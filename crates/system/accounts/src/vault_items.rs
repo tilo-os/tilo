@@ -11,6 +11,13 @@
 //! names an item and is not its secret, so it may be held by code that must
 //! never read one.
 //!
+//! Something that works with nobody watching uses an item only where its
+//! person said it always may ([`VaultItems::let_always`]): the leave names
+//! who, for what and where, is sealed with the item, is read beside its uses
+//! ([`VaultItems::leaves`]) and is taken back by the person
+//! ([`VaultItems::take_back`]). A leave hands nothing out: every use still
+//! goes through [`VaultItems::use_as`] and is written down there.
+//!
 //! A place is compared exactly: the scheme, the host and the port. An item
 //! kept for `https://example.com` is not used at `http://example.com`, at
 //! `https://login.example.com` or at any other port.
@@ -343,6 +350,37 @@ pub struct UseRecord {
 pub const MAX_USES_KEPT: usize = 32;
 const MAX_BY_CHARS: usize = 120;
 
+/// The leaves an item keeps: the newest of them.
+pub const MAX_LEAVES: usize = 16;
+const MAX_USING_CHARS: usize = 64;
+
+/// A leave its person gave: `by` may use the item for `using` at
+/// every one of `places` without them being asked again. It says who, for
+/// what and where, never what the item holds, and hands nothing out.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Leave {
+    /// Who may: an agent, by its id in the workspace's list of agents.
+    pub by: String,
+    /// The name its person knew it under when they gave the leave.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// What it may use the item for: the use's own word.
+    pub using: String,
+    /// The places the leave covers.
+    pub places: Vec<Place>,
+    /// When the person gave it, in seconds since the Unix epoch.
+    pub since_unix: u64,
+}
+
+/// `text` as a leave keeps a name or a word: one line, bounded.
+fn kept_word(text: &str, most: usize) -> String {
+    text.trim()
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(most)
+        .collect()
+}
+
 /// One item as the vault seals it.
 #[derive(Serialize, Deserialize)]
 struct Sealed {
@@ -356,6 +394,8 @@ struct Sealed {
     last_used_unix: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     uses: Vec<UseRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    leaves: Vec<Leave>,
 }
 
 impl Drop for Sealed {
@@ -426,7 +466,23 @@ impl Sealed {
             added_unix: unix_now(),
             last_used_unix: None,
             uses: Vec::new(),
+            leaves: Vec::new(),
         })
+    }
+
+    /// Whether a use that needs `kind` and sends the secret to every one of
+    /// `places` is one this item allows: the one rule every use is held to.
+    fn allows(&self, kind: Option<ItemKind>, places: &[Place]) -> Result<(), ItemError> {
+        if places.is_empty() || !places.iter().all(|place| self.places.contains(place)) {
+            return Err(ItemError::WrongPlace);
+        }
+        if kind.is_some_and(|kind| kind != self.kind) {
+            return Err(ItemError::WrongKind);
+        }
+        if self.kind == ItemKind::CodeGenerator {
+            return Err(ItemError::NeverReleased);
+        }
+        Ok(())
     }
 
     fn facts(&self, id: ItemId) -> ItemFacts {
@@ -581,15 +637,7 @@ impl VaultItems {
         by: &str,
     ) -> Result<Released, ItemError> {
         let mut sealed = self.sealed(id)?;
-        if places.is_empty() || !places.iter().all(|place| sealed.places.contains(place)) {
-            return Err(ItemError::WrongPlace);
-        }
-        if kind.is_some_and(|kind| kind != sealed.kind) {
-            return Err(ItemError::WrongKind);
-        }
-        if sealed.kind == ItemKind::CodeGenerator {
-            return Err(ItemError::NeverReleased);
-        }
+        sealed.allows(kind, places)?;
         let now = unix_now();
         sealed.last_used_unix = Some(now);
         sealed.uses.push(UseRecord {
@@ -618,6 +666,107 @@ impl VaultItems {
     pub fn uses(&self, id: &ItemId) -> Result<Vec<UseRecord>, ItemError> {
         let mut sealed = self.sealed(id)?;
         Ok(std::mem::take(&mut sealed.uses))
+    }
+
+    /// Whether the item `id` names could be used as `kind` at every one of
+    /// `places`, answering what is safe to say of it when it could. What
+    /// [`Self::use_as`] refuses is refused here the same; nothing is handed
+    /// out and nothing is written down, so whoever must ask a person first
+    /// asks only about a use that would be taken.
+    pub fn fits(
+        &self,
+        id: &ItemId,
+        kind: ItemKind,
+        places: &[Place],
+    ) -> Result<ItemFacts, ItemError> {
+        let sealed = self.sealed(id)?;
+        sealed.allows(Some(kind), places)?;
+        Ok(sealed.facts(id.clone()))
+    }
+
+    /// Whether `by` may use the item `id` names for `using` at every one of
+    /// `places` without its person being asked: one leave of theirs
+    /// ([`Self::let_always`]) names that agent and that use and covers all
+    /// of those places.
+    pub fn stands(
+        &self,
+        id: &ItemId,
+        places: &[Place],
+        by: &str,
+        using: &str,
+    ) -> Result<bool, ItemError> {
+        let sealed = self.sealed(id)?;
+        Ok(!places.is_empty()
+            && !by.is_empty()
+            && sealed.leaves.iter().any(|leave| {
+                leave.by == by
+                    && leave.using == using
+                    && places.iter().all(|place| leave.places.contains(place))
+            }))
+    }
+
+    /// Keep the person's leave: the agent `by`, which they know as
+    /// `name`, may use the item `id` names for `using` at every one of
+    /// `places` without being asked again. Only places the item belongs to
+    /// are covered, and the leave hands nothing out.
+    pub fn let_always(
+        &mut self,
+        id: &ItemId,
+        places: &[Place],
+        (by, name): (&str, &str),
+        using: &str,
+    ) -> Result<(), ItemError> {
+        let mut sealed = self.sealed(id)?;
+        if places.is_empty() || !places.iter().all(|place| sealed.places.contains(place)) {
+            return Err(ItemError::WrongPlace);
+        }
+        let by = kept_word(by, MAX_BY_CHARS);
+        let using = kept_word(using, MAX_USING_CHARS);
+        if by.is_empty() || using.is_empty() {
+            return Err(ItemError::Invalid(
+                "A leave names who may use the item and for what",
+            ));
+        }
+        let mut covered = places.to_vec();
+        covered.sort();
+        covered.dedup();
+        sealed
+            .leaves
+            .retain(|leave| !(leave.by == by && leave.using == using && leave.places == covered));
+        sealed.leaves.push(Leave {
+            by,
+            name: kept_word(name, MAX_BY_CHARS),
+            using,
+            places: covered,
+            since_unix: unix_now(),
+        });
+        let excess = sealed.leaves.len().saturating_sub(MAX_LEAVES);
+        if excess > 0 {
+            sealed.leaves = sealed.leaves.split_off(excess);
+        }
+        self.write(id, &sealed)
+    }
+
+    /// The leaves the item `id` names keeps, oldest first.
+    pub fn leaves(&self, id: &ItemId) -> Result<Vec<Leave>, ItemError> {
+        let mut sealed = self.sealed(id)?;
+        Ok(std::mem::take(&mut sealed.leaves))
+    }
+
+    /// Take back the leaves of the item `id` names: every one, or
+    /// only those of the agent `by`. Answers how many were taken back; from
+    /// then on that agent's next use asks its person again.
+    pub fn take_back(&mut self, id: &ItemId, by: Option<&str>) -> Result<usize, ItemError> {
+        let mut sealed = self.sealed(id)?;
+        let before = sealed.leaves.len();
+        sealed
+            .leaves
+            .retain(|leave| by.is_some_and(|by| leave.by != by));
+        let taken = before.saturating_sub(sealed.leaves.len());
+        if taken > 0 {
+            self.write(id, &sealed)?;
+        }
+        Ok(taken)
     }
 }
 
@@ -1067,6 +1216,214 @@ mod tests {
         assert!(uses.iter().all(|used| used.places == [both[1].clone()]));
         let unknown = ItemId::parse("0123456789abcdef0123456789abcdef").unwrap();
         assert_eq!(items.uses(&unknown).err(), Some(ItemError::NotFound));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Whether an item fits a use is said without using it: what a use
+    /// would be refused for is refused here the same, nothing is handed out
+    /// and nothing is written down.
+    #[test]
+    fn whether_an_item_fits_a_use_is_said_without_using_it() {
+        let root = root();
+        let mut items = VaultItems::open_in(&root).unwrap();
+        let both = [
+            place("imap://mail.example.test:993"),
+            place("smtp://mail.example.test:465"),
+        ];
+        let elsewhere = place("imap://mail.attacker.example:993");
+        let kept = items
+            .add(login(&[
+                "imap://mail.example.test:993",
+                "smtp://mail.example.test:465",
+            ]))
+            .unwrap();
+        let seed = items
+            .add(item(
+                ItemKind::CodeGenerator,
+                &["https://example.test"],
+                SEED,
+            ))
+            .unwrap();
+        let unknown = ItemId::parse("0123456789abcdef0123456789abcdef").unwrap();
+
+        assert_eq!(
+            items.fits(&kept.id, ItemKind::Login, &both).unwrap().id,
+            kept.id
+        );
+        for (id, kind, places, refusal) in [
+            (&kept.id, ItemKind::Key, &both[..], ItemError::WrongKind),
+            (
+                &kept.id,
+                ItemKind::Login,
+                std::slice::from_ref(&elsewhere),
+                ItemError::WrongPlace,
+            ),
+            (&kept.id, ItemKind::Login, &[][..], ItemError::WrongPlace),
+            (
+                &seed.id,
+                ItemKind::CodeGenerator,
+                &[place("https://example.test")][..],
+                ItemError::NeverReleased,
+            ),
+            (&unknown, ItemKind::Login, &both[..], ItemError::NotFound),
+        ] {
+            assert_eq!(items.fits(id, kind, places).err(), Some(refusal));
+        }
+        assert!(items.uses(&kept.id).unwrap().is_empty());
+        assert!(
+            items
+                .facts()
+                .iter()
+                .all(|facts| facts.last_used_unix.is_none())
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A leave is for one agent, one use and the places it names.
+    /// It covers no place the item does not belong to, is kept once however
+    /// often it is given, stays with the item across a reopening, and hands
+    /// nothing out.
+    #[test]
+    fn a_leave_is_for_one_agent_one_use_and_the_places_it_names() {
+        let root = root();
+        let mut items = VaultItems::open_in(&root).unwrap();
+        let both = [
+            place("imap://mail.example.test:993"),
+            place("smtp://mail.example.test:465"),
+        ];
+        let elsewhere = place("imap://mail.attacker.example:993");
+        let kept = items
+            .add(login(&[
+                "imap://mail.example.test:993",
+                "smtp://mail.example.test:465",
+            ]))
+            .unwrap();
+        let scout = ("scout", "Scout");
+        assert!(!items.stands(&kept.id, &both, "scout", "add-mail").unwrap());
+
+        // A leave covers only where the item belongs, and names who and
+        // for what.
+        for (places, who, using) in [
+            (std::slice::from_ref(&elsewhere), scout, "add-mail"),
+            (&[][..], scout, "add-mail"),
+            (&both[..], ("", ""), "add-mail"),
+            (&both[..], scout, " "),
+        ] {
+            assert!(
+                items.let_always(&kept.id, places, who, using).is_err(),
+                "{places:?} {who:?} {using:?}"
+            );
+        }
+        assert!(items.leaves(&kept.id).unwrap().is_empty());
+
+        items
+            .let_always(&kept.id, &both, scout, "add-mail")
+            .unwrap();
+        // Given twice it is kept once.
+        let turned = [both[1].clone(), both[0].clone()];
+        items
+            .let_always(&kept.id, &turned, scout, "add-mail")
+            .unwrap();
+        let items = VaultItems::open_in(&root).unwrap();
+        let leaves = items.leaves(&kept.id).unwrap();
+        assert_eq!(leaves.len(), 1, "{leaves:?}");
+        assert_eq!(leaves[0].by, "scout");
+        assert_eq!(leaves[0].name, "Scout");
+        assert_eq!(leaves[0].using, "add-mail");
+        assert_eq!(leaves[0].places, both);
+        let said = format!("{leaves:?}");
+        assert!(!said.contains(PASSWORD) && !said.contains("ada@"), "{said}");
+
+        assert!(items.stands(&kept.id, &both, "scout", "add-mail").unwrap());
+        assert!(
+            items
+                .stands(&kept.id, &both[..1], "scout", "add-mail")
+                .unwrap(),
+            "a leave for both servers covers one of them"
+        );
+        for (places, by, using) in [
+            (&both[..], "scout-two", "add-mail"),
+            (&both[..], "Scout", "add-mail"),
+            (&both[..], "scout", "fill-page"),
+            (&both[..], "", "add-mail"),
+            (&[][..], "scout", "add-mail"),
+            (std::slice::from_ref(&elsewhere), "scout", "add-mail"),
+        ] {
+            assert!(
+                !items.stands(&kept.id, places, by, using).unwrap(),
+                "{places:?} {by} {using}"
+            );
+        }
+        // A leave is not a use: nothing was handed out for it.
+        assert!(items.uses(&kept.id).unwrap().is_empty());
+        assert_eq!(items.facts()[0].last_used_unix, None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Its person takes a leave back, one agent's or every one. An item
+    /// that is forgotten keeps none, and an item keeps its newest leaves,
+    /// not all it ever had.
+    #[test]
+    fn a_leave_is_taken_back_and_goes_with_its_item() {
+        let root = root();
+        let mut items = VaultItems::open_in(&root).unwrap();
+        let both = [
+            place("imap://mail.example.test:993"),
+            place("smtp://mail.example.test:465"),
+        ];
+        let kept = items
+            .add(login(&[
+                "imap://mail.example.test:993",
+                "smtp://mail.example.test:465",
+            ]))
+            .unwrap();
+        let scout = ("scout", "Scout");
+        items
+            .let_always(&kept.id, &both, scout, "add-mail")
+            .unwrap();
+
+        // Another agent's leaves, which are none, then this one's.
+        assert_eq!(items.take_back(&kept.id, Some("scout-two")).unwrap(), 0);
+        assert!(items.stands(&kept.id, &both, "scout", "add-mail").unwrap());
+        assert_eq!(items.take_back(&kept.id, Some("scout")).unwrap(), 1);
+        assert!(!items.stands(&kept.id, &both, "scout", "add-mail").unwrap());
+        assert_eq!(items.take_back(&kept.id, None).unwrap(), 0);
+
+        // Every leave of the item at once.
+        items
+            .let_always(&kept.id, &both, scout, "add-mail")
+            .unwrap();
+        items
+            .let_always(&kept.id, &both[..1], ("other", "Other"), "add-mail")
+            .unwrap();
+        assert_eq!(items.take_back(&kept.id, None).unwrap(), 2);
+        assert!(items.leaves(&kept.id).unwrap().is_empty());
+
+        // An item that is forgotten keeps none.
+        items
+            .let_always(&kept.id, &both, scout, "add-mail")
+            .unwrap();
+        assert!(items.remove(&kept.id).unwrap());
+        assert_eq!(
+            items.stands(&kept.id, &both, "scout", "add-mail").err(),
+            Some(ItemError::NotFound)
+        );
+        assert_eq!(
+            items.let_always(&kept.id, &both, scout, "add-mail").err(),
+            Some(ItemError::NotFound)
+        );
+
+        // An item keeps its newest leaves.
+        let many = items.add(login(&["imap://mail.example.test:993"])).unwrap();
+        for agent in 0..(MAX_LEAVES + 4) {
+            let name = format!("agent-{agent}");
+            items
+                .let_always(&many.id, &both[..1], (&name, ""), "add-mail")
+                .unwrap();
+        }
+        let leaves = items.leaves(&many.id).unwrap();
+        assert_eq!(leaves.len(), MAX_LEAVES);
+        assert_eq!(leaves[0].by, "agent-4");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -3,7 +3,9 @@ use super::App;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct LocalActionCheckpoint {
-    #[serde(default)]
+    /// Kept under the name a checkpoint has always given it; one that names it as the code
+    /// does reads too.
+    #[serde(default, rename = "custody", alias = "ownership")]
     pub ownership: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     pub report: runtime_collab::LocalDocumentActionReport,
     #[serde(with = "checkpoint_row")]

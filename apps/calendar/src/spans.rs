@@ -160,6 +160,20 @@ pub struct FreeAnswer {
 }
 
 impl SpanAsked {
+    /// Every occurrence from `from_ms` to before `to_ms`, ms since the
+    /// epoch, in the zone most entries are in: what a reader asks that holds
+    /// moments rather than a person's words. `None` for a moment no
+    /// calendar reaches.
+    #[must_use]
+    pub fn between_ms(from_ms: i64, to_ms: i64) -> Option<Self> {
+        let written = |ms: i64| DateTime::from_timestamp_millis(ms).map(|at| at.to_rfc3339());
+        Some(Self {
+            from: written(from_ms)?,
+            to: written(to_ms)?,
+            ..Self::default()
+        })
+    }
+
     /// What `events` hold in the span asked.
     ///
     /// # Errors

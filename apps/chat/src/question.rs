@@ -24,7 +24,7 @@
 //! | Kind | Answers | Detail | On an answer |
 //! |---|---|---|---|
 //! | [`CHOICE`] | the asker's own, each with its label | none | the label is posted as the person's own message |
-//! | [`ACTION`] | [`ALLOW`], [`DENY`], and [`ALWAYS`] where one event may do that kind of thing unasked from then on | the invocation as its host keeps it; `draft` is the [`tilo_actions::Draft`] the person reviews | its host says it [`STARTED`], runs that one invocation or drops it, and says which ([`Question::settle`]) |
+//! | [`ACTION`] | [`ALLOW`], [`DENY`], and [`ALWAYS`] where one event may do that kind of thing unasked from then on, or an agent may use one vault item at the same place | the invocation as its host keeps it; `draft` is the [`tilo_actions::Draft`] the person reviews, and `use.item` says which item of their vault it would use: its kind and where, never its address | its host says it [`STARTED`], runs that one invocation or drops it, and says which ([`Question::settle`]) |
 //! | [`SECRET`] | none of its own: [`FILLED`], or [`DECLINED`] | what is asked for: its `kind`, the places it `belongsTo` and, when known, the `username` | the person's device hands what they typed into the protected field to their vault, and the answer's detail carries the vault item's `reference`, never the secret |
 //!
 //! To add a kind: give it a name here, say what its detail holds and what
@@ -288,6 +288,18 @@ impl Question {
     #[must_use]
     pub fn draft(&self) -> Option<tilo_actions::Draft> {
         serde_json::from_value(self.kept()?.get("draft")?.clone()).ok()
+    }
+
+    /// The item of its person's vault the action an [`ACTION`] question asks
+    /// about would use, as the server that keeps the vault says it: its kind
+    /// and the places it would be used at. The item's address is never in a
+    /// question.
+    #[must_use]
+    pub fn uses_item(&self) -> Option<crate::secret_ask::Asked> {
+        (self.kind.0 == ACTION)
+            .then(|| self.kept()?.pointer("/use/item").cloned())
+            .flatten()
+            .and_then(|item| serde_json::from_value(item).ok())
     }
 
     /// What the button of the answer `id` says, when the asker worded it.

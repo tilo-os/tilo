@@ -710,3 +710,96 @@ async fn the_catalogue_offers_her_calendars_to_the_agent_she_named_and_to_nobody
         "an agent she no longer names"
     );
 }
+
+/// What an automation that waits on an entry's time is handed: every
+/// occurrence as the pull of her own server left it, for the agent she named
+/// and for nobody else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_times_her_calendars_hold_are_read_for_the_agent_she_named_alone() {
+    let ada = Ada::new().await;
+    let her = ada.herself();
+    // A series over the end of summer time, at 09:30 where she lives, with a
+    // day it leaves out and a day moved to the afternoon; and a whole day.
+    let series = meeting(
+        "standup-1@example.org",
+        "Standup",
+        "20261019T093000",
+        "RRULE:FREQ=DAILY;COUNT=9\r\nEXDATE;TZID=Europe/Berlin:20261021T093000\r\n",
+    )
+    .replace(
+        "END:VCALENDAR\r\n",
+        "BEGIN:VEVENT\r\nUID:standup-1@example.org\r\nSUMMARY:Standup\r\n\
+         RECURRENCE-ID;TZID=Europe/Berlin:20261022T093000\r\n\
+         DTSTART;TZID=Europe/Berlin:20261022T140000\r\nDURATION:PT30M\r\nEND:VEVENT\r\n\
+         END:VCALENDAR\r\n",
+    );
+    ada.server.put("work", "standup.ics", &series);
+    ada.server.put(
+        "work",
+        "offsite.ics",
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example//Server//EN\r\nBEGIN:VEVENT\r\n\
+         UID:offsite-1@example.org\r\nSUMMARY:Offsite\r\nDTSTART;VALUE=DATE:20261023\r\n\
+         DTEND;VALUE=DATE:20261024\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+    );
+    let id = ada.add().await["id"].as_str().expect("its id").to_owned();
+    let person = ada.device.user_public_key;
+    let workspace = ada.workspace_id.to_string();
+    // From Monday 19 October 2026 to before Wednesday 28 October, in UTC.
+    let (from, to) = (1_792_368_000_000_i64, 1_793_145_600_000_i64);
+    let read = |agent: &'static str| {
+        ada.workspaces
+            .calendar_occurrences_for(&person, &workspace, agent, from, to)
+    };
+
+    // Nothing of her calendar for an agent she did not name.
+    assert_eq!(read("assistant").await, Ok(Vec::new()));
+    let naming = RemoteActionTarget {
+        provider: person_accounts::PROVIDER.to_owned(),
+        address: ActionAddress::new(person_accounts::RESOURCE, person_accounts::ASSISTANT),
+    };
+    asked(
+        &ada.page(),
+        &her,
+        naming,
+        json!({"account": id, "agent": "assistant", "may": true}),
+    )
+    .await
+    .expect("she names her assistant for the calendar account");
+    assert_eq!(read("stranger").await, Ok(Vec::new()));
+
+    // Every occurrence at the moment it starts: 09:30 where she lives is
+    // 07:30 UTC in summer time and 08:30 after it ended on the 25th; the day
+    // left out is not there, the moved one is where it was moved to under
+    // the date it had in its series, and the whole day begins at her
+    // midnight.
+    let held: Vec<(String, String, i64, bool)> = read("assistant")
+        .await
+        .expect("her assistant's read")
+        .iter()
+        .map(|occurrence| {
+            (
+                occurrence["title"].as_str().unwrap().to_owned(),
+                occurrence["occurrence"].as_str().unwrap().to_owned(),
+                occurrence["startMs"].as_i64().unwrap(),
+                occurrence["moved"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    let expected: Vec<(String, String, i64, bool)> = [
+        ("Standup", "2026-10-19", 1_792_395_000_000_i64, false),
+        ("Standup", "2026-10-20", 1_792_481_400_000_i64, false),
+        ("Standup", "2026-10-22", 1_792_670_400_000_i64, true),
+        ("Offsite", "2026-10-23", 1_792_706_400_000_i64, false),
+        ("Standup", "2026-10-23", 1_792_740_600_000_i64, false),
+        ("Standup", "2026-10-24", 1_792_827_000_000_i64, false),
+        ("Standup", "2026-10-25", 1_792_917_000_000_i64, false),
+        ("Standup", "2026-10-26", 1_793_003_400_000_i64, false),
+        ("Standup", "2026-10-27", 1_793_089_800_000_i64, false),
+    ]
+    .into_iter()
+    .map(|(title, day, at, moved): (&str, &str, i64, bool)| {
+        (title.to_owned(), day.to_owned(), at, moved)
+    })
+    .collect();
+    assert_eq!(held, expected);
+}

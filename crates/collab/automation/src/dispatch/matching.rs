@@ -197,6 +197,8 @@ fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<
         (TriggerSpec::AppEvent { app_id, kind }, Event::AppEvent(declared)) => {
             declared.app_id == *app_id && declared.kind == *kind
         }
+        // Whoever reads the times already held them to the trigger's filter.
+        (TriggerSpec::ResourceTime { .. }, Event::Time(fired)) => fired.trigger == index,
         _ => false,
     }
 }

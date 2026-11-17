@@ -1525,3 +1525,90 @@ async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
     assert!(fake.drain_requests().is_empty());
     relay.shutdown().await;
 }
+
+/// What a service on this device's own network says to whoever asks it.
+const SAID_INSIDE: &str = "what a service inside says";
+
+/// Why what was asked about a workspace's holders was refused.
+fn holder_refused(answered: Result<Value, ActionHostError>) -> String {
+    match answered {
+        Err(ActionHostError::Refused { reason }) => reason,
+        other => panic!("naming a holder was not refused: {other:?}"),
+    }
+}
+
+/// An owner names a holder by its site, and this device then asks that site
+/// from inside its own network. It asks an https address on the internet
+/// and nothing else: a plain-http address and an address on its own network
+/// are refused before anything is asked, for adding a holder and for
+/// removing one.
+#[tokio::test]
+async fn a_holder_is_named_by_an_https_address_on_the_internet_and_nothing_else_is_asked() {
+    use test_http::{Reply, Responder};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let (workspace, workspace_id, governance) = governed(server.workspaces()).await;
+    let owner = caller(&owner);
+    let inside = Responder::handle(|_| Some(Reply::status(403).body(SAID_INSIDE)));
+    for origin in [
+        inside.url(),
+        format!("https://127.0.0.1:{}", inside.port()),
+        "https://10.0.0.5:8500".to_owned(),
+        "http://holder.example".to_owned(),
+    ] {
+        let adding = request(&workspace, super::ADD_HOST, json!({ "origin": origin }));
+        let reason = holder_refused(invoke(&governance, workspace_id, &owner, adding).await);
+        assert!(reason.contains("is no holder's address"), "{reason}");
+        assert!(!reason.contains(SAID_INSIDE), "{reason}");
+    }
+    let removing = request(
+        &workspace,
+        super::REMOVE_HOST,
+        json!({ "host": inside.url() }),
+    );
+    let reason = holder_refused(invoke(&governance, workspace_id, &owner, removing).await);
+    assert!(reason.contains("is no holder's address"), "{reason}");
+    assert!(
+        inside.drain_requests().is_empty(),
+        "an address on this device's own network was asked"
+    );
+}
+
+/// Where its operator lets a device call its own network, a holder's site
+/// there is asked. Still no redirect is followed, so a site an owner names
+/// sends this device nowhere else, and what a site answers a refusal with
+/// is not handed on to whoever named it.
+#[tokio::test]
+async fn a_holders_site_sends_the_device_nowhere_else_and_its_refusal_is_not_handed_on() {
+    use test_http::{Reply, Responder};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let (workspace, workspace_id, governance) = governed(server.workspaces()).await;
+    server.workspaces().call_private_model_addresses(true);
+    let owner = caller(&owner);
+    let adding = |origin: String| request(&workspace, super::ADD_HOST, json!({ "origin": origin }));
+
+    let elsewhere = Responder::handle(|_| Some(Reply::status(403).body(SAID_INSIDE)));
+    let onward = format!("{}/elsewhere", elsewhere.url());
+    let redirecting =
+        Responder::handle(move |_| Some(Reply::status(307).header("Location", &onward)));
+    let asked = adding(redirecting.url());
+    let reason = holder_refused(invoke(&governance, workspace_id, &owner, asked).await);
+    assert_eq!(redirecting.drain_requests().len(), 1, "{reason}");
+    assert!(
+        elsewhere.drain_requests().is_empty(),
+        "a redirect was followed: {reason}"
+    );
+    assert!(!reason.contains(SAID_INSIDE), "{reason}");
+
+    let refusing = Responder::handle(|_| Some(Reply::status(401).body(SAID_INSIDE)));
+    let asked = adding(refusing.url());
+    let reason = holder_refused(invoke(&governance, workspace_id, &owner, asked).await);
+    assert_eq!(refusing.drain_requests().len(), 1, "{reason}");
+    assert!(reason.contains("refused to say"), "{reason}");
+    assert!(!reason.contains(SAID_INSIDE), "{reason}");
+}

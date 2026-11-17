@@ -4,10 +4,10 @@
 //! A person says in their own words what is important to them, with the
 //! situations those words depend on ([`person_telling::Importance`]), and
 //! everything their assistant tells them joins one log, each thing marked
-//! by that rule ([`told`], [`judge`]). The host keeps both in the person's
+//! by that rule ([`told`], [`judge`]). The server keeps both in the person's
 //! own store, beside their models and their arriving mail, and not in a
-//! record of theirs a workspace carries: a person's own record is sealed
-//! for their devices, and it is the host that reads the rule, judges and
+//! document of theirs a workspace carries: a person's own document is sealed
+//! for their devices, and it is the server that reads the rule, judges and
 //! tells while every device of theirs is off.
 //!
 //! It is the person's alone. The host answers the person on a device of
@@ -30,9 +30,11 @@ use serde_json::Value;
 use tilo_actions::remote::person_telling::{
     self, Acknowledge, Fact, ForgetFact, Importance, Insist, Insisting, KeepOnHost, Kind,
     LetThrough, Line, ListAfter, MAX_FACT_NAME_BYTES, MAX_FACT_VALUE_BYTES, MAX_FACTS,
-    MAX_LINE_BYTES, MAX_LINES, Say, SetFact, Tell, Teller, Unsay,
+    MAX_LINE_BYTES, MAX_LINES, Offered, Say, SetFact, Tell, Teller, Unsay,
 };
-use tilo_actions::remote::{ActionHostError, Caller, InvokeArgument, InvokeRequest};
+use tilo_actions::remote::{
+    ActionHostError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
+};
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 
@@ -93,6 +95,14 @@ fn clipped(text: &str, most: usize) -> String {
     }
     format!("{}…", text.get(..end).unwrap_or_default().trim_end())
 }
+
+/// Whoever asks, as the transport certified them and where they ask: what
+/// a button they offer is held against.
+type Asked<'a> = (
+    Option<collab_types::WorkspaceId>,
+    &'a Caller,
+    Option<&'a DeviceCert>,
+);
 
 /// Who asks about a person's rule and log.
 enum Asking {
@@ -447,7 +457,10 @@ impl Workspaces {
         let asking = self.asking_about_telling(caller, certificate, workspace_id)?;
         match request.target.address.resource.as_str() {
             person_telling::IMPORTANCE => self.importance_invoke(&asking, request),
-            person_telling::TOLD => self.told_invoke(&asking, request).await,
+            person_telling::TOLD => {
+                self.told_invoke(&asking, (workspace_id, caller, certificate), request)
+                    .await
+            }
             _ => Err(ActionHostError::UnknownAction),
         }
     }
@@ -476,6 +489,7 @@ impl Workspaces {
     async fn told_invoke(
         &self,
         asking: &Asking,
+        asked: Asked<'_>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionHostError> {
         match (request.target.address.action.as_str(), asking) {
@@ -490,21 +504,29 @@ impl Workspaces {
                 },
             ) => {
                 let tell: Tell = argument(request, "what to tell")?;
+                if let Err(refused) = self.offers_its_own(asked, &tell.actions).await {
+                    return answer(&Err::<Value, String>(refused));
+                }
+                let teller = Teller {
+                    agent: id.clone(),
+                    name: name.clone(),
+                };
+                let offered_by = (!tell.actions.is_empty()).then(|| teller.clone());
                 let telling = ToTell {
                     id: None,
-                    // What a thing is comes from what caused it, never
-                    // from whoever tells.
-                    kind: Kind::of_cause(tell.cause.as_ref()),
+                    // What an agent tells is news, whatever cause it
+                    // names, and its person's rule marks it. What reaches a
+                    // person unjudged, a reminder they set up or a brief
+                    // they asked for, is told by what carries out that
+                    // event of theirs, never by whoever says it is one.
+                    kind: Kind::News,
                     tell,
-                    from: Some(Teller {
-                        agent: id.clone(),
-                        name: name.clone(),
-                    }),
+                    from: Some(teller),
                     workspace: Some(workspace.clone()),
                     words_stay: false,
                     spender: None,
                 };
-                answer(&self.tell(person, telling).await)
+                answer(&self.tell_offered(person, telling, offered_by).await)
             }
             (person_telling::LIST, Asking::Person(person)) => {
                 let after: ListAfter = argument_or_default(request, "a place in the log")?;
@@ -524,6 +546,52 @@ impl Workspaces {
             }
             _ => Err(ActionHostError::UnknownAction),
         }
+    }
+
+    /// Refuse `actions`, the buttons an agent's own telling offers, unless
+    /// each is an action this server offers that agent itself where it
+    /// asks. A button is pressed by the person and invoked as the person,
+    /// so one aimed at anything else would have the person do for the
+    /// agent what it may not do alone. A workspace's governance and this
+    /// server's own operations are never a button.
+    async fn offers_its_own(
+        &self,
+        (workspace_id, caller, certificate): Asked<'_>,
+        actions: &[Offered],
+    ) -> Result<(), String> {
+        // Bounded before anything is looked up for them.
+        if actions.len() > person_telling::MAX_ACTIONS {
+            return Err(format!(
+                "A thing told offers at most {} buttons",
+                person_telling::MAX_ACTIONS
+            ));
+        }
+        for action in actions {
+            let target = &action.target;
+            let query = CatalogueQuery {
+                provider: Some(target.app.clone()),
+                max_results: 1000,
+                ..CatalogueQuery::default()
+            };
+            let its_own = !super::actions::governs(&target.app)
+                && target.record.is_empty()
+                && self
+                    .catalogue(workspace_id, caller, certificate, &query)
+                    .await
+                    .rows
+                    .iter()
+                    .filter_map(|row| row.action.as_ref())
+                    .any(|offered| {
+                        offered.address.resource == target.resource
+                            && offered.address.action == target.action
+                    });
+            if !its_own {
+                return Err(
+                    "A button invokes only an action its teller may invoke itself".to_owned(),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Make `change` to `person`'s rule and answer the rule as it stands

@@ -22,6 +22,8 @@ use tilo_agent_session::bot::host_steps::{
 mod events;
 /// The host's own answers for the programs it runs for a person.
 mod judging;
+/// A program's triggers at a time its person's calendars hold.
+mod times;
 
 const MALLORY: [u8; 32] = [7; 32];
 const ADA: [u8; 32] = [8; 32];

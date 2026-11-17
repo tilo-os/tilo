@@ -1,17 +1,17 @@
-//! A person's events on this host: kept, run, and answered as typed
+//! A person's events on this server: kept, run, and answered as typed
 //! actions ([`tilo_actions::remote::person_events`]).
 //!
-//! An event is a Shortcut the host runs for one person
+//! An event is a Shortcut the server runs for one person
 //! ([`tilo_agent_session::bot::event`]). It is run by the engine that runs a
 //! workspace's bots ([`super::installed::BotRunner`]), for that person, and
-//! is no member of the workspace: its program's steps are the host's own (a
+//! is no member of the workspace: its program's steps are the server's own (a
 //! judgement, a count, an instruction handed to the person's assistant), so
 //! it changes no record and nothing has to admit it. What it starts is the
 //! assistant's own work, under the assistant's own bounds.
 //!
-//! Each event keeps a directory of its own under the host's state: what was
+//! Each event keeps a directory of its own under the server's state: what was
 //! described, what its runner took in, and what it keeps between its runs.
-//! A host that starts again runs every event it kept, and a moment that
+//! A server that starts again runs every event it kept, and a moment that
 //! passed while it was down fires once.
 //!
 //! The actions are answered for the person a caller is, or acts for on a
@@ -65,6 +65,9 @@ const PROGRESS: &str = "progress.json";
 /// Whose events: the workspace, and the person by their root, hex.
 type Owner = (String, String);
 
+/// What answers the steps of one event.
+type StepsFor = Arc<dyn Fn(&Definition) -> Arc<dyn HostSteps> + Send + Sync>;
+
 /// Whether `message` is for a person's events.
 #[must_use]
 pub fn addresses(message: &RemoteActionMessage) -> bool {
@@ -77,7 +80,7 @@ pub fn addresses(message: &RemoteActionMessage) -> bool {
     }
 }
 
-/// What a host that runs no events answers `message`: that it offers no
+/// What a server that runs no events answers `message`: that it offers no
 /// such action, as for anything it does not know.
 #[must_use]
 pub fn not_served(message: RemoteActionMessage) -> Option<Pending<RemoteActionMessage>> {
@@ -126,12 +129,12 @@ struct Inner {
     workspaces: Workspaces,
     /// Where every event keeps its directory.
     state: PathBuf,
-    /// What the host answers an event's steps with.
-    steps: Arc<dyn HostSteps>,
+    /// What the server answers an event's steps with.
+    steps: StepsFor,
     running: Mutex<BTreeMap<Owner, BTreeMap<String, Running>>>,
 }
 
-/// The events of this host's people: every one it keeps runs for as long as
+/// The events of this server's people: every one it keeps runs for as long as
 /// this, or a clone of it, is held.
 #[derive(Clone)]
 pub struct PersonEvents {
@@ -140,17 +143,55 @@ pub struct PersonEvents {
 
 impl PersonEvents {
     /// Run every event kept under `state`, and keep new ones there. Their
-    /// steps are answered by this host ([`super::assistant::host_steps`]).
-    /// Called on the runtime the events run on.
+    /// steps are answered by this server ([`super::assistant`]): with
+    /// `actions`, the server's action service, an instruction an event hands
+    /// over starts a turn of its person's assistant. Called on the runtime
+    /// the events work on.
     #[must_use]
-    pub fn start(workspaces: Workspaces, state: PathBuf) -> Self {
-        let steps = super::assistant::host_steps(workspaces.clone());
-        Self::start_with(workspaces, state, steps)
+    pub fn start(
+        workspaces: Workspaces,
+        state: PathBuf,
+        actions: Option<tilo_agent_session::workspace_actions::WorkspaceActions>,
+    ) -> Self {
+        use super::assistant::{self, Starter};
+        let plain = || -> StepsFor {
+            let steps = assistant::host_steps(workspaces.clone());
+            Arc::new(move |_: &Definition| Arc::clone(&steps))
+        };
+        let starting_turns =
+            |actions: tilo_agent_session::workspace_actions::WorkspaceActions| -> StepsFor {
+                let workspaces = workspaces.clone();
+                Arc::new(move |event: &Definition| {
+                    let kind = if matches!(event.trigger(), Ok(TriggerSpec::Once { .. })) {
+                        assistant::REMINDER
+                    } else {
+                        assistant::EVENT
+                    };
+                    assistant::steps_starting_turns(
+                        workspaces.clone(),
+                        actions.clone(),
+                        Starter {
+                            name: event.name.clone(),
+                            kind,
+                        },
+                    )
+                })
+            };
+        let steps = actions.map_or_else(plain, starting_turns);
+        Self::started(workspaces, state, steps)
     }
 
     /// [`Self::start`], with what answers the events' steps given.
     #[must_use]
     pub fn start_with(workspaces: Workspaces, state: PathBuf, steps: Arc<dyn HostSteps>) -> Self {
+        Self::started(
+            workspaces,
+            state,
+            Arc::new(move |_: &Definition| Arc::clone(&steps)),
+        )
+    }
+
+    fn started(workspaces: Workspaces, state: PathBuf, steps: StepsFor) -> Self {
         let events = Self {
             inner: Arc::new(Inner {
                 workspaces,
@@ -163,8 +204,8 @@ impl PersonEvents {
         events
     }
 
-    /// Start every event a host before this one kept. One that does not
-    /// start is said and left where it is, so a fixed host runs it again.
+    /// Start every event a server before this one kept. One that does not
+    /// start is said and left where it is, so a fixed server runs it again.
     fn resume_kept(&self) {
         let mut kept = Vec::new();
         for (workspace, at) in directories(&self.inner.state) {
@@ -231,7 +272,7 @@ impl PersonEvents {
             BTreeMap::new(),
             dir.join(PROGRESS),
         )?
-        .runs_for(owner.1.clone(), Arc::clone(&self.inner.steps));
+        .runs_for(owner.1.clone(), (self.inner.steps)(&definition));
         let kept = runner.kept();
         Ok(Running {
             definition,
@@ -355,8 +396,8 @@ impl PersonEvents {
             return Err(ActionHostError::UnknownAction);
         }
         let workspaces = &self.inner.workspaces;
-        // Where a host keeps workspaces of people's own, a workspace is
-        // whose the host says it is. A host that keeps none governs its
+        // Where a server keeps workspaces of people's own, a workspace is
+        // whose the server says it is. A server that keeps none governs its
         // workspaces for its own person, and they are that person's.
         let theirs = if workspaces.keeps_own_workspaces() {
             workspaces.owns(&person, &workspace_id.to_string())
@@ -682,8 +723,12 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
             "when",
             "What starts it, as one line: `once at 2026-11-17T11:32:00Z` (a moment, with its \
              offset from UTC), `every day at 09:00`, `every Monday, Thursday at 17:30` (this \
-             host's clock), `every 3600 seconds`, or a change in the workspace as a Shortcut \
-             writes it.",
+             host's clock), `every 3600 seconds`, `15 minutes before \"entries.*.start\" in a \
+             \"tilo.accounts.calendars\" where categories is \"Travel\"` (a moment before, `at` \
+             or after the start or the end, `entries.*.end`, of each entry in its person's \
+             calendars, every occurrence of one that repeats; each `where` names a field of the \
+             entry and the value it holds, and what the assistant is told carries the entry), \
+             or a change in the workspace as a Shortcut writes it.",
         ),
         needed(
             "instruction",

@@ -1,10 +1,10 @@
-//! A person's vault on the host: what they keep to sign in with is added,
+//! A person's vault on their server: what they keep to sign in with is added,
 //! listed and removed only from their own device, a listing says only what
 //! is safe to say, and no agent reaches any of it, whoever it acts for.
 
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay handle a test binds is kept until the test ends; dropping it earlier closes the host it drives"
+    reason = "the server's handle a test binds is kept until the test ends; dropping it earlier closes the server it drives"
 )]
 
 use serde_json::{Value, json};
@@ -30,8 +30,8 @@ const KEY: &str = "sk-live-ada-own-key";
 
 /// `target` asked by `caller`, on the device `device` certifies, in the
 /// workspace `workspace_id` carries.
-async fn ask_at(
-    host: &HostWorkspaceActions,
+pub(super) async fn ask_at(
+    service: &HostWorkspaceActions,
     workspace_id: WorkspaceId,
     (device, caller): (&DeviceCert, &Caller),
     target: RemoteActionTarget,
@@ -53,7 +53,8 @@ async fn ask_at(
         appearance: None,
     };
     let receipt = settled(
-        host.in_workspace_as(workspace_id, device)
+        service
+            .in_workspace_as(workspace_id, device)
             .invoke(caller, request),
     )
     .await?;
@@ -64,15 +65,15 @@ async fn ask_at(
 }
 
 /// `action` of the vault, asked as [`ask_at`] asks.
-async fn ask(
-    host: &HostWorkspaceActions,
+pub(super) async fn ask(
+    service: &HostWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
     action: &str,
     argument: Value,
 ) -> Result<Value, ActionHostError> {
     ask_at(
-        host,
+        service,
         workspace_id,
         who,
         person_vault::target(action),
@@ -96,17 +97,17 @@ fn fields(said: &Value) -> Vec<&str> {
 /// What `other` reaches of the item `reference` names in someone else's
 /// vault: nothing listed, nothing removed.
 async fn reaches_nothing_of_it(
-    host: &HostWorkspaceActions,
+    service: &HostWorkspaceActions,
     workspace_id: WorkspaceId,
     other: (&DeviceCert, &Caller),
     reference: &str,
 ) {
-    let theirs = ask(host, workspace_id, other, person_vault::LIST, json!({}))
+    let theirs = ask(service, workspace_id, other, person_vault::LIST, json!({}))
         .await
         .unwrap();
     assert_eq!(theirs["items"], json!([]), "{theirs}");
     let refused = ask(
-        host,
+        service,
         workspace_id,
         other,
         person_vault::REMOVE,
@@ -125,7 +126,7 @@ fn a_login(site: &str) -> Value {
 }
 
 /// Every file under `dir` whose bytes hold `needle`.
-fn files_holding(dir: &std::path::Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
+pub(super) fn files_holding(dir: &std::path::Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
     let mut holding = Vec::new();
     let mut waiting = vec![dir.to_path_buf()];
     while let Some(next) = waiting.pop() {
@@ -146,7 +147,7 @@ fn files_holding(dir: &std::path::Path, needle: &[u8]) -> Vec<std::path::PathBuf
     holding
 }
 
-/// A person keeps a login from their own device. What the host answers,
+/// A person keeps a login from their own device. What the server answers,
 /// then and in every listing, is its kind, where it belongs and when it was
 /// added, under a reference: never the secret, never the name. Another
 /// member, the workspace's owner included, lists nothing of it and removes
@@ -157,13 +158,13 @@ async fn a_person_keeps_what_they_sign_in_with_and_reads_back_only_what_is_safe(
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let (as_ada, as_bo, as_owner) = (caller(&ada), caller(&bo), caller(&owner));
 
     let kept = ask(
-        &host,
+        &service,
         workspace_id,
         (&ada, &as_ada),
         person_vault::ADD,
@@ -182,7 +183,7 @@ async fn a_person_keeps_what_they_sign_in_with_and_reads_back_only_what_is_safe(
     assert_eq!(fields(&kept), ["addedAt", "belongsTo", "kind", "reference"]);
 
     let hers = ask(
-        &host,
+        &service,
         workspace_id,
         (&ada, &as_ada),
         person_vault::LIST,
@@ -197,7 +198,7 @@ async fn a_person_keeps_what_they_sign_in_with_and_reads_back_only_what_is_safe(
     }
 
     for other in [(&bo, &as_bo), (&owner, &as_owner)] {
-        reaches_nothing_of_it(&host, workspace_id, other, &reference).await;
+        reaches_nothing_of_it(&service, workspace_id, other, &reference).await;
     }
 
     for needle in [PASSWORD, NAME, "linkedin"] {
@@ -211,7 +212,7 @@ async fn a_person_keeps_what_they_sign_in_with_and_reads_back_only_what_is_safe(
     );
 
     let remaining = ask(
-        &host,
+        &service,
         workspace_id,
         (&ada, &as_ada),
         person_vault::REMOVE,
@@ -234,12 +235,12 @@ async fn no_agent_reaches_a_persons_vault() {
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let as_ada = caller(&ada);
     let kept = ask(
-        &host,
+        &service,
         workspace_id,
         (&ada, &as_ada),
         person_vault::ADD,
@@ -267,7 +268,7 @@ async fn no_agent_reaches_a_persons_vault() {
             Caller::bot("bot", ada.user_public_key, ada.device_public_key),
         ),
         (
-            "an agent the host admitted itself, acting for her",
+            "an agent the server admitted itself, acting for her",
             &ada,
             Caller::local_agent("assistant").acting_for(person.clone()),
         ),
@@ -284,7 +285,7 @@ async fn no_agent_reaches_a_persons_vault() {
             (person_vault::ADD, a_login("https://attacker.example")),
             (person_vault::REMOVE, json!({"item": reference})),
         ] {
-            let refused = ask(&host, workspace_id, (device, asking), action, argument).await;
+            let refused = ask(&service, workspace_id, (device, asking), action, argument).await;
             assert!(
                 matches!(refused, Err(ActionHostError::UnknownAction)),
                 "{who}, {action}: {refused:?}"
@@ -294,7 +295,7 @@ async fn no_agent_reaches_a_persons_vault() {
 
     // Nothing of hers moved, and nothing was kept for anyone else.
     let hers = ask(
-        &host,
+        &service,
         workspace_id,
         (&ada, &as_ada),
         person_vault::LIST,
@@ -304,7 +305,7 @@ async fn no_agent_reaches_a_persons_vault() {
     .unwrap();
     assert_eq!(hers["items"], json!([kept]));
     let his = ask(
-        &host,
+        &service,
         workspace_id,
         (&bo, &caller(&bo)),
         person_vault::LIST,
@@ -325,7 +326,7 @@ async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
 
@@ -341,7 +342,7 @@ async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
         json!({"kind": "code-generator", "belongsTo": ["https://example.com"], "secret": NOT_A_SEED}),
     ] {
         let refused = ask(
-            &host,
+            &service,
             workspace_id,
             (&ada, &as_ada),
             person_vault::ADD,
@@ -360,7 +361,7 @@ async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
         assert!(!said.contains(PASSWORD) && !said.contains("0189"), "{said}");
     }
     let refused = ask(
-        &host,
+        &service,
         workspace_id,
         (&ada, &as_ada),
         person_vault::REMOVE,
@@ -371,7 +372,7 @@ async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
     assert!(!format!("{refused} {refused:?}").contains(PASSWORD));
 
     let hers = ask(
-        &host,
+        &service,
         workspace_id,
         (&ada, &as_ada),
         person_vault::LIST,
@@ -385,13 +386,13 @@ async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
 }
 
 /// A provider of whoever asks, at `https://models.example/v1`, by its id.
-async fn a_provider(
-    host: &HostWorkspaceActions,
+pub(super) async fn a_provider(
+    service: &HostWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
 ) -> String {
     let added = ask_at(
-        host,
+        service,
         workspace_id,
         who,
         person_models::target(person_models::ADD_PROVIDER),
@@ -403,14 +404,14 @@ async fn a_provider(
 }
 
 /// A `kind` kept for `place` in the vault of whoever asks, by its reference.
-async fn kept_item(
-    host: &HostWorkspaceActions,
+pub(super) async fn kept_item(
+    service: &HostWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
     (kind, place): (&str, &str),
 ) -> Value {
     let kept = ask(
-        host,
+        service,
         workspace_id,
         who,
         person_vault::ADD,
@@ -423,13 +424,13 @@ async fn kept_item(
 
 /// The uses the item `item` names remembers, as its person reads them.
 async fn uses_of(
-    host: &HostWorkspaceActions,
+    service: &HostWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
     item: &Value,
 ) -> Value {
     let uses = ask(
-        host,
+        service,
         workspace_id,
         who,
         person_vault::USES,
@@ -451,12 +452,12 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
-    let provider = a_provider(&host, workspace_id, (&ada, &as_ada)).await;
+    let provider = a_provider(&service, workspace_id, (&ada, &as_ada)).await;
     let item = kept_item(
-        &host,
+        &service,
         workspace_id,
         (&ada, &as_ada),
         ("key", "https://models.example/v1/chat"),
@@ -466,7 +467,7 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
         .named("Helper");
 
     let view = ask_at(
-        &host,
+        &service,
         workspace_id,
         (&ada, &helper),
         person_models::target(person_models::SET_KEY_FROM_ITEM),
@@ -488,7 +489,7 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
     assert!(files_holding(dir.path(), KEY.as_bytes()).is_empty());
 
     let listed = ask(
-        &host,
+        &service,
         workspace_id,
         (&ada, &as_ada),
         person_vault::LIST,
@@ -500,13 +501,13 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
         listed["items"][0]["lastUsedAt"].as_u64().is_some(),
         "{listed}"
     );
-    let uses = uses_of(&host, workspace_id, (&ada, &as_ada), &item).await;
+    let uses = uses_of(&service, workspace_id, (&ada, &as_ada), &item).await;
     assert_eq!(uses.as_array().map(Vec::len), Some(1), "{uses}");
     assert_eq!(uses[0]["places"], json!(["https://models.example"]));
     assert_eq!(uses[0]["by"], "Helper");
     assert_eq!(fields(&uses[0]), ["at", "by", "places"]);
     let refused = ask(
-        &host,
+        &service,
         workspace_id,
         (&ada, &helper),
         person_vault::USES,
@@ -524,27 +525,39 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
 /// a key for another service, a login for the provider's site, and the
 /// provider's own key.
 async fn a_provider_and_items(
-    host: &HostWorkspaceActions,
+    service: &HostWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
 ) -> (String, [Value; 3]) {
-    let provider = a_provider(host, workspace_id, who).await;
-    let elsewhere = kept_item(host, workspace_id, who, ("key", "https://other.example")).await;
-    let login = kept_item(host, workspace_id, who, ("login", "https://models.example")).await;
-    let right = kept_item(host, workspace_id, who, ("key", "https://models.example")).await;
+    let provider = a_provider(service, workspace_id, who).await;
+    let elsewhere = kept_item(service, workspace_id, who, ("key", "https://other.example")).await;
+    let login = kept_item(
+        service,
+        workspace_id,
+        who,
+        ("login", "https://models.example"),
+    )
+    .await;
+    let right = kept_item(
+        service,
+        workspace_id,
+        who,
+        ("key", "https://models.example"),
+    )
+    .await;
     (provider, [elsewhere, login, right])
 }
 
 /// Nothing was kept and nothing used: the provider of `who` has no key and
 /// none of `items` remembers a use.
 async fn nothing_was_used(
-    host: &HostWorkspaceActions,
+    service: &HostWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
     items: &[Value; 3],
 ) {
     let models = ask_at(
-        host,
+        service,
         workspace_id,
         who,
         person_models::target(person_models::LIST),
@@ -558,7 +571,7 @@ async fn nothing_was_used(
         "{models}"
     );
     for item in items {
-        assert_eq!(uses_of(host, workspace_id, who, item).await, json!([]));
+        assert_eq!(uses_of(service, workspace_id, who, item).await, json!([]));
     }
 }
 
@@ -571,14 +584,14 @@ async fn a_reference_is_refused_wherever_its_item_does_not_belong() {
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let (as_ada, as_bo) = (caller(&ada), caller(&bo));
     let hers = (&ada, &as_ada);
-    let (provider, items) = a_provider_and_items(&host, workspace_id, hers).await;
+    let (provider, items) = a_provider_and_items(&service, workspace_id, hers).await;
     let [elsewhere, login, right] = &items;
-    let his_provider = a_provider(&host, workspace_id, (&bo, &as_bo)).await;
+    let his_provider = a_provider(&service, workspace_id, (&bo, &as_bo)).await;
     let helper = Caller::delegated_agent("assistant", ada.user_public_key, ada.device_public_key);
     let his_helper = Caller::delegated_agent("assistant", bo.user_public_key, bo.device_public_key);
 
@@ -609,7 +622,7 @@ async fn a_reference_is_refused_wherever_its_item_does_not_belong() {
         ),
     ] {
         let refused = ask_at(
-            &host,
+            &service,
             workspace_id,
             who,
             person_models::target(person_models::SET_KEY_FROM_ITEM),
@@ -621,7 +634,7 @@ async fn a_reference_is_refused_wherever_its_item_does_not_belong() {
             "{reason}: {refused:?}"
         );
     }
-    nothing_was_used(&host, workspace_id, hers, &items).await;
+    nothing_was_used(&service, workspace_id, hers, &items).await;
     relay.shutdown().await;
 }
 
@@ -634,11 +647,11 @@ async fn only_a_persons_own_agent_uses_their_vault_and_only_by_reference() {
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);
-    let (provider, items) = a_provider_and_items(&host, workspace_id, hers).await;
+    let (provider, items) = a_provider_and_items(&service, workspace_id, hers).await;
     let [_, _, right] = &items;
     let from_item = person_models::target(person_models::SET_KEY_FROM_ITEM);
     let person = hex::encode(ada.user_public_key);
@@ -667,7 +680,7 @@ async fn only_a_persons_own_agent_uses_their_vault_and_only_by_reference() {
         ),
     ] {
         let refused = ask_at(
-            &host,
+            &service,
             workspace_id,
             (&ada, &other),
             target,
@@ -679,7 +692,7 @@ async fn only_a_persons_own_agent_uses_their_vault_and_only_by_reference() {
             "{other:?}: {refused:?}"
         );
     }
-    nothing_was_used(&host, workspace_id, hers, &items).await;
+    nothing_was_used(&service, workspace_id, hers, &items).await;
     relay.shutdown().await;
 }
 
@@ -692,12 +705,12 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);
     let kept = ask(
-        &host,
+        &service,
         workspace_id,
         hers,
         person_vault::ADD,
@@ -720,7 +733,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
         ("imap.example.test", 143, "smtp.example.test"),
     ] {
         let refused = ask_at(
-            &host,
+            &service,
             workspace_id,
             (&ada, &helper),
             with_item.clone(),
@@ -739,7 +752,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
         );
     }
     let typed = ask_at(
-        &host,
+        &service,
         workspace_id,
         (&ada, &helper),
         person_accounts::target(person_accounts::ADD_MAIL),
@@ -757,7 +770,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
     );
 
     let accounts = ask_at(
-        &host,
+        &service,
         workspace_id,
         hers,
         person_accounts::target(person_accounts::LIST),
@@ -767,7 +780,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
     .unwrap();
     assert_eq!(accounts["accounts"], json!([]), "{accounts}");
     assert_eq!(
-        uses_of(&host, workspace_id, hers, &sign_in).await,
+        uses_of(&service, workspace_id, hers, &sign_in).await,
         json!([])
     );
     relay.shutdown().await;

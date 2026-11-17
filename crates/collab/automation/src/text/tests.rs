@@ -395,6 +395,36 @@ tilo_test_env::scenario! {
                 app_id: "so.tilo.mail".into(),
                 kind: "mail.message".into(),
             },
+            TriggerSpec::ResourceTime {
+                kind: "tilo.accounts.calendars".into(),
+                field: "entries.*.start".into(),
+                offset_secs: -900,
+                filter: serde_json::Map::from_iter([(
+                    "categories".to_owned(),
+                    Value::from("Board"),
+                )]),
+            },
+            TriggerSpec::ResourceTime {
+                kind: "tasks.issues".into(),
+                field: "issues.*.due_ms".into(),
+                offset_secs: 0,
+                filter: serde_json::Map::new(),
+            },
+            TriggerSpec::ResourceTime {
+                kind: "calendar.calendar".into(),
+                field: "events.*.end".into(),
+                offset_secs: 259_200,
+                filter: serde_json::Map::from_iter([
+                    ("all_day".to_owned(), Value::Bool(false)),
+                    ("title".to_owned(), Value::from("Renewal")),
+                ]),
+            },
+            TriggerSpec::ResourceTime {
+                kind: "tasks.issues".into(),
+                field: "issues.*.due_ms".into(),
+                offset_secs: -90,
+                filter: serde_json::Map::new(),
+            },
         ];
         let shortcut = Shortcut {
             id: "triggered".into(),

@@ -104,6 +104,9 @@ mod hosted_browser;
 #[path = "workspace_actions/hosted_documents.rs"]
 pub mod hosted_documents;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_secret_use.rs"]
+mod hosted_secret_use;
+#[cfg(test)]
 #[path = "workspace_actions/invocations_read.rs"]
 mod invocations_read;
 #[cfg(test)]
@@ -224,7 +227,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
     crate::common::add_channel(&mut doc, "ada", "general", None);
-    let channel = crate::common::channel(&doc, chat::model::ChannelKind::Text);
+    let general = crate::common::channel(&doc, chat::model::ChannelKind::Text);
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
@@ -233,7 +236,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     let message = resource_support::on_messages(
         &mut source,
         "post",
-        &serde_json::json!({"channel": channel.id, "text": "Hello é, shared natively"}),
+        &serde_json::json!({"channel": general.id, "text": "Hello é, shared natively"}),
     );
     let (id, kind) = resource_support::published_message(&source, &message);
     assert_eq!(
@@ -247,7 +250,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     let shared = resource_support::on_messages(
         &mut source,
         "share-resource",
-        &serde_json::json!({"channel": channel.id, "attached": attached, "text": "Discuss this resource"}),
+        &serde_json::json!({"channel": general.id, "attached": attached, "text": "Discuss this resource"}),
     );
     let shared = source
         .read_resource(&part, chat::messages::read_part)

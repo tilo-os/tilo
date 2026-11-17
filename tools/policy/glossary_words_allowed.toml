@@ -26,6 +26,11 @@ words = ["*"]
 paths = ["crates/collab/threshold-identity/src/bip39.rs"]
 
 [[allow]]
+reason = "The name a commit's column has inside a repository document kept before the column had its name: read, never written."
+words = ["lane"]
+paths = ["apps/git-client/src/model.rs", "apps/git-client/src/resource.rs"]
+
+[[allow]]
 reason = "A Wayland or logind seat: a set of input devices and the session on them."
 words = ["seat"]
 identifiers = ["wl_seat", "WlSeat", "seat0", "XDG_SEAT", "libseat", "LibSeat", "zwp_input_method_v2", "ext_data_control_v1"]
@@ -40,6 +45,11 @@ paths = ["apps/poker/*"]
 reason = "iroh's NAT relay."
 words = ["relay"]
 identifiers = ["RelayMode", "RelayUrl", "RelayMap", "RelayNode", "RelayUrlParseError"]
+
+[[allow]]
+reason = "The name a device's store and a page's store keep a run of unpublished writes under: files and keys written under it, found by it for as long as stores keep runs this way."
+words = ["custody"]
+paths = ["crates/collab/tilo-peer-state/src/owner/publication.rs"]
 
 [[allow]]
 reason = "An email's subject line."
@@ -71,6 +81,17 @@ paths = [
 reason = "A participant of a FROST signing or key generation round."
 words = ["participant"]
 paths = ["crates/collab/threshold-identity/*"]
+
+[[allow]]
+reason = "The name the report of a local document action gives its provenance: kept in app documents and sent between an app and the system, read and written by that name."
+words = ["custody"]
+paths = [
+    "crates/runtime/runtime-collab/src/lib.rs",
+    "crates/runtime/runtime-collab/src/local_document_action_transport_tests.rs",
+    "crates/collab/tilo-action-broker/src/local_document_action.rs",
+    "crates/sdk/ui-core/src/app/local_action_persistence.rs",
+    "crates/sdk/ui-core/src/app/local_action_persistence_tests.rs",
+]
 
 [[allow]]
 reason = "An iCalendar or WhatsApp group participant."

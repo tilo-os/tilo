@@ -156,9 +156,12 @@ pub fn note_value(note: &Note) -> Value {
     serde_json::to_value(note).unwrap_or(Value::Null)
 }
 
-/// The steps of one run that advanced a count.
+/// The steps of one invocation that advanced a count.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Counted {
+    /// Kept under the name a program's file has always given it. A file that names it as
+    /// the code does reads too, because builds wrote that for a while.
+    #[serde(rename = "run", alias = "invocation")]
     invocation: String,
     steps: BTreeSet<String>,
 }
@@ -178,8 +181,8 @@ pub enum Ended {
     Failed,
 }
 
-/// A program's last run: when it ended, how, and why when it did not run to
-/// its end.
+/// A program's last invocation: when it ended, how, and why when it did not
+/// get to its end.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastRun {
     /// When it ended, ms since the epoch.
@@ -416,6 +419,38 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// A program's file as a server wrote it before the code named an invocation, and as
+    /// builds wrote it for a while after: both read with what the program counted, and the
+    /// file is written as it always was.
+    #[test]
+    fn what_a_program_counted_reads_from_a_file_of_before_and_of_between() {
+        let before = json!({
+            "counts": {"": 2, "mail": 1},
+            "counted": {"run": "r2", "steps": ["0", "1"]},
+            "paused": true,
+            "runs": 2,
+        });
+        let mut between = before.clone();
+        between["counted"] = json!({"invocation": "r2", "steps": ["0", "1"]});
+        for file in [before.clone(), between] {
+            let mut kept: Kept = serde_json::from_value(file).expect("the file reads");
+            assert!(
+                kept.paused(),
+                "what stood beside the counts is read with them"
+            );
+            assert_eq!(
+                kept.count(&step("r2", "1"), ""),
+                Ok(2),
+                "a step that counted already advances nothing"
+            );
+            assert_eq!(kept.count(&step("r3", "0"), ""), Ok(3));
+            let mut read: Kept = serde_json::from_value(before.clone()).expect("the file reads");
+            read.count(&step("r2", "1"), "").expect("counted before");
+            let written = serde_json::to_value(&read).unwrap_or_default();
+            assert_eq!(written["counted"], before["counted"]);
+        }
     }
 
     #[test]

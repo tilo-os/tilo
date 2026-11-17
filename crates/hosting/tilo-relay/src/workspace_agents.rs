@@ -58,15 +58,20 @@ use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
 use crate::workspace_bots::events::PersonEvents;
 use crate::workspaces::Workspaces;
-use crate::workspaces::person_model::{Interaction, ModelRefusal, PersonModel, Spender};
+use crate::workspaces::person_model::{ModelRefusal, PersonModel, Spender};
 use tilo_actions::remote::person_events;
+use turn_provider::TurnProvider;
 
 mod answers;
 mod asks;
 mod going;
+mod sub_agents;
 mod summary;
+mod turn_provider;
+mod vault_uses;
 
 pub use asks::{Answered, Carried, Carries, ServerAsk};
+pub use sub_agents::Line;
 
 /// What a turn's reply says when the turn goes on with what its person wrote next.
 const WENT_ON: &str = "I am going on with what you wrote next, and answer below.";
@@ -107,6 +112,11 @@ pub struct WorkspaceActionHost {
     /// The events this host runs for its people, where it runs any: what an agent sets up, pauses,
     /// changes and removes for the person its turn is for.
     events: Option<PersonEvents>,
+    /// What this service answers itself for the one turn it serves, beside the workspace's
+    /// resources ([`TurnProvider`]).
+    own: Vec<Arc<dyn TurnProvider>>,
+    /// How the calls those took ended; `None` while it answers none of them.
+    ended: Option<turn_provider::Ended>,
 }
 
 impl WorkspaceActionHost {
@@ -116,6 +126,8 @@ impl WorkspaceActionHost {
             actions,
             workspace,
             events: None,
+            own: Vec::new(),
+            ended: None,
         }
     }
 
@@ -124,6 +136,17 @@ impl WorkspaceActionHost {
     #[must_use]
     pub fn offering(mut self, events: Option<PersonEvents>) -> Self {
         self.events = events;
+        self
+    }
+
+    /// This service, answering `provider` as well for the turn it serves: named in what the
+    /// turn's tools list, and called like the workspace's own actions.
+    #[must_use]
+    fn answering(mut self, provider: Arc<dyn TurnProvider>) -> Self {
+        self.own.push(provider);
+        if self.ended.is_none() {
+            self.ended = Some(turn_provider::Ended::here());
+        }
         self
     }
 
@@ -162,6 +185,28 @@ impl ActionHost for WorkspaceActionHost {
             .as_ref()
             .filter(|_| query.provider.is_none())
             .and_then(|events| events.provider(self.workspace, caller));
+        // One provider id is answered by every provider of the turn's own that holds a
+        // resource of it: their rows make one page.
+        let own: Vec<_> = self
+            .own
+            .iter()
+            .filter_map(|own| own.rows(caller, &query))
+            .collect();
+        if !own.is_empty()
+            && let Some(ended) = &self.ended
+        {
+            return ended.page(own, query);
+        }
+        // A listing of everything names the turn's own providers beside the workspace's, each
+        // once.
+        let mut offered: Vec<tilo_actions::remote::CatalogueProvider> = Vec::new();
+        if query.provider.is_none() {
+            for named in self.own.iter().flat_map(|own| own.providers(caller)) {
+                if offered.iter().all(|known| known.provider != named.provider) {
+                    offered.push(named);
+                }
+            }
+        }
         self.serve(
             caller,
             RemoteActionMessage::CatalogueRequest {
@@ -169,9 +214,10 @@ impl ActionHost for WorkspaceActionHost {
                 query,
             },
         )
-        .map(|answer| match answer {
+        .map(move |answer| match answer {
             RemoteActionMessage::CatalogueResponse { result, .. } => result.map(|mut page| {
                 page.providers.extend(events);
+                page.providers.extend(offered);
                 page
             }),
             _ => Err(unavailable()),
@@ -188,6 +234,11 @@ impl ActionHost for WorkspaceActionHost {
         {
             return Pending::ready(Ok(events.invoke(self.workspace, caller, &request)));
         }
+        if let Some(own) = self.own.iter().find(|own| own.takes(&request.target))
+            && let Some(ended) = &self.ended
+        {
+            return ended.carry_out(Arc::clone(own), caller, request);
+        }
         self.serve(caller, RemoteActionMessage::Invoke(request))
             .map(|answer| match answer {
                 RemoteActionMessage::Receipt(receipt) => Ok(receipt),
@@ -196,7 +247,12 @@ impl ActionHost for WorkspaceActionHost {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.actions.observe(caller, id)
+        // What a provider of the turn's own took is no invocation of the workspace's: how it
+        // ended is kept here.
+        self.ended
+            .as_ref()
+            .and_then(|ended| ended.of(id))
+            .or_else(|| self.actions.observe(caller, id))
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
@@ -258,6 +314,8 @@ pub struct Turn {
     /// Whether the person wrote it themselves, rather than a cause asking for them: their own
     /// words reach a turn of theirs that is going.
     pub typed: bool,
+    /// Where a sub-agent's turn stands in its team ([`Line`]): none for an agent a person made.
+    pub line: Option<Line>,
 }
 
 /// What a workspace's records ask of the agents its host runs.
@@ -269,6 +327,8 @@ struct Asks {
     stopped: Vec<Turn>,
     /// The turns their people's answers owe the agents that asked them.
     answered: Vec<answers::Wake>,
+    /// What this server owes the workspace's sub-agents beside their turns.
+    sub: sub_agents::Owed,
 }
 
 /// The agents a host runs for the workspaces it governs.
@@ -362,6 +422,9 @@ impl HostAgents {
     /// # Errors
     /// The workspace's records could not be read.
     pub async fn look(&self, workspace: &str) -> Result<(), String> {
+        // What a person answered about a use of their vault is carried out
+        // whether or not anything asks an agent now.
+        self.settle_uses(workspace).await;
         self.look_past(workspace, None).await
     }
 
@@ -431,6 +494,7 @@ impl HostAgents {
                 }
             }
         }
+        self.carry(workspace, asks.sub).await;
         Ok(())
     }
 
@@ -495,6 +559,7 @@ impl HostAgents {
             self.workspaces.note_waiting(workspace, waiting);
             return Ok(asks);
         };
+        let mut team = self.team(workspace, agents).await?;
         for (app, record) in routes {
             if app != CHAT
                 || ui::resource::DocumentId::parse(record)
@@ -540,6 +605,7 @@ impl HostAgents {
                     request: told.instruction,
                     fold: told.fold,
                     typed: summons.typed,
+                    line: None,
                     ask: Ask::Message {
                         part: record.clone(),
                         message: summons.message.to_string(),
@@ -559,6 +625,7 @@ impl HostAgents {
                     request: String::new(),
                     fold: None,
                     typed: summons.typed,
+                    line: None,
                     ask: Ask::Message {
                         part: record.clone(),
                         message: summons.message.to_string(),
@@ -566,10 +633,12 @@ impl HostAgents {
                     },
                 });
             }
+            team.read(record, &chat, &part);
         }
         self.workspaces.note_waiting(workspace, waiting);
         answered.retain(|wake| !woken.contains(&wake.key));
         asks.answered = answered;
+        team.settle(&mut asks);
         Ok(asks)
     }
 
@@ -611,6 +680,7 @@ impl HostAgents {
                     request,
                     fold: None,
                     typed: true,
+                    line: None,
                     ask: Ask::Issue {
                         record: record.clone(),
                         issue: ask.issue.to_string(),
@@ -634,10 +704,12 @@ impl HostAgents {
         Ok(agents
             .agents
             .iter()
-            // A sub-agent is not worked here yet: its turns carry a rule of their own
-            // (`Agent::turn_rules`), and nothing is run for one without it.
+            // A sub-agent worked elsewhere is its own runner's.
             .filter(|agent| {
-                agent.is_active() && agent.on_host && agent.mcp_client.is_none() && !agent.is_sub()
+                agent.is_active()
+                    && agent.on_host
+                    && agent.mcp_client.is_none()
+                    && sub_agents::worked_here(agent)
             })
             .map(|agent| (agent.id.0.clone(), agent.clone()))
             .collect())
@@ -686,22 +758,26 @@ impl HostAgents {
             .person_device(workspace_id, person)
             .await
             .ok_or("the person who asked is admitted here on no device")?;
-        Ok(TurnScope {
+        let mut scope = TurnScope {
             host: WorkspaceActionHost::new(self.actions.clone(), workspace_id)
                 .offering(self.events.clone()),
             person: Caller::authenticated(person, device).in_workspace(workspace),
             workspace: workspace.to_owned(),
             workspace_id,
-        })
+        };
+        // What the turn's tools reach beside the workspace's resources, each a provider of the
+        // turn's own ([`TurnProvider`]): what its person's vault lets it use by reference.
+        let uses = vault_uses::TurnUses::for_turn(self, turn, &scope.reply(turn)).await;
+        scope.host = scope.host.answering(uses);
+        Ok(scope)
     }
 
     /// End `turn` as `outcome` without working on it: its reply says how it ended.
     async fn end(&self, workspace: &str, turn: &Turn, outcome: &Outcome) -> Result<(), String> {
-        self.scope(workspace, turn)
-            .await?
-            .reply(turn)
-            .finished(outcome)
-            .await
+        let acting = self.scope(workspace, turn).await?;
+        let ended = acting.reply(turn).finished(outcome).await;
+        self.sub_ended(&acting, turn, outcome, false).await;
+        ended
     }
 
     /// Whether a host that stopped left `turn` begun: its reply shows a step taken, and no turn
@@ -742,15 +818,18 @@ impl HostAgents {
         if self.left_begun(workspace, &turn).await {
             // Its steps may have changed things already, and nothing says which: starting over
             // would do them twice. It ends here, and asking again is the person's to do.
-            let ended = reply
-                .finished(&Outcome::Failed(LEFT_BEGUN.to_owned()))
-                .await;
+            let left = Outcome::Failed(LEFT_BEGUN.to_owned());
+            let ended = reply.finished(&left).await;
+            self.sub_ended(&scope, &turn, &left, false).await;
             return (turn.ask, ended);
         }
         reply.taken().await;
+        self.sub_began(workspace, &turn).await;
+        let from_starter = turn.line.as_ref().is_some_and(|line| line.from_starter);
         let day = today();
-        let limit = turn.agent.spend_limit_micros;
-        let spent_before = turn.agent.spent_on(&day);
+        // A sub-agent spends on the day of the person's own agent it works under.
+        let limit = sub_agents::payer(&turn).spend_limit_micros;
+        let spent_before = sub_agents::payer(&turn).spent_on(&day);
         let asked = self
             .model_for_turn(
                 (workspace, scope.workspace_id),
@@ -774,7 +853,8 @@ impl HostAgents {
             }
         };
         if cost > 0 {
-            self.charge(workspace, &turn.agent, &day, cost).await;
+            self.charge(workspace, sub_agents::payer(&turn), &day, cost)
+                .await;
         }
         if let Outcome::Answered(words) = &outcome {
             self.keep_summary(
@@ -790,6 +870,7 @@ impl HostAgents {
             // Its person stopped it: what it asked them and still waits is taken back.
             self.take_back_asked(workspace, &turn, &began).await;
         }
+        self.sub_ended(&scope, &turn, &outcome, from_starter).await;
         (turn.ask, ended)
     }
 
@@ -824,14 +905,14 @@ impl HostAgents {
                 // Every call is counted on the agent's day as it is answered, so turns of
                 // one agent going at once cannot each spend the day's whole limit.
                 self.workspaces
-                    .person_model(keeper, Interaction::Task)
+                    .person_model(keeper, sub_agents::kind_of(&turn.agent))
                     .working_in(workspace_id)
                     .spending_as(Spender {
                         workspace: workspace.to_owned(),
-                        agent: turn.agent.id.0.clone(),
-                        name: turn.agent.name.clone(),
+                        agent: sub_agents::payer(turn).id.0.clone(),
+                        name: sub_agents::payer(turn).name.clone(),
                         day: day.to_owned(),
-                        limit_micros: turn.agent.spend_limit_micros,
+                        limit_micros: sub_agents::payer(turn).spend_limit_micros,
                     })
             });
         let linked = match theirs {
@@ -843,7 +924,7 @@ impl HostAgents {
                     .map(|linked| (theirs, linked.model.id))
             }
             None => Err(ModelRefusal::NoModelLinked {
-                kind: Interaction::Task,
+                kind: sub_agents::kind_of(&turn.agent),
             }),
         };
         match linked {
@@ -998,7 +1079,7 @@ impl TurnScope {
             .in_agent_session(session)
             .on_turn(
                 tilo_action_policy::turn::Turn::new(turn.conversation.clone(), turn.cause.clone()),
-                turn.agent.bound_rules().unwrap_or_default(),
+                turn.agent.turn_rules(&self.workspace),
             );
         Reply {
             host: self.host.clone(),
@@ -1486,7 +1567,7 @@ fn instructions(turn: &Turn) -> String {
         name = turn.agent.name,
         conversation = turn.conversation,
     );
-    format!("{every}{told}")
+    format!("{every}{}{told}", sub_agents::told(turn))
 }
 
 /// The tools the turn's server offers, as the model is told them.

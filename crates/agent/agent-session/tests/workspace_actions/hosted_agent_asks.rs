@@ -1,13 +1,13 @@
-//! What starts a turn of an agent the host runs besides its person's typing: a cause that asks
+//! What starts a turn of an agent the server works besides its person's typing: a cause that asks
 //! through Chat's `ask-agent`. And what reaches a turn that is going: what its person writes
-//! next, their stop, and the host's own restart. All through the relay's own interfaces, with
+//! next, their stop, and the server's own restart. All through its own interfaces, with
 //! no device of the person running anything.
 use super::*;
 use std::sync::Condvar;
 use tilo_actions::remote::Caller;
 
-/// A hosted workspace with one person in its chat and their agent made to run on the host, as
-/// the tests beside this one set it up. The person's page joins: its device is the one the host
+/// A hosted workspace with one person in its chat and their agent made to run on the server, as
+/// the tests beside this one set it up. The person's page joins: its device is the one the server
 /// admits their agent's turns on. Nothing on it runs an agent.
 macro_rules! team {
     ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $person:ident) => {
@@ -157,7 +157,7 @@ impl Drop for Opens {
     }
 }
 
-/// A model whose answers are written out, in order over every turn it is made for (a host makes
+/// A model whose answers are written out, in order over every turn it is made for (a server makes
 /// its model anew for each turn), the last one again once they are used up. It waits at its hold
 /// before it answers the call numbered `hold_at`, counted from 0 over every call it is asked.
 struct Waits {
@@ -280,8 +280,8 @@ fn end_of(reply: &chat::chat::Message) -> Option<chat::agent_stream::AgentFinish
     }
 }
 
-/// Run `turn` on `agents` until its model was asked `calls` times, then let the host go: the
-/// turn is dropped where it stands, as when the host's process ends.
+/// Run `turn` on `agents` until its model was asked `calls` times, then let the server go: the
+/// turn is dropped where it stands, as when the server's process ends.
 async fn dies_at(
     agents: &HostAgents,
     workspace: &str,
@@ -309,7 +309,7 @@ async fn a_cause_asks_the_agent_on_the_host_once_for_the_person_it_names() {
     team!(root, browser, actions, workspaces, workspace, page, person);
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     // What asks here: another agent of the person's, acting for them, as a sub-agent with news
-    // or the runner of their reminder does. The person is never an argument: the host says who
+    // or the runner of their reminder does. The person is never an argument: the server says who
     // it acts for.
     let planner = themselves(&root, &browser, &workspace)
         .delegated_to("planner")
@@ -369,7 +369,7 @@ async fn a_cause_asks_the_agent_on_the_host_once_for_the_person_it_names() {
         "what asked wrote it, never the person"
     );
 
-    // With no device on, the host reads it as the agent's one turn, for that person.
+    // With no device on, the server reads it as the agent's one turn, for that person.
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = HostAgents::new(
         workspaces.clone(),
@@ -654,7 +654,7 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     )
     .await;
 
-    // The host stops while the turn works: it had looked through the workspace, and its model
+    // The server stops while the turn works: it had looked through the workspace, and its model
     // was asked what to do next.
     let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
     let _opens = Opens(Arc::clone(&hold));
@@ -673,7 +673,7 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
         "its record shows a step taken and no end"
     );
 
-    // The host that starts again reads the turn from the records. It does not take its steps a
+    // The server that starts again reads the turn from the workspace. It does not take its steps a
     // second time: the reply says it was interrupted, and asking again is the person's to do.
     let again = Arc::new(Mutex::new(Vec::new()));
     let restarted = HostAgents::new(
@@ -707,7 +707,7 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     assert!(restarted.turns(&workspace).await.unwrap().is_empty());
     drop(restarted);
 
-    // A turn the host had only taken changed nothing yet: after the restart it runs, once.
+    // A turn the server had only taken changed nothing yet: after the restart it runs, once.
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let second = write_to_agent(
         &actions,
@@ -761,3 +761,7 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     let _ = person;
     page.peer.close();
 }
+
+/// Sub-agents: started by the person's own agent, working in conversations of their own.
+#[path = "hosted_sub_agents.rs"]
+mod sub_agents;

@@ -20,9 +20,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_provider_config::protocol::{Content, ErrorKind, Message, ModelError};
-use serde_json::{Value, json};
-use tilo_actions::remote::person_telling::{self, Cause, Kind, Tell, Told, ToldList, WhyCode};
-use tilo_actions::remote::{ActionHost, ActionHostError, Caller, ReceiptStatus};
+use serde_json::{Map, Value, json};
+use tilo_actions::remote::person_telling::{
+    self, Cause, Kind, Offered, OfferedTarget, Tell, Teller, Told, ToldList, WhyCode,
+};
+use tilo_actions::remote::{
+    ActionHost, ActionHostError, Caller, ReceiptStatus, WORKSPACE_GOVERNANCE_PROVIDER,
+};
 use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
@@ -126,6 +130,33 @@ async fn told_by_agent(setup: &Setup, words: &str, cause: Value) -> Told {
     )
     .await;
     serde_json::from_value(answer.expect("the host tells")).expect("a thing told")
+}
+
+/// What this server itself tells Ada as it carries out an event of her
+/// own, a reminder she set up or a brief she asked for: of the kind that
+/// event's own `cause` says, with her assistant named as its teller.
+async fn told_by_her_event(setup: &Setup, words: &str, cause: Value, insists: bool) -> Told {
+    let cause: Cause = serde_json::from_value(cause).expect("a cause");
+    let telling = ToTell {
+        kind: Kind::of_cause(Some(&cause)),
+        tell: Tell {
+            words: words.to_owned(),
+            cause: Some(cause),
+            insists,
+            ..Tell::default()
+        },
+        from: Some(Teller {
+            agent: ASSISTANT.to_owned(),
+            name: ASSISTANT.to_owned(),
+        }),
+        workspace: Some(setup.own.to_string()),
+        ..ToTell::default()
+    };
+    setup
+        .workspaces
+        .tell(&setup.ada.user_public_key, telling)
+        .await
+        .expect("the server tells")
 }
 
 /// What Ada reads of her log after place `after`, on her device.
@@ -303,11 +334,13 @@ async fn the_rule_decides_alone_where_it_can_and_the_persons_own_model_is_asked_
     );
     assert_eq!(model.asked().len(), 2);
 
-    // A reminder is hers: it reaches her as that, and nobody judges it.
-    let reminder = told_by_agent(
+    // A reminder is hers: told as this server carries out the event she
+    // set up, it reaches her as that, and nobody judges it.
+    let reminder = told_by_her_event(
         &setup,
         "Call Jo.",
         json!({"kind": "reminder", "label": "Call Jo", "key": "r-1"}),
+        false,
     )
     .await;
     assert_eq!(reminder.kind, Kind::Reminder);
@@ -320,10 +353,11 @@ async fn the_rule_decides_alone_where_it_can_and_the_persons_own_model_is_asked_
     model.then(Reply::text(
         r#"{"important": true, "why": "The landlord is in it."}"#,
     ));
-    let brief = told_by_agent(
+    let brief = told_by_her_event(
         &setup,
         "At ten: the landlord, about the lease.",
         json!({"kind": "brief", "label": "Morning rundown", "key": "b-1"}),
+        false,
     )
     .await;
     assert_eq!(brief.kind, Kind::Brief);
@@ -584,12 +618,14 @@ async fn a_device_that_waits_is_answered_when_something_is_told() {
     assert!(started.elapsed() >= Duration::from_millis(150));
 }
 
-/// A reminder Ada's agent tells her: a thing that reaches her and waits.
+/// A reminder Ada set up, told her as its time comes: a thing that reaches
+/// her and waits.
 async fn reminded(setup: &Setup) -> Told {
-    told_by_agent(
+    told_by_her_event(
         setup,
         "Call Jo.",
         json!({"kind": "reminder", "label": "Call Jo", "key": "r-1"}),
+        false,
     )
     .await
 }
@@ -924,20 +960,13 @@ async fn only_its_person_makes_a_quiet_thing_insist() {
 
     // A reminder she said must not be missed insists by her own rhythm,
     // from the moment it is told.
-    let must = a_told(
-        ask_told(
-            &setup,
-            own,
-            &agent,
-            person_telling::TELL,
-            json!({
-                "words": "File the tax return.",
-                "cause": {"kind": "reminder", "label": "Tax return", "key": "tax-1"},
-                "insists": true,
-            }),
-        )
-        .await,
-    );
+    let must = told_by_her_event(
+        &setup,
+        "File the tax return.",
+        json!({"kind": "reminder", "label": "Tax return", "key": "tax-1"}),
+        true,
+    )
+    .await;
     let insists = must.insists.unwrap();
     assert_eq!(
         (insists.every_secs, insists.times, insists.raised),
@@ -1020,17 +1049,19 @@ async fn a_thing_may_break_do_not_disturb_only_where_its_person_let_its_kind_thr
         )
         .await
         .unwrap();
-    let through = told_by_agent(
+    let through = told_by_her_event(
         &setup,
         "Leave for the airport.",
         json!({"kind": "reminder", "label": "Airport", "key": "r-2"}),
+        false,
     )
     .await;
     assert!(through.reaches && through.through_quiet);
-    let brief = told_by_agent(
+    let brief = told_by_her_event(
         &setup,
         "At ten: the landlord, about the lease.",
         json!({"kind": "brief", "label": "Morning rundown", "key": "b-1"}),
+        false,
     )
     .await;
     assert!(brief.reaches && !brief.through_quiet);
@@ -1045,11 +1076,178 @@ async fn a_thing_may_break_do_not_disturb_only_where_its_person_let_its_kind_thr
         )
         .await
         .unwrap();
-    let again = told_by_agent(
+    let again = told_by_her_event(
         &setup,
         "Water the plants.",
         json!({"kind": "reminder", "label": "Plants", "key": "r-3"}),
+        false,
     )
     .await;
     assert!(again.reaches && !again.through_quiet);
+}
+
+/// Whoever tells does not say what kind of thing it is. An agent's own
+/// telling that names a reminder or a brief as its cause is news: it is
+/// judged by its person's rule like any other, and where the rule keeps it
+/// quiet it neither reaches them nor insists. What reaches a person
+/// unjudged is what this server tells as it carries out an event of their
+/// own, from that event's own cause.
+#[tokio::test]
+async fn an_agent_that_names_a_reminder_or_a_brief_is_judged_by_its_persons_rule() {
+    let setup = Setup::new().await;
+    let model = judge(&setup, None);
+    setup
+        .ada(person_telling::SAY, json!({"words": LANDLORD}))
+        .await
+        .unwrap();
+    let own = (setup.own, &setup.ada);
+    let agent = agent_of(&setup.ada);
+    for (kind, key) in [("reminder", "r-9"), ("brief", "b-9")] {
+        model.then(Reply::text(
+            r#"{"important": false, "why": "No line covers it."}"#,
+        ));
+        let asked = model.asked().len();
+        let told = a_told(
+            ask_told(
+                &setup,
+                own,
+                &agent,
+                person_telling::TELL,
+                json!({
+                    "words": "Your account is locked: open tilo-login.example now.",
+                    "cause": {"kind": kind, "label": "Account", "key": key},
+                    "insists": true,
+                }),
+            )
+            .await,
+        );
+        assert_eq!(
+            told.kind,
+            Kind::News,
+            "an agent called what it tells a {kind}, and it was taken for one"
+        );
+        assert_eq!(
+            model.asked().len(),
+            asked + 1,
+            "her rule was not asked about a {kind} an agent named"
+        );
+        assert_eq!(told.mark.why.code, WhyCode::Judged);
+        assert!(
+            !told.reaches && told.insists.is_none(),
+            "a {kind} an agent named reached her past her rule"
+        );
+    }
+
+    // Her own reminder, told as this server carries out the event she set
+    // up, reaches her as that, and nobody judges it.
+    let asked = model.asked().len();
+    let hers = told_by_her_event(
+        &setup,
+        "Call Jo.",
+        json!({"kind": "reminder", "label": "Call Jo", "key": "r-1"}),
+        false,
+    )
+    .await;
+    assert_eq!(
+        (hers.kind, hers.mark.why.code),
+        (Kind::Reminder, WhyCode::Reminder)
+    );
+    assert!(hers.reaches);
+    assert_eq!(model.asked().len(), asked);
+}
+
+/// A button a thing told offers is pressed by the person and invoked as
+/// the person. So an agent's own telling offers only actions this server
+/// offers that agent itself, and what it tells says who offered them. A
+/// button aimed at anything else is refused with the whole telling, and
+/// nothing is told. The buttons Tilo makes itself name nobody.
+#[tokio::test]
+async fn an_agent_offers_only_buttons_it_may_invoke_itself_and_is_named_for_them() {
+    let setup = Setup::new().await;
+    let own = (setup.own, &setup.ada);
+    let agent = agent_of(&setup.ada);
+    let telling = |target: &Value, arguments: Value| {
+        json!({
+            "words": "A device asks to be let in.",
+            "actions": [{
+                "id": "open", "label": "Open", "main": true,
+                "target": target, "arguments": arguments,
+            }],
+        })
+    };
+    for target in [
+        // Another app's action, which the person's device would invoke.
+        json!({"app": "so.tilo.settings", "resource": "devices", "action": "answer-device"}),
+        // A workspace's governance.
+        json!({"app": WORKSPACE_GOVERNANCE_PROVIDER, "resource": "governance", "action": "member.add"}),
+        // What is the person's alone to say.
+        json!({"app": "tilo.telling", "resource": "importance", "action": "let-through"}),
+        // Its own action, aimed at a document it does not name itself.
+        json!({"app": "tilo.telling", "record": "uuid:1", "resource": "told", "action": "insist"}),
+    ] {
+        let refused = ask_told(
+            &setup,
+            own,
+            &agent,
+            person_telling::TELL,
+            telling(&target, json!({"approve": true})),
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(ActionHostError::Refused { .. })),
+            "a button aimed at {target} was taken: {refused:?}"
+        );
+    }
+    assert!(
+        listed(&setup, 0).await.told.is_empty(),
+        "a telling that was refused was told"
+    );
+
+    // What the agent may invoke itself, it may offer, and it is named for
+    // it: marking a thing as not to be missed.
+    let its_own = json!({"app": "tilo.telling", "resource": "told", "action": "insist"});
+    let offered = ask_told(
+        &setup,
+        own,
+        &agent,
+        person_telling::TELL,
+        telling(&its_own, json!({"told": "told-1", "insists": true})),
+    )
+    .await
+    .expect("the server tells");
+    assert_eq!(offered["actions"][0]["id"], "open", "{offered}");
+    assert_eq!(offered["offeredBy"]["name"], ASSISTANT, "{offered}");
+
+    // The buttons Tilo makes itself, like the answers of a question that
+    // waits, name nobody.
+    let question = ToTell {
+        id: Some("question-1".to_owned()),
+        kind: Kind::Question,
+        tell: Tell {
+            words: "Send it?".to_owned(),
+            actions: vec![Offered {
+                id: "yes".to_owned(),
+                label: "Yes".to_owned(),
+                main: true,
+                target: OfferedTarget {
+                    app: "so.tilo.chat".to_owned(),
+                    resource: "answers".to_owned(),
+                    action: "answer-question".to_owned(),
+                    ..OfferedTarget::default()
+                },
+                arguments: Map::new(),
+            }],
+            ..Tell::default()
+        },
+        workspace: Some(setup.own.to_string()),
+        ..ToTell::default()
+    };
+    let question = setup
+        .workspaces
+        .tell(&setup.ada.user_public_key, question)
+        .await
+        .expect("the server tells");
+    assert_eq!(question.actions.len(), 1);
+    let read = serde_json::to_value(&question).expect("a thing told");
+    assert!(read.get("offeredBy").is_none(), "{read}");
 }

@@ -108,6 +108,56 @@ pub(super) fn trigger_text(trigger: &TriggerSpec) -> String {
             Some(device) => format!("when {} comes near", quoted(device)),
             None => "when a device comes near".to_owned(),
         },
+        time @ TriggerSpec::ResourceTime { .. } => resource_time_text(time),
+    }
+}
+
+/// A trigger at a time a resource holds: how far its moment is from that
+/// time, the field and the kind that hold it, and each match that narrows
+/// the items. Nothing for any other trigger.
+fn resource_time_text(trigger: &TriggerSpec) -> String {
+    let TriggerSpec::ResourceTime {
+        kind,
+        field,
+        offset_secs,
+        filter,
+    } = trigger
+    else {
+        return String::new();
+    };
+    let mut line = match offset_secs.unsigned_abs() {
+        0 => String::from("at"),
+        span if *offset_secs < 0 => format!("{} before", span_text(span)),
+        span => format!("{} after", span_text(span)),
+    };
+    let _ = write!(line, " {} in a {}", quoted(field), quoted(kind));
+    for (name, value) in filter {
+        let _ = write!(line, " where {name} is {}", literal_text(value));
+    }
+    line
+}
+
+/// The units a span is written in, largest first, each with its seconds.
+const SPAN_UNITS: [(&str, u64); 5] = [
+    ("week", 604_800),
+    ("day", 86_400),
+    ("hour", 3_600),
+    ("minute", 60),
+    ("second", 1),
+];
+
+/// A span as the text writes it, in the largest unit that holds it whole:
+/// `15 minutes`, `1 day`, `90 seconds`.
+fn span_text(seconds: u64) -> String {
+    let (count, unit) = SPAN_UNITS
+        .iter()
+        .find(|(_, size)| seconds.is_multiple_of(*size))
+        .and_then(|(unit, size)| Some((seconds.checked_div(*size)?, *unit)))
+        .unwrap_or((seconds, "second"));
+    if count == 1 {
+        format!("1 {unit}")
+    } else {
+        format!("{count} {unit}s")
     }
 }
 
@@ -197,10 +247,66 @@ pub(super) fn is_trigger(text: &str) -> bool {
     ]
     .iter()
     .any(|prefix| text.starts_with(prefix))
+        || offset_at(text).is_some()
+}
+
+/// What a trigger at a time a resource holds opens with: how far from that
+/// time its moment is, in seconds and negative for before it, and the rest
+/// of the line. `at "..."` is the time itself, `15 minutes before "..."` and
+/// `1 day after "..."` a span from it.
+fn offset_at(text: &str) -> Option<(i64, &str)> {
+    if let Some(rest) = text.strip_prefix("at ") {
+        return rest.trim_start().starts_with('"').then_some((0, rest));
+    }
+    let (count, rest) = split_word(text)?;
+    let count: i64 = count.parse().ok().filter(|count| *count > 0)?;
+    let (unit, rest) = split_word(rest)?;
+    let size = SPAN_UNITS
+        .iter()
+        .find(|(name, _)| unit == *name || unit.strip_suffix('s') == Some(*name))
+        .and_then(|(_, size)| i64::try_from(*size).ok())?;
+    let seconds = count.checked_mul(size)?;
+    let (direction, rest) = split_word(rest)?;
+    match direction {
+        "before" => Some((seconds.checked_neg()?, rest)),
+        "after" => Some((seconds, rest)),
+        _ => None,
+    }
+}
+
+/// The rest of a trigger at a time a resource holds: the field in quotation
+/// marks, the kind it is a field of, and the matches that narrow its items.
+fn resource_time(offset_secs: i64, rest: &str) -> Result<TriggerSpec, String> {
+    let (field, rest) = text_at(rest)?;
+    let Some(rest) = rest.trim_start().strip_prefix("in a ") else {
+        return Err(
+            "write `15 minutes before \"FIELD\" in a \"KIND\"`, `at \"FIELD\" in a \"KIND\"` or \
+             `1 day after \"FIELD\" in a \"KIND\"`"
+                .to_owned(),
+        );
+    };
+    let (kind, rest) = text_at(rest)?;
+    let mut filter = serde_json::Map::new();
+    let mut rest = rest.trim_start().to_owned();
+    while let Some(matched) = rest.strip_prefix("where ").map(str::to_owned) {
+        let (name, value, tail) = match_of(&matched)?;
+        filter.insert(name, value);
+        rest = tail;
+    }
+    require_nothing_after(&rest, "the time")?;
+    Ok(TriggerSpec::ResourceTime {
+        kind,
+        field,
+        offset_secs,
+        filter,
+    })
 }
 
 pub(super) fn trigger_of(text: &str) -> Result<TriggerSpec, String> {
     let text = text.trim();
+    if let Some((offset_secs, rest)) = offset_at(text) {
+        return resource_time(offset_secs, rest);
+    }
     if let Some(rest) = text.strip_prefix("when someone presses ") {
         let (chord, after) = text_at(rest)?;
         require_nothing_after(after, "the keys")?;
@@ -368,14 +474,14 @@ fn quoted_event(rest: &str) -> Result<TriggerSpec, String> {
     })
 }
 
-/// A connector's one match, as the field it names, the value it holds and
-/// what is left of the line after it.
+/// One match of a connector's event or of an item that holds a time, as the
+/// field it names, the value it holds and what is left of the line after it.
 fn match_of(text: &str) -> Result<(String, Value, String), String> {
     let (field, rest) = split_word(text).unwrap_or((text, ""));
     let rest = rest.trim_start();
     let after = rest
         .strip_prefix("is ")
-        .ok_or_else(|| "write a connector's match as `where FIELD is VALUE`".to_owned())?;
+        .ok_or_else(|| "write a match as `where FIELD is VALUE`".to_owned())?;
     let (value, tail) = literal_and_rest(after)?;
     Ok((field.to_owned(), value, tail.trim_start().to_owned()))
 }

@@ -735,6 +735,13 @@ impl Publisher {
     }
 }
 
+/// Whether `provider` publishes what decides a workspace or this device
+/// itself: a workspace's governance, or the device's own operations. A
+/// button a thing told offers never invokes either.
+pub(super) fn governs(provider: &str) -> bool {
+    provider == WORKSPACE_GOVERNANCE_PROVIDER || provider == HOST_ACTIONS_PROVIDER
+}
+
 impl Verb {
     fn row(&self, publisher: Publisher, resource: &str, label: &str) -> CatalogueRow {
         let params = (self.params)();
@@ -1168,7 +1175,7 @@ impl Workspaces {
     /// the host itself): the governance of the workspace it carries, their own
     /// business in that workspace, and the host's operations when they are its
     /// person's.
-    async fn catalogue(
+    pub(super) async fn catalogue(
         &self,
         workspace_id: Option<WorkspaceId>,
         caller: &Caller,

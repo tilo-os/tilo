@@ -131,9 +131,28 @@ impl Definition {
             TriggerSpec::Once { .. }
             | TriggerSpec::Schedule { .. }
             | TriggerSpec::ResourceChanged { .. } => Ok(trigger),
+            TriggerSpec::ResourceTime {
+                kind,
+                field,
+                offset_secs,
+                ..
+            } => match tilo_automation::resource_time::refusal(kind, field, *offset_secs) {
+                Some(why) => Err(why),
+                // The times of a person's calendars are read where their
+                // accounts are kept; no other resource's are yet.
+                None if kind != tilo_automation::resource_time::PERSON_CALENDARS => Err(format!(
+                    "for now a moment is counted from the start or the end of an entry in its \
+                     person's calendars: `15 minutes before \"{}\" in a \"{}\"`",
+                    tilo_automation::resource_time::CALENDAR_START,
+                    tilo_automation::resource_time::PERSON_CALENDARS
+                )),
+                None => Ok(trigger),
+            },
             _ => Err(
                 "the host runs an event with every device off: it starts at a time (`once at`, \
-                 `every`) or when something in the workspace changes"
+                 `every`), a moment before or after an entry of its person's calendars (`15 \
+                 minutes before \"entries.*.start\" in a \"tilo.accounts.calendars\"`) or when \
+                 something in the workspace changes"
                     .into(),
             ),
         }

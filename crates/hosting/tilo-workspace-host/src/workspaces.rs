@@ -102,7 +102,12 @@ pub mod person_asking;
 // What the person keeps to sign in with, in that same vault of theirs.
 #[cfg(not(target_arch = "wasm32"))]
 mod person_vault;
+// A secret used by reference by a turn this server carries out itself.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod hosted_use;
 mod personal;
+mod weak;
+pub use weak::WeakWorkspaces;
 mod publication;
 use publication::{Change, SinceBase, starts_over, withdraws};
 #[cfg(test)]
@@ -923,19 +928,6 @@ pub struct Workspaces {
     inner: Arc<WorkspacesInner>,
 }
 
-/// [`Workspaces`] for whoever must not keep them alive: the browser action service, which
-/// hands sessions the calls of the workspaces this relay carries.
-#[derive(Clone)]
-pub struct WeakWorkspaces(std::sync::Weak<WorkspacesInner>);
-
-impl WeakWorkspaces {
-    /// The workspaces, while the relay still has them.
-    #[must_use]
-    pub fn upgrade(&self) -> Option<Workspaces> {
-        self.0.upgrade().map(|inner| Workspaces { inner })
-    }
-}
-
 struct WorkspacesInner {
     host: WorkspaceServices,
     /// The sealed history of every workspace governed here, which their
@@ -992,6 +984,9 @@ struct WorkspacesInner {
     /// its people keep ([`Workspaces::mail_session`]).
     #[cfg(not(target_arch = "wasm32"))]
     mail_session: std::sync::RwLock<person_settings::Session>,
+    /// What uses of a vault item by reference keep here ([`hosted_use`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    vault_uses: hosted_use::Uses,
     /// The inboxes this host watches, and who listens for them
     /// ([`mail_watch`]).
     #[cfg(not(target_arch = "wasm32"))]
@@ -1221,12 +1216,6 @@ impl Workspaces {
         Some(governed.peer().records())
     }
 
-    /// These workspaces, held without keeping them alive.
-    #[must_use]
-    pub fn downgrade(&self) -> WeakWorkspaces {
-        WeakWorkspaces(Arc::downgrade(&self.inner))
-    }
-
     /// Open every workspace recorded under `dir` and bind each to the relay, pinned.
     pub(crate) async fn open(
         host: WorkspaceServices,
@@ -1271,6 +1260,8 @@ impl Workspaces {
                 mail_session: std::sync::RwLock::new(Arc::new(
                     tilo_mail_session::LiveMailSession::default(),
                 )),
+                #[cfg(not(target_arch = "wasm32"))]
+                vault_uses: hosted_use::Uses::default(),
                 #[cfg(not(target_arch = "wasm32"))]
                 mail_watches: mail_watch::MailWatches::default(),
                 #[cfg(not(target_arch = "wasm32"))]

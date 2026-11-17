@@ -328,9 +328,9 @@ mod tests {
 
     fn message(text: &str, question: Option<Question>) -> Message {
         let assistant = MemberId::agent("assistant");
-        let channel =
+        let conversation =
             chat::chat::Chat::direct_id([MemberId::person(hex::encode(ADA)), assistant.clone()]);
-        let mut message = Message::new(channel, assistant, 1_763_366_400, text.to_owned());
+        let mut message = Message::new(conversation, assistant, 1_763_366_400, text.to_owned());
         message.author_name = Some("Assistant".to_owned());
         message.question = question;
         message
