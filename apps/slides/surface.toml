@@ -44,6 +44,15 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "add-slides"
+kind = "undoable"
+returns = { schema = { type = "object" } }
+params = [
+  { name = "slides", type = { list = { named = "OutlinedSlide" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { body = { type = ["string", "null"] }, layout = { oneOf = [{ type = "null" }, { type = "string", enum = ["title", "title_content", "two_column", "section", "blank"] }] }, notes = { type = ["string", "null"] }, title = { type = ["string", "null"] } } } } },
+  { name = "after", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
 id = "insert-slide"
 kind = "undoable"
 params = [
@@ -277,6 +286,15 @@ fields = [
   { name = "bold", type = { option = "bool" } },
   { name = "italic", type = { option = "bool" } },
   { name = "radius", type = { option = "float" } },
+]
+
+[[resources.types]]
+name = "OutlinedSlide"
+fields = [
+  { name = "title", type = { option = "text" } },
+  { name = "body", type = { option = "text" } },
+  { name = "layout", type = { option = { named = "Layout" } } },
+  { name = "notes", type = { option = "text" } },
 ]
 
 [[resources.types]]

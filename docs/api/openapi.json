@@ -22516,6 +22516,68 @@
       "slides.deck.add-slide.Result": {
         "type": "object"
       },
+      "slides.deck.add-slides.Arguments": {
+        "type": "object",
+        "properties": {
+          "slides": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "body": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "layout": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "enum": [
+                        "title",
+                        "title_content",
+                        "two_column",
+                        "section",
+                        "blank"
+                      ],
+                      "type": "string"
+                    }
+                  ]
+                },
+                "notes": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "after": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "slides"
+        ],
+        "description": ""
+      },
+      "slides.deck.add-slides.Result": {
+        "type": "object"
+      },
       "slides.deck.insert-slide.Arguments": {
         "type": "object",
         "properties": {
@@ -31239,6 +31301,12 @@
       "resource": "slides.deck",
       "action": "add-slide",
       "arguments": "#/components/schemas/slides.deck.add-slide.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "slides.deck",
+      "action": "add-slides",
+      "arguments": "#/components/schemas/slides.deck.add-slides.Arguments"
     },
     {
       "app": "so.tilo.slides",

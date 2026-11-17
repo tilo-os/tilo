@@ -31,6 +31,7 @@ __all__ = [
     "MarkSpan",
     "MarkValue",
     "NewElement",
+    "OutlinedSlide",
     "PaletteKind",
     "Slide",
     "SlideData",
@@ -128,6 +129,12 @@ class NewElement(TypedDict):
     italic: bool | None
     radius: float | None
 
+class OutlinedSlide(TypedDict):
+    title: str | None
+    body: str | None
+    layout: Layout | None
+    notes: str | None
+
 PaletteKind = Literal["indigo", "emerald", "amber", "rose", "sky"]
 
 class Slide(TypedDict):
@@ -195,7 +202,7 @@ ReplaceDeckArgs = TypedDict("ReplaceDeckArgs", {
 
 class Deck(Resource):
     """Deck — `slides.deck`."""
-    __surface__ = "so.tilo.slides@d95a427d78624175"
+    __surface__ = "so.tilo.slides@a568e642f85c914e"
     title: str
     palette: PaletteKind
     look: DeckLook
@@ -219,6 +226,18 @@ class Deck(Resource):
         if after is not None:
             args["after"] = after
         return self.action("add-slide", **args)
+
+    def add_slides(self,
+        *,
+        slides: list[OutlinedSlide],
+        after: str | None = None,
+    ) -> Any | Run:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["slides"] = slides
+        if after is not None:
+            args["after"] = after
+        return self.action("add-slides", **args)
 
     def insert_slide(self,
         *,

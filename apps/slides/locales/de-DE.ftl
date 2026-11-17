@@ -176,6 +176,7 @@ slides-element-italic = { $new ->
 }
 slides-element-radius = Die Ecken von { $item } abgerundet
 slides-add-slide = Eine Folie hinzugefügt
+slides-add-slides = Folien hinzugefügt
 slides-insert-slide = Eine Folie hinzugefügt
 slides-duplicate-slide = Eine Folie dupliziert
 slides-delete-slide = Eine Folie gelöscht
@@ -223,6 +224,7 @@ slides-slide-number = Folie { $number }
 
 slides-deck = Präsentation
 slides-deck-add-slide = Folie hinzufügen
+slides-deck-add-slides = Folien hinzufügen
 slides-deck-insert-slide = Folie einfügen
 slides-deck-duplicate-slide = Folie duplizieren
 slides-deck-delete-slide = Folie löschen

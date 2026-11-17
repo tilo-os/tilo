@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.slides@d95a427d78624175";
+export const SURFACE = "so.tilo.slides@a568e642f85c914e";
 
 /** One of "surface", "accent", "deep". */
 export type Background = "surface" | "accent" | "deep";
@@ -115,6 +115,13 @@ export interface NewElement {
   radius: number | null;
 }
 
+export interface OutlinedSlide {
+  title: string | null;
+  body: string | null;
+  layout: Layout | null;
+  notes: string | null;
+}
+
 /** One of "indigo", "emerald", "amber", "rose", "sky". */
 export type PaletteKind = "indigo" | "emerald" | "amber" | "rose" | "sky";
 
@@ -194,6 +201,10 @@ export interface Deck extends tilo.Resource {
     title?: string;
     body?: string;
     layout?: Layout;
+    after?: string;
+  }): Promise<unknown | tilo.Run>;
+  addSlides(args: {
+    slides: OutlinedSlide[];
     after?: string;
   }): Promise<unknown | tilo.Run>;
   insertSlide(args: {
