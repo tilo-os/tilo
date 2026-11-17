@@ -411,10 +411,7 @@ fn answered(landed: Option<Result<(), String>>) -> Result<(), String> {
 /// Say over the sheet why the workspace refused a change it answered after the pass that asked:
 /// the panes stand as they were, and the note goes over them.
 fn refused(state: &sheet::WorkspaceSettingsState, reason: &str) {
-    state.refuse(sheet::Notice {
-        title: t("workspace-settings-refused"),
-        detail: Some(reason.to_owned()),
-    });
+    state.refuse(crate::workspace_people::refusal(reason));
     let mut shown = state.settings();
     shown.notice = state.notice();
     state.show(shown);
@@ -497,10 +494,7 @@ fn govern(
 /// Say why the workspace refused a change, over the tab the person asked on,
 /// and leave the workspace as it was.
 fn refuse(state: &sheet::WorkspaceSettingsState, fed: &Feeding<'_>, reason: &str) {
-    state.refuse(sheet::Notice {
-        title: t("workspace-settings-refused"),
-        detail: Some(reason.to_owned()),
-    });
+    state.refuse(crate::workspace_people::refusal(reason));
     let shown = state.settings();
     let review = shown.agents.review.as_ref().map(|row| row.agent.clone());
     show(state, fed, shown.tab, review.as_deref());
@@ -870,9 +864,7 @@ fn settings(
             || tilo_desktop_surface::names::workspace(""),
             |ws| tilo_desktop_surface::names::workspace(&ws.name),
         ),
-        role: workspace
-            .and_then(|ws| ws.role_of(person))
-            .map_or_else(|| t("workspace-settings-role-guest"), domain::role_label),
+        role: crate::workspace_people::role_line(workspace.and_then(|ws| ws.role_of(person))),
         close: t("workspace-settings-close"),
         tabs: tabs(),
         tab,
@@ -1126,35 +1118,10 @@ fn device_key(key: &str) -> Option<[u8; 32]> {
 
 /// The sheet's tabs, each by the name the strip shows and the shorter one a narrow sheet uses.
 fn tabs() -> Vec<sheet::TabLabel> {
-    let short = [
-        "workspace-settings-tab-general",
-        "workspace-settings-tab-people",
-        "workspace-settings-tab-agents",
-        "workspace-settings-tab-privacy",
-        "workspace-settings-tab-apps",
-        "workspace-settings-tab-emoji",
-    ];
     sheet::Tab::ALL
         .into_iter()
-        .zip(short)
-        .map(|(tab, short)| sheet::TabLabel {
-            tab,
-            label: t(label_key(tab)),
-            short: t(short),
-        })
+        .map(crate::workspace_people::tab_label)
         .collect()
-}
-
-/// What a tab is called in the strip.
-fn label_key(tab: sheet::Tab) -> &'static str {
-    match tab {
-        sheet::Tab::General => "workspace-settings-tab-general",
-        sheet::Tab::People => "workspace-settings-tab-people",
-        sheet::Tab::Agents => "workspace-settings-tab-agents",
-        sheet::Tab::Permissions => "workspace-settings-tab-privacy-security",
-        sheet::Tab::Apps => "workspace-settings-tab-apps-files",
-        sheet::Tab::Emoji => "workspace-settings-tab-emoji",
-    }
 }
 
 /// What the person here is called on their own row.
@@ -1164,49 +1131,12 @@ fn own_name() -> Option<String> {
 
 /// The People tab: who shares the workspace and their roles.
 fn people(ws: &Workspace, names: &PeopleNames, person: &UserId) -> sheet::People {
-    let content = domain::people::content(ws, names, person, ws.is_owner(person));
-    sheet::People {
-        count: content.count,
-        status: content.status,
-        header: content.header,
-        you_tag: content.you_tag,
-        remove: content.remove,
-        people: content
-            .people
-            .iter()
-            .map(|entry| sheet::Person {
-                key: entry.user.clone(),
-                name: entry.name.clone(),
-                you: entry.you,
-                role: entry.role.clone(),
-                role_key: ws.role_of(&entry.user).map(|role| role.key().to_owned()),
-                extra: entry.extra.clone(),
-                offers: match entry.offers {
-                    domain::people::Offers::Nothing => sheet::Offers::Nothing,
-                    domain::people::Offers::Role => sheet::Offers::Role,
-                    domain::people::Offers::RoleAndRemove => sheet::Offers::RoleAndRemove,
-                },
-                can_manage: entry.can_manage,
-            })
-            .collect(),
-        roles: [Role::Viewer, Role::Commenter, Role::Editor]
-            .into_iter()
-            .map(|role| sheet::RoleChoice {
-                key: role.key().to_owned(),
-                label: domain::role_label(role),
-                allows: domain::role_capability_preview(role),
-            })
-            .collect(),
-        empty: content.empty,
-        note: content.note,
-        remove_decision: sheet::Decision {
-            title: t("workspace-settings-remove-sheet-title"),
-            description: t("workspace-settings-remove-sheet-description"),
-            keep: t("workspace-settings-keep-access"),
-            review: t("workspace-settings-review-activity"),
-            confirm: t("workspace-settings-remove-person"),
-        },
-    }
+    crate::workspace_people::tab(domain::people::content(
+        ws,
+        names,
+        person,
+        ws.is_owner(person),
+    ))
 }
 
 /// The Privacy & Security tab: the permissions the workspace gives, who holds each, and the

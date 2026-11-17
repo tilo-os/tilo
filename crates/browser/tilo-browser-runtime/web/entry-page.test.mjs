@@ -309,7 +309,7 @@ test('workspaces another host held at the origin of the page host are no longer 
     {origin: ORIGIN, workspace: 'gone-2', hostDevice: 'e2'.repeat(32), name: 'Other'},
     {origin: 'https://elsewhere.example', workspace: 'away', hostDevice: 'e3'.repeat(32), name: 'Away'},
   ]});
-  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'People', 'Join a workspace']);
+  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'Join a workspace']);
   assert.deepEqual(enteredWorkspaces().map(entry => entry.workspace), ['current', 'other', 'away']);
 });
 
@@ -343,7 +343,7 @@ test('a bare home entry, which names no workspace until admitted, does not offer
 test('the page keeps switch actions together and dispatches them', async () => {
   const {calls, shown, diagnostics} = await fixture();
   const actions = shown.at(-1);
-  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'People', 'Join a workspace']);
+  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'Join a workspace']);
   diagnostics.onHostAction(actions.find(action => action.title === 'Open Other').id);
   await tick();
   assert.deepEqual(calls, ['flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);

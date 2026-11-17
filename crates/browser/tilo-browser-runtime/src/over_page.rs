@@ -1,8 +1,9 @@
 //! A sheet drawn over the page, out of its flow: the session's own sheet,
 //! kept current by whoever answers it, taking the keyboard and the press that
-//! dismisses it. The page shows two — the directory and the invite sheet —
-//! and how a sheet stands over a page is the same for both, so it is here
-//! once and each answers [`OverSheet`] with its own sheet and effects.
+//! dismisses it. The page shows several — the directory, the invite sheet,
+//! the workspace settings — and how a sheet stands over a page is the same for
+//! each, so it is here once and each answers [`OverSheet`] with its own sheet
+//! and effects.
 
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
@@ -33,13 +34,13 @@ pub(crate) trait OverSheet {
     fn sheet_name(&self) -> &'static str;
 }
 
-/// A sheet the person opens: the directory and the invite sheet.
+/// A sheet the person opens: the directory, the invite sheet and the workspace settings.
 pub(crate) trait PageSheet: OverSheet {
     fn open(&self);
     fn is_open(&self) -> bool;
 }
 
-/// The sheets' code: the session's directory and invite sheets and the
+/// The sheets' code: the session's directory, invite and workspace settings sheets and the
 /// workspace directory's store behind both, and the shortcut guide's sheet.
 /// The browser desktop fetches it the first time the person opens one
 /// (`deferred-sheets`).
@@ -47,6 +48,7 @@ pub(crate) trait PageSheet: OverSheet {
 pub struct SheetsCode {
     directory: MakeDirectory,
     invite: MakeInvite,
+    workspace_settings: MakeWorkspaceSettings,
     pub(crate) guide: FollowGuide,
 }
 
@@ -69,6 +71,9 @@ type MakeInvite = fn(
     &Wake,
 ) -> Box<dyn PageSheet>;
 
+type MakeWorkspaceSettings =
+    fn(crate::desktop::Shared, tilo_desktop::here::Here, Option<u32>) -> Box<dyn PageSheet>;
+
 type Wake = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// The sheets' code where it is linked.
@@ -77,6 +82,7 @@ pub fn builtin_sheets() -> SheetsCode {
     SheetsCode {
         directory: crate::directory::make,
         invite: crate::invite::make,
+        workspace_settings: crate::workspace_settings::make,
         guide: crate::guide::follow,
     }
 }
@@ -124,6 +130,16 @@ impl LazySheet {
                 peer,
                 &wake,
             )
+        }))
+    }
+
+    pub(crate) fn workspace_settings(
+        shared: crate::desktop::Shared,
+        here: tilo_desktop::here::Here,
+        peer: Option<u32>,
+    ) -> Self {
+        Self::new(Box::new(move |code| {
+            (code.workspace_settings)(shared.clone(), std::rc::Rc::clone(&here), peer)
         }))
     }
 

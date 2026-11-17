@@ -129,6 +129,21 @@ pub(super) fn host_actions() -> [tilo_desktop_surface::HostAction; 2] {
     ]
 }
 
+/// The workspace menu's settings row, offered in a page that is in a workspace: who is in it and
+/// what each may do, on the session's own sheet.
+fn workspace_settings() -> tilo_desktop_surface::HostAction {
+    use tilo_desktop_surface::i18n::t;
+    tilo_desktop_surface::HostAction {
+        id: tilo_desktop::desktop_host::WORKSPACE_SETTINGS.to_owned(),
+        title: t("session-host-workspace-settings"),
+        subtitle: Some(t("session-host-workspace-settings-description")),
+        icon: Some("settings".to_owned()),
+        destructive: false,
+        unasked: false,
+        source: Some(tilo_desktop_surface::HostActionSource::Workspace),
+    }
+}
+
 /// What the page's own rows are and which of them the person was last offered: the upload rows
 /// come and go with whether they may change the workspace's records.
 #[derive(Default)]
@@ -168,6 +183,9 @@ impl Desktop {
         }
         *self.offered.uploads.borrow_mut() = Some(uploads);
         let mut rows = self.offered.page.borrow().clone();
+        if self.shared.peer.is_some() {
+            rows.push(workspace_settings());
+        }
         if uploads {
             rows.extend(host_actions());
         }

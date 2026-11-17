@@ -4,11 +4,9 @@
 //! their standing here, and the workspace's host makes, lists and cancels the
 //! links, which open this page.
 
-use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 
 use serde::Deserialize;
@@ -21,6 +19,7 @@ use tilo_sheets::invite::{self as sheet, Choosing, InviteEffect};
 
 use ui::LocalState;
 
+use crate::host_asks::{HostAsks, Reply, refused};
 use crate::over_page::{OverSheet, PageSheet};
 use crate::shell::{HostRequest, HostRequests};
 
@@ -50,12 +49,6 @@ pub(crate) struct PageInviteConfig {
     #[serde(default)]
     pub host: String,
 }
-
-/// What the host answered, from its own thread.
-type Reply = Result<WorkspacesReply, String>;
-
-/// Who hears a host's answer.
-type Then = Box<dyn FnOnce(Reply)>;
 
 /// The sheet over the page, while it is up.
 /// The page's invite sheet, as the sheets' code makes it
@@ -104,14 +97,11 @@ impl PageInvite {
         });
         let workspace = Rc::new(PageWorkspace {
             config: config.cloned(),
-            peer,
             person: config.and_then(|config| hex::decode(&config.user).ok()?.try_into().ok()),
-            shared,
             here,
             pending: Rc::default(),
-            replies: Arc::default(),
-            waiting: RefCell::default(),
-            asks: Cell::new(0),
+            asks: HostAsks::new(peer, NO_HOST, Arc::clone(&shared.woken)),
+            shared,
         });
         Self {
             invite: Invite::new(
@@ -134,7 +124,7 @@ impl PageInvite {
     /// workspace stands, and carry out what the person pressed since the last
     /// pass. Whether anything changed.
     fn follow(&mut self, show: &mut dyn FnMut(Option<ui::widget::Element>), missing: bool) -> bool {
-        let mut changed = self.workspace.take_replies();
+        let mut changed = self.workspace.asks.take_replies();
         changed |= self.store.answered();
         changed |= self.invite.follow_shelf();
         if !self.presentation.is_open() {
@@ -186,7 +176,6 @@ impl tilo_session::platform::clipboard::Clipboard for PageClipboard {
 /// The workspace this page is in, as its host answers for it.
 struct PageWorkspace {
     config: Option<PageInviteConfig>,
-    peer: Option<u32>,
     shared: crate::desktop::Shared,
     /// Who is here, as the workspace's presence names them.
     here: Here,
@@ -194,62 +183,11 @@ struct PageWorkspace {
     person: Option<[u8; 32]>,
     /// The links that still work, as the host last answered.
     pending: Rc<RefCell<Vec<PendingInvite>>>,
-    /// What the host answered, by the ask, from its own thread.
-    replies: Arc<Mutex<Vec<(u64, Reply)>>>,
-    /// Who hears each answer, by the ask.
-    waiting: RefCell<BTreeMap<u64, Then>>,
-    asks: Cell<u64>,
+    /// What the sheet asks the workspace's host.
+    asks: HostAsks,
 }
 
 impl PageWorkspace {
-    /// Ask this page's workspace host `request`; `then` hears its answer on a
-    /// later pass, or why it was not asked.
-    fn ask(
-        &self,
-        request: impl FnOnce(&str) -> WorkspacesRequest + 'static,
-        then: impl FnOnce(Reply) + 'static,
-    ) {
-        let Some(peer) = self.peer else {
-            return then(Err(NO_HOST.to_owned()));
-        };
-        let id = self.asks.replace(self.asks.get().wrapping_add(1));
-        let (replies, woken) = (Arc::clone(&self.replies), Arc::clone(&self.shared.woken));
-        let asked = crate::replicated::host_then(
-            peer,
-            Box::new(request),
-            Box::new(move |reply| {
-                replies
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push((id, reply));
-                woken.store(true, Ordering::Release);
-            }),
-        );
-        match asked {
-            Ok(()) => drop(self.waiting.borrow_mut().insert(id, Box::new(then))),
-            Err(error) => then(Err(error)),
-        }
-    }
-
-    /// Hand what the host answered since the last pass to whoever asked.
-    /// Whether anything arrived.
-    fn take_replies(&self) -> bool {
-        let replies: Vec<(u64, Reply)> = std::mem::take(
-            &mut *self
-                .replies
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        let arrived = !replies.is_empty();
-        for (id, reply) in replies {
-            let then = self.waiting.borrow_mut().remove(&id);
-            if let Some(then) = then {
-                then(reply);
-            }
-        }
-        arrived
-    }
-
     /// Keep the links that still work from the host's answer.
     fn keeping(&self) -> impl FnOnce(Reply) -> Result<(), Refused> + 'static {
         let pending = Rc::clone(&self.pending);
@@ -288,7 +226,7 @@ impl Workspace for PageWorkspace {
     fn may_invite(&self) -> bool {
         // Whether this person may invite here is the workspace's last answer, which
         // [`crate::replication`] asks with the rest of their standing.
-        self.peer.is_some()
+        self.asks.hosted()
             && self.workspace().is_some()
             && self.shared.invitable.load(Ordering::Relaxed)
     }
@@ -324,7 +262,7 @@ impl Workspace for PageWorkspace {
             return;
         };
         let keeping = self.keeping();
-        self.ask(
+        self.asks.ask(
             move |_| WorkspacesRequest::Pending { workspace },
             move |reply| listed(keeping(reply)),
         );
@@ -440,7 +378,7 @@ impl Workspace for PageWorkspace {
             .map(|config| config.name.trim().to_owned())
             .filter(|name| !name.is_empty());
         let pending = Rc::clone(&self.pending);
-        self.ask(
+        self.asks.ask(
             move |_| WorkspacesRequest::Invite {
                 workspace,
                 request_id,
@@ -493,7 +431,7 @@ impl Workspace for PageWorkspace {
             return answer(refuse(&error.to_string()));
         }
         let keeping = self.keeping();
-        self.ask(
+        self.asks.ask(
             move |_| WorkspacesRequest::Cancel {
                 workspace,
                 request_id,
@@ -527,16 +465,6 @@ fn role_label(role: Role) -> String {
 /// What a role lets whoever joins with a link do here.
 fn role_preview(role: Role) -> String {
     tilo_desktop::workspace_settings::role_capability_preview(role)
-}
-
-/// What the host refused, in its own words, or what it answered instead of
-/// what was asked.
-fn refused(reply: Result<WorkspacesReply, String>) -> String {
-    match reply {
-        Ok(WorkspacesReply::Refused(reason)) => reason,
-        Ok(_) => "the workspace answered something else than what was asked".to_owned(),
-        Err(error) => error,
-    }
 }
 
 impl PageSheet for PageInvite {

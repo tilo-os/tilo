@@ -179,6 +179,8 @@ pub use questions::{
 #[cfg(target_arch = "wasm32")]
 mod guide;
 #[cfg(target_arch = "wasm32")]
+mod host_asks;
+#[cfg(target_arch = "wasm32")]
 mod invite;
 #[cfg(target_arch = "wasm32")]
 mod jobs_card;
@@ -284,6 +286,8 @@ mod replication;
 #[cfg(target_arch = "wasm32")]
 mod replicated;
 // The workspaces a host governs, as the page administers them.
+#[cfg(target_arch = "wasm32")]
+mod workspace_settings;
 #[cfg(target_arch = "wasm32")]
 mod workspaces;
 // The workspaces this browser entered, by the rules every device keeps them by.

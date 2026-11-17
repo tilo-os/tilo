@@ -342,6 +342,18 @@ pub struct WorkspaceSettingsState {
     asked: Rc<RefCell<Vec<WorkspaceSettingsEffect>>>,
     /// Why the workspace refused the last change, until the person puts it away.
     notice: Rc<RefCell<Option<Notice>>>,
+    /// What the sheet keeps to itself where its host draws it ([`Self::sheet`]).
+    drawn: Rc<RefCell<Option<Drawn>>>,
+}
+
+/// The fields and questions of a sheet its host draws itself, kept across the builds.
+#[derive(Clone)]
+struct Drawn {
+    new_agent: LocalState<String>,
+    new_model: LocalState<String>,
+    new_colour: LocalState<String>,
+    limit: LocalState<String>,
+    local: LocalState<Local>,
 }
 
 impl std::fmt::Debug for WorkspaceSettingsState {
@@ -424,6 +436,57 @@ impl WorkspaceSettingsState {
         std::mem::take(&mut *self.asked.borrow_mut())
     }
 
+    /// The sheet as a host that draws it itself shows it: what it shows now, with every press
+    /// asked of this state. Built again when [`Self::settings`] or [`Self::drawn_revision`] moved.
+    pub fn sheet(&self) -> Element {
+        let settings = self.settings();
+        let shown = self
+            .shown
+            .borrow_mut()
+            .get_or_insert_with(|| LocalState::new(settings.clone()))
+            .clone();
+        let name = self
+            .name
+            .borrow_mut()
+            .get_or_insert_with(|| LocalState::new(settings.name.clone()))
+            .clone();
+        let drawn = self
+            .drawn
+            .borrow_mut()
+            .get_or_insert_with(|| Drawn {
+                new_agent: LocalState::new(String::new()),
+                new_model: LocalState::new(String::new()),
+                new_colour: LocalState::new(String::new()),
+                limit: LocalState::new(String::new()),
+                local: LocalState::new(Local::default()),
+            })
+            .clone();
+        let parts = Parts {
+            dispatch: None,
+            shown,
+            name,
+            new_agent: drawn.new_agent,
+            new_model: drawn.new_model,
+            new_colour: drawn.new_colour,
+            limit: drawn.limit,
+            local: drawn.local,
+            state: Some(self.clone()),
+        };
+        let content = match parts.local.get().confirming {
+            Some(confirm) => decision(&settings, &confirm, &parts),
+            None => sheet(&settings, &parts),
+        };
+        Box::new(Keys { content, parts })
+    }
+
+    /// How far what a sheet its host draws keeps to itself moved: a question asked or answered.
+    pub fn drawn_revision(&self) -> u64 {
+        self.drawn
+            .borrow()
+            .as_ref()
+            .map_or(0, |drawn| drawn.local.revision())
+    }
+
     fn ask(&self, effect: WorkspaceSettingsEffect) {
         if effect == WorkspaceSettingsEffect::Close {
             // The sheet's own close: the card leaves the screen, and the
@@ -485,7 +548,7 @@ impl ResourceApp for WorkspaceSettingsApp {
             None => Err("there is no workspace to change here".to_owned()),
         });
         let parts = Parts {
-            dispatch: cx.dispatcher(),
+            dispatch: Some(cx.dispatcher()),
             shown: shown.clone(),
             name,
             new_agent,
@@ -673,7 +736,9 @@ fn sample() -> Settings {
 /// What every part of the view acts through.
 #[derive(Clone)]
 struct Parts {
-    dispatch: Dispatcher<WorkspaceSettings>,
+    /// Where the sheet's effects go in its own app; none where its host draws it, which takes
+    /// every press as the person's own.
+    dispatch: Option<Dispatcher<WorkspaceSettings>>,
     shown: LocalState<Settings>,
     /// The name as typed.
     name: LocalState<String>,
@@ -706,9 +771,11 @@ impl Parts {
             self.new_colour.set(String::new());
             self.local.update(|local| local.creating = false);
         }
-        match &self.state {
-            Some(state) if self.dispatch.is_own_gesture(&effect) => state.ask(effect),
-            _ => self.dispatch.effect(&effect),
+        match (&self.state, &self.dispatch) {
+            (Some(state), Some(dispatch)) if dispatch.is_own_gesture(&effect) => state.ask(effect),
+            (_, Some(dispatch)) => dispatch.effect(&effect),
+            (Some(state), None) => state.ask(effect),
+            (None, None) => {}
         }
     }
 

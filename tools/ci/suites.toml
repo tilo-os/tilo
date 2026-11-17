@@ -624,7 +624,6 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/connection-status.test.mjs",
   "crates/browser/tilo-browser-runtime/web/changes.test.mjs",
   "crates/browser/tilo-browser-runtime/web/workspace-actions.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/people.test.mjs",
   "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/json-text.test.mjs",

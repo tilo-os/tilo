@@ -283,21 +283,6 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .tilo-waiting .tilo-waiting-note { margin: 0 0 8px; font-size: 13px; color: #9b9ba3; }
     /* Who is in a workspace, and who may remove them (entry-page.mjs
        `peopleCard`): a row each, the person and their part, then Remove. */
-    .tilo-people { width: min(480px, calc(100vw - 32px)); gap: 16px; max-height: calc(100% - 32px); overflow: auto; }
-    .tilo-people h2 { margin: 0; font-size: 17px; font-weight: 600; color: #f2f2f4; }
-    .tilo-people ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
-    .tilo-people li { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 0; border-top: 1px solid #2a2c32; }
-    .tilo-people li:first-child { border-top: 0; }
-    .tilo-people .tilo-people-who { display: grid; flex: 1; min-width: 0; color: #e6e6e9; }
-    .tilo-people .tilo-people-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .tilo-people .tilo-people-role { font-size: 12px; color: #8f8f99; }
-    .tilo-people .tilo-people-note { margin: 0 0 8px; font-size: 13px; color: #9b9ba3; }
-    .tilo-people .tilo-people-none { color: #9b9ba3; }
-    .tilo-people .tilo-people-confirm { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-    .tilo-people .tilo-people-question { font-size: 12px; color: #e6e6e9; }
-    .tilo-people li button { flex: none; padding: 6px 12px; }
-    .tilo-people .tilo-people-remove { color: #ff8b82; border-color: #5a2a2a; }
-    .tilo-people section:empty { display: none; }
     /* Pairing a device: the link's sheet, the ask on the device that sent
        it, and the code a new device shows while it waits (entry-page.mjs). */
     .tilo-pair { width: min(400px, calc(100vw - 32px)); gap: 16px; max-height: calc(100% - 32px); overflow: auto; }

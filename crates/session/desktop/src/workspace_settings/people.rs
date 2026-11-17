@@ -15,6 +15,8 @@ pub struct Person {
     pub name: String,
     pub you: bool,
     pub role: String,
+    /// Their role, by the key a role change names it.
+    pub role_key: String,
     /// Their extra permissions, only when they have any.
     pub extra: Option<String>,
     pub offers: Offers,
@@ -48,18 +50,28 @@ pub struct PeopleContent {
     pub note: Option<String>,
 }
 
-/// What the People tab shows of `ws` to `viewer` .
-pub fn content(
-    ws: &Workspace,
-    names: &PeopleNames,
-    viewer: &UserId,
-    is_owner: bool,
-) -> PeopleContent {
-    let roster = ordered_roster(ws);
-    let people = roster
-        .iter()
+/// One member as the People tab reads them, from wherever the viewer's device learns of its
+/// workspace's people: the shell's own policy, or a page's host answering for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Member {
+    pub user: UserId,
+    /// What the viewer calls them.
+    pub name: String,
+    pub role: CapRole,
+    /// Whether the workspace is theirs: set when it was made, and no role it hands out.
+    pub owns: bool,
+    /// Whether the workspace's members made them an administrator.
+    pub administrator: bool,
+    /// How many permissions they hold beyond their role.
+    pub grants: usize,
+}
+
+/// The members of `ws` in the tab's order, each named as `names` (the roster) names them.
+#[must_use]
+pub fn members(ws: &Workspace, names: &PeopleNames, viewer: &UserId) -> Vec<Member> {
+    ordered_roster(ws)
+        .into_iter()
         .map(|(user, role)| {
-            let owns = ws.is_owner(user);
             let subject = tilo_action_policy::Grantee::person(user.clone());
             let grants = ws
                 .policy
@@ -73,29 +85,64 @@ pub fn content(
                         && tilo_action_policy::roles::keeper_named(&grant.id).is_none()
                 })
                 .count();
-            let (offers_role, offers_remove) = member_row_offers(owns, user, viewer);
-            Person {
-                user: user.clone(),
+            Member {
                 name: member_row_name(
                     names,
                     ws,
                     viewer,
                     &tilo_action_policy::MemberId::person(user.clone()),
                 ),
+                owns: ws.is_owner(&user),
+                administrator: ws.policy.is_administrator(&user),
+                role,
+                grants,
+                user,
+            }
+        })
+        .collect()
+}
+
+/// What the People tab shows of `ws` to `viewer` .
+pub fn content(
+    ws: &Workspace,
+    names: &PeopleNames,
+    viewer: &UserId,
+    is_owner: bool,
+) -> PeopleContent {
+    content_of(&members(ws, names, viewer), viewer, is_owner)
+}
+
+/// What the People tab shows of `members`, in their order, to `viewer` .
+#[must_use]
+pub fn content_of(members: &[Member], viewer: &UserId, is_owner: bool) -> PeopleContent {
+    // An administrator governs every member who is not one; only the owner governs them too.
+    let administers = is_owner
+        || members
+            .iter()
+            .any(|member| member.user == *viewer && member.administrator);
+    let people = members
+        .iter()
+        .map(|member| {
+            let (user, owns) = (&member.user, member.owns);
+            let (offers_role, offers_remove) = member_row_offers(owns, user, viewer);
+            Person {
+                user: user.clone(),
+                name: member.name.clone(),
                 you: user == viewer,
                 // An owner by role who does not own the workspace reads as Admin, and an Editor
                 // the workspace made an administrator as one: everyone sees who governs here.
-                role: if *role == CapRole::Owner && !owns {
+                role: if member.role == CapRole::Owner && !owns {
                     t("workspace-settings-role-admin")
-                } else if !owns && ws.policy.is_administrator(user) {
+                } else if !owns && member.administrator {
                     super::administrator_label()
                 } else {
-                    role_label(*role)
+                    role_label(member.role)
                 },
-                extra: (grants > 0).then(|| {
+                role_key: member.role.key().to_owned(),
+                extra: (member.grants > 0).then(|| {
                     t_args(
                         "workspace-settings-member-extra",
-                        &[("count", grants.into())],
+                        &[("count", member.grants.into())],
                     )
                 }),
                 offers: match (offers_role, offers_remove) {
@@ -103,14 +150,16 @@ pub fn content(
                     (true, false) => Offers::Role,
                     (false, _) => Offers::Nothing,
                 },
-                can_manage: is_owner && !owns && user != viewer,
+                can_manage: !owns
+                    && user != viewer
+                    && (is_owner || administers && !member.administrator),
             }
         })
         .collect();
     PeopleContent {
         count: t_args(
             "workspace-settings-members-count",
-            &[("count", roster.len().into())],
+            &[("count", members.len().into())],
         ),
         status: t("workspace-settings-members-help"),
         header: t("workspace-settings-people-header"),
@@ -121,6 +170,62 @@ pub fn content(
             t("workspace-settings-members-empty-title"),
             t("workspace-settings-members-empty-detail"),
         ),
-        note: members_authority_note(is_owner),
+        note: members_authority_note(administers),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member(user: &str, role: CapRole, owns: bool, administrator: bool) -> Member {
+        Member {
+            user: user.to_owned(),
+            name: user.to_owned(),
+            role,
+            owns,
+            administrator,
+            grants: 0,
+        }
+    }
+
+    fn manages(content: &PeopleContent) -> Vec<(&str, bool)> {
+        content
+            .people
+            .iter()
+            .map(|person| (person.user.as_str(), person.can_manage))
+            .collect()
+    }
+
+    #[test]
+    fn who_may_change_whom_follows_the_workspace_rules() {
+        let members = [
+            member("owner", CapRole::Owner, true, false),
+            member("admin", CapRole::Editor, false, true),
+            member("eve", CapRole::Editor, false, false),
+        ];
+        // The owner governs everyone but themselves.
+        let owner = content_of(&members, &"owner".to_owned(), true);
+        assert_eq!(
+            manages(&owner),
+            [("owner", false), ("admin", true), ("eve", true)]
+        );
+        assert_eq!(owner.note, None);
+        // An administrator governs every member who is not one, never the owner.
+        let admin = content_of(&members, &"admin".to_owned(), false);
+        assert_eq!(
+            manages(&admin),
+            [("owner", false), ("admin", false), ("eve", true)]
+        );
+        assert_eq!(admin.note, None);
+        assert_eq!(
+            admin.people[1].role,
+            crate::workspace_settings::administrator_label()
+        );
+        // Anyone else governs nobody, and is told who does.
+        let eve = content_of(&members, &"eve".to_owned(), false);
+        assert!(manages(&eve).iter().all(|(_, may)| !may));
+        assert!(eve.note.is_some());
+        assert_eq!(eve.people[2].role_key, "editor");
     }
 }

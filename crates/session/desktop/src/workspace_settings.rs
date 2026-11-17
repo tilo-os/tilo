@@ -849,9 +849,10 @@ fn person_name(ws: &Workspace, local_user: &str, id: &MemberId) -> String {
     member_name_or_short_id(ws, id)
 }
 
-/// What the People tab says about who may change a member's role.
-pub fn members_authority_note(is_owner: bool) -> Option<String> {
-    (!is_owner).then(|| t("workspace-settings-owner-only"))
+/// What the People tab says about who may change a member's role, to a viewer who governs none
+/// of them.
+pub fn members_authority_note(governs: bool) -> Option<String> {
+    (!governs).then(|| t("workspace-settings-owner-only"))
 }
 
 /// What a bot says under its name: whether it runs yet, and from which version. One fact per line,

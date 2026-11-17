@@ -523,6 +523,9 @@ pub(crate) struct BrowserShell {
     /// The invite sheet, over the page while it is up: the session's own,
     /// made and listed through the workspace's host.
     invite: crate::over_page::OverPage<crate::over_page::LazySheet>,
+    /// The workspace settings, over the page while they are up: the session's own sheet, on its
+    /// People tab, listed and changed through the workspace's host.
+    workspace_settings: crate::over_page::OverPage<crate::over_page::LazySheet>,
     /// The shortcut guide, over the page while it is up: the session's own,
     /// explaining and changing the table this page's shell answers.
     guide: crate::over_page::OverPage<PageGuide>,
@@ -559,9 +562,26 @@ pub(crate) struct BrowserShell {
 }
 
 /// How many sheets the page draws over everything, last among its children:
-/// the invite sheet, the directory, the shortcut guide, an agent's question and
-/// a window's menu.
-const SHEETS: usize = 5;
+/// the invite sheet, the workspace settings, the directory, the shortcut guide,
+/// an agent's question and a window's menu.
+const SHEETS: usize = 6;
+
+/// Hand `event` to `sheet` while it is up, at its node `node`: whether it took it.
+fn sheet_event(
+    sheet: &mut crate::over_page::OverPage<crate::over_page::LazySheet>,
+    event: &WindowEvent,
+    ctx: &mut EventCtx<'_>,
+    node: NodeId,
+) -> bool {
+    if !sheet.is_open() {
+        return false;
+    }
+    sheet.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+    if *ctx.handled {
+        sheet.follow();
+    }
+    *ctx.handled
+}
 
 /// What the top bar's chrome reads from the page besides the layout.
 pub struct ChromeSources {
@@ -589,6 +609,7 @@ impl BrowserShell {
         children.extend(self.layers.iter().map(|layer| layer as &dyn Widget));
         children.extend([
             &self.invite as &dyn Widget,
+            &self.workspace_settings,
             &self.directory,
             &self.guide,
             &self.questions,
@@ -709,11 +730,14 @@ impl BrowserShell {
         let invite = crate::over_page::OverPage::new(crate::over_page::LazySheet::invite(
             Rc::clone(&requests),
             offers.invite.as_ref(),
-            shared,
+            shared.clone(),
             Rc::clone(&chrome.here),
             peer,
             &chrome.wake,
         ));
+        let workspace_settings = crate::over_page::OverPage::new(
+            crate::over_page::LazySheet::workspace_settings(shared, Rc::clone(&chrome.here), peer),
+        );
         let (hints, top, guide) = hints_and_guide(top);
         let invitable = Rc::new(Cell::new(false));
         let (people, mut layers) = mount_people(
@@ -750,6 +774,7 @@ impl BrowserShell {
             agent_work_seen: Cell::new(None),
             directory,
             invite,
+            workspace_settings,
             guide,
             questions: crate::over_page::OverPage::new(crate::over_page::LazyQuestions::new()),
             window_menu,
@@ -1773,6 +1798,9 @@ impl BrowserShell {
         // session's shell opens, over the page's own site.
         if id == tilo_desktop::desktop_host::JOIN_WORKSPACE {
             self.directory.open();
+        } else if id == tilo_desktop::desktop_host::WORKSPACE_SETTINGS {
+            // The workspace menu's settings: the session's own sheet, on who is in the workspace.
+            self.workspace_settings.open();
         } else if let Some(card) = LaunchpadAction::from_host_id(&id) {
             // The empty shell's welcome verbs are the desktop's own, carried
             // out here.
@@ -1916,6 +1944,7 @@ impl Widget for BrowserShell {
         changed |= self.follow_asks();
         changed |= self.walk.follow();
         changed |= self.invite.follow();
+        changed |= self.workspace_settings.follow();
         changed |= self.directory.follow();
         changed |= self.guide.follow();
         changed |= self.questions.follow();
@@ -1954,6 +1983,7 @@ impl Widget for BrowserShell {
             .collect();
         let directory = self.directory.build_layout(taffy, theme, map);
         let invite = self.invite.build_layout(taffy, theme, map);
+        let workspace_settings = self.workspace_settings.build_layout(taffy, theme, map);
         let guide = self.guide.build_layout(taffy, theme, map);
         let questions = self.questions.build_layout(taffy, theme, map);
         let window_menu = self.window_menu.build_layout(taffy, theme, map);
@@ -1965,7 +1995,14 @@ impl Widget for BrowserShell {
         };
         let mut children = vec![layer, top, profile];
         children.extend(layers);
-        children.extend([invite, directory, guide, questions, window_menu]);
+        children.extend([
+            invite,
+            workspace_settings,
+            directory,
+            guide,
+            questions,
+            window_menu,
+        ]);
         taffy.widget_node(style, &children, map, self)
     }
 
@@ -1989,6 +2026,7 @@ impl Widget for BrowserShell {
             }
             for (sheet, &node) in [
                 &mut self.invite as &mut dyn Widget,
+                &mut self.workspace_settings,
                 &mut self.directory,
                 &mut self.guide,
                 &mut self.questions,
@@ -2026,6 +2064,8 @@ impl Widget for BrowserShell {
         // or browses the directory.
         self.invite
             .draw_child(scene, transform, text, theme, presence);
+        self.workspace_settings
+            .draw_child(scene, transform, text, theme, presence);
         self.directory
             .draw_child(scene, transform, text, theme, presence);
         // Over everything, while the person reads or changes the keys.
@@ -2052,7 +2092,16 @@ impl Widget for BrowserShell {
         else {
             return;
         };
-        let Some(&[invite, directory, guide, questions, window_menu]) = children.get(sheets..)
+        let Some(
+            &[
+                invite,
+                workspace_settings,
+                directory,
+                guide,
+                questions,
+                window_menu,
+            ],
+        ) = children.get(sheets..)
         else {
             return;
         };
@@ -2079,25 +2128,13 @@ impl Widget for BrowserShell {
         if self.question_event(event, ctx, questions) {
             return;
         }
-        // The invite sheet, like the directory: it takes what it covers, the
-        // keyboard and the press that dismisses it.
-        if self.invite.is_open() {
-            self.invite
-                .handle_event(event, &mut ctx.reborrow(ctx.path, invite));
-            if *ctx.handled {
-                self.invite.follow();
-                return;
-            }
-        }
-        // The directory sheet, like the profile card: it takes what it
-        // covers, the keyboard and the press that dismisses it.
-        if self.directory.is_open() {
-            self.directory
-                .handle_event(event, &mut ctx.reborrow(ctx.path, directory));
-            if *ctx.handled {
-                self.directory.follow();
-                return;
-            }
+        // The invite sheet, the workspace settings and the directory, like the profile card:
+        // each takes what it covers, the keyboard and the press that dismisses it.
+        if sheet_event(&mut self.invite, event, ctx, invite)
+            || sheet_event(&mut self.workspace_settings, event, ctx, workspace_settings)
+            || sheet_event(&mut self.directory, event, ctx, directory)
+        {
+            return;
         }
         // The shortcut guide, like the directory: over the desktop, and while
         // it waits for a shortcut's new keys every press is the guide's.
@@ -2163,6 +2200,7 @@ impl Widget for BrowserShell {
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         !self.layers.wants_pointer_capture()
             && !self.invite.is_open()
+            && !self.workspace_settings.is_open()
             && !self.directory.is_open()
             && !self.guide.is_open()
             && !self.window_menu.is_open()
@@ -2209,6 +2247,7 @@ impl Widget for BrowserShell {
         );
         children.extend([
             &mut self.invite as &mut (dyn Widget + '_),
+            &mut self.workspace_settings,
             &mut self.directory,
             &mut self.guide,
             &mut self.questions,
