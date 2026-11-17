@@ -320,6 +320,75 @@ pub fn invitation(text: &str) -> Result<Invitation, String> {
     })
 }
 
+/// `text` as a calendar keeps it: the event an invitation carried, without
+/// the `METHOD` it travelled with, which an entry a server stores may not
+/// have.
+#[must_use]
+pub fn kept_text(text: &str) -> String {
+    let mut out = String::new();
+    for line in pim_lines::unfold(text) {
+        if ContentLine::parse(&line).is_some_and(|parsed| parsed.name == "METHOD") {
+            continue;
+        }
+        fold_into(&mut out, &line);
+    }
+    out
+}
+
+/// `text` with its event filed under `categories`, in the property a
+/// server keeps them in, and every other line as it was: what the entry
+/// holds that this calendar does not model stays. `None` when the text
+/// holds no event.
+#[must_use]
+pub fn with_categories(text: &str, categories: &[String]) -> Option<String> {
+    let lines = pim_lines::unfold(text);
+    let parsed: Vec<Option<ContentLine>> =
+        lines.iter().map(|line| ContentLine::parse(line)).collect();
+    // The event itself: the first that names no single occurrence.
+    let mut event: Option<(usize, usize)> = None;
+    let mut begun: Option<(usize, bool)> = None;
+    for (index, line) in parsed.iter().enumerate() {
+        let Some(line) = line else { continue };
+        if line.begins("VEVENT") {
+            begun = Some((index, false));
+        } else if line.name == "RECURRENCE-ID" {
+            if let Some((_, occurrence)) = &mut begun {
+                *occurrence = true;
+            }
+        } else if line.ends("VEVENT")
+            && let Some((start, false)) = begun.take()
+        {
+            event = Some((start, index));
+            break;
+        }
+    }
+    let (start, end) = event?;
+    let mut out = String::new();
+    let mut alarm = false;
+    for (index, (line, parsed)) in lines.iter().zip(&parsed).enumerate() {
+        let within = index > start && index < end;
+        if within && parsed.as_ref().is_some_and(|line| line.begins("VALARM")) {
+            alarm = true;
+        }
+        let was_filed = within
+            && !alarm
+            && parsed
+                .as_ref()
+                .is_some_and(|line| line.name == "CATEGORIES");
+        if index == end && !categories.is_empty() {
+            let listed: Vec<String> = categories.iter().map(|held| escape(held)).collect();
+            fold_into(&mut out, &format!("CATEGORIES:{}", listed.join(",")));
+        }
+        if !was_filed {
+            fold_into(&mut out, line);
+        }
+        if parsed.as_ref().is_some_and(|line| line.ends("VALARM")) {
+            alarm = false;
+        }
+    }
+    Some(out)
+}
+
 fn recurrence_rule(event: &Event) -> String {
     let mut rule = event.recurrence.to_rrule();
     if rule.is_empty() {

@@ -71,6 +71,8 @@ use tilo_relay_session::workspaces::HOST_ACTIONS_PROVIDER;
 use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
 
+#[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
+mod calendars;
 pub(super) mod host;
 #[cfg(not(target_arch = "wasm32"))]
 mod mail;
@@ -1222,14 +1224,22 @@ impl Workspaces {
         {
             offer.add(host::HOST, "", self.host_rows(certificate, asking));
         }
-        // An agent its person named for a mail account finds what it may
-        // do with that mail here. A page asks the host directly, and is
-        // offered no row.
+        // An agent its person named for a mail or a calendar account finds
+        // what it may do with it here. A page asks directly, and is offered
+        // no row.
         #[cfg(not(target_arch = "wasm32"))]
-        if wants(person_accounts::PROVIDER)
-            && self.reads_mail_as_assistant(caller, certificate, workspace_id)
-        {
-            offer.add(mail::MAIL, "", mail::assistant_rows());
+        if wants(person_accounts::PROVIDER) {
+            let mut rows = Vec::new();
+            if self.reads_mail_as_assistant(caller, certificate, workspace_id) {
+                rows.extend(mail::assistant_rows());
+            }
+            #[cfg(feature = "agents")]
+            if self.reads_calendars_as_assistant(caller, certificate, workspace_id) {
+                rows.extend(calendars::assistant_rows());
+            }
+            if !rows.is_empty() {
+                offer.add(mail::MAIL, "", rows);
+            }
         }
         // An agent of a person's finds that person's rule for what is
         // important here: to read wherever it works for them, to change

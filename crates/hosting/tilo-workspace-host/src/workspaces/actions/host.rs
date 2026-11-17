@@ -1075,6 +1075,8 @@ mod accounts_tests;
 #[cfg(test)]
 mod asking_tests;
 mod branch;
+#[cfg(all(test, feature = "agents"))]
+mod calendar_tests;
 #[cfg(test)]
 mod kept_asks_tests;
 #[cfg(test)]

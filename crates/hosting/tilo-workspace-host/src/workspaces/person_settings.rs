@@ -1,22 +1,22 @@
-//! The person's mail accounts and model providers, kept by the host their
-//! workspace runs on.
+//! The person's mail accounts, calendar accounts and model providers, kept
+//! by the holder their workspace runs on.
 //!
 //! A page has no mail connection and no vault, so the panes that add a mail
-//! account or a provider key from a browser ask the host: it opens the mail
+//! account or a provider key from a browser ask the holder: it opens the mail
 //! server's session to prove the sign-in, keeps the account and the key in
 //! the person's own vault, and answers what it kept. A secret travels in and
 //! never back — a reading says only whether one is kept.
 //!
 //! They are the person's, not any workspace's: one store per person under
-//! `people/<person>` in the host's state, whichever of their workspaces they
-//! ask from, with its own owner-only key file on a host without a keyring.
+//! `people/<person>` in the holder's state, whichever of their workspaces
+//! they ask from, with its own owner-only key file where there is no keyring.
 //! The stores are the shared account and settings formats, so a device that
 //! reads them keeps reading the same files.
 //!
 //! Only the person themselves asks: a device of theirs, its certificate
 //! naming them. Another member, an administrator or the workspace's owner
 //! included, reaches only their own store, and an agent's request is refused
-//! here, as the host's own operations refuse one.
+//! here, as the holder's own operations refuse one.
 
 mod sending;
 
@@ -52,6 +52,10 @@ use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
 use super::person_models::kept_location;
+
+/// A person's calendars, kept beside their mail accounts.
+#[cfg(feature = "agents")]
+pub(in crate::workspaces) mod calendars;
 
 impl Workspaces {
     /// Where this host keeps `person`'s own accounts and model providers,
@@ -189,7 +193,14 @@ impl Workspaces {
                     workspace: &workspace,
                     agent: &agent,
                 };
-                !accounts_of_assistant(&self.person_settings_root(&person), named).is_empty()
+                // Named for a mail account: one named for a calendar alone
+                // is offered nothing of mail.
+                let root = self.person_settings_root(&person);
+                let kept = accounts::AccountStore::load_in(&root);
+                accounts_of_assistant(&root, named).iter().any(|account| {
+                    kept.get(&accounts::AccountId::from(account.clone()))
+                        .is_some_and(|kept| kept.type_id.as_str() == accounts::email::TYPE_ID)
+                })
             }
             _ => false,
         }
@@ -325,6 +336,13 @@ impl Workspaces {
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionHostError> {
+        // The person's calendars are another resource of the same provider.
+        #[cfg(feature = "agents")]
+        if request.target.address.resource == calendars::RESOURCE {
+            return self
+                .person_calendars_invoke(workspace_id, caller, certificate, request)
+                .await;
+        }
         let person = match Self::asking_about_mail(caller, certificate, workspace_id)? {
             AskingAboutMail::Person(person) => person,
             AskingAboutMail::Assistant {
@@ -728,7 +746,12 @@ fn say_assistant(
     }
     let kept_here = accounts::AccountStore::load_in(root)
         .get(&accounts::AccountId::from(saying.account.clone()))
-        .is_some_and(|account| account.type_id.as_str() == accounts::email::TYPE_ID);
+        .is_some_and(|account| {
+            matches!(
+                account.type_id.as_str(),
+                accounts::email::TYPE_ID | "caldav"
+            )
+        });
     if !kept_here {
         return Err("That account is not kept here".into());
     }
