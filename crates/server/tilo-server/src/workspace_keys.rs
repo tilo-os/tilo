@@ -29,14 +29,14 @@ use collab_types::Ed25519PublicKey;
 use ed25519_dalek::SigningKey;
 use key_group::VaultKey;
 use neighbour_wire::NeighbourMsg;
-use tilo_action_broker::workspace_keys::{
-    GovernancePark, GovernancePump, GovernanceTransport, InboundGovernance, KeyDir, KeyDirectory,
-    KeyProvider, KeysConfig, NoSealChecks, SharedKeys, WorkspaceKeys,
-};
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::StatePeer;
 use tilo_workspace_service::workspaces::{
     DeviceKeyGroups, DeviceKeys, GroupKeys, GroupKeysAnswerFuture, KeySink, Workspaces,
+};
+use tilo_workspace_keys::{
+    GovernancePark, GovernancePump, GovernanceTransport, InboundGovernance, KeyDir, KeyDirectory,
+    KeyProvider, KeysConfig, NoSealChecks, SharedKeys, WorkspaceKeys,
 };
 use tokio::task::JoinHandle;
 
@@ -51,8 +51,7 @@ use tokio::task::JoinHandle;
 const OPEN_WAIT: Duration = Duration::from_secs(30);
 /// A first write must outlast the wait before the group is created here, or a
 /// fresh workspace's first seed is refused for keys that do arrive.
-const _: () =
-    assert!(OPEN_WAIT.as_secs() > tilo_action_broker::workspace_keys::founding_wait().as_secs());
+const _: () = assert!(OPEN_WAIT.as_secs() > tilo_workspace_keys::founding_wait().as_secs());
 /// Where the shared key service keeps its state under the state root.
 const STATE: &str = "groups";
 
@@ -86,7 +85,7 @@ impl KeyService {
                 state: Arc::new(KeyDir::new(&root)),
                 vault: vault_key(&device),
                 signer: Arc::new(device),
-                role: tilo_action_broker::workspace_keys::KeyRole::Committer,
+                role: tilo_workspace_keys::KeyRole::Committer,
             },
             Box::new(directory.clone()),
             Arc::new(NoSealChecks),
@@ -275,7 +274,7 @@ impl KeyDirectory for Directory {
         workspace: WorkspaceId,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let at = UNIX_EPOCH.checked_add(tilo_action_broker::workspace_keys::policy_instant(now))?;
+        let at = UNIX_EPOCH.checked_add(tilo_workspace_keys::policy_instant(now))?;
         let state = lock(&self.states).get(&workspace.to_string())?.clone();
         // Governance that cannot be read says nothing of who reads it.
         let readers = state.governance().key_holders(at).ok()?;

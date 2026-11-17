@@ -274,7 +274,6 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # the same fabric as everything else that follows them.
 tilo-device-fabric = { path = "../device-fabric" }
 # The fabric's portable vocabulary: who a device is, the stamp a fact carries, fresh ids.
-tilo-fabric-core = { path = "../../collab/fabric-core" }
 # A sibling device's half of this device's disk key: the unlock exchange an
 # early-boot client speaks, and the sealed halves each device holds of the
 # other.
