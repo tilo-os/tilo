@@ -1208,7 +1208,7 @@ impl PeerRefusal {
             Self::Unavailable => "this desktop isn't serving its actions yet; try again shortly",
             Self::Busy => room::NO_ROOM,
             Self::OutsideEnvironment => {
-                "this server serves only programs inside the environment it belongs to"
+                "this socket serves only programs inside the environment it belongs to"
             }
         }
     }
