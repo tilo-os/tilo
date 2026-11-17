@@ -210,8 +210,8 @@ async fn ownership_that_cannot_be_read_keeps_the_run() {
         "the client is told it may retry: {seen}"
     );
     assert_eq!(
-        tilo_actions::remote::ActionHostError::from(refusal.clone()),
-        tilo_actions::remote::ActionHostError::Unavailable {
+        tilo_actions::remote::ActionCallError::from(refusal.clone()),
+        tilo_actions::remote::ActionCallError::Unavailable {
             reason: reason.clone()
         }
     );
@@ -251,8 +251,8 @@ async fn ownership_that_really_changed_ends_the_run() {
     );
     assert_eq!(Refusal::Ended.message(), "execution session ended");
     assert_eq!(
-        tilo_actions::remote::ActionHostError::from(Refusal::Ended),
-        tilo_actions::remote::ActionHostError::NotPermitted
+        tilo_actions::remote::ActionCallError::from(Refusal::Ended),
+        tilo_actions::remote::ActionCallError::NotPermitted
     );
     drop(fixture);
 }

@@ -3,13 +3,13 @@
 //! A caller that wants to know when an invocation finishes used to ask
 //! again on a timer: an `Observe` every 200 ms, each a round trip. A waiting
 //! request (`wait_ms` on [`RemoteActionMessage::Observe`] or
-//! [`InvokeRequest`]) is instead held by the host until the invocation moves
+//! [`InvokeRequest`]) is instead held by the provider until the invocation moves
 //! past what the caller has seen, settles, or the wait runs out — so a
-//! result reaches its caller one round trip after the host records it.
+//! result reaches its caller one round trip after the provider records it.
 //!
-//! Nothing here sleeps or holds a thread. A wait parks on the host's own
-//! change signal ([`ActionHost::next_change`]) and looks again only when it
-//! fires; a host that has none answers at once, as it always did. The state
+//! Nothing here sleeps or holds a thread. A wait parks on the provider's own
+//! change signal ([`ActionProvider::next_change`]) and looks again only when it
+//! fires; a provider that has none answers at once. The state
 //! a waiting answer carries is read when it is answered, as the caller is
 //! then, so a caller who lost access in the meantime hears `None`.
 //!
@@ -20,22 +20,22 @@ use serde::{Deserialize, Serialize};
 use tilo_clock::time::{Duration, Instant};
 
 use super::{
-    ActionHost, Caller, Completer, InvocationReceipt, InvocationState, Pending, PendingPoll,
+    ActionProvider, Caller, Completer, InvocationReceipt, InvocationState, Pending, PendingPoll,
     ReceiptStatus, pending,
 };
 use crate::outcome::{InvocationId, InvocationUpdate};
 
-/// The longest a host holds a waiting answer, whatever `wait_ms` asked, so a
+/// The longest a provider holds a waiting answer, whatever `wait_ms` asked, so a
 /// server connection or a broker call is never held open indefinitely.
 pub const MAX_REMOTE_WAIT: Duration = Duration::from_secs(10);
 
-/// How often one wait looks again because the host's change signal had
+/// How often one wait looks again because the provider's change signal had
 /// already fired, before it answers with what it has rather than spin.
 const MAX_IMMEDIATE_WAKES: u32 = 64;
 
 /// How far an invocation's updates had got when its caller last looked:
 /// what a waiting [`Observe`](super::RemoteActionMessage::Observe) asks the
-/// host to move past.
+/// provider to move past.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UpdateMark {
     Accepted,
@@ -75,18 +75,18 @@ pub(super) fn deadline(wait_ms: u32) -> Instant {
     now.checked_add(wait).unwrap_or(now)
 }
 
-/// The state of `invocation`, as [`ActionHost::observe`] reports it to
+/// The state of `invocation`, as [`ActionProvider::observe`] reports it to
 /// `caller`, once it has moved past `seen` — or, with no `seen`, once it
 /// settles — or at `until`, whichever comes first.
 ///
 /// It answers at once when the invocation is already there, when `caller`
-/// may not see it (`None`), when the host cannot signal changes, or when
+/// may not see it (`None`), when the provider cannot signal changes, or when
 /// `caller`'s execution has ended. Otherwise it waits on
-/// [`ActionHost::next_change`] and looks again each time that fires; the
-/// deadline is checked then, so a host's bounded change interval bounds how
+/// [`ActionProvider::next_change`] and looks again each time that fires; the
+/// deadline is checked then, so a provider's bounded change interval bounds how
 /// far past `until` an answer can come.
-pub fn settle_with<H: ActionHost + Clone + Send + 'static>(
-    host: &H,
+pub fn settle_with<H: ActionProvider + Clone + Send + 'static>(
+    provider: &H,
     caller: &Caller,
     invocation: InvocationId,
     seen: Option<UpdateMark>,
@@ -94,7 +94,7 @@ pub fn settle_with<H: ActionHost + Clone + Send + 'static>(
 ) -> Pending<Option<InvocationState>> {
     let (answer, settled) = pending();
     look(Wait {
-        host: host.clone(),
+        provider: provider.clone(),
         caller: caller.clone(),
         invocation,
         seen,
@@ -106,13 +106,13 @@ pub fn settle_with<H: ActionHost + Clone + Send + 'static>(
 
 /// `receipt`, held while it says the invocation is still running until it
 /// settles or `until` passes — what a waiting `Invoke` answers with.
-pub(super) fn settle_receipt<H: ActionHost + Clone + Send + 'static>(
-    host: &H,
+pub(super) fn settle_receipt<H: ActionProvider + Clone + Send + 'static>(
+    provider: &H,
     caller: &Caller,
     receipt: Pending<InvocationReceipt>,
     until: Instant,
 ) -> Pending<InvocationReceipt> {
-    let host = host.clone();
+    let provider = provider.clone();
     let caller = caller.clone();
     let (completer, settled) = pending();
     receipt.then(move |receipt| {
@@ -125,7 +125,7 @@ pub(super) fn settle_receipt<H: ActionHost + Clone + Send + 'static>(
             completer.complete(receipt);
             return;
         }
-        settle_with(&host, &caller, receipt.invocation, None, until).then(move |state| {
+        settle_with(&provider, &caller, receipt.invocation, None, until).then(move |state| {
             // Nothing visible to this caller any more: the admission stands,
             // and the next observe says what became of it.
             completer.complete(state.flatten().map_or(receipt, |state| state.receipt()));
@@ -136,7 +136,7 @@ pub(super) fn settle_receipt<H: ActionHost + Clone + Send + 'static>(
 
 /// One parked wait.
 struct Wait<H> {
-    host: H,
+    provider: H,
     caller: Caller,
     invocation: InvocationId,
     seen: Option<UpdateMark>,
@@ -144,7 +144,7 @@ struct Wait<H> {
     answer: Completer<Option<InvocationState>>,
 }
 
-impl<H: ActionHost> Wait<H> {
+impl<H: ActionProvider> Wait<H> {
     /// Whether `state` is worth answering with now.
     fn arrived(&self, state: Option<&InvocationState>) -> bool {
         state.is_none_or(|state| {
@@ -165,7 +165,7 @@ impl<H: ActionHost> Wait<H> {
     }
 }
 
-fn look<H: ActionHost + Send + 'static>(wait: Wait<H>) {
+fn look<H: ActionProvider + Send + 'static>(wait: Wait<H>) {
     let mut wakes = 0_u32;
     loop {
         if wait.answer.is_abandoned() {
@@ -173,8 +173,8 @@ fn look<H: ActionHost + Send + 'static>(wait: Wait<H>) {
         }
         // Asked for before looking, so a change between the two still wakes
         // the wait rather than slipping past it.
-        let change = wait.host.next_change(&wait.caller, &wait.invocation);
-        let state = wait.host.observe(&wait.caller, &wait.invocation);
+        let change = wait.provider.next_change(&wait.caller, &wait.invocation);
+        let state = wait.provider.observe(&wait.caller, &wait.invocation);
         let answer_now =
             wait.arrived(state.as_ref()) || wait.over() || wakes >= MAX_IMMEDIATE_WAKES;
         let Some(mut change) = change.filter(|_| !answer_now) else {

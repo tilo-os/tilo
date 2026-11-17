@@ -54,6 +54,8 @@ the graph may make it.
   endpoints, and what the session says and hears on it.
 - **Action service**: how a device answers the action requests other devices of its workspaces
   send it, and sends its own.
+- **Action provider**: what answers a device's action calls (`ActionProvider`): a peer's remote
+  calls, and a window's own to its app.
 - **App action server**: what answers the remote actions that reach a serving device for its apps.
 - **App wire**: the socket a session serves its apps' calls on.
 - **Document**: internal storage of one or more resources (an automerge document). Apps never see it.

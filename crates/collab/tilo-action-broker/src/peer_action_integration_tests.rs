@@ -1,10 +1,10 @@
 // The person's other device acting on this one: the engine's action service
-// hands such a request to this broker's api as an `ActionHost`, and what it
+// hands such a request to this broker's api as an `ActionProvider`, and what it
 // gets is the same durable log an application's own caller gets.
 
 use super::*;
 use tilo_actions::remote::{
-    ActionHost as _, Caller, CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest,
+    ActionProvider as _, Caller, CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest,
     PendingPoll, ReceiptStatus, RemoteActionTarget,
 };
 
@@ -27,7 +27,7 @@ fn a_device(fixture: &LocalDirectoryFixture, seed: u8) -> Caller {
 
 fn device_api(
     fixture: &LocalDirectoryFixture,
-) -> Arc<dyn tilo_actions::remote::ActionHost + Send + Sync> {
+) -> Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> {
     crate::collab_app_broker::device_host(Arc::clone(&fixture.state))
 }
 
@@ -75,7 +75,7 @@ async fn answered<T>(
 /// receipt, or the API refused it outright.
 async fn refused(
     fixture: &LocalDirectoryFixture,
-    api: &Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>,
+    api: &Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
     caller: &Caller,
     request: &InvokeRequest,
 ) {

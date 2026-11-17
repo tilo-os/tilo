@@ -1,4 +1,4 @@
-// Actual Settings worker, private inherited route and certified shell ActionHost.
+// Actual Settings worker, private inherited route and certified shell ActionProvider.
 // Capture only the production bridge's static direction label, never RPC payloads.
 struct KeyboardReadBridgeProbe(Arc<Mutex<Vec<String>>>);
 impl tracing::Subscriber for KeyboardReadBridgeProbe {
@@ -190,7 +190,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_appr
             .in_new_execution();
             let facade = broker.app_action_broker().unwrap();
             let host = facade
-                .certified_local_action_host(
+                .certified_local_action_provider(
                     &caller,
                     &presentation(&env.route.cluster_id, &env.cert, &env.key),
                 )

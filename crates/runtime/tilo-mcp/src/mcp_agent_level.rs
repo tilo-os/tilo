@@ -5,8 +5,8 @@
 use std::collections::HashSet;
 
 use super::{
-    ActionHost, CatalogueLimits, CatalogueQuery, CatalogueRow, DEFAULT_WAIT_MS, LEVEL_PAGES, Level,
-    Levels, McpServer, Node, PAGE_ROWS, cannot_be_read_now, level_of, restart_pause,
+    ActionProvider, CatalogueLimits, CatalogueQuery, CatalogueRow, DEFAULT_WAIT_MS, LEVEL_PAGES,
+    Level, Levels, McpServer, Node, PAGE_ROWS, cannot_be_read_now, level_of, restart_pause,
 };
 
 /// The rows a [`Level`] was read from, where each of its pages after the
@@ -151,7 +151,7 @@ impl LsCursor {
     }
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `level`, read on until it holds more than `children` resources or
     /// the directory ends: what a listing paging past the first bounded
     /// read needs, so every resource a directory holds is reachable.

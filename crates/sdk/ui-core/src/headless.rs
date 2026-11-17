@@ -12373,7 +12373,7 @@ mod dispatched_action_driver_tests {
         }
     }
 
-    /// An editor in the migrated shape: every edit is dispatched through `ActionHost`, and the only
+    /// An editor in the migrated shape: every edit is dispatched through `ActionProvider`, and the only
     /// thing it tells the host is the bracket the action host captured. Two ways in, as a canvas
     /// app has: a keystroke, and an accessibility verb.
     struct ActionEditor {

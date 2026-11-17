@@ -26,7 +26,7 @@ use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 use tilo_actions::InvocationId;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{
-    ActionHostError, CataloguePage, CatalogueQuery, InvocationReceipt, InvokeArgument,
+    ActionCallError, CataloguePage, CatalogueQuery, InvocationReceipt, InvokeArgument,
     InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
 
@@ -365,7 +365,7 @@ impl Page {
     pub async fn catalogue(
         &mut self,
         query: CatalogueQuery,
-    ) -> Result<CataloguePage, ActionHostError> {
+    ) -> Result<CataloguePage, ActionCallError> {
         self.correlation = self.correlation.checked_add(1).unwrap();
         let correlation = self.correlation;
         self.send(RemoteActionMessage::CatalogueRequest { correlation, query });

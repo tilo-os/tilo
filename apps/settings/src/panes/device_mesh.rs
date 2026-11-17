@@ -2598,7 +2598,7 @@ mod tests {
         const HOST_WORDS: &str = "the code the second screen showed did not match";
         let dir = tempfile::tempdir().unwrap();
         let mut model = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
-        model.remote = ui::RemoteActions::with_host(
+        model.remote = ui::RemoteActions::with_provider(
             Arc::new(PairingHost {
                 approval_failure: Some(HOST_WORDS.into()),
                 ..PairingHost::default()
@@ -2835,7 +2835,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
                 let host = Arc::new(PairingHost::default());
-                pane.remote = ui::RemoteActions::with_host(
+                pane.remote = ui::RemoteActions::with_provider(
                     host.clone(),
                     ui::tilo_actions::remote::Caller::local_person("owner"),
                 );
@@ -2853,7 +2853,7 @@ mod tests {
             env.set("TILO_IDENTITY_ROOT", dir.path());
             let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
             let host = Arc::new(PairingHost::default());
-            pane.remote = ui::RemoteActions::with_host(
+            pane.remote = ui::RemoteActions::with_provider(
                 host.clone(),
                 ui::tilo_actions::remote::Caller::local_person("owner"),
             );
@@ -2928,7 +2928,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
             let host = Arc::new(PairingHost::default());
-            pane.remote = ui::RemoteActions::with_host(
+            pane.remote = ui::RemoteActions::with_provider(
                 host.clone(),
                 ui::tilo_actions::remote::Caller::local_person("owner"),
             );
@@ -3012,7 +3012,7 @@ mod tests {
         }
     }
 
-    impl ui::tilo_actions::remote::ActionHost for PairingHost {
+    impl ui::tilo_actions::remote::ActionProvider for PairingHost {
         fn query(
             &self,
             _: &ui::tilo_actions::remote::Caller,
@@ -3020,11 +3020,11 @@ mod tests {
         ) -> ui::tilo_actions::remote::Pending<
             Result<
                 ui::tilo_actions::remote::CataloguePage,
-                ui::tilo_actions::remote::ActionHostError,
+                ui::tilo_actions::remote::ActionCallError,
             >,
         > {
             ui::tilo_actions::remote::Pending::ready(Err(
-                ui::tilo_actions::remote::ActionHostError::NotPermitted,
+                ui::tilo_actions::remote::ActionCallError::NotPermitted,
             ))
         }
 
@@ -3035,7 +3035,7 @@ mod tests {
         ) -> ui::tilo_actions::remote::Pending<
             Result<
                 ui::tilo_actions::remote::InvocationReceipt,
-                ui::tilo_actions::remote::ActionHostError,
+                ui::tilo_actions::remote::ActionCallError,
             >,
         > {
             use ui::tilo_actions::remote::{device_pairing, identity_admin};
@@ -3096,7 +3096,7 @@ mod tests {
             &self,
             _: &ui::tilo_actions::remote::Caller,
             _: &ui::tilo_actions::InvocationId,
-        ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
+        ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionCallError>>
         {
             ui::tilo_actions::remote::Pending::ready(Ok(()))
         }

@@ -15,7 +15,7 @@
 
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
-    ActionAddress, ActionHostError, Browser, DeviceCapabilities, DocumentRoute, InvokeArgument,
+    ActionAddress, ActionCallError, Browser, DeviceCapabilities, DocumentRoute, InvokeArgument,
     ReceiptStatus, enrol, record_provider, start,
 };
 use std::time::{Duration, Instant};
@@ -108,7 +108,7 @@ async fn post(
         let again = matches!(
             &receipt.status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::Unavailable { .. }
+                error: ActionCallError::Unavailable { .. }
             }
         ) || matches!(&receipt.status, ReceiptStatus::Failed { error } if error.retryable);
         assert!(

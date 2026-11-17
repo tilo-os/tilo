@@ -64,7 +64,7 @@ pub struct FeedbackAnswer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::{ActionHostError, RemoteActionMessage, refuse};
+    use crate::remote::{ActionCallError, RemoteActionMessage, refuse};
     #[test]
     fn feedback_admission_is_an_owner_request_and_generic_hosts_refuse_it() {
         let message = RemoteActionMessage::FeedbackRequest {
@@ -80,13 +80,13 @@ mod tests {
             },
         };
         assert!(message.is_request());
-        let response = refuse(&message, ActionHostError::NotPermitted).unwrap();
+        let response = refuse(&message, ActionCallError::NotPermitted).unwrap();
         assert!(!response.is_request());
         assert!(matches!(
             response,
             RemoteActionMessage::FeedbackResponse {
                 correlation: 7,
-                result: Err(ActionHostError::NotPermitted)
+                result: Err(ActionCallError::NotPermitted)
             }
         ));
         let untrusted = serde_json::json!({"destination":{"workspace":"existing-workspace","provider":"record:so.tilo.chat:","channel":"existing-channel"},"access":{"person":"owner"}});

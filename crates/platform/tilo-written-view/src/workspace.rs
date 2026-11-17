@@ -4,7 +4,7 @@
 
 use serde_json::{Map, Value as Json};
 use tilo_actions::remote::{
-    ActionHostError, InvokeArgument, ResourceReadRequest, application_action_target,
+    ActionCallError, InvokeArgument, ResourceReadRequest, application_action_target,
 };
 use ui::arriving::Arrival;
 use ui::remote_actions::{InvocationCall, ResourceReadCall};
@@ -138,9 +138,9 @@ fn answered(answer: &Json) -> Read {
     }
 }
 
-fn unanswered(error: &ActionHostError) -> Read {
+fn unanswered(error: &ActionCallError) -> Read {
     match error {
-        ActionHostError::Refused { .. } | ActionHostError::NotPermitted => Read::Refused,
+        ActionCallError::Refused { .. } | ActionCallError::NotPermitted => Read::Refused,
         other => Read::Unread(other.to_string()),
     }
 }

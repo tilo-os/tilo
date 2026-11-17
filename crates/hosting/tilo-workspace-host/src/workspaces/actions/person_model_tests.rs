@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use agent_provider_config::protocol::{Content, Message, ModelRequest, Role, ToolChoice};
 use serde_json::{Value, json};
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, ReceiptStatus, person_models,
+    ActionCallError, ActionProvider as _, Caller, ReceiptStatus, person_models,
 };
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
@@ -78,7 +78,7 @@ async fn ask_as(
     device: &DeviceCert,
     caller: &Caller,
     (verb, argument): (&str, Value),
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     let mut request = request("", "", argument);
     request.target = person_models::target(verb);
     let receipt = settled(
@@ -242,7 +242,7 @@ async fn no_agent_reads_or_changes_a_persons_key() {
             let verb = asking.0;
             let refused = ask_as(&host, workspace_id, &ada, agent, asking).await;
             assert!(
-                matches!(refused, Err(ActionHostError::UnknownAction)),
+                matches!(refused, Err(ActionCallError::UnknownAction)),
                 "{verb} as {:?}: {refused:?}",
                 agent.acting()
             );

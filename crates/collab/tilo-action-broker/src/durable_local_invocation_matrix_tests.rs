@@ -411,7 +411,7 @@ mod durable_local_matrix {
     }
 
     include!("display_control_tests.rs");
-    include!("admitted_local_host_tests.rs");
+    include!("admitted_local_provider_tests.rs");
     include!("certified_lifecycle_tests.rs");
     include!("dispatcher_receipt_tests.rs");
     include!("durable_local_wire_tests.rs");

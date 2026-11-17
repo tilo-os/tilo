@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use tilo_action_broker::collab_app_broker::AppBrokerState;
-use tilo_actions::remote::{ActionHostError, Caller};
+use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_lock::MutexRecover as _;
 
 use super::{ApiAsk, SessionServices, WAIT, unanswered};
@@ -31,7 +31,7 @@ impl ServiceRecords {
         &self,
         app: &str,
         ask: impl FnOnce(tilo_actions::remote::Completer<Option<T>>) -> ApiAsk,
-    ) -> Result<Option<T>, ActionHostError> {
+    ) -> Result<Option<T>, ActionCallError> {
         if !self.session.kept.lock_recover().contains(app) {
             return Ok(None);
         }
@@ -43,21 +43,21 @@ impl ServiceRecords {
             .map_err(|_| unanswered())
     }
 
-    fn broker(&self) -> Result<Arc<AppBrokerState>, ActionHostError> {
+    fn broker(&self) -> Result<Arc<AppBrokerState>, ActionCallError> {
         self.state
             .as_ref()
             .and_then(std::sync::Weak::upgrade)
-            .ok_or_else(|| ActionHostError::Unavailable {
+            .ok_or_else(|| ActionCallError::Unavailable {
                 reason: "this desktop keeps no records of its own".to_owned(),
             })
     }
 
     fn workspace_reads(
         &self,
-    ) -> Result<Arc<dyn tilo_actions::remote::ResourceReads>, ActionHostError> {
+    ) -> Result<Arc<dyn tilo_actions::remote::ResourceReads>, ActionCallError> {
         self.broker()?
             .resource_reads()
-            .ok_or_else(|| ActionHostError::Unavailable {
+            .ok_or_else(|| ActionCallError::Unavailable {
                 reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.to_owned(),
             })
     }
@@ -77,7 +77,7 @@ impl tilo_actions::remote::ResourceReads for ServiceRecords {
         &self,
         caller: &Caller,
         address: &tilo_actions::remote::ResourceAddress,
-    ) -> Result<tilo_actions::remote::ResourceCopy, ActionHostError> {
+    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
         let app = address.app.clone();
         if let Some(record) = self.on_pass(&address.app, |done| ApiAsk::Record { app, done })? {
             return Ok(tilo_actions::remote::ResourceCopy::Document(
@@ -94,7 +94,7 @@ impl tilo_actions::remote::ResourceReads for ServiceRecords {
         caller: &Caller,
         address: &tilo_actions::remote::ResourceAddress,
         wake: &tilo_actions::remote::ResourceWake,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         self.workspace_reads()?.watch(caller, address, wake)
     }
 }
@@ -104,7 +104,7 @@ impl tilo_actions::remote::ResourceChanges for ServiceRecords {
         &self,
         caller: &Caller,
         change: &tilo_actions::remote::ResourceChange,
-    ) -> Result<serde_json::Value, ActionHostError> {
+    ) -> Result<serde_json::Value, ActionCallError> {
         // The session hears of every record this connection changes, whichever end applies it:
         // one of the records taking its work back undoes.
         if let Some((sessions, session)) = &self.agent_session {
@@ -120,7 +120,7 @@ impl tilo_actions::remote::ResourceChanges for ServiceRecords {
         }
         self.broker()?
             .resource_changes()
-            .ok_or_else(|| ActionHostError::Unavailable {
+            .ok_or_else(|| ActionCallError::Unavailable {
                 reason: "this desktop applies no task's changes at a record's origin".to_owned(),
             })?
             .apply(caller, change)

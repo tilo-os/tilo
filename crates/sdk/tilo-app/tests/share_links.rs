@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending, ResourceViewLocator,
 };
 use tilo_app::permissions::Role;
@@ -75,12 +75,12 @@ struct Host {
     asked: Mutex<Vec<CatalogueQuery>>,
 }
 
-impl ActionHost for Host {
+impl ActionProvider for Host {
     fn query(
         &self,
         _caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         let provider = query.provider.clone().unwrap_or_default();
         self.asked.lock().unwrap().push(query);
         Pending::ready(Ok(CataloguePage {
@@ -100,8 +100,8 @@ impl ActionHost for Host {
         &self,
         _caller: &Caller,
         _request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        Pending::ready(Err(ActionHostError::NotPermitted))
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::NotPermitted))
     }
 
     fn observe(
@@ -116,7 +116,7 @@ impl ActionHost for Host {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         tilo_actions::remote::Pending::ready(Ok(()))
     }
 }

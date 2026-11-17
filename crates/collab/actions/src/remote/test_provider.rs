@@ -1,4 +1,4 @@
-//! An [`ActionHost`] for tests, built from closures: what stands in for a
+//! An [`ActionProvider`] for tests, built from closures: what stands in for a
 //! session or a peer when a test only needs it to answer one way and to
 //! remember what it was asked.
 
@@ -7,37 +7,37 @@ use std::sync::Mutex;
 use tilo_lock::MutexRecover as _;
 
 use super::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending, ReceiptStatus,
 };
 use crate::outcome::{ActionOutput, InvocationId};
 
 type Catalogue =
-    dyn Fn(&Caller, CatalogueQuery) -> Result<CataloguePage, ActionHostError> + Send + Sync;
-type Answer = dyn Fn(&Caller, &InvokeRequest) -> Pending<Result<InvocationReceipt, ActionHostError>>
+    dyn Fn(&Caller, CatalogueQuery) -> Result<CataloguePage, ActionCallError> + Send + Sync;
+type Answer = dyn Fn(&Caller, &InvokeRequest) -> Pending<Result<InvocationReceipt, ActionCallError>>
     + Send
     + Sync;
 
-/// A host that keeps every request it is asked to invoke, and every caller
+/// A provider that keeps every request it is asked to invoke, and every caller
 /// that asked anything, and answers from closures. Unless told otherwise it
 /// offers an empty catalogue and completes every invocation at once with an
 /// empty output. It observes nothing (each answer is final) and cancels
 /// anything.
-pub struct TestHost {
+pub struct TestProvider {
     catalogue: Box<Catalogue>,
     answer: Box<Answer>,
     asked: Mutex<Vec<InvokeRequest>>,
     callers: Mutex<Vec<Caller>>,
 }
 
-impl Default for TestHost {
+impl Default for TestProvider {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl TestHost {
-    /// A host offering nothing that completes every invocation.
+impl TestProvider {
+    /// A provider offering nothing that completes every invocation.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -59,7 +59,7 @@ impl TestHost {
     #[must_use]
     pub fn with_catalogue(
         mut self,
-        catalogue: impl Fn(&Caller, CatalogueQuery) -> Result<CataloguePage, ActionHostError>
+        catalogue: impl Fn(&Caller, CatalogueQuery) -> Result<CataloguePage, ActionCallError>
         + Send
         + Sync
         + 'static,
@@ -90,7 +90,7 @@ impl TestHost {
     #[must_use]
     pub fn answering(
         mut self,
-        answer: impl Fn(&Caller, &InvokeRequest) -> Pending<Result<InvocationReceipt, ActionHostError>>
+        answer: impl Fn(&Caller, &InvokeRequest) -> Pending<Result<InvocationReceipt, ActionCallError>>
         + Send
         + Sync
         + 'static,
@@ -115,12 +115,12 @@ impl TestHost {
     }
 }
 
-impl ActionHost for TestHost {
+impl ActionProvider for TestProvider {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.callers.lock_recover().push(caller.clone());
         Pending::ready((self.catalogue)(caller, query))
     }
@@ -129,7 +129,7 @@ impl ActionHost for TestHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.callers.lock_recover().push(caller.clone());
         let answer = (self.answer)(caller, &request);
         self.asked.lock_recover().push(request);
@@ -140,7 +140,7 @@ impl ActionHost for TestHost {
         None
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Ok(()))
     }
 }

@@ -141,7 +141,7 @@ impl WorkspaceDocumentsLink for Member {
         _workspace: WorkspaceId,
         caller: &Caller,
         _question: ConfirmationQuestion,
-    ) -> Option<Pending<Result<ConfirmationReply, ActionHostError>>> {
+    ) -> Option<Pending<Result<ConfirmationReply, ActionCallError>>> {
         assert_eq!(
             caller.user_public_key(),
             Some(&self.person),
@@ -245,7 +245,7 @@ fn settled(
         let again = matches!(
             &status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::Unavailable { .. }
+                error: ActionCallError::Unavailable { .. }
             }
         ) || matches!(&status, ReceiptStatus::Failed { error } if error.retryable);
         if !again || Instant::now() >= deadline {
@@ -622,9 +622,9 @@ async fn both_routes_decide_every_callers_actions_alike() {
             let by_host = match &status {
                 ReceiptStatus::Rejected {
                     error:
-                        ActionHostError::NotPermitted
-                        | ActionHostError::UnknownAction
-                        | ActionHostError::ConfirmationRequired { .. },
+                        ActionCallError::NotPermitted
+                        | ActionCallError::UnknownAction
+                        | ActionCallError::ConfirmationRequired { .. },
                 } => Admitted::Refused,
                 _ if was_asked => Admitted::AsksFirst,
                 // It ran: what the action answered is its own.

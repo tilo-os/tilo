@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, InvocationReceipt, InvokeRequest, Reservation, own_device,
+    ActionCallError, Caller, InvocationReceipt, InvokeRequest, Reservation, own_device,
 };
 
 use super::super::AppBrokerState;
@@ -43,8 +43,8 @@ impl AppBrokerState {
         caller: &Caller,
         origin: Option<&super::super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionHostError> {
-        let abandon = |error: ActionHostError| {
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        let abandon = |error: ActionCallError| {
             if let Ok(mut log) = self.remote_invocations.lock() {
                 log.abandon(&request.invocation);
             }
@@ -55,22 +55,22 @@ impl AppBrokerState {
             return self
                 .remote_job(caller, &request.invocation)
                 .map(|job| self.receipt_for(request.invocation, job))
-                .ok_or(ActionHostError::UnknownInvocation);
+                .ok_or(ActionCallError::UnknownInvocation);
         }
         let Some(service) = self.services.own_device.as_ref() else {
-            return Err(abandon(ActionHostError::UnknownAction));
+            return Err(abandon(ActionCallError::UnknownAction));
         };
         if request.target != own_device::target() {
-            return Err(abandon(ActionHostError::UnknownAction));
+            return Err(abandon(ActionCallError::UnknownAction));
         }
         if !is_person_here(caller, origin) {
-            return Err(abandon(ActionHostError::NotPermitted));
+            return Err(abandon(ActionCallError::NotPermitted));
         }
         let Some(workspace) = caller.workspace() else {
-            return Err(abandon(ActionHostError::NotPermitted));
+            return Err(abandon(ActionCallError::NotPermitted));
         };
         let Some(()) = self.decide_for(caller, workspace, |_, _, _| ()) else {
-            return Err(abandon(ActionHostError::NotPermitted));
+            return Err(abandon(ActionCallError::NotPermitted));
         };
         let checked = own_device::Invocation::from_argument(&request.argument)
             .and_then(|invocation| invocation.check())
@@ -164,7 +164,7 @@ mod tests {
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::{
-        ActionHostError, Caller, Completer, Confirmation, ConfirmationQuestion, InvokeArgument,
+        ActionCallError, Caller, Completer, Confirmation, ConfirmationQuestion, InvokeArgument,
         InvokeRequest, Pending, RemoteActionMessage, own_device, pending,
     };
 
@@ -177,7 +177,7 @@ mod tests {
         sent: Mutex<Vec<(own_device::Checked, InvokeRequest)>>,
         callers: Mutex<Vec<Caller>>,
         answers: Mutex<Vec<Completer<OwnDeviceOutcome>>>,
-        refuse: Option<ActionHostError>,
+        refuse: Option<ActionCallError>,
         admission_check: Mutex<Option<Box<dyn Fn() + Send>>>,
     }
 
@@ -187,7 +187,7 @@ mod tests {
             caller: &Caller,
             checked: &own_device::Checked,
             request: &InvokeRequest,
-        ) -> Result<Pending<OwnDeviceOutcome>, ActionHostError> {
+        ) -> Result<Pending<OwnDeviceOutcome>, ActionCallError> {
             if let Some(check) = self.admission_check.lock().unwrap().as_ref() {
                 check();
             }
@@ -208,8 +208,8 @@ mod tests {
             &self,
             _: &Caller,
             _: &ConfirmationQuestion,
-        ) -> Result<Pending<Result<Confirmation, ActionHostError>>, ActionHostError> {
-            Err(ActionHostError::UnknownAction)
+        ) -> Result<Pending<Result<Confirmation, ActionCallError>>, ActionCallError> {
+            Err(ActionCallError::UnknownAction)
         }
     }
 
@@ -258,7 +258,7 @@ mod tests {
         state: &Arc<AppBrokerState>,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
         state
             .action_invoke(caller, None, None, request)
             .wait_timeout(tilo_test_env::hang_bound())
@@ -553,7 +553,7 @@ mod tests {
         phase own_device_immediate_refusal_is_signed_and_replayed_without_sending;
         {
             let network = Arc::new(Network {
-                refuse: Some(ActionHostError::Refused {
+                refuse: Some(ActionCallError::Refused {
                     reason: "the device is not enrolled".into(),
                 }),
                 ..Default::default()
@@ -568,7 +568,7 @@ mod tests {
             *network.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
             assert!(matches!(
                 f.invoke(&asked),
-                Err(ActionHostError::Refused { .. })
+                Err(ActionCallError::Refused { .. })
             ));
             let completed = f.assert_signed(&asked, true);
             assert_eq!(
@@ -708,7 +708,7 @@ mod tests {
         // A retry observes that refusal rather than attempting another dispatch.
         {
             let network = Arc::new(Network {
-                refuse: Some(ActionHostError::Refused {
+                refuse: Some(ActionCallError::Refused {
                     reason: "the device is not one of the person's enrolled devices".into(),
                 }),
                 ..Network::default()
@@ -718,7 +718,7 @@ mod tests {
             let asked = request(&invocation(SETTINGS));
             assert!(matches!(
                 invoked(&state, &person, &asked),
-                Err(ActionHostError::Refused { .. })
+                Err(ActionCallError::Refused { .. })
             ));
             let job = state
                 .remote_job(&person, &asked.invocation)
@@ -734,7 +734,7 @@ mod tests {
             malformed.argument = InvokeArgument::Text("aa".into());
             assert!(matches!(
                 invoked(&state, &person, &malformed),
-                Err(ActionHostError::InvalidRequest { .. })
+                Err(ActionCallError::InvalidRequest { .. })
             ));
         }
 

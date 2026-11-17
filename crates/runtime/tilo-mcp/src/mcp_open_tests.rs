@@ -4,7 +4,7 @@
 use super::*;
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
-    ActionHostError, CatalogueProvider, CatalogueResource, InvocationReceipt, InvocationState,
+    ActionCallError, CatalogueProvider, CatalogueResource, InvocationReceipt, InvocationState,
     Pending,
 };
 use tilo_actions::{ActionParam, InvocationUpdate, ParamType};
@@ -60,7 +60,7 @@ struct Writer {
 
 struct DirectoryFailure {
     parent: Option<String>,
-    error: ActionHostError,
+    error: ActionCallError,
 }
 
 /// One request a [`Writer`] was sent.
@@ -471,12 +471,12 @@ fn host_matches(row: &CatalogueRow, needle: &str) -> bool {
         .any(|field| field.to_lowercase().contains(&needle))
 }
 
-impl ActionHost for Writer {
+impl ActionProvider for Writer {
     fn query(
         &self,
         _caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.log
             .lock()
             .unwrap()
@@ -503,7 +503,7 @@ impl ActionHost for Writer {
             }));
         };
         if provider != WORKSPACE && !running {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let mut failure = self.query_failure.lock().unwrap();
         if provider != WORKSPACE
@@ -567,7 +567,7 @@ impl ActionHost for Writer {
         &self,
         _caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         self.log.lock().unwrap().push(Asked::Invoke {
             revision: request.revision.clone(),
@@ -580,11 +580,11 @@ impl ActionHost for Writer {
         // As the broker refuses an instance that is no longer live.
         let gone = request.target.provider != WORKSPACE && !*self.running.lock().unwrap();
         if !known || gone {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         if request.target.provider == WORKSPACE {
             if !matches!(&request.argument, InvokeArgument::Json(map) if map.is_empty()) {
-                return Pending::ready(Err(ActionHostError::Refused {
+                return Pending::ready(Err(ActionCallError::Refused {
                     reason: "launch content requires an application the launcher authenticated"
                         .into(),
                 }));
@@ -683,7 +683,7 @@ impl ActionHost for Writer {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
@@ -697,7 +697,7 @@ fn run<F: std::future::Future>(future: F) -> F::Output {
 }
 
 /// One turn's tool call: its structured result, or its error text.
-async fn call<H: ActionHost + Send + Sync + 'static>(
+async fn call<H: ActionProvider + Send + Sync + 'static>(
     server: &McpServer<H>,
     name: &str,
     arguments: Value,
@@ -1340,7 +1340,7 @@ tilo_test_env::scenario! {
             .unwrap_err();
             assert_eq!(
                 refusal,
-                format!("not_permitted: {}", ActionHostError::NotPermitted)
+                format!("not_permitted: {}", ActionCallError::NotPermitted)
             );
             assert!(host.mutations.lock().unwrap().is_empty());
         });
@@ -1457,12 +1457,12 @@ impl FailingMutationHost {
     }
 }
 
-impl ActionHost for FailingMutationHost {
+impl ActionProvider for FailingMutationHost {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.directory.query(caller, query)
     }
 
@@ -1470,9 +1470,9 @@ impl ActionHost for FailingMutationHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if self.refuse {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         let result = self
             .log
@@ -1505,7 +1505,7 @@ impl ActionHost for FailingMutationHost {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
@@ -2230,13 +2230,13 @@ tilo_test_env::scenario! {
         for tool in ["tilo_invoke", "tilo_resolve"] {
             for (failure, expected) in [
                 (
-                    ActionHostError::Unavailable {
+                    ActionCallError::Unavailable {
                         reason: "the original directory is disconnected".into(),
                     },
                     "unavailable: the original directory is disconnected",
                 ),
                 (
-                    ActionHostError::NotPermitted,
+                    ActionCallError::NotPermitted,
                     "not_permitted: the caller may not invoke this action",
                 ),
             ] {
@@ -2280,7 +2280,7 @@ tilo_test_env::scenario! {
             *host.running.lock().unwrap() = true;
             *host.query_failure.lock().unwrap() = Some(DirectoryFailure {
                 parent: Some(DOC.into()),
-                error: ActionHostError::Unavailable {
+                error: ActionCallError::Unavailable {
                     reason: "the original action directory is disconnected".into(),
                 },
             });

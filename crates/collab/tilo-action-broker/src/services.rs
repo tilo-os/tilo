@@ -817,7 +817,7 @@ pub trait HostedWorkspaces: Send + Sync {
     fn host_actions(
         &self,
         workspace: &str,
-    ) -> Option<Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>>;
+    ) -> Option<Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>>;
 }
 
 /// The native host's separately authorized display transaction service.

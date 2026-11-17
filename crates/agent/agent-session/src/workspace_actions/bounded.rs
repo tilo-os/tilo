@@ -24,7 +24,7 @@
 //! or anything a viewer's action wrote, is never saved.
 
 use super::{
-    ActionHostError, Arc, Caller, ConfinedReplica, Confirmation, DocumentMutation, DocumentRoute,
+    ActionCallError, Arc, Caller, ConfinedReplica, Confirmation, DocumentMutation, DocumentRoute,
     HashMap, HashSet, Instant, InvocationId, InvokeRequest, Mounted, Mutex, Outcome, Seed, Worker,
     WorkspaceId, WorkspaceState, reads,
 };
@@ -211,8 +211,8 @@ pub(super) fn approved(
 }
 
 /// The refusal of a confirmation a bounded caller gave by its own word.
-pub(super) fn own_word_refused() -> ActionHostError {
-    ActionHostError::Refused {
+pub(super) fn own_word_refused() -> ActionCallError {
+    ActionCallError::Refused {
         reason: "only the person confirms this action, on their own device: invoke it without \
                  a confirmation and the host asks them"
             .into(),
@@ -375,21 +375,21 @@ pub(super) fn question(
 pub(super) fn bounded_access(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
-) -> Result<policy::MemberAccess, ActionHostError> {
+) -> Result<policy::MemberAccess, ActionCallError> {
     let granted = who.caller.granted(&policy.workspace, &policy.agent_bound);
     policy
         .access
         .clone()
         .as_acting(who.caller.acting().clone())
         .map(|access| access.granted(granted))
-        .ok_or(ActionHostError::NotPermitted)
+        .ok_or(ActionCallError::NotPermitted)
 }
 
 /// `who`'s permissions under `policy` ([`bounded_access`]).
 pub(super) fn bounded_permissions(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
-) -> Result<ui::permissions::PermissionContext, ActionHostError> {
+) -> Result<ui::permissions::PermissionContext, ActionCallError> {
     Ok(super::ViewReadPolicy {
         access: bounded_access(policy, who)?,
         ..policy.clone()
@@ -402,7 +402,7 @@ pub(super) fn bounded_permissions(
 pub(super) fn member_actor(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
-) -> Result<crate::ReplicaActor, ActionHostError> {
+) -> Result<crate::ReplicaActor, ActionCallError> {
     Ok(crate::ReplicaActor::Member {
         access: bounded_access(policy, who)?,
         sandbox: policy.sandbox.clone(),
@@ -470,7 +470,7 @@ impl Worker {
         who: &Bounded,
         cluster: &str,
         record: Option<(&str, &str)>,
-    ) -> Result<super::ViewReadPolicy, ActionHostError> {
+    ) -> Result<super::ViewReadPolicy, ActionCallError> {
         let governed = self.shared.link.get().and_then(|link| match record {
             Some((app, record)) => {
                 link.view_read_policy(workspace_id, &who.person_caller, app, record)
@@ -498,7 +498,7 @@ impl Worker {
                     agent_bound: Vec::new(),
                 }
             }
-            Some(_) | None => return Err(ActionHostError::NotPermitted),
+            Some(_) | None => return Err(ActionCallError::NotPermitted),
         };
         // An agent a person's device handed its session to is held to the bound the workspace's
         // list of its agents keeps for it: the own person's agents as much as anyone's, so what
@@ -518,7 +518,7 @@ impl Worker {
         workspace_id: WorkspaceId,
         who: &Bounded,
         route: &DocumentRoute,
-    ) -> Result<super::ViewReadPolicy, ActionHostError> {
+    ) -> Result<super::ViewReadPolicy, ActionCallError> {
         let record = Some((route.app_id.as_str(), route.document.as_str()));
         self.policy_for(workspace_id, who, &route.cluster_id, record)
     }
@@ -603,8 +603,8 @@ impl Worker {
         who: &Bounded,
         route: &DocumentRoute,
         state: &WorkspaceState,
-    ) -> Result<BoundedKey, ActionHostError> {
-        let unavailable = |reason: String| ActionHostError::Unavailable { reason };
+    ) -> Result<BoundedKey, ActionCallError> {
+        let unavailable = |reason: String| ActionCallError::Unavailable { reason };
         let policy = self.policy_at(workspace_id, who, route)?;
         // Where the host's own mount holds it, so a part is held beside the
         // same record for everyone. Why it does not mount is the caller's to
@@ -715,7 +715,7 @@ impl Worker {
         who: &Bounded,
         route: &DocumentRoute,
         state: &WorkspaceState,
-    ) -> Result<Vec<tilo_actions::ActionDescriptor>, ActionHostError> {
+    ) -> Result<Vec<tilo_actions::ActionDescriptor>, ActionCallError> {
         let key = self.bounded_replica(workspace_id, who, route, state)?;
         Ok(self
             .bounded
@@ -734,7 +734,7 @@ impl Worker {
         (route, state): (&DocumentRoute, &WorkspaceState),
         query: &tilo_actions::remote::CatalogueQuery,
         window: (usize, usize),
-    ) -> Result<(usize, Vec<tilo_actions::remote::CatalogueRow>), ActionHostError> {
+    ) -> Result<(usize, Vec<tilo_actions::remote::CatalogueRow>), ActionCallError> {
         let key = self.bounded_replica(workspace_id, who, route, state)?;
         Ok(self
             .bounded
@@ -752,7 +752,7 @@ impl Worker {
         who: &Bounded,
         (route, state): (&DocumentRoute, &WorkspaceState),
         address: &ActionAddress,
-    ) -> Result<Option<tilo_actions::ActionDescriptor>, ActionHostError> {
+    ) -> Result<Option<tilo_actions::ActionDescriptor>, ActionCallError> {
         let key = self.bounded_replica(workspace_id, who, route, state)?;
         Ok(self
             .bounded
@@ -817,7 +817,7 @@ impl Worker {
         if let Some(entry) = self.log().entries.get_mut(&invocation) {
             entry.about = Some(Box::new(about));
         }
-        Outcome::Rejected(ActionHostError::confirmation_required())
+        Outcome::Rejected(ActionCallError::confirmation_required())
     }
 
     /// What the person is asked about running `descriptor` with `arguments`
@@ -878,7 +878,7 @@ impl Worker {
         let held = self
             .bounded
             .remove(&key)
-            .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
+            .ok_or(Outcome::Rejected(ActionCallError::UnknownAction))?;
         let app = &held.held.app;
         // What the caller's own view offers, asked for by address: the record
         // publishes to its owner what the caller may not run, which tells a
@@ -886,9 +886,9 @@ impl Worker {
         let Some(descriptor) = app.descriptor(&target.address) else {
             return Err(Outcome::Rejected(
                 if self.publishes(&key.0, &target.address) {
-                    ActionHostError::NotPermitted
+                    ActionCallError::NotPermitted
                 } else {
-                    ActionHostError::UnknownAction
+                    ActionCallError::UnknownAction
                 },
             ));
         };
@@ -977,7 +977,7 @@ impl Worker {
             if !refused.is_empty() {
                 tracing::info!(record = %changed.document, ?refused,
                     "workspace actions: a change writes what its author may not");
-                return Err(Outcome::Rejected(ActionHostError::NotPermitted));
+                return Err(Outcome::Rejected(ActionCallError::NotPermitted));
             }
         }
         for (changed, mutation) in taken {
@@ -1034,7 +1034,7 @@ impl super::Shared {
     pub(super) fn answered(
         self: &Arc<Self>,
         asking: Asking,
-        reply: Option<&Result<ConfirmationReply, ActionHostError>>,
+        reply: Option<&Result<ConfirmationReply, ActionCallError>>,
     ) {
         let Asking {
             workspace_id,

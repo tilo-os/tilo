@@ -80,7 +80,7 @@ pub(super) fn put(typed: &mut Value, shown: Shown) {
         let code = failure
             .host
             .as_ref()
-            .map_or("not_shown", tilo_actions::remote::ActionHostError::code);
+            .map_or("not_shown", tilo_actions::remote::ActionCallError::code);
         fields.insert(
             "not_shown".into(),
             json!({"code": code, "message": failure.message}),
@@ -112,7 +112,7 @@ pub(super) fn step_links(steps: &[Value]) -> Vec<Value> {
     links
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `tilo_link`: the link to the resource `args.path` names, or, when the
     /// resource offers none of its own, to the record it is in.
     pub(super) async fn agent_link(
@@ -357,7 +357,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let receipt = match self.host().invoke(&self.caller(), request).await {
             Some(Ok(receipt)) => receipt,
             Some(Err(error)) => return Err(error.into()),
-            None => return Err(tilo_actions::remote::ActionHostError::Unanswered.into()),
+            None => return Err(tilo_actions::remote::ActionCallError::Unanswered.into()),
         };
         match receipt.status {
             ReceiptStatus::Rejected { error } => Err(error.into()),

@@ -215,7 +215,7 @@ struct Asking {
 }
 
 type ApprovalAnswer =
-    Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionHostError>;
+    Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionCallError>;
 
 /// One agent in one workspace.
 #[allow(
@@ -1885,7 +1885,7 @@ impl AgentMember {
         let (arrived, control) = (Arc::clone(&answer), Arc::clone(&self.control));
         approver.confirm(&caller, &request).then(move |given| {
             *arrived.lock_recover() = Some(given.unwrap_or(Err(
-                tilo_actions::remote::ActionHostError::confirmation_required(),
+                tilo_actions::remote::ActionCallError::confirmation_required(),
             )));
             control.wake();
         });

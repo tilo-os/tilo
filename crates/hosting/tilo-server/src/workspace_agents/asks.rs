@@ -45,7 +45,9 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::Agent;
 use ui::permissions::MemberId;
 
-use super::{Ask, CHAT, HostAgents, Turn, WRITE_WAIT, WorkspaceActionHost, invoke_named, later};
+use super::{
+    Ask, CHAT, HostAgents, Turn, WRITE_WAIT, WorkspaceActionProvider, invoke_named, later,
+};
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_asking::Allowing;
 use crate::workspaces::person_asking::kept_asks::{KeptAsk, NewAsk};
@@ -174,7 +176,7 @@ impl AsksInConversation for InConversation {
         }
         let (completer, answer) = tilo_actions::remote::pending();
         let workspaces = self.workspaces.clone();
-        let holder = WorkspaceActionHost::new(self.actions.clone(), workspace_id);
+        let holder = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
         let caller = caller.clone();
         self.runtime.spawn(async move {
             let asking = Asking {
@@ -250,7 +252,7 @@ fn words_of(words: &Words) -> String {
 /// Put the question about `kept` to its person in the conversation
 /// `conversation`, saying `text`, as `asker`: the agent acting for them.
 async fn post(
-    holder: &WorkspaceActionHost,
+    holder: &WorkspaceActionProvider,
     asker: &Caller,
     conversation_id: &str,
     text: &str,
@@ -288,7 +290,7 @@ async fn post(
 /// conversation the turn is in, as the turn's own caller.
 async fn put(
     workspaces: &Workspaces,
-    holder: &WorkspaceActionHost,
+    holder: &WorkspaceActionProvider,
     caller: &Caller,
     asking: Asking,
     asked: AskedInTurn,
@@ -600,7 +602,7 @@ impl HostAgents {
         let Some(kept) = self.workspaces.keep_ask(&person, new)? else {
             return Ok(());
         };
-        let holder = WorkspaceActionHost::new(self.actions.clone(), workspace_id);
+        let holder = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
         let posted = post(&holder, &asker, &conversation_id, words.trim(), &kept).await;
         if posted.is_err() {
             self.workspaces.forget_ask(&kept);
@@ -713,7 +715,7 @@ impl HostAgents {
             .named(&turn.agent.name);
         let author = MemberId::agent(&turn.agent.id.0);
         let theirs = MemberId::person(&turn.person);
-        let holder = WorkspaceActionHost::new(self.actions.clone(), workspace_id);
+        let holder = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
         for (document, part) in self.question_parts(workspace).await {
             for (id, put) in part.messages.iter() {
                 let waits = put
@@ -812,7 +814,7 @@ impl HostAgents {
         found: &Found,
         (outcome, told): (&str, Option<String>),
     ) -> Result<(), String> {
-        let holder = WorkspaceActionHost::new(self.actions.clone(), workspace_id);
+        let holder = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
         let route = DocumentRoute {
             app_id: CHAT.to_owned(),
             cluster_id: workspace.to_owned(),

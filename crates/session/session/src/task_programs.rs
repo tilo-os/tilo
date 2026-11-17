@@ -128,8 +128,8 @@ impl HostStepServices for TaskPrograms {
         let session = actor
             .session()
             .ok_or("an agent runs programs as a step of its session")?;
-        let host = request
-            .host
+        let provider = request
+            .provider
             .clone()
             .ok_or("an agent runs programs only through its session's API")?;
         let args = bind(request.argument)?;
@@ -152,7 +152,7 @@ impl HostStepServices for TaskPrograms {
             });
         self.programs.run(ProgramRequest {
             workspace: request.workspace,
-            host,
+            provider,
             agent,
             person: actor.acting_for(),
             session,
@@ -194,7 +194,7 @@ mod tests {
             actor,
             address,
             argument: Some(argument),
-            host: None,
+            provider: None,
             group: None,
         }
     }

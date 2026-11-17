@@ -1073,7 +1073,7 @@ impl ui::collaboration::PeerTransport for Broker {
                     self.events.push(step_receipt(
                         invocation,
                         tilo_actions::remote::ReceiptStatus::Rejected {
-                            error: tilo_actions::remote::ActionHostError::Refused {
+                            error: tilo_actions::remote::ActionCallError::Refused {
                                 reason: "the turn this step answers is no longer going".into(),
                             },
                         },
@@ -1082,7 +1082,7 @@ impl ui::collaboration::PeerTransport for Broker {
                     self.events.push(step_receipt(
                         invocation,
                         tilo_actions::remote::ReceiptStatus::Rejected {
-                            error: tilo_actions::remote::ActionHostError::confirmation_required(),
+                            error: tilo_actions::remote::ActionCallError::confirmation_required(),
                         },
                     ));
                 } else if self.world.borrow().deny.contains(&action)
@@ -1320,7 +1320,7 @@ impl Broker {
             self.events.push(step_receipt(
                 invocation,
                 tilo_actions::remote::ReceiptStatus::Rejected {
-                    error: tilo_actions::remote::ActionHostError::Refused {
+                    error: tilo_actions::remote::ActionCallError::Refused {
                         reason: format!("permission denied: the agent may not {action}"),
                     },
                 },

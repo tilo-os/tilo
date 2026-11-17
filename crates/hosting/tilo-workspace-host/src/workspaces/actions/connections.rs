@@ -14,7 +14,7 @@ use tilo_actions::remote::person_connections::{
     self, AtAddress, BeginSignIn, Call, FinishSignIn, Named,
 };
 use tilo_actions::remote::{
-    ActionHostError as Refused, CatalogueRow, InvokeArgument, InvokeRequest,
+    ActionCallError as Refused, CatalogueRow, InvokeArgument, InvokeRequest,
 };
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 

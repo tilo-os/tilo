@@ -120,7 +120,7 @@ impl AppBrokerState {
         admitted: AdmittedHostAction,
         (app_id, workspace): (&str, &str),
         launched: Launched,
-    ) -> Result<(), tilo_actions::remote::ActionHostError> {
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
         let Launched::Started { ticket } = launched else {
             self.complete_host_action(
                 &admitted,
@@ -328,7 +328,7 @@ mod tests {
         state: &Arc<AppBrokerState>,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<u64, tilo_actions::remote::ActionHostError> {
+    ) -> Result<u64, tilo_actions::remote::ActionCallError> {
         state
             .action_invoke(caller, None, None, request)
             .wait_timeout(tilo_test_env::hang_bound())

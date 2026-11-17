@@ -3,7 +3,7 @@
 //! becomes the workspace's `open` of the app ([`ApplicationLaunch::target`]), asked of
 //! the session's action API: the window never starts anything itself.
 
-use tilo_actions::remote::{ActionHostError, ApplicationLaunch, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, ApplicationLaunch, InvokeRequest};
 use tilo_actions::{ActionOutput, ApiError, InvocationId, InvocationUpdate};
 
 use crate::arriving::Arrival;
@@ -93,16 +93,16 @@ pub(crate) fn start_application_launch(
 
 /// What a refusal from the session says to the person who asked.
 #[must_use]
-pub fn api_error(error: &ActionHostError) -> ApiError {
+pub fn api_error(error: &ActionCallError) -> ApiError {
     match error {
-        ActionHostError::Unavailable { reason } | ActionHostError::Refused { reason } => {
+        ActionCallError::Unavailable { reason } | ActionCallError::Refused { reason } => {
             ApiError::Unavailable {
                 code: error.code().into(),
                 reason: reason.clone(),
             }
         }
-        ActionHostError::ConfirmationRequired { .. } => ApiError::ConfirmationRequired,
-        ActionHostError::NotPermitted => ApiError::Unavailable {
+        ActionCallError::ConfirmationRequired { .. } => ApiError::ConfirmationRequired,
+        ActionCallError::NotPermitted => ApiError::Unavailable {
             code: error.code().into(),
             reason: "You may not do that here".into(),
         },
@@ -114,7 +114,7 @@ pub fn api_error(error: &ActionHostError) -> ApiError {
 }
 
 fn finished(
-    call: &Arrival<InvocationUpdate, ActionHostError>,
+    call: &Arrival<InvocationUpdate, ActionCallError>,
 ) -> Option<Result<ActionOutput, ApiError>> {
     match call {
         Arrival::Failed(error) => Some(Err(api_error(error))),

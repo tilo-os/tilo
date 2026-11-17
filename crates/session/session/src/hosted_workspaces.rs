@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
     InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
 };
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
@@ -51,7 +51,7 @@ struct Inner {
     /// What serves what another device addresses to this device through a
     /// host of its, once the session's broker can answer it
     /// ([`crate::device_inbox`]).
-    inbound: Mutex<Option<Arc<dyn ActionHost + Send + Sync>>>,
+    inbound: Mutex<Option<Arc<dyn ActionProvider + Send + Sync>>>,
 }
 
 /// This device's session with one host, and the workspaces it entered there.
@@ -66,7 +66,7 @@ struct Host {
 impl Host {
     /// Serve what another device addresses to this device through this host, on
     /// this device's own session with it, and answer on that same session.
-    fn serve_inbound(&self, actions: &Arc<dyn ActionHost + Send + Sync>) {
+    fn serve_inbound(&self, actions: &Arc<dyn ActionProvider + Send + Sync>) {
         let session = self.device.session();
         let outbox = Arc::clone(session.outbox());
         session.serve_inbound(Arc::new(crate::device_inbox::Inbox::new(
@@ -112,7 +112,7 @@ impl HostedWorkspaces {
     /// a listing of a window's resources, a page action on it. Installed once the
     /// session's broker can answer, on every session this device holds with a host
     /// and on each it opens from now on.
-    pub(crate) fn serve_inbound(&self, actions: Arc<dyn ActionHost + Send + Sync>) {
+    pub(crate) fn serve_inbound(&self, actions: Arc<dyn ActionProvider + Send + Sync>) {
         for host in self.0.hosts.lock_recover().values() {
             host.serve_inbound(&actions);
         }
@@ -183,7 +183,7 @@ impl HostedWorkspaces {
     }
 
     /// `workspace`'s actions on its host, when a host other than this device runs its records.
-    fn actions_of(&self, workspace: &str) -> Option<Arc<dyn ActionHost + Send + Sync>> {
+    fn actions_of(&self, workspace: &str) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
         let placed = self.placed(workspace)?;
         let host = self.host(&placed);
         Some(Arc::new(OnHost {
@@ -392,7 +392,7 @@ pub(crate) fn keep_on_hosts(
 }
 
 impl tilo_action_broker::services::HostedWorkspaces for HostedWorkspaces {
-    fn host_actions(&self, workspace: &str) -> Option<Arc<dyn ActionHost + Send + Sync>> {
+    fn host_actions(&self, workspace: &str) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
         self.actions_of(workspace)
     }
 }
@@ -418,8 +418,8 @@ impl OnHost {
     /// Ask `ask` of the workspace's actions on the host once this device is in it there.
     fn asking<T: Send + 'static>(
         &self,
-        ask: impl FnOnce(SessionActions) -> Pending<Result<T, ActionHostError>> + Send + 'static,
-    ) -> Pending<Result<T, ActionHostError>> {
+        ask: impl FnOnce(SessionActions) -> Pending<Result<T, ActionCallError>> + Send + 'static,
+    ) -> Pending<Result<T, ActionCallError>> {
         let (answer, answered) = pending();
         let host = Arc::clone(&self.host);
         let workspace = self.workspace.clone();
@@ -433,7 +433,7 @@ impl OnHost {
                 }
             };
             answer.complete(ask(actions).await.unwrap_or_else(|| {
-                Err(ActionHostError::Unavailable {
+                Err(ActionCallError::Unavailable {
                     reason: "the workspace's host did not answer".into(),
                 })
             }));
@@ -447,7 +447,7 @@ async fn enter(
     host: &Host,
     workspace: &str,
     workspace_id: WorkspaceId,
-) -> Result<SessionActions, ActionHostError> {
+) -> Result<SessionActions, ActionCallError> {
     let _entering = host.entering.lock().await;
     if let Some(actions) = host.entered.lock_recover().get(&workspace_id) {
         return Ok(actions.clone());
@@ -456,7 +456,7 @@ async fn enter(
         host.device
             .join(workspace)
             .await
-            .map_err(|error| ActionHostError::Unavailable {
+            .map_err(|error| ActionCallError::Unavailable {
                 reason: format!("the workspace's host did not let this device in: {error}"),
             })?;
     let actions = host.device.actions(entered);
@@ -466,12 +466,12 @@ async fn enter(
     Ok(actions)
 }
 
-impl ActionHost for OnHost {
+impl ActionProvider for OnHost {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         let caller = caller.clone();
         self.asking(move |actions| actions.query(&caller, query))
     }
@@ -480,7 +480,7 @@ impl ActionHost for OnHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let caller = caller.clone();
         self.asking(move |actions| actions.invoke(&caller, request))
     }
@@ -493,10 +493,10 @@ impl ActionHost for OnHost {
         self.entered()?.next_change(caller, id)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         match self.entered() {
             Some(actions) => actions.cancel(caller, id),
-            None => Pending::ready(Err(ActionHostError::UnknownInvocation)),
+            None => Pending::ready(Err(ActionCallError::UnknownInvocation)),
         }
     }
 
@@ -508,7 +508,7 @@ impl ActionHost for OnHost {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
         let caller = caller.clone();
         let request = request.clone();
         self.asking(move |actions| actions.confirm(&caller, &request))

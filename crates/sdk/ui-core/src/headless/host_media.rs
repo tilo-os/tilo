@@ -197,7 +197,7 @@ fn queue_catalogue(
     message: tilo_actions::remote::RemoteActionMessage,
 ) {
     use tilo_actions::remote::{
-        ActionHostError, InvocationReceipt, ReceiptStatus, RemoteActionMessage,
+        ActionCallError, InvocationReceipt, ReceiptStatus, RemoteActionMessage,
     };
     // An action the workspace's host runs travels this media queue to it, and the host
     // admits it by the person's own standing in the workspace: a page cannot
@@ -211,7 +211,7 @@ fn queue_catalogue(
                     message: RemoteActionMessage::Receipt(InvocationReceipt {
                         invocation: request.invocation,
                         status: ReceiptStatus::Rejected {
-                            error: ActionHostError::Unavailable {
+                            error: ActionCallError::Unavailable {
                                 reason: reason.into(),
                             },
                         },
@@ -234,7 +234,7 @@ fn queue_catalogue(
             &CollabEvent::RemoteAction {
                 message: RemoteActionMessage::CatalogueResponse {
                     correlation: *correlation,
-                    result: Err(ActionHostError::Unavailable {
+                    result: Err(ActionCallError::Unavailable {
                         reason: "local catalogue media queue is busy".into(),
                     }),
                 },

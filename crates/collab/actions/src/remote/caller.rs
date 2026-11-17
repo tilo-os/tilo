@@ -56,7 +56,7 @@ pub struct Caller {
     // in its own right and acting for them (`Self::acting_for`).
     pub(super) session_delegated: bool,
     // How far the invocation this caller's requests continue was admitted
-    // to reach, set by the host that matched them to it.
+    // to reach, set by the provider that matched them to it.
     pub(super) within: within::Within,
     // The turn an agent acts inside: the person's message in a conversation
     // that caused it (`Self::agent_turn`). Every op carries it, so the
@@ -90,7 +90,7 @@ impl Caller {
         }
     }
 
-    /// A person on a connection the host admitted itself, by the id that
+    /// A person on a connection the provider admitted itself, by the id that
     /// admission established.
     #[must_use]
     pub fn local_person(person: impl Into<tilo_action_policy::PersonId>) -> Self {
@@ -108,7 +108,7 @@ impl Caller {
         }
     }
 
-    /// A delegated agent on a connection the host admitted itself.
+    /// A delegated agent on a connection the provider admitted itself.
     #[must_use]
     pub fn local_agent(agent_id: impl Into<String>) -> Self {
         Self {
@@ -125,7 +125,7 @@ impl Caller {
         }
     }
 
-    /// An installed bot on a connection the host admitted itself, by its
+    /// An installed bot on a connection the provider admitted itself, by its
     /// installation: software, never a person, whatever its id spells.
     #[must_use]
     pub fn local_bot(installation: impl Into<String>) -> Self {
@@ -135,7 +135,7 @@ impl Caller {
         }
     }
 
-    /// An application on a connection the host admitted itself, by the
+    /// An application on a connection the provider admitted itself, by the
     /// package id that admission established. It acts as the person whose
     /// session runs it ([`Self::acting_for`]), in that app; with nobody
     /// behind it, it holds nothing.
@@ -185,7 +185,7 @@ impl Caller {
     /// exactly what that person may, held to the editor preset and to the
     /// bound its own record carries, and nothing outside a turn. Every op it
     /// makes carries the turn, so the receiving device checks the cause it
-    /// arrived with. Set only by the host that admitted the turn.
+    /// arrived with. Set only by the provider that admitted the turn.
     #[must_use]
     pub fn agent_turn(
         agent_id: impl Into<String>,
@@ -230,7 +230,7 @@ impl Caller {
         }
     }
 
-    /// Give an already admitted connection its own execution scope. The host
+    /// Give an already admitted connection its own execution scope. The provider
     /// mints the identifier; no payload, display name or history run selects it.
     /// This changes invocation ownership, never the caller's permissions.
     #[must_use]
@@ -239,7 +239,7 @@ impl Caller {
         self
     }
 
-    /// Retain a host-issued execution when projecting the same transport into
+    /// Retain a provider-issued execution when projecting the same transport into
     /// another verified action API. A lease conveys ownership and lifetime,
     /// never certificate ownership or additional permissions.
     #[must_use]
@@ -248,7 +248,7 @@ impl Caller {
         self
     }
 
-    /// Host-issued execution identity. An identifier alone conveys no authority.
+    /// Provider-issued execution identity. An identifier alone conveys no authority.
     #[must_use]
     pub fn execution_id(&self) -> Option<uuid::Uuid> {
         self.execution.as_ref().map(|lease| lease.id)
@@ -281,7 +281,7 @@ impl Caller {
     }
 
     /// The caller acts for `person`: an agent or an app the person started.
-    /// Set only by the host that admitted the delegation, never from a
+    /// Set only by the provider that admitted the delegation, never from a
     /// payload. It names who the actor works for in presence and history; it
     /// widens nothing.
     #[must_use]
@@ -302,7 +302,7 @@ impl Caller {
     /// actor (its edits, presence and history are the agent's, for the
     /// person) and it may do only what both the person and the delegation a
     /// device gives its agents allow. A caller that is not a person is
-    /// returned as it is. Set only by the host that admitted the person.
+    /// returned as it is. Set only by the provider that admitted the person.
     #[must_use]
     pub fn delegated_to(mut self, agent_id: impl Into<String>) -> Self {
         let Some(person) = self.acting.person_id().map(str::to_owned) else {
@@ -326,7 +326,7 @@ impl Caller {
     }
 
     /// An agent caller working in the agent session `session`: what its
-    /// changes are grouped and taken back by. Set only by the host that
+    /// changes are grouped and taken back by. Set only by the provider that
     /// admitted the session; names nothing for a caller that is not an agent.
     #[must_use]
     pub fn in_agent_session(mut self, session: impl Into<String>) -> Self {
@@ -343,7 +343,7 @@ impl Caller {
     }
 
     /// The agent this person's own device handed its session to ([`Self::delegated_to`]) acts
-    /// inside `turn`, held to `bound`, the rules its own record narrows it to: the host that runs
+    /// inside `turn`, held to `bound`, the rules its own record narrows it to: the provider that runs
     /// the agent for the person and admitted the turn's cause sets it, never a payload. Changes
     /// nothing for a caller that is not such an agent.
     #[must_use]
@@ -416,7 +416,7 @@ impl Caller {
     /// The caller's invocations are the steps of Shortcut `id`'s run: still
     /// the person's authority (bounded by the Shortcut's own grants, which
     /// the runner applies), but the Shortcut is who acts, for the person.
-    /// Set only by the host's Shortcut runner.
+    /// Set only by the provider's Shortcut runner.
     #[must_use]
     pub fn running_shortcut(mut self, id: impl Into<String>) -> Self {
         let person = self
@@ -465,9 +465,9 @@ impl Caller {
         tilo_action_policy::roles::agent_grants(workspace, agent, person, bound)
     }
 
-    /// The run this caller's actions are part of, as the host that admitted it
-    /// says: an agent (or a key it holds) in an execution the host minted for
-    /// its connection works in one run, named by the name the host knows for
+    /// The run this caller's actions are part of, as the provider that admitted it
+    /// says: an agent (or a key it holds) in an execution the provider minted for
+    /// its connection works in one run, named by the name the provider knows for
     /// it. History groups the run's changes, Activity lists it and undo takes
     /// it back whole, whatever the client says of itself. `None` for anyone
     /// else.

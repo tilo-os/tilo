@@ -3,7 +3,7 @@
 
 use super::*;
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// What the workspace holds, by the host's own search: on a desktop the
     /// one search it runs, the palette's ranking and `place_found`'s, so a
     /// text an agent asks for answers what the person sees, in the person's

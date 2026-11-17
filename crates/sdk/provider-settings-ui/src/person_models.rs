@@ -33,7 +33,7 @@ use ui::tilo_actions::remote::person_models::{
     self, AddModel, AddPreset, AddProvider, ListedModels, ListingProblem, ModelProviders, Protocol,
     ProviderView, SetAssignments, SetDefault, SetKey,
 };
-use ui::tilo_actions::remote::{ActionHostError, InvokeArgument};
+use ui::tilo_actions::remote::{ActionCallError, InvokeArgument};
 use ui::tilo_resource::{self, Binds, Effect, Resource};
 use zeroize::Zeroize as _;
 
@@ -754,12 +754,12 @@ fn settled(call: &ui::InvocationCall) -> Option<Outcome> {
             message.unwrap_or_else(|| t("models-cancelled")),
         )),
         ui::Arrival::Failed(
-            error @ (ActionHostError::Unavailable { .. } | ActionHostError::UnknownAction),
+            error @ (ActionCallError::Unavailable { .. } | ActionCallError::UnknownAction),
         ) => Some(Outcome::Unserved(error.to_string())),
         // The host's own words are the reason; the kind of refusal says
         // nothing more to a person.
         ui::Arrival::Failed(
-            ActionHostError::Refused { reason } | ActionHostError::InvalidRequest { reason },
+            ActionCallError::Refused { reason } | ActionCallError::InvalidRequest { reason },
         ) => Some(Outcome::Refused(reason)),
         ui::Arrival::Failed(error) => Some(Outcome::Refused(error.to_string())),
         ui::Arrival::Ready(_) | ui::Arrival::Pending { .. } => None,

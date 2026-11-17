@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tilo_actions::remote::identity_admin;
 use tilo_actions::remote::{
-    ActionHostError, Caller, Completer, Confirmation, ConfirmationQuestion, InvokeArgument,
+    ActionCallError, Caller, Completer, Confirmation, ConfirmationQuestion, InvokeArgument,
     InvokeRequest, Pending, pending,
 };
 
@@ -22,12 +22,12 @@ use tilo_actions::remote::{
 #[derive(Default)]
 struct OwnDevices {
     asked: Mutex<Vec<(Caller, ConfirmationQuestion)>>,
-    answers: Mutex<Vec<Completer<Result<Confirmation, ActionHostError>>>>,
-    unreachable: Option<ActionHostError>,
+    answers: Mutex<Vec<Completer<Result<Confirmation, ActionCallError>>>>,
+    unreachable: Option<ActionCallError>,
 }
 
 impl OwnDevices {
-    fn unreachable(error: ActionHostError) -> Self {
+    fn unreachable(error: ActionCallError) -> Self {
         Self {
             unreachable: Some(error),
             ..Self::default()
@@ -36,7 +36,7 @@ impl OwnDevices {
 
     /// What the person answered on their own device, once the host has asked
     /// them: the question is put from another thread.
-    fn answer(&self, answer: Result<Confirmation, ActionHostError>) {
+    fn answer(&self, answer: Result<Confirmation, ActionCallError>) {
         let deadline = Instant::now()
             .checked_add(Duration::from_secs(60))
             .expect("a minute from now is a representable instant");
@@ -66,15 +66,15 @@ impl OwnDeviceActions for OwnDevices {
         _: &Caller,
         _: &tilo_actions::remote::own_device::Checked,
         _: &InvokeRequest,
-    ) -> Result<Pending<OwnDeviceOutcome>, ActionHostError> {
-        Err(ActionHostError::UnknownAction)
+    ) -> Result<Pending<OwnDeviceOutcome>, ActionCallError> {
+        Err(ActionCallError::UnknownAction)
     }
 
     fn ask_person(
         &self,
         caller: &Caller,
         question: &ConfirmationQuestion,
-    ) -> Result<Pending<Result<Confirmation, ActionHostError>>, ActionHostError> {
+    ) -> Result<Pending<Result<Confirmation, ActionCallError>>, ActionCallError> {
         if let Some(unreachable) = &self.unreachable {
             return Err(unreachable.clone());
         }
@@ -209,10 +209,10 @@ tilo_test_env::scenario! {
         let waiting = fixture
             .state
             .request_approval(&fixture.caller, None, &request());
-        own_devices.answer(Err(ActionHostError::NotPermitted));
+        own_devices.answer(Err(ActionCallError::NotPermitted));
         assert!(matches!(
             waiting.wait_timeout(Duration::from_secs(30)),
-            Ok(Some(Err(ActionHostError::ConfirmationRequired { .. })))
+            Ok(Some(Err(ActionCallError::ConfirmationRequired { .. })))
         ));
         drop(fixture);
     }
@@ -237,7 +237,7 @@ tilo_test_env::scenario! {
                 .state
                 .request_approval(&fixture.caller, None, &request())
                 .wait_timeout(Duration::from_secs(5)),
-            Ok(Some(Err(ActionHostError::ConfirmationRequired { .. })))
+            Ok(Some(Err(ActionCallError::ConfirmationRequired { .. })))
         ));
         drop(fixture);
     }
@@ -264,7 +264,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 answered,
-                Ok(Some(Err(ActionHostError::ConfirmationRequired { .. })))
+                Ok(Some(Err(ActionCallError::ConfirmationRequired { .. })))
             ),
             "a question nobody answers confirms nothing"
         );
@@ -276,7 +276,7 @@ tilo_test_env::scenario! {
     {
         let fixture = Fixture::new_certified_foreign(HostServices {
             own_device: Some(
-                Arc::new(OwnDevices::unreachable(ActionHostError::Unavailable {
+                Arc::new(OwnDevices::unreachable(ActionCallError::Unavailable {
                     reason: "no device of theirs is reachable in this workspace".into(),
                 })) as Arc<dyn OwnDeviceActions>,
             ),
@@ -287,7 +287,7 @@ tilo_test_env::scenario! {
                 .state
                 .request_approval(&fixture.caller, None, &request())
                 .wait_timeout(Duration::from_secs(5)),
-            Ok(Some(Err(ActionHostError::Unavailable { .. })))
+            Ok(Some(Err(ActionCallError::Unavailable { .. })))
         ));
         drop(fixture);
     }

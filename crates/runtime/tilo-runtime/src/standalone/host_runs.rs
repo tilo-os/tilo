@@ -5,13 +5,13 @@
 //! A key's run is admitted as an MCP client of this runtime is: the profile's
 //! person on this device, handing the run to an agent named after the key.
 
-use super::{Arc, Caller, RuntimeActionHost};
+use super::{Arc, Caller, RuntimeActionProvider};
 use collab_types::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 /// The profile's workspace's actions, as the keys of its person reach them.
 pub(super) struct HostRuns {
-    pub(super) host: RuntimeActionHost,
+    pub(super) provider: RuntimeActionProvider,
     /// The profile's workspace, by its UUID.
     pub(super) workspace: String,
     pub(super) actor: String,
@@ -30,7 +30,7 @@ impl crate::key_sessions::Sessions for HostRuns {
         key: &DeviceCert,
     ) -> Result<(crate::key_sessions::SessionHost, Caller), String> {
         let (run, caller, _) = self
-            .host
+            .provider
             .agent_session(workspace, &self.actor, &self.policy_time, |_| {
                 tilo_mcp::devices::agent_id("agent", key)
             })

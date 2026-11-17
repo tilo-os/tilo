@@ -61,7 +61,7 @@ use accounts::vault_items::{self, ItemId, Place, VaultItems};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{ActionKind, Answer, PersonId, Rule, TreePath};
-use tilo_actions::remote::ActionHostError::{
+use tilo_actions::remote::ActionCallError::{
     self, InvalidRequest, NotPermitted, Refused, UnknownAction,
 };
 use tilo_actions::remote::person_accounts::{self, AddMailWithItem};
@@ -242,7 +242,7 @@ impl Use {
     fn read(
         target: &RemoteActionTarget,
         arguments: &Map<String, Value>,
-    ) -> Result<Self, ActionHostError> {
+    ) -> Result<Self, ActionCallError> {
         let invalid = |what: &str| InvalidRequest {
             reason: what.to_owned(),
         };
@@ -339,7 +339,7 @@ impl Use {
     }
 }
 
-fn refused(reason: impl Into<String>) -> ActionHostError {
+fn refused(reason: impl Into<String>) -> ActionCallError {
     Refused {
         reason: reason.into(),
     }
@@ -456,7 +456,7 @@ impl Workspaces {
     pub async fn keepers_turn(
         &self,
         turn: &HostedTurn<'_>,
-    ) -> Result<KeepersTurn, ActionHostError> {
+    ) -> Result<KeepersTurn, ActionCallError> {
         let caller = turn.caller;
         let acting = caller.acting();
         // An agent a person's own session was handed to, inside a turn:
@@ -506,7 +506,7 @@ impl Workspaces {
         &self,
         turn: &HostedTurn<'_>,
         target: &RemoteActionTarget,
-    ) -> Result<KeepersTurn, ActionHostError> {
+    ) -> Result<KeepersTurn, ActionCallError> {
         let using = self.keepers_turn(turn).await?;
         if !turn.may_take(&using.workspace, target) {
             return Err(NotPermitted);
@@ -553,7 +553,7 @@ impl Workspaces {
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,
         asked_in: Value,
-    ) -> Result<TurnUse, ActionHostError> {
+    ) -> Result<TurnUse, ActionCallError> {
         let using = self.turn_uses_for(turn, &request.target).await?;
         let arguments = arguments_of(request);
         let wanted = Use::read(&request.target, &arguments)?;
@@ -601,7 +601,7 @@ impl Workspaces {
         (request, arguments): (&InvokeRequest, Map<String, Value>),
         (kind, belongs): (vault_items::ItemKind, Vec<String>),
         (reason, asked_in): (String, Value),
-    ) -> Result<TurnUse, ActionHostError> {
+    ) -> Result<TurnUse, ActionCallError> {
         let person = hex::encode(using.person);
         let mut asks = self.hosted_asks();
         let open = asks.get_or_insert_with(Vec::new);
@@ -717,7 +717,7 @@ impl Workspaces {
         ask: &str,
         shown: &Value,
         answer: UseAnswer,
-    ) -> Result<Option<Value>, ActionHostError> {
+    ) -> Result<Option<Value>, ActionCallError> {
         let claimed = self.claim_use(ask)?;
         self.carry_out_use(turn, &claimed, shown, answer).await
     }
@@ -735,7 +735,7 @@ impl Workspaces {
         clippy::significant_drop_tightening,
         reason = "the claim is read and written under one lock, so two readers of one answer cannot both take it"
     )]
-    pub fn claim_use(&self, ask: &str) -> Result<OpenAsk, ActionHostError> {
+    pub fn claim_use(&self, ask: &str) -> Result<OpenAsk, ActionCallError> {
         let claimed = {
             let mut asks = self.hosted_asks();
             let Some(kept) = asks
@@ -772,7 +772,7 @@ impl Workspaces {
         claimed: &OpenAsk,
         shown: &Value,
         answer: UseAnswer,
-    ) -> Result<Option<Value>, ActionHostError> {
+    ) -> Result<Option<Value>, ActionCallError> {
         let carried = self.carry_out(turn, claimed, shown, answer).await;
         self.forget_use(&claimed.person, &claimed.ask);
         carried
@@ -785,7 +785,7 @@ impl Workspaces {
         kept: &OpenAsk,
         shown: &Value,
         answer: UseAnswer,
-    ) -> Result<Option<Value>, ActionHostError> {
+    ) -> Result<Option<Value>, ActionCallError> {
         let mut person = [0; 32];
         hex::decode_to_slice(&kept.person, &mut person).map_err(|_| UnknownAction)?;
         let root = self.person_settings_root(&person);

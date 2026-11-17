@@ -21,7 +21,8 @@ use tilo_actions::InvocationId;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::mcp_server::{self, Server};
 use tilo_actions::remote::{
-    ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark, settle_with,
+    ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark,
+    settle_with,
 };
 use tilo_server_client::revoke_device;
 use tilo_session_client::device::session_as_agent;

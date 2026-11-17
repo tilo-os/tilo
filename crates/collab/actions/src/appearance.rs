@@ -188,12 +188,12 @@ pub fn check_avatar_bytes(bytes: &[u8]) -> Result<(), AppearanceError> {
 /// it under the caller's own name.
 ///
 /// # Errors
-/// [`crate::remote::ActionHostError::Refused`] when the request carries one.
+/// [`crate::remote::ActionCallError::Refused`] when the request carries one.
 pub fn refuse_here(
     request: &crate::remote::InvokeRequest,
-) -> Result<(), crate::remote::ActionHostError> {
+) -> Result<(), crate::remote::ActionCallError> {
     match request.appearance {
-        Some(_) => Err(crate::remote::ActionHostError::Refused {
+        Some(_) => Err(crate::remote::ActionCallError::Refused {
             reason: "only a bot allowed to post under other names may carry an appearance".into(),
         }),
         None => Ok(()),
@@ -206,27 +206,27 @@ pub fn refuse_here(
 /// in the workspace's content store under its own hash.
 ///
 /// # Errors
-/// [`crate::remote::ActionHostError::Refused`] for a caller that may not show
-/// another name; [`crate::remote::ActionHostError::InvalidRequest`] for an
+/// [`crate::remote::ActionCallError::Refused`] for a caller that may not show
+/// another name; [`crate::remote::ActionCallError::InvalidRequest`] for an
 /// invalid appearance or avatar.
 pub fn admit(
     caller: &crate::remote::Caller,
     appearance: &Appearance,
     allows_personas: impl FnOnce(&str) -> bool,
     avatar: impl FnOnce(&str) -> Option<Vec<u8>>,
-) -> Result<Appearance, crate::remote::ActionHostError> {
-    use crate::remote::ActionHostError;
+) -> Result<Appearance, crate::remote::ActionCallError> {
+    use crate::remote::ActionCallError;
     let Some(installation) = caller.acting().bot_id() else {
-        return Err(ActionHostError::Refused {
+        return Err(ActionCallError::Refused {
             reason: "only a bot allowed to post under other names may carry an appearance".into(),
         });
     };
     if !allows_personas(installation) {
-        return Err(ActionHostError::Refused {
+        return Err(ActionCallError::Refused {
             reason: "this bot's installation does not allow it to post under other names".into(),
         });
     }
-    let invalid = |error: AppearanceError| ActionHostError::InvalidRequest {
+    let invalid = |error: AppearanceError| ActionCallError::InvalidRequest {
         reason: error.to_string(),
     };
     appearance.validate().map_err(invalid)?;
@@ -381,7 +381,7 @@ mod tests {
 
         phase a_api_that_cannot_check_a_bot_refuses_an_appearance;
         {
-            use crate::remote::{ActionHostError, InvokeArgument, InvokeRequest, RemoteActionTarget};
+            use crate::remote::{ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget};
             let mut request = InvokeRequest {
                 invocation: crate::InvocationId(uuid::Uuid::from_u128(1)),
                 target: RemoteActionTarget {
@@ -400,13 +400,13 @@ mod tests {
             request.appearance = Some(Appearance::new("alice", None, None).unwrap());
             assert!(matches!(
                 refuse_here(&request),
-                Err(ActionHostError::Refused { .. })
+                Err(ActionCallError::Refused { .. })
             ));
         }
 
         phase only_a_bot_whose_installation_allows_personas_is_admitted;
         {
-            use crate::remote::{ActionHostError, Caller};
+            use crate::remote::{ActionCallError, Caller};
             let alice = Appearance::new("alice", None, None).unwrap();
             let bot = Caller::bot("7f1c", [1; 32], [2; 32]);
             assert_eq!(
@@ -420,12 +420,12 @@ mod tests {
             );
             assert!(matches!(
                 admit(&bot, &alice, |_| false, |_| None),
-                Err(ActionHostError::Refused { .. })
+                Err(ActionCallError::Refused { .. })
             ));
             let person = Caller::local_person("ada");
             assert!(matches!(
                 admit(&person, &alice, |_| true, |_| None),
-                Err(ActionHostError::Refused { .. })
+                Err(ActionCallError::Refused { .. })
             ));
             let hidden = Appearance {
                 name: "a\u{200B}lice".into(),
@@ -434,23 +434,23 @@ mod tests {
             };
             assert!(matches!(
                 admit(&bot, &hidden, |_| true, |_| None),
-                Err(ActionHostError::InvalidRequest { .. })
+                Err(ActionCallError::InvalidRequest { .. })
             ));
         }
 
         phase an_avatar_must_be_in_the_store_match_its_hash_and_be_an_image;
         {
-            use crate::remote::{ActionHostError, Caller};
+            use crate::remote::{ActionCallError, Caller};
             let bot = Caller::bot("7f1c", [1; 32], [2; 32]);
             let image = png();
             let hash = blake3::hash(&image).to_hex().to_string();
             let shown = Appearance::new("alice", Some(hash.clone()), None).unwrap();
             let stored = |wanted: &str| (wanted == hash).then(|| image.clone());
             assert_eq!(admit(&bot, &shown, |_| true, stored), Ok(shown.clone()));
-            let refused = |result: Result<Appearance, ActionHostError>, expected: AppearanceError| {
+            let refused = |result: Result<Appearance, ActionCallError>, expected: AppearanceError| {
                 assert_eq!(
                     result,
-                    Err(ActionHostError::InvalidRequest {
+                    Err(ActionCallError::InvalidRequest {
                         reason: expected.to_string()
                     })
                 );

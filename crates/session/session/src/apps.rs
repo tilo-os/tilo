@@ -436,7 +436,7 @@ impl Apps {
         let (broker, caller, wake) = {
             let state = self.state.borrow();
             let Some(broker) = &state.broker else {
-                return Err(no_action_host());
+                return Err(no_action_provider());
             };
             (
                 Arc::clone(broker),
@@ -1380,7 +1380,7 @@ impl Apps {
         let workspace = match application_provider(&target.provider) {
             Some((workspace, _)) => workspace.to_owned(),
             None => provider_workspace(&target.provider)
-                .ok_or_else(no_action_host)?
+                .ok_or_else(no_action_provider)?
                 .to_owned(),
         };
         let app = target
@@ -2135,7 +2135,7 @@ impl AppActions for Apps {
         let workspace = match application_provider(&target.provider) {
             Some((workspace, _)) => workspace.to_owned(),
             None => provider_workspace(&target.provider)
-                .ok_or_else(no_action_host)?
+                .ok_or_else(no_action_provider)?
                 .to_owned(),
         };
         self.deliver_answered(target, arguments, &workspace, Some(answered))
@@ -2219,7 +2219,7 @@ impl AppActions for Apps {
     fn cancel(&self, _app: &str, _workspace: &str, _invocation: &str) -> Result<(), ApiError> {
         // A job's row carries the invocation the broker follows, and no row is listed yet
         // ([`Self::jobs`]), so nothing names one to stop.
-        Err(no_action_host())
+        Err(no_action_provider())
     }
 
     /// Open `uri` in the app that takes it: the app this workspace's defaults, the person's own or
@@ -2357,12 +2357,12 @@ pub(crate) fn window_is_its_page(app: &str) -> bool {
     })
 }
 
-/// Why an action an app publishes cannot be run here: the action host an app's resources arrive on
+/// Why an action an app publishes cannot be run here: the provider an app's resources arrive on
 /// is not mounted in this session.
-fn no_action_host() -> ApiError {
+fn no_action_provider() -> ApiError {
     ApiError::Unavailable {
-        code: "action_host_unavailable".into(),
-        reason: "The session runs without an action host".into(),
+        code: "action_provider_unavailable".into(),
+        reason: "The session runs without an action provider".into(),
     }
 }
 

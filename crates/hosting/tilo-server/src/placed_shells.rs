@@ -33,7 +33,7 @@ use legacy_vm::hosted::control::{self, ENVIRONMENT, Reply, Request, VmRequest};
 use legacy_vm::hosted::size::VmSize;
 use serde::Deserialize;
 use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRan, CommandRequest};
-use tilo_actions::remote::{ActionHost, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
+use tilo_actions::remote::{ActionProvider, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_agent_session::workspace_actions::{ShellRan, Watching};
 use tilo_peer_state::actions::ActionService;

@@ -21,7 +21,7 @@ use tilo_actions::remote::environment_device::{
     self, END_WINDOW_SHARE, MEDIA_KEYS, MediaKeys, SHARE_WINDOW, WindowShare,
 };
 use tilo_actions::remote::{
-    ActionHostError, Caller, InvocationReceipt, InvokeRequest, ReceiptStatus, RemoteActionMessage,
+    ActionCallError, Caller, InvocationReceipt, InvokeRequest, ReceiptStatus, RemoteActionMessage,
     pending,
 };
 use tilo_desktop_model::ids::{device_salt_of_key, peer_salt_of};
@@ -54,9 +54,9 @@ impl HostedBrowsers {
     ) -> Option<crate::app_serving::Routing> {
         let action = environment_device::action_of(&request.target)?.to_owned();
         let message = RemoteActionMessage::Invoke(request.clone());
-        let refused = |error: ActionHostError| super::answered_with(&message, error);
+        let refused = |error: ActionCallError| super::answered_with(&message, error);
         let Some(asked) = self.asking_device(workspace_id, caller) else {
-            return refused(ActionHostError::NotPermitted);
+            return refused(ActionCallError::NotPermitted);
         };
         let invocation = request.invocation;
         let argument = request.argument.clone();
@@ -108,25 +108,25 @@ impl Asked {
         &self,
         action: &str,
         argument: &tilo_actions::remote::InvokeArgument,
-    ) -> Result<serde_json::Value, ActionHostError> {
+    ) -> Result<serde_json::Value, ActionCallError> {
         match action {
             MEDIA_KEYS => self.media_keys().await,
             SHARE_WINDOW | END_WINDOW_SHARE => {
                 let window: WindowShare = argument_of(argument)?;
                 self.share(&window, action == SHARE_WINDOW).await
             }
-            _ => Err(ActionHostError::NotPermitted),
+            _ => Err(ActionCallError::NotPermitted),
         }
     }
 
     /// The media keys of this device's own streams at the media channel's
     /// current epoch, sealed to it.
-    async fn media_keys(&self) -> Result<serde_json::Value, ActionHostError> {
+    async fn media_keys(&self) -> Result<serde_json::Value, ActionCallError> {
         let keys = self
             .workspaces
             .as_ref()
             .and_then(tilo_workspace_host::workspaces::Workspaces::device_keys)
-            .ok_or_else(|| ActionHostError::Unavailable {
+            .ok_or_else(|| ActionCallError::Unavailable {
                 reason: "this host holds no workspace's keys".to_owned(),
             })?;
         lend(
@@ -143,19 +143,19 @@ impl Asked {
         &self,
         window: &WindowShare,
         share: bool,
-    ) -> Result<serde_json::Value, ActionHostError> {
+    ) -> Result<serde_json::Value, ActionCallError> {
         if !owns_window(&self.device.device_public_key, window.tab) {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let id = window_share_id(window.tab);
         let refused =
-            |error: tilo_workspace_host::workspaces::CollaborationError| ActionHostError::Refused {
+            |error: tilo_workspace_host::workspaces::CollaborationError| ActionCallError::Refused {
                 reason: error.to_string(),
             };
         let workspaces = self
             .workspaces
             .as_ref()
-            .ok_or_else(|| ActionHostError::Unavailable {
+            .ok_or_else(|| ActionCallError::Unavailable {
                 reason: "this host governs no workspace".to_owned(),
             })?;
         let grants = if share {
@@ -181,8 +181,8 @@ async fn lend(
     keys: &dyn tilo_workspace_host::workspaces::GroupKeys,
     workspace: &str,
     device: [u8; 32],
-) -> Result<serde_json::Value, ActionHostError> {
-    let unavailable = |reason: String| ActionHostError::Unavailable { reason };
+) -> Result<serde_json::Value, ActionCallError> {
+    let unavailable = |reason: String| ActionCallError::Unavailable { reason };
     let content = keys
         .group_keys(workspace, false)
         .await
@@ -212,8 +212,8 @@ fn owns_window(device: &[u8; 32], tab: u64) -> bool {
 /// `argument` as the JSON object `T` is.
 fn argument_of<T: serde::de::DeserializeOwned>(
     argument: &tilo_actions::remote::InvokeArgument,
-) -> Result<T, ActionHostError> {
-    let invalid = |reason: String| ActionHostError::InvalidRequest { reason };
+) -> Result<T, ActionCallError> {
+    let invalid = |reason: String| ActionCallError::InvalidRequest { reason };
     let tilo_actions::remote::InvokeArgument::Json(map) = argument else {
         return Err(invalid("the window is named in JSON".to_owned()));
     };
@@ -312,7 +312,7 @@ mod tests {
         let device = [5; 32];
         let refused = lend(&Holding(media()), "another-workspace", device).await;
         assert!(
-            matches!(refused, Err(ActionHostError::Unavailable { .. })),
+            matches!(refused, Err(ActionCallError::Unavailable { .. })),
             "{refused:?}"
         );
     }

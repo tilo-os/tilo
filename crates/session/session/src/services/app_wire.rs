@@ -372,8 +372,8 @@ pub(crate) fn start_app_wire(
     };
     // What arrives on this device's app wire is answered by the broker that now serves: another
     // of the person's devices runs nothing here the person in front of it could not.
-    if let (Some(actions), Some(host)) = (actions, broker.app_action_broker()) {
-        actions.install(host.device_host());
+    if let (Some(actions), Some(broker)) = (actions, broker.app_action_broker()) {
+        actions.install(broker.device_host());
         attach_remote_use(&actions, options);
     }
     Ok(Some(AppWire {

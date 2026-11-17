@@ -1,14 +1,14 @@
-//! A shared host is the host ([`ActionHost`] for `Arc<H>`).
+//! A shared provider is the provider ([`ActionProvider`] for `Arc<H>`).
 
 use super::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
     ContentGets, ContentPuts, InvocationId, InvocationReceipt, InvocationState, InvokeRequest,
     Pending, ResourceChanges, ResourceReads,
 };
 
-/// A shared host is the host: what lets one be handed to [`super::serve`], which
+/// A shared provider is the provider: what lets one be handed to [`super::serve`], which
 /// keeps a handle for answers that wait.
-impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
+impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
     fn retire_execution(&self, caller: &Caller) {
         (**self).retire_execution(caller);
     }
@@ -17,7 +17,7 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         (**self).query(caller, query)
     }
 
@@ -25,7 +25,7 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         (**self).invoke(caller, request)
     }
 
@@ -49,7 +49,7 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
         (**self).changed(caller, scope)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         (**self).cancel(caller, id)
     }
 
@@ -57,7 +57,7 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
         (**self).confirm(caller, request)
     }
 

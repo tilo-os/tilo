@@ -2,11 +2,11 @@
 //! and `pdf-viewer#open content=…` opens a file the workspace holds in the app that opens it,
 //! whether or not the app runs already.
 
-use super::{ActionHost, Addressed, McpServer, OneCall, Value, json};
+use super::{ActionProvider, Addressed, McpServer, OneCall, Value, json};
 use super::{Done, LsArgs, ParsedPath, Reply, app_names, outcome};
 use std::fmt::Write as _;
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `notes#open` (or `notes#start`, without a window): start an installed app, then say
     /// what is in it.
     pub(super) async fn launch(

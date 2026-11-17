@@ -208,7 +208,7 @@ fn directory_request(
 async fn admit_directory_invoke(
     fixture: &LocalDirectoryFixture,
     request: &tilo_actions::remote::InvokeRequest,
-) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError> {
+) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError> {
     use tilo_actions::remote::Caller;
     let caller = Caller::local_person("fixture-owner")
         .in_workspace(fixture.cluster_id.clone())
@@ -224,7 +224,7 @@ async fn admit_directory_invoke(
 /// revision named empty is still refused.
 #[tokio::test(flavor = "current_thread")]
 async fn a_directory_invoke_naming_no_revision_resolves_the_directory_as_it_is_now() {
-    use tilo_actions::remote::{ActionHostError, Caller, PendingPoll};
+    use tilo_actions::remote::{ActionCallError, Caller, PendingPoll};
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut fixture = local_directory_fixture();
@@ -238,7 +238,7 @@ async fn a_directory_invoke_naming_no_revision_resolves_the_directory_as_it_is_n
                     .state
                     .action_invoke(&caller, None, None, &request)
                     .poll_ready(),
-                PendingPoll::Ready(Err(ActionHostError::InvalidRequest { .. }))
+                PendingPoll::Ready(Err(ActionCallError::InvalidRequest { .. }))
             ));
             request.revision = None;
             admit_directory_invoke(&fixture, &request)
@@ -290,7 +290,7 @@ async fn revisionless_admission_records_the_resolved_revision() {
 /// as stale rather than admitting it unbound.
 #[tokio::test(flavor = "current_thread")]
 async fn a_revisionless_invoke_an_owner_cannot_bind_is_refused() {
-    use tilo_actions::remote::ActionHostError;
+    use tilo_actions::remote::ActionCallError;
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut fixture = local_directory_fixture();
@@ -298,7 +298,7 @@ async fn a_revisionless_invoke_an_owner_cannot_bind_is_refused() {
             let request = directory_request(&fixture, None, None);
             let refused = admit_directory_invoke(&fixture, &request).await;
             assert!(
-                matches!(&refused, Err(ActionHostError::StaleRevision)),
+                matches!(&refused, Err(ActionCallError::StaleRevision)),
                 "{refused:?}"
             );
             assert!(
@@ -320,7 +320,7 @@ async fn a_revisionless_invoke_an_owner_cannot_bind_is_refused() {
 /// admitted, and so is an action asking no confirmation without one.
 #[tokio::test(flavor = "current_thread")]
 async fn confirmed_directory_action_needs_a_revision() {
-    use tilo_actions::remote::{ActionHostError, CONFIRMED_ACTION_NEEDS_REVISION, Confirmation};
+    use tilo_actions::remote::{ActionCallError, CONFIRMED_ACTION_NEEDS_REVISION, Confirmation};
     tokio::task::LocalSet::new()
         .run_until(async {
             let root = tempfile::tempdir().unwrap();
@@ -331,7 +331,7 @@ async fn confirmed_directory_action_needs_a_revision() {
             assert!(
                 matches!(
                     &refused,
-                    Err(ActionHostError::InvalidRequest { reason })
+                    Err(ActionCallError::InvalidRequest { reason })
                         if reason == CONFIRMED_ACTION_NEEDS_REVISION
                 ),
                 "{refused:?}"

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, CHANGED_UNAVAILABLE, Caller, MAX_REMOTE_WAIT,
+    ActionCallError, ActionProvider as _, CHANGED_UNAVAILABLE, Caller, MAX_REMOTE_WAIT,
     RESOURCE_READ_REFUSED, RESOURCE_READS_UNAVAILABLE, ResourceAddress, ResourceCopy,
     ResourceReadRequest, WatchScope,
 };
@@ -76,7 +76,7 @@ impl HeldRecords for Held {
         &self,
         caller: &Caller,
         address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionHostError> {
+    ) -> Result<ResourceCopy, ActionCallError> {
         self.read.set(self.read.get().saturating_add(1));
         if caller.workspace() != Some(WORKSPACE) || self.denied.borrow().contains(&address.app) {
             return Err(refused());
@@ -112,7 +112,7 @@ fn desktop() -> (RemoteActions, Openings, RecordAnswers, Arc<AtomicBool>) {
     let (session, openings) = super::serve(WORKSPACE, Arc::clone(&woken));
     let answers = openings.answer_records();
     let window =
-        RemoteActions::with_host(session, Caller::local_person("ada").in_workspace(WORKSPACE));
+        RemoteActions::with_provider(session, Caller::local_person("ada").in_workspace(WORKSPACE));
     (window, openings, answers, woken)
 }
 
@@ -148,8 +148,8 @@ fn revision(call: &ui::ResourceReadCall) -> Option<String> {
     })
 }
 
-fn refused() -> ActionHostError {
-    ActionHostError::Refused {
+fn refused() -> ActionCallError {
+    ActionCallError::Refused {
         reason: RESOURCE_READ_REFUSED.into(),
     }
 }
@@ -247,7 +247,7 @@ fn a_read_the_desktop_refuses_is_refused() {
     // Someone from outside the workspace reads nothing of it.
     let (session, openings) = super::serve(WORKSPACE, Arc::default());
     let mut answers = openings.answer_records();
-    let outsider = RemoteActions::with_host(session, Caller::local_person("eve"));
+    let outsider = RemoteActions::with_provider(session, Caller::local_person("eve"));
     let read = outsider.read_resource(None, record_of(TASKS));
     held.let_read(TASKS, true);
     answers.answer(&held, now);
@@ -260,10 +260,10 @@ fn a_desktop_that_answers_no_reads_says_so_at_once() {
     let (session, _openings) = super::serve(WORKSPACE, Arc::default());
     let caller = Caller::local_person("ada").in_workspace(WORKSPACE);
     assert!(session.changed(&caller, WatchScope::Records).is_none());
-    let window = RemoteActions::with_host(session, caller);
+    let window = RemoteActions::with_provider(session, caller);
     assert_eq!(
         window.read_resource(None, record_of(TASKS)).get(),
-        Arrival::Failed(ActionHostError::Unavailable {
+        Arrival::Failed(ActionCallError::Unavailable {
             reason: RESOURCE_READS_UNAVAILABLE.into(),
         })
     );
@@ -293,7 +293,7 @@ fn a_reader_that_takes_records_itself_is_refused_not_left_waiting() {
     );
     assert_eq!(
         taken.err(),
-        Some(ActionHostError::Refused {
+        Some(ActionCallError::Refused {
             reason: super::ASKED_NOT_TAKEN.into(),
         })
     );
@@ -382,7 +382,7 @@ fn a_wait_for_a_change_ends_when_the_records_move_or_within_its_bound() {
 
     assert_eq!(
         window.changed(WatchScope::Here).get(),
-        Arrival::Failed(ActionHostError::Unavailable {
+        Arrival::Failed(ActionCallError::Unavailable {
             reason: CHANGED_UNAVAILABLE.into(),
         })
     );

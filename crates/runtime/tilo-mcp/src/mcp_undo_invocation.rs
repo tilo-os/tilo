@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use super::watch::history_entries;
-use super::{ActionHost, Addressed, Failure, McpServer, OneCall, Reply, Value, json};
+use super::{ActionProvider, Addressed, Failure, McpServer, OneCall, Reply, Value, json};
 use tilo_lock::MutexRecover as _;
 
 /// How many of a record's changes are read to find a group's.
@@ -87,7 +87,7 @@ struct GroupEffect {
     over: Option<Value>,
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Take back the invocation `invocation` this session started (or a step of):
     /// every change it made, in every record it changed, or nothing when someone
     /// else's change stands on one of them.

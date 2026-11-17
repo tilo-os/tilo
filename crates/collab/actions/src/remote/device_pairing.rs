@@ -1,6 +1,6 @@
 use super::{ActionAddress, RemoteActionTarget};
 
-/// The provider the host answers pairing under.
+/// The provider that answers pairing under.
 pub const PROVIDER: &str = "tilo.device-pairing";
 /// The resource the steps are actions of.
 pub const RESOURCE: &str = "identity.device.pair";

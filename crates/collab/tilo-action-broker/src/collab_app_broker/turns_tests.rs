@@ -342,7 +342,7 @@ async fn a_turns_question_is_asked_under_its_session() {
                     first,
                     RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
                         status: tilo_actions::remote::ReceiptStatus::Rejected {
-                            error: tilo_actions::remote::ActionHostError::ConfirmationRequired { .. }
+                            error: tilo_actions::remote::ActionCallError::ConfirmationRequired { .. }
                         },
                         ..
                     })

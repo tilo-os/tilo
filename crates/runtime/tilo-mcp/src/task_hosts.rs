@@ -128,7 +128,7 @@ impl<H> WorkspaceCatalogue<H> {
 
 impl<H> TaskCatalogue for WorkspaceCatalogue<H>
 where
-    H: tilo_actions::remote::ActionHost + Send + Sync,
+    H: tilo_actions::remote::ActionProvider + Send + Sync,
 {
     /// The apps the workspace lists, each with the surface this build of the app publishes: a
     /// program compiles against the app's own declarations, so an app whose surface this build

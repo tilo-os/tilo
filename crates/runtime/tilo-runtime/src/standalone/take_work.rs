@@ -37,7 +37,7 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use std::net::ToSocketAddrs as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tilo_actions::remote::ActionHost;
+use tilo_actions::remote::ActionProvider;
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService};
 use tilo_user_identity::DeviceCert;
 
@@ -220,7 +220,7 @@ fn shell_runs(
     joined: &Arc<Joined>,
     replicas: Option<super::files::ReplicaSlot>,
     browsers: Option<PathBuf>,
-) -> Option<Arc<dyn ActionHost + Send + Sync>> {
+) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
     use ush::environment_commands::EnvironmentCommands;
     use ush::workspace_shell::WorkspaceShells;
     let member = profile.to_path_buf();
@@ -260,7 +260,7 @@ fn shell_runs(
     _joined: &Arc<Joined>,
     _replicas: Option<super::files::ReplicaSlot>,
     _browsers: Option<PathBuf>,
-) -> Option<Arc<dyn ActionHost + Send + Sync>> {
+) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
     None
 }
 

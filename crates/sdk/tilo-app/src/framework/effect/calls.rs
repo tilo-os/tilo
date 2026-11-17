@@ -3,7 +3,7 @@
 
 use std::sync::mpsc::TryRecvError;
 
-use tilo_actions::remote::ActionHostError;
+use tilo_actions::remote::ActionCallError;
 use tilo_actions::{ActionOutput, InvocationUpdate};
 use tilo_resource::Resource;
 use ui_core::Arrival;
@@ -48,8 +48,8 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// `then` with that outcome on the UI thread.
     fn wait_answer<A: 'static, T: Send + 'static>(
         &mut self,
-        answer: Result<ui_core::Arriving<A, ActionHostError>, String>,
-        settled: impl Fn(&Arrival<A, ActionHostError>) -> Option<Result<T, String>> + 'static,
+        answer: Result<ui_core::Arriving<A, ActionCallError>, String>,
+        settled: impl Fn(&Arrival<A, ActionCallError>) -> Option<Result<T, String>> + 'static,
         then: impl FnOnce(&mut H, Result<T, String>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
         let mut answer = Some(answer);
@@ -100,7 +100,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
 /// What `called`, a call of another resource's `action`, came to once it
 /// ended: its output, or why it did not go ahead. `None` while it runs.
 fn called_outcome(
-    arrival: &Arrival<InvocationUpdate, ActionHostError>,
+    arrival: &Arrival<InvocationUpdate, ActionCallError>,
     action: &str,
 ) -> Option<Result<ActionOutput, String>> {
     match arrival {

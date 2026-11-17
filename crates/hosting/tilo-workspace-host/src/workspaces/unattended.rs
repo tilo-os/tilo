@@ -22,7 +22,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use tilo_actions::remote::{ActionHostError, Caller, InvokeArgument, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_lock::RwLockRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
@@ -62,12 +62,12 @@ pub trait AsksPeople: Send + Sync {
 }
 
 /// Unknown and forbidden are the same answer.
-const fn unknown() -> ActionHostError {
-    ActionHostError::UnknownAction
+const fn unknown() -> ActionCallError {
+    ActionCallError::UnknownAction
 }
 
-fn refused(reason: impl Into<String>) -> ActionHostError {
-    ActionHostError::Refused {
+fn refused(reason: impl Into<String>) -> ActionCallError {
+    ActionCallError::Refused {
         reason: reason.into(),
     }
 }
@@ -158,7 +158,7 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let certificate = certificate
             .filter(|certificate| {
                 caller.device_public_key() == Some(&certificate.device_public_key)
@@ -175,14 +175,14 @@ impl Workspaces {
             return Err(unknown());
         }
         let InvokeArgument::Json(arguments) = &request.argument else {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: "`on` is true or false".into(),
             });
         };
         let on = arguments
             .get("on")
             .and_then(Value::as_bool)
-            .ok_or_else(|| ActionHostError::InvalidRequest {
+            .ok_or_else(|| ActionCallError::InvalidRequest {
                 reason: "`on` is true or false".into(),
             })?;
         let person = certificate.user_public_key;

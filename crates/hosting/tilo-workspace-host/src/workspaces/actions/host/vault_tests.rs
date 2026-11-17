@@ -10,7 +10,7 @@
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
+    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
 };
 use tilo_actions::remote::{person_accounts, person_models, person_vault};
@@ -36,7 +36,7 @@ pub(super) async fn ask_at(
     (device, caller): (&DeviceCert, &Caller),
     target: RemoteActionTarget,
     argument: Value,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     let argument = match argument {
         Value::Object(map) if !map.is_empty() => InvokeArgument::Json(map),
         _ => InvokeArgument::None,
@@ -71,7 +71,7 @@ pub(super) async fn ask(
     who: (&DeviceCert, &Caller),
     action: &str,
     argument: Value,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     ask_at(
         service,
         workspace_id,
@@ -115,7 +115,7 @@ async fn reaches_nothing_of_it(
     )
     .await;
     assert!(
-        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason == "That item is not kept here"),
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason == "That item is not kept here"),
         "{refused:?}"
     );
 }
@@ -287,7 +287,7 @@ async fn no_agent_reaches_a_persons_vault() {
         ] {
             let refused = ask(&service, workspace_id, (device, asking), action, argument).await;
             assert!(
-                matches!(refused, Err(ActionHostError::UnknownAction)),
+                matches!(refused, Err(ActionCallError::UnknownAction)),
                 "{who}, {action}: {refused:?}"
             );
         }
@@ -353,7 +353,7 @@ async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
         assert!(
             matches!(
                 refused,
-                ActionHostError::Refused { .. } | ActionHostError::InvalidRequest { .. }
+                ActionCallError::Refused { .. } | ActionCallError::InvalidRequest { .. }
             ),
             "{unusable}: {refused:?}"
         );
@@ -515,7 +515,7 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
     )
     .await;
     assert!(
-        matches!(refused, Err(ActionHostError::UnknownAction)),
+        matches!(refused, Err(ActionCallError::UnknownAction)),
         "{refused:?}"
     );
     server.shutdown().await;
@@ -630,7 +630,7 @@ async fn a_reference_is_refused_wherever_its_item_does_not_belong() {
         )
         .await;
         assert!(
-            matches!(&refused, Err(ActionHostError::Refused { reason: said }) if said == reason),
+            matches!(&refused, Err(ActionCallError::Refused { reason: said }) if said == reason),
             "{reason}: {refused:?}"
         );
     }
@@ -688,7 +688,7 @@ async fn only_a_persons_own_agent_uses_their_vault_and_only_by_reference() {
         )
         .await;
         assert!(
-            matches!(refused, Err(ActionHostError::UnknownAction)),
+            matches!(refused, Err(ActionCallError::UnknownAction)),
             "{other:?}: {refused:?}"
         );
     }
@@ -747,7 +747,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
         )
         .await;
         assert!(
-            matches!(&refused, Err(ActionHostError::Refused { reason }) if reason == "That item belongs somewhere else"),
+            matches!(&refused, Err(ActionCallError::Refused { reason }) if reason == "That item belongs somewhere else"),
             "{incoming}:{port} {outgoing}: {refused:?}"
         );
     }
@@ -765,7 +765,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
     )
     .await;
     assert!(
-        matches!(typed, Err(ActionHostError::UnknownAction)),
+        matches!(typed, Err(ActionCallError::UnknownAction)),
         "{typed:?}"
     );
 

@@ -10,7 +10,7 @@
 
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_actions::remote::{ActionHost as _, ActionHostError, InvokeRequest, ReceiptStatus};
+use tilo_actions::remote::{ActionCallError, ActionProvider as _, InvokeRequest, ReceiptStatus};
 use tilo_server_protocol::workspaces::JoinReply;
 use tilo_server_session::workspaces::{
     CREATE_OWN_WORKSPACE, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
@@ -37,7 +37,7 @@ async fn invoke(
     device: &DeviceCert,
     action: &str,
     argument: Value,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     let receipt = settled(
         host.as_host(device)
             .invoke(&caller(device), host_request(action, argument)),
@@ -794,7 +794,7 @@ async fn an_agents_run_on_a_persons_own_device_reads_their_list_and_changes_noth
     ] {
         let refused = ask(action, argument).await;
         assert!(
-            matches!(refused, Err(ActionHostError::UnknownAction)),
+            matches!(refused, Err(ActionCallError::UnknownAction)),
             "{action}: {refused:?}"
         );
     }

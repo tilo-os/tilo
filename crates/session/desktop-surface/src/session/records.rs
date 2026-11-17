@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, Completer, MAX_REMOTE_WAIT, Pending, RemoteActionMessage,
+    ActionCallError, Caller, Completer, MAX_REMOTE_WAIT, Pending, RemoteActionMessage,
     ResourceAddress, ResourceAsk, ResourceCopy, ResourceReadRequest, ResourceReads, WatchScope,
     pending, readings_of,
 };
@@ -46,14 +46,14 @@ pub trait HeldRecords {
     ///
     /// # Errors
     ///
-    /// As [`ResourceReads::read`]: [`ActionHostError::Refused`] for a record `caller` may not
-    /// read, [`ActionHostError::Unavailable`] for one that is still arriving, or while what the
+    /// As [`ResourceReads::read`]: [`ActionCallError::Refused`] for a record `caller` may not
+    /// read, [`ActionCallError::Unavailable`] for one that is still arriving, or while what the
     /// caller may read is not known yet.
     fn read(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionHostError>;
+    ) -> Result<ResourceCopy, ActionCallError>;
 
     /// A few bytes that differ whenever the committed content of the record `address` does (its
     /// heads), `None` for a record the desktop does not hold. Asked on every pass for every read
@@ -74,7 +74,7 @@ pub trait HeldRecords {
 struct RecordAsk {
     caller: Caller,
     read: ResourceReadRequest,
-    answer: Completer<Result<String, ActionHostError>>,
+    answer: Completer<Result<String, ActionCallError>>,
 }
 
 /// The session's end: the reads its windows ask, kept for the desktop.
@@ -135,8 +135,8 @@ impl ResourceReads for Reads {
     /// ([`Self::answer_read`]), never taken here. Refused, not unavailable: a reader that takes
     /// records itself ([`tilo_actions::remote::read_resources`]) reads an unavailable record as
     /// one still arriving, and would answer with a record that never comes.
-    fn read(&self, _: &Caller, _: &ResourceAddress) -> Result<ResourceCopy, ActionHostError> {
-        Err(ActionHostError::Refused {
+    fn read(&self, _: &Caller, _: &ResourceAddress) -> Result<ResourceCopy, ActionCallError> {
+        Err(ActionCallError::Refused {
             reason: ASKED_NOT_TAKEN.into(),
         })
     }
@@ -146,8 +146,8 @@ impl ResourceReads for Reads {
         _: &Caller,
         _: &ResourceAddress,
         _: &tilo_actions::remote::ResourceWake,
-    ) -> Result<(), ActionHostError> {
-        Err(ActionHostError::Refused {
+    ) -> Result<(), ActionCallError> {
+        Err(ActionCallError::Refused {
             reason: ASKED_NOT_TAKEN.into(),
         })
     }
@@ -341,7 +341,7 @@ impl RecordAnswers {
                 readings
                     .readable()
                     .map(|readings| readings.to_string())
-                    .map_err(|reason| ActionHostError::Refused { reason }),
+                    .map_err(|reason| ActionCallError::Refused { reason }),
             ),
             Err(error) => ask.answer.complete(Err(error)),
         }

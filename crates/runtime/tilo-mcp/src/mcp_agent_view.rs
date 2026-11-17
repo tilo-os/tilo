@@ -26,7 +26,7 @@ pub(super) struct ViewArgs {
 /// The app's action that reads its window as lines.
 const OUTLINE: &str = "outline";
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `tilo_view {path}`: the lines of the view `path` names, or of the app window that
     /// shows it. The app is started without a window when it does not run, so looking at a
     /// workspace needs nothing opened first.

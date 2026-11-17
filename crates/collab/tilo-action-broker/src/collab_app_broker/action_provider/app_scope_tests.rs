@@ -22,7 +22,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tilo_actions::remote::{
-    ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueRow, MAX_CATALOGUE_PAGE,
+    ActionCallError, Caller, CataloguePage, CatalogueQuery, CatalogueRow, MAX_CATALOGUE_PAGE,
     PendingPoll, workspace_provider,
 };
 use tilo_actions::{
@@ -564,7 +564,7 @@ impl DirectoryFixture {
     }
 
     /// `query`'s answer, draining the directory bridge until it arrives.
-    async fn answer(&self, query: &CatalogueQuery) -> Result<CataloguePage, ActionHostError> {
+    async fn answer(&self, query: &CatalogueQuery) -> Result<CataloguePage, ActionCallError> {
         let mut pending = self.state.action_query(&self.caller, query);
         tilo_test_env::within("the app-filtered directory query", async {
             loop {

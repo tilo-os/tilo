@@ -8,7 +8,7 @@ use super::BridgeError;
 #[derive(Debug)]
 pub(crate) struct Failure {
     pub(crate) message: String,
-    pub(crate) host: Option<tilo_actions::remote::ActionHostError>,
+    pub(crate) host: Option<tilo_actions::remote::ActionCallError>,
 }
 
 impl From<String> for Failure {
@@ -26,8 +26,8 @@ impl From<&str> for Failure {
     }
 }
 
-impl From<tilo_actions::remote::ActionHostError> for Failure {
-    fn from(error: tilo_actions::remote::ActionHostError) -> Self {
+impl From<tilo_actions::remote::ActionCallError> for Failure {
+    fn from(error: tilo_actions::remote::ActionCallError) -> Self {
         Self {
             message: error.to_string(),
             host: Some(error),

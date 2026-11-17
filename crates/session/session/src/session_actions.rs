@@ -144,7 +144,7 @@ impl HostStepServices for SessionActions {
 mod tests {
     use std::time::Duration;
 
-    use tilo_actions::remote::{ActionHostError, Caller, CatalogueQuery, PendingPoll};
+    use tilo_actions::remote::{ActionCallError, Caller, CatalogueQuery, PendingPoll};
 
     /// A headless session serving its own broker on `app_wire`, so the session's own actions reach
     /// the catalogue every caller of the desktop is offered.
@@ -166,8 +166,8 @@ mod tests {
     /// its invocation are read on the loop, which steps here until the answer is in.
     fn answered<T: Send + 'static>(
         session: &mut crate::Session,
-        ask: impl FnOnce() -> tilo_actions::remote::Pending<Result<T, ActionHostError>>,
-    ) -> Result<T, ActionHostError> {
+        ask: impl FnOnce() -> tilo_actions::remote::Pending<Result<T, ActionCallError>>,
+    ) -> Result<T, ActionCallError> {
         let (done, mut answered) = tilo_actions::remote::pending();
         ask().then(move |answer| done.complete(answer));
         let deadline = tilo_test_env::hang_deadline();
@@ -177,7 +177,7 @@ mod tests {
                 return answer.expect("the broker answers");
             }
         }
-        Err(ActionHostError::Refused {
+        Err(ActionCallError::Refused {
             reason: "the session did not answer".to_owned(),
         })
     }

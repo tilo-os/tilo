@@ -653,7 +653,7 @@ tilo_test_env::scenario! {
         );
         assert!(matches!(
             result,
-            Err(ActionHostError::Unavailable { reason })
+            Err(ActionCallError::Unavailable { reason })
                 if reason.contains("original policy clock or origin")
         ));
         assert!(

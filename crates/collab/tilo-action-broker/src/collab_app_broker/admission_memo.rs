@@ -8,7 +8,7 @@
 //!   are still checked on every verification.
 //! * [`with_admitted_now`]: one synchronous call that has just verified a
 //!   certified caller against current membership and policy
-//!   ([`super::local_action_host`]'s `invoke`) lends that admission to the
+//!   ([`super::local_action_provider`]'s `invoke`) lends that admission to the
 //!   dispatch it reaches before returning, so the same presentation is not
 //!   verified twice within microseconds on one thread. The scope ends when
 //!   the call returns: whatever continues later (a launch wait, a directory

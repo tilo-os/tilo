@@ -27,7 +27,7 @@ use tilo_actions::remote::person_asking::{
     self, AgentName, Asked, AskedBy, Call, MAX_NAME_BYTES, MAX_WORDS_BYTES, Permission,
     Permissions, Source, TakeBack, Waiting, WaitingQuestions, Words,
 };
-use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 
@@ -424,7 +424,7 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let person = Self::asking_person(caller, certificate, workspace_id)?;
         let address = &request.target.address;
         match (address.resource.as_str(), address.action.as_str()) {
@@ -447,7 +447,7 @@ impl Workspaces {
                     });
                 answer(&left)
             }
-            _ => Err(ActionHostError::UnknownAction),
+            _ => Err(ActionCallError::UnknownAction),
         }
     }
 
@@ -459,7 +459,7 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         if request.target.provider == person_asking::PROVIDER {
             self.person_asking_invoke(workspace_id, caller, certificate, request)
         } else {

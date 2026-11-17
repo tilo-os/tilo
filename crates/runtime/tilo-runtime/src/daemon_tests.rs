@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
         drop(endpoint);
     }
 
-    phase a_result_another_process_was_handed_opens_through_the_action_host;
+    phase a_result_another_process_was_handed_opens_through_the_action_provider;
     {
         let host = PageHost::default();
         host.offered
@@ -901,13 +901,13 @@ struct PageHost {
     invoked: std::sync::Arc<std::sync::Mutex<Vec<tilo_actions::remote::InvokeRequest>>>,
 }
 
-impl tilo_actions::remote::ActionHost for PageHost {
+impl tilo_actions::remote::ActionProvider for PageHost {
     fn query(
         &self,
         _caller: &tilo_actions::remote::Caller,
         query: tilo_actions::remote::CatalogueQuery,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
     > {
         use tilo_actions::remote::{CatalogueProvider, CatalogueResource, CatalogueRow};
         let rows: Vec<CatalogueRow> = if self.offered.load(std::sync::atomic::Ordering::SeqCst) {
@@ -964,7 +964,7 @@ impl tilo_actions::remote::ActionHost for PageHost {
         _caller: &tilo_actions::remote::Caller,
         request: tilo_actions::remote::InvokeRequest,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
         let invocation = request.invocation;
         self.invoked.lock().unwrap().push(request);
@@ -986,9 +986,9 @@ impl tilo_actions::remote::ActionHost for PageHost {
         &self,
         _caller: &tilo_actions::remote::Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
         tilo_actions::remote::Pending::ready(Err(
-            tilo_actions::remote::ActionHostError::UnknownInvocation,
+            tilo_actions::remote::ActionCallError::UnknownInvocation,
         ))
     }
 }

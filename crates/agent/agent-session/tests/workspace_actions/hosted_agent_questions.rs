@@ -13,7 +13,7 @@ use tilo_actions::remote::person_asking::{self, ActionName, Asked, Words};
 use tilo_server::{
     daemon,
     workspace_agents::{
-        Answered, Carried, Carries, HostAgents, ServerAsk, WorkspaceActionHost, invoke_named,
+        Answered, Carried, Carries, HostAgents, ServerAsk, WorkspaceActionProvider, invoke_named,
     },
     workspaces::{
         Workspaces,
@@ -1343,7 +1343,7 @@ async fn a_persons_stop_takes_back_what_the_stopped_turn_asked() {
         hosted.browser.cert.device_public_key,
     )
     .in_workspace(&hosted.workspace);
-    let holder = WorkspaceActionHost::new(
+    let holder = WorkspaceActionProvider::new(
         hosted.actions.clone(),
         WorkspaceId::parse(&hosted.workspace).unwrap(),
     );

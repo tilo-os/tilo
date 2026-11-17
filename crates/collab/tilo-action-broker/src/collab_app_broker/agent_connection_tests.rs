@@ -10,7 +10,7 @@
 use super::*;
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
-    ActionHost as _, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    ActionProvider as _, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
 use tilo_peer_state::join::agent_cert::AgentCert;
 
@@ -519,7 +519,7 @@ async fn an_agent_sessions_question_is_asked_on_the_shell_and_allowed_once() {
                 .unwrap_err();
             assert_eq!(
                 first,
-                tilo_actions::remote::ActionHostError::confirmation_required()
+                tilo_actions::remote::ActionCallError::confirmation_required()
             );
             let asking = host.confirm(&caller, &append_request(71));
             let shown = shell.shown(1).await;
@@ -545,7 +545,7 @@ async fn an_agent_sessions_question_is_asked_on_the_shell_and_allowed_once() {
                 .unwrap_err();
             assert_eq!(
                 next,
-                tilo_actions::remote::ActionHostError::confirmation_required(),
+                tilo_actions::remote::ActionCallError::confirmation_required(),
                 "once is once"
             );
             drop(f);
@@ -572,7 +572,7 @@ async fn an_agent_sessions_question_the_person_denies_refuses_the_step() {
             shell.answer(crate::app_actions::AppActionConsent::Deny);
             let refused = asking.await.expect("answered").unwrap_err();
             assert!(
-                matches!(&refused, tilo_actions::remote::ActionHostError::Refused { reason }
+                matches!(&refused, tilo_actions::remote::ActionCallError::Refused { reason }
                     if reason.contains(tilo_actions::draft::DECLINED)),
                 "{refused:?}"
             );
@@ -652,7 +652,7 @@ async fn an_agent_sessions_question_is_withdrawn_when_it_leaves_or_ends() {
             end(&f);
             let refused = asking.await.expect("answered").unwrap_err();
             assert!(
-                matches!(&refused, tilo_actions::remote::ActionHostError::Refused { reason }
+                matches!(&refused, tilo_actions::remote::ActionCallError::Refused { reason }
                     if reason.contains("withdrawn")),
                 "{refused:?}"
             );

@@ -5,7 +5,7 @@
 use std::cell::{Cell, RefCell};
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, ContentPutAnswer, ContentPutStep, HostedContentPuts,
+    ActionCallError, Caller, ContentPutAnswer, ContentPutStep, HostedContentPuts,
     MAX_CONTENT_FRAME_BYTES, Pending,
 };
 use tilo_content::ContentStore;
@@ -49,13 +49,13 @@ impl Host {
 }
 
 impl PutSteps for Host {
-    fn put_step(&self, step: ContentPutStep) -> Pending<Result<ContentPutAnswer, ActionHostError>> {
+    fn put_step(&self, step: ContentPutStep) -> Pending<Result<ContentPutAnswer, ActionCallError>> {
         self.steps.borrow_mut().push(step.clone());
         if let ContentPutStep::Append { offset, .. } = &step
             && self.lose_at.get() == Some(*offset)
         {
             self.lose_at.set(None);
-            return Pending::ready(Err(ActionHostError::Unavailable {
+            return Pending::ready(Err(ActionCallError::Unavailable {
                 reason: "the device did not answer in time".into(),
             }));
         }

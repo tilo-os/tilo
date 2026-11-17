@@ -11,12 +11,12 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use tilo_actions::remote::{
-    ActionHostError, CONTENT_PUTS_UNAVAILABLE, ContentPut, MAX_CONTENT_PUT_CHUNK,
+    ActionCallError, CONTENT_PUTS_UNAVAILABLE, ContentPut, MAX_CONTENT_PUT_CHUNK,
     MAX_OPEN_CONTENT_PUTS,
 };
 use tilo_lock::MutexRecover as _;
 
-use super::{ActionHost, Deserialize, McpServer, Surface, Value, json, parse, tool_result};
+use super::{ActionProvider, Deserialize, McpServer, Surface, Value, json, parse, tool_result};
 
 /// The longest base64 text of a chunk within [`MAX_CONTENT_PUT_CHUNK`].
 const MAX_CHUNK_TEXT: usize = MAX_CONTENT_PUT_CHUNK.div_ceil(3) * 4;
@@ -98,16 +98,16 @@ struct FinishArgs {
 }
 
 /// A host's refusal in its own words.
-fn refusal(error: ActionHostError) -> String {
+fn refusal(error: ActionCallError) -> String {
     match error {
-        ActionHostError::Refused { reason }
-        | ActionHostError::InvalidRequest { reason }
-        | ActionHostError::Unavailable { reason } => reason,
+        ActionCallError::Refused { reason }
+        | ActionCallError::InvalidRequest { reason }
+        | ActionCallError::Unavailable { reason } => reason,
         other => other.to_string(),
     }
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Answer one put tool, as this session's surface answers.
     pub(super) async fn put_call(&self, name: &str, args: Value) -> Value {
         let result = match name {
@@ -201,7 +201,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 Some(open) => open
                     .append(offset, &chunk)
                     .map(|written| (written, open.size())),
-                None => Err(ActionHostError::InvalidRequest {
+                None => Err(ActionCallError::InvalidRequest {
                     reason: format!("no upload {id} is open in this session"),
                 }),
             };
@@ -211,7 +211,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         .await
         .map_err(|_| "the chunk could not be appended".to_owned())?
         .map_err(|error| {
-            if matches!(error, ActionHostError::Refused { .. }) {
+            if matches!(error, ActionCallError::Refused { .. }) {
                 // The store refused the chunk: the upload is over.
                 self.uploads.lock_recover().open.remove(&id);
             }
@@ -226,13 +226,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let upload = Arc::clone(&slot);
         let reference = tokio::task::spawn_blocking(move || {
             let mut upload = upload.lock_recover();
-            let gone = || ActionHostError::InvalidRequest {
+            let gone = || ActionCallError::InvalidRequest {
                 reason: format!("no upload {id} is open in this session"),
             };
             let open = upload.as_ref().ok_or_else(gone)?;
             // Short of its size, the upload stays open to be completed.
             if open.written() != open.size() {
-                return Err(ActionHostError::InvalidRequest {
+                return Err(ActionCallError::InvalidRequest {
                     reason: format!(
                         "the upload has {} of {} bytes: append the rest at offset {}",
                         open.written(),

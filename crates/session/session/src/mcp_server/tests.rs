@@ -174,7 +174,7 @@ fn a_workspace_apps_record_is_read_without_the_sessions_pass() {
         },
     );
     assert!(
-        matches!(&read, Err(ActionHostError::Unavailable { reason })
+        matches!(&read, Err(ActionCallError::Unavailable { reason })
             if reason == "this desktop keeps no records of its own"),
         "answered from the broker, which this shell has none of: {read:?}"
     );
@@ -352,7 +352,7 @@ fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
             assert!(
                 matches!(
                     read,
-                    Err(ActionHostError::NotPermitted | ActionHostError::Refused { .. })
+                    Err(ActionCallError::NotPermitted | ActionCallError::Refused { .. })
                 ),
                 "an agent no broker lets read it reads none of it: {read:?}"
             );

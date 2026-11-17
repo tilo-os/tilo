@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::de::DeserializeOwned;
 use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::{ActionHostError, InvokeArgument, RemoteActionTarget};
+use tilo_actions::remote::{ActionCallError, InvokeArgument, RemoteActionTarget};
 use ui_core::Followed;
 use ui_core::arriving::{Arrival, Arriving, Source};
 
@@ -48,7 +48,7 @@ const DENIED: &[&str] = &["not_permitted", "permission_denied"];
 /// What `call`'s latest update says about the read; `None` while it has
 /// nothing new to show.
 fn answered<T: DeserializeOwned>(
-    call: &Arrival<InvocationUpdate, ActionHostError>,
+    call: &Arrival<InvocationUpdate, ActionCallError>,
 ) -> Option<Result<T, ReadFailure>> {
     let decode = |value: &serde_json::Value| {
         T::deserialize(value)
@@ -72,8 +72,8 @@ fn answered<T: DeserializeOwned>(
                 ReadFailure::Failed(error.message.clone())
             }))
         }
-        Arrival::Failed(ActionHostError::NotPermitted) => Some(Err(ReadFailure::Denied(
-            ActionHostError::NotPermitted.to_string(),
+        Arrival::Failed(ActionCallError::NotPermitted) => Some(Err(ReadFailure::Denied(
+            ActionCallError::NotPermitted.to_string(),
         ))),
         Arrival::Failed(error) => Some(Err(ReadFailure::Failed(error.to_string()))),
     }
@@ -112,7 +112,7 @@ struct Inner {
 }
 
 /// What lands each update of a followed call in its answer.
-type Lander = Box<dyn Fn(&Arrival<InvocationUpdate, ActionHostError>) + Send>;
+type Lander = Box<dyn Fn(&Arrival<InvocationUpdate, ActionCallError>) + Send>;
 
 /// What following a read does with its answer, whatever the answer's type:
 /// the following is not generic, so the runtime holds it once for every
@@ -270,7 +270,7 @@ fn follow(inner: &Inner, again: bool) {
     let followed = opener.follow(
         inner.target.clone(),
         inner.argument.borrow().clone(),
-        move |call: &Arrival<InvocationUpdate, ActionHostError>| {
+        move |call: &Arrival<InvocationUpdate, ActionCallError>| {
             if current.load(Ordering::Acquire) == generation {
                 land(call);
             }

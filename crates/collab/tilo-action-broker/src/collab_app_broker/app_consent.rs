@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tilo_actions::remote::{Caller, InvokeRequest, RemoteActionMessage};
 
 use super::AppBrokerState;
-use super::action_host::{ConnectionActionHost, RowScope};
+use super::action_provider::{ConnectionActionProvider, RowScope};
 use crate::app_actions::{
     AppActionAnswer, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
 };
@@ -257,11 +257,11 @@ impl AppBrokerState {
 pub(super) fn serve_after_consent(
     state: Arc<AppBrokerState>,
     consent: Box<PendingConsent>,
-    host: ConnectionActionHost,
+    provider: ConnectionActionProvider,
     caller: Caller,
     message: RemoteActionMessage,
 ) -> super::wire::Answer<RemoteActionMessage> {
-    use tilo_actions::remote::{ActionHostError, refuse};
+    use tilo_actions::remote::{ActionCallError, refuse};
     Box::pin(async move {
         let mut consent = consent;
         // A consent sheet shows no draft: only the choice counts. Resolved by
@@ -272,16 +272,16 @@ pub(super) fn serve_after_consent(
         let reply = match answered {
             Err(_) => refuse(
                 &message,
-                ActionHostError::Unavailable {
+                ActionCallError::Unavailable {
                     reason: "the sheet closed without the person's answer".into(),
                 },
             ),
             Ok(answer) if !answer.consent.grants() => {
-                refuse(&message, ActionHostError::NotPermitted)
+                refuse(&message, ActionCallError::NotPermitted)
             }
             Ok(answer) => {
                 if let Err(reason) = state.keep_app_action_consent(&consent, answer.consent) {
-                    refuse(&message, ActionHostError::Refused { reason })
+                    refuse(&message, ActionCallError::Refused { reason })
                 } else {
                     // Answered at admission, as before waits existed: an answer
                     // given for this call is spent by that admission, never
@@ -296,7 +296,7 @@ pub(super) fn serve_after_consent(
                     let person = consent.request.person.clone();
                     super::approval::serve_answering(
                         Arc::clone(&state),
-                        host,
+                        provider,
                         caller,
                         person,
                         message,
@@ -305,6 +305,6 @@ pub(super) fn serve_after_consent(
                 }
             }
         };
-        reply.ok_or_else(|| BrokerError::failed("the action host dropped the request".into()))
+        reply.ok_or_else(|| BrokerError::failed("the action provider dropped the request".into()))
     })
 }

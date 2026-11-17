@@ -4,7 +4,7 @@
 use super::*;
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
-    ActionHostError, Caller, CataloguePage, CatalogueProvider, InvocationReceipt, InvocationState,
+    ActionCallError, Caller, CataloguePage, CatalogueProvider, InvocationReceipt, InvocationState,
     InvokeRequest, Pending, ReceiptStatus,
 };
 use tilo_actions::{ActionContract, ActionKind, ExecutionLocus, InputSpec, InvocationUpdate};
@@ -128,12 +128,12 @@ impl Tracker {
     }
 }
 
-impl ActionHost for Tracker {
+impl ActionProvider for Tracker {
     fn query(
         &self,
         _caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         let rows = match (query.provider.as_deref(), &query.target) {
             (None, _) => Vec::new(),
             // An exact address is answered at whatever level it stands.
@@ -163,7 +163,7 @@ impl ActionHost for Tracker {
         &self,
         _caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         self.invoked.lock().unwrap().push(request);
         Pending::ready(Ok(InvocationReceipt {
@@ -208,7 +208,7 @@ impl ActionHost for Tracker {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionHostError>> {
+    ) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Ok(()))
     }
 }

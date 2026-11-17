@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending, ReceiptStatus,
 };
 use tilo_app::RemoteActions;
@@ -50,24 +50,24 @@ impl ResourceApp for NotesApp {
 /// `refusal`, else opens.
 #[derive(Default)]
 struct Api {
-    refusal: Option<ActionHostError>,
+    refusal: Option<ActionCallError>,
     asked: Mutex<Vec<InvokeRequest>>,
 }
 
-impl ActionHost for Api {
+impl ActionProvider for Api {
     fn query(
         &self,
         _: &Caller,
         _: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        Pending::ready(Err(ActionHostError::NotPermitted))
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::NotPermitted))
     }
 
     fn invoke(
         &self,
         _: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         self.asked.lock().unwrap().push(request);
         Pending::ready(match &self.refusal {
@@ -89,7 +89,7 @@ impl ActionHost for Api {
         &self,
         _: &Caller,
         _: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
@@ -127,12 +127,12 @@ fn a_reference_chip_opens_its_resource_in_its_own_app_and_tells_a_refusal() {
     assert_eq!(app.refused(), None);
 
     let api = Arc::new(Api {
-        refusal: Some(ActionHostError::NotPermitted),
+        refusal: Some(ActionCallError::NotPermitted),
         ..Api::default()
     });
     let _served = RemoteActions::enter(api.clone(), Caller::local_person("ada"));
     let mut app = open_chip(&api);
     let refused = app.refused().expect("the refusal is told");
     assert_eq!(refused.action, "open");
-    assert_eq!(refused.reason, ActionHostError::NotPermitted.to_string());
+    assert_eq!(refused.reason, ActionCallError::NotPermitted.to_string());
 }

@@ -387,7 +387,7 @@ pub(super) async fn remote_action_round_trip(
     answer.unwrap_or_else(|reason| {
         tilo_actions::remote::refuse(
             &message,
-            tilo_actions::remote::ActionHostError::Unavailable { reason },
+            tilo_actions::remote::ActionCallError::Unavailable { reason },
         )
         .unwrap_or(message)
     })

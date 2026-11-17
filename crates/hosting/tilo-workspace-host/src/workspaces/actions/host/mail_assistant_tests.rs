@@ -22,7 +22,9 @@ use tilo_actions::remote::person_accounts::{
     self, AccountAssistants, FetchedMail, FetchedMessage, FoundMail, MailAccounts, MailArrivals,
     StartedSend,
 };
-use tilo_actions::remote::{ActionHost, ActionHostError, Caller, CatalogueQuery, ReceiptStatus};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Caller, CatalogueQuery, ReceiptStatus,
+};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
@@ -80,7 +82,7 @@ impl Setup {
     }
 
     /// Ada's page: what a device of hers asks the host through.
-    fn page(&self) -> impl ActionHost + Clone + Send + 'static {
+    fn page(&self) -> impl ActionProvider + Clone + Send + 'static {
         self.host.in_workspace_as(self.workspace_id, &self.device)
     }
 
@@ -105,7 +107,7 @@ impl Setup {
         caller: &Caller,
         action: &str,
         argument: Value,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         asked_of(&self.page(), caller, action, argument).await
     }
 
@@ -122,11 +124,11 @@ impl Setup {
 
 /// What `caller` is answered when it asks `action` of `page`, or why not.
 async fn asked_of(
-    page: &(impl ActionHost + Sync),
+    page: &(impl ActionProvider + Sync),
     caller: &Caller,
     action: &str,
     argument: Value,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     let receipt = settled(page.invoke(caller, asking(action, argument))).await?;
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
@@ -135,22 +137,22 @@ async fn asked_of(
 }
 
 /// What an answer carries, read as `T`.
-fn read<T: serde::de::DeserializeOwned>(answer: Result<Value, ActionHostError>) -> T {
+fn read<T: serde::de::DeserializeOwned>(answer: Result<Value, ActionCallError>) -> T {
     serde_json::from_value(answer.expect("the host answers")).expect("the answer reads")
 }
 
 /// `answer` is the one answer for unknown and forbidden.
-fn nobody(what: &str, answer: Result<Value, ActionHostError>) {
+fn nobody(what: &str, answer: Result<Value, ActionCallError>) {
     let refused = answer.expect_err(what);
     assert!(
-        matches!(refused, ActionHostError::UnknownAction),
+        matches!(refused, ActionCallError::UnknownAction),
         "{what}: {refused:?}"
     );
 }
 
 /// The mail actions the catalogue offers `caller` on `page`: none when it
 /// is offered nothing.
-async fn offered(page: &(impl ActionHost + Sync), caller: &Caller) -> Vec<String> {
+async fn offered(page: &(impl ActionProvider + Sync), caller: &Caller) -> Vec<String> {
     let query = CatalogueQuery {
         provider: Some(person_accounts::PROVIDER.into()),
         max_results: 100,
@@ -181,9 +183,9 @@ fn lunch() -> Value {
 /// `caller` begins the message to Bo over `page` and asks for it to be
 /// sent.
 async fn send_lunch(
-    page: &(impl ActionHost + Sync),
+    page: &(impl ActionProvider + Sync),
     caller: &Caller,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     let begun: StartedSend =
         read(asked_of(page, caller, person_accounts::BEGIN_SEND, lunch()).await);
     asked_of(
@@ -253,7 +255,7 @@ async fn a_person_names_the_agent_that_may_read_an_account() {
     let stranger = json!({"account": "eve@example.test", "agent": ASSISTANT, "may": true});
     let refused = setup.ask(&ada, person_accounts::ASSISTANT, stranger).await;
     assert!(
-        matches!(refused, Err(ActionHostError::Refused { .. })),
+        matches!(refused, Err(ActionCallError::Refused { .. })),
         "{refused:?}"
     );
 
@@ -383,7 +385,7 @@ async fn a_message_the_assistant_would_send_waits_for_its_person() {
 
     let unasked = send_lunch(&page, &agent).await;
     assert!(
-        matches!(unasked, Err(ActionHostError::ConfirmationRequired { .. })),
+        matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
         "with nobody to ask through: {unasked:?}"
     );
 
@@ -393,7 +395,7 @@ async fn a_message_the_assistant_would_send_waits_for_its_person() {
     assert!(
         matches!(
             unanswered,
-            Err(ActionHostError::ConfirmationRequired { .. })
+            Err(ActionCallError::ConfirmationRequired { .. })
         ),
         "with no answer: {unanswered:?}"
     );
@@ -416,7 +418,7 @@ async fn a_message_the_assistant_would_send_waits_for_its_person() {
         .ask_people(Asked::answering(Some(ConfirmationAnswer::Deny)));
     let denied = send_lunch(&page, &agent).await;
     assert!(
-        matches!(denied, Err(ActionHostError::Refused { .. })),
+        matches!(denied, Err(ActionCallError::Refused { .. })),
         "{denied:?}"
     );
     assert!(setup.servers.asked().is_empty(), "nothing left unallowed");
@@ -497,7 +499,7 @@ async fn nobody_elses_agent_reads_a_persons_mail() {
     // Bo himself reads his own accounts, of which this is none.
     let his = asked_of(&bos_page, &caller(&bo), fetch, hers()).await;
     assert!(
-        matches!(his, Err(ActionHostError::Refused { .. })),
+        matches!(his, Err(ActionCallError::Refused { .. })),
         "{his:?}"
     );
     assert!(setup.servers.asked().is_empty(), "no server was asked");
@@ -605,7 +607,7 @@ fn lunch_with(fields: &Value) -> Value {
 }
 
 /// Why a request was not carried out.
-type Refusal = ActionHostError;
+type Refusal = ActionCallError;
 
 /// The rows a question names its recipients in.
 const WHOM: [&str; 3] = ["To", "Copy to", "Blind copy to"];

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
@@ -39,12 +39,12 @@ impl ServerHost {
     }
 }
 
-impl ActionHost for ServerHost {
+impl ActionProvider for ServerHost {
     fn query(
         &self,
         _caller: &Caller,
         _query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(CataloguePage {
             exhausted: true,
             ..CataloguePage::default()
@@ -55,10 +55,10 @@ impl ActionHost for ServerHost {
         &self,
         _caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if request.target == mcp_server::target(mcp_server::REVOKE) {
             let InvokeArgument::Json(argument) = &request.argument else {
-                return Pending::ready(Err(ActionHostError::InvalidRequest {
+                return Pending::ready(Err(ActionCallError::InvalidRequest {
                     reason: "a revoke names its grant".into(),
                 }));
             };
@@ -97,7 +97,7 @@ impl ActionHost for ServerHost {
             .filter(|state| state.invocation() == *id)
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Ok(()))
     }
 }

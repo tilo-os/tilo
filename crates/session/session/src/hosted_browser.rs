@@ -42,8 +42,8 @@ use tilo_actions::remote::browser::{MARK, Report, SEND_HELD};
 use tilo_actions::remote::environment_device;
 use tilo_actions::remote::linux_apps::{self, AppLaunch};
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
-    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    ActionCallError, ActionProvider as _, Caller, CataloguePage, CatalogueQuery,
+    ConfirmedInvocation, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::selection::logical_resource_id;
 use tilo_server_protocol::hosted::Material;
@@ -286,7 +286,7 @@ enum Arrived {
     /// why they did not give one, and the invocation it answers.
     Answered {
         request: Box<InvokeRequest>,
-        answer: Box<Result<ConfirmedInvocation, ActionHostError>>,
+        answer: Box<Result<ConfirmedInvocation, ActionCallError>>,
     },
 }
 
@@ -754,7 +754,7 @@ impl HostedBrowser {
                 let answered = Arrived::Answered {
                     request: Box::new(request),
                     answer: Box::new(
-                        answer.unwrap_or(Err(ActionHostError::confirmation_required())),
+                        answer.unwrap_or(Err(ActionCallError::confirmation_required())),
                     ),
                 };
                 if arrived.send(answered).is_err() {

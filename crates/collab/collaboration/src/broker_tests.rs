@@ -1143,7 +1143,7 @@ impl FakeHost {
 
     fn remote_action(&self, frame: &[u8]) -> Result<Reply, String> {
         use tilo_actions::remote::{
-            ActionHostError, InvocationReceipt, ReceiptStatus, RemoteActionFrame,
+            ActionCallError, InvocationReceipt, ReceiptStatus, RemoteActionFrame,
             RemoteActionMessage,
         };
         let frame = RemoteActionFrame::decode(frame).map_err(|e| e.to_string())?;
@@ -1163,7 +1163,7 @@ impl FakeHost {
                 status: ReceiptStatus::Accepted,
             })
         } else {
-            tilo_actions::remote::refuse(&frame.message, ActionHostError::UnknownAction)
+            tilo_actions::remote::refuse(&frame.message, ActionCallError::UnknownAction)
                 .expect("an invocation has a refusal")
         };
         RemoteActionFrame::new(answer)

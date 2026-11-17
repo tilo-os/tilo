@@ -30,7 +30,7 @@ use serde_json::{Map, Value, json};
 use tilo_actions::api::{ActionAddress, ApiError};
 use tilo_actions::context::Cause;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
     ReceiptStatus, ResourceAddress, ResourceCopy, ResourceReads, ResourceWake,
 };
@@ -182,7 +182,7 @@ pub struct OutboxSpec {
     pub connector: Arc<dyn Performer>,
 }
 
-/// The `ActionHost` one installation's runs act through.
+/// The `ActionProvider` one installation's runs act through.
 pub struct BotApi<P: ApiMember> {
     member: Arc<Mutex<P>>,
     installation: String,
@@ -315,7 +315,7 @@ impl<P: ApiMember> BotApi<P> {
         page
     }
 
-    fn run(&self, request: &InvokeRequest) -> Result<ReceiptStatus, ActionHostError> {
+    fn run(&self, request: &InvokeRequest) -> Result<ReceiptStatus, ActionCallError> {
         if request.target.provider == host_steps::PROVIDER {
             return self.host_step(request);
         }
@@ -325,7 +325,7 @@ impl<P: ApiMember> BotApi<P> {
         let mut member = self.lock();
         let route = resource_of(&request.target.provider, member.workspace())
             .filter(|route| member.holds(route))
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         let step = request.context.as_ref().and_then(AutomationStep::of);
         if let Some(step) = step.as_ref()
             && let Some((route, done)) = member.find_in_history(step, &self.actor())
@@ -336,7 +336,7 @@ impl<P: ApiMember> BotApi<P> {
             InvokeArgument::Json(map) => map.clone(),
             InvokeArgument::None => Map::new(),
             InvokeArgument::Text(_) => {
-                return Err(ActionHostError::InvalidRequest {
+                return Err(ActionCallError::InvalidRequest {
                     reason: "a bot's step takes JSON arguments".into(),
                 });
             }
@@ -390,8 +390,8 @@ impl<P: ApiMember> BotApi<P> {
     /// record's history, so a step the run takes again after a restart is
     /// asked of the host again under the same invocation and run step, which
     /// the host answers once ([`HostSteps`], [`Keeps`]).
-    fn host_step(&self, request: &InvokeRequest) -> Result<ReceiptStatus, ActionHostError> {
-        let invalid = |reason: String| ActionHostError::InvalidRequest { reason };
+    fn host_step(&self, request: &InvokeRequest) -> Result<ReceiptStatus, ActionCallError> {
+        let invalid = |reason: String| ActionCallError::InvalidRequest { reason };
         let InvokeArgument::Json(arguments) = &request.argument else {
             return Err(invalid("a host step takes JSON arguments".into()));
         };
@@ -415,10 +415,10 @@ impl<P: ApiMember> BotApi<P> {
             },
         )
         .map_err(invalid)?
-        .ok_or(ActionHostError::UnknownAction)?;
+        .ok_or(ActionCallError::UnknownAction)?;
         let answered = asked
             .answered_by(host.map(|(_, steps)| &**steps), keeps.map(|keeps| &**keeps))
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         match answered {
             Ok(value) => Ok(ReceiptStatus::Completed {
                 output: ActionOutput {
@@ -426,7 +426,7 @@ impl<P: ApiMember> BotApi<P> {
                     resources: Vec::new(),
                 },
             }),
-            Err(HostStepError::Unavailable(reason)) => Err(ActionHostError::Unavailable { reason }),
+            Err(HostStepError::Unavailable(reason)) => Err(ActionCallError::Unavailable { reason }),
             Err(HostStepError::Refused(reason)) => Ok(ReceiptStatus::Failed {
                 error: ActionFailure {
                     code: host_steps::REFUSED.to_owned(),
@@ -447,7 +447,7 @@ impl<P: ApiMember> BotApi<P> {
         spec: &OutboxSpec,
         queued: Vec<OutboxRow>,
         output: ActionOutput,
-    ) -> Result<ReceiptStatus, ActionHostError> {
+    ) -> Result<ReceiptStatus, ActionCallError> {
         let mut results = Vec::new();
         for row in queued {
             // The worker is waited on without holding the member, so
@@ -471,7 +471,7 @@ impl<P: ApiMember> BotApi<P> {
                     });
                 }
                 Err(PerformError::Unavailable(reason)) => {
-                    return Err(ActionHostError::Unavailable { reason });
+                    return Err(ActionCallError::Unavailable { reason });
                 }
             }
         }
@@ -493,7 +493,7 @@ impl<P: ApiMember> BotApi<P> {
         spec: &OutboxSpec,
         entry: &str,
         outcome: &Value,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         let arguments = ui::tilo_resource::outbox_settle_arguments(&spec.field, entry, outcome);
         let edit = ActionAddress::new(
             address.resource.clone(),
@@ -503,7 +503,7 @@ impl<P: ApiMember> BotApi<P> {
         self.lock()
             .invoke(route, &edit, &arguments, &self.invoker(), &context, false)
             .map(drop)
-            .map_err(|error| ActionHostError::Unavailable {
+            .map_err(|error| ActionCallError::Unavailable {
                 reason: format!("the outbox entry was not settled: {error}"),
             })
     }
@@ -520,7 +520,7 @@ impl<P: ApiMember> BotApi<P> {
         address: &ActionAddress,
         step: &AutomationStep,
         done: &ActionContext,
-    ) -> Result<ReceiptStatus, ActionHostError> {
+    ) -> Result<ReceiptStatus, ActionCallError> {
         let Some(spec) = self
             .outboxes
             .iter()
@@ -593,9 +593,9 @@ impl<P: ApiMember + 'static> ResourceReads for BotReads<P> {
         &self,
         caller: &Caller,
         address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionHostError> {
+    ) -> Result<ResourceCopy, ActionCallError> {
         if !is_bot(caller, &self.installation) {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let member = self.member.lock_recover();
         let route = DocumentRoute {
@@ -606,7 +606,7 @@ impl<P: ApiMember + 'static> ResourceReads for BotReads<P> {
         match member.record(&route) {
             Ok(Some(document)) => Ok(ResourceCopy::Document(document)),
             Ok(None) => Ok(ResourceCopy::Absent),
-            Err(reason) => Err(ActionHostError::Refused { reason }),
+            Err(reason) => Err(ActionCallError::Refused { reason }),
         }
     }
 
@@ -617,18 +617,18 @@ impl<P: ApiMember + 'static> ResourceReads for BotReads<P> {
         caller: &Caller,
         _: &ResourceAddress,
         _: &ResourceWake,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         if is_bot(caller, &self.installation) {
             Ok(())
         } else {
-            Err(ActionHostError::NotPermitted)
+            Err(ActionCallError::NotPermitted)
         }
     }
 }
 
 /// An API refusal as what `invoke` answers: a rejection is the call's
 /// error, a failure its receipt.
-fn status_or_rejection(status: ReceiptStatus) -> Result<ReceiptStatus, ActionHostError> {
+fn status_or_rejection(status: ReceiptStatus) -> Result<ReceiptStatus, ActionCallError> {
     match status {
         ReceiptStatus::Rejected { error } => Err(error),
         status => Ok(status),
@@ -653,14 +653,14 @@ fn update_of(invocation: InvocationId, status: &ReceiptStatus) -> Option<Invocat
     }
 }
 
-impl<P: ApiMember + 'static> ActionHost for BotApi<P> {
+impl<P: ApiMember + 'static> ActionProvider for BotApi<P> {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         if !self.its_own(caller) {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         Pending::ready(Ok(self.catalogue(&query)))
     }
@@ -669,9 +669,9 @@ impl<P: ApiMember + 'static> ActionHost for BotApi<P> {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if !self.its_own(caller) {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         let known = self.log.lock_recover().get(&request.invocation).cloned();
         if let Some(status) = known {
@@ -713,8 +713,8 @@ impl<P: ApiMember + 'static> ActionHost for BotApi<P> {
         &self,
         _caller: &Caller,
         _id: &InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(Err(ActionHostError::NotCancellable {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionCallError::NotCancellable {
             reason: "a bot's step runs to its end".into(),
         }))
     }

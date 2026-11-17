@@ -174,7 +174,7 @@ tilo_test_env::scenario! {
             );
             if configured {
                 assert!(
-                    matches!(result, Err(ActionHostError::Unavailable { reason })
+                    matches!(result, Err(ActionCallError::Unavailable { reason })
                     if reason.contains("original certificate missing"))
                 );
             } else {

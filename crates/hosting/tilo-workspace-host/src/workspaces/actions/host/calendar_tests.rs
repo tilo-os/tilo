@@ -23,7 +23,7 @@ use collab_types::WorkspaceId;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::{
-    ActionHost as ActionService, ActionHostError as ActionError, Caller, CatalogueQuery,
+    ActionCallError as ActionError, ActionProvider as ActionService, Caller, CatalogueQuery,
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget, person_accounts,
     person_vault,
 };

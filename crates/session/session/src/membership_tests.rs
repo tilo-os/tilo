@@ -1480,7 +1480,7 @@ fn an_agent_is_refused_a_role(
         .expect("the host answers");
     matches!(
         answer,
-        Err(tilo_actions::remote::ActionHostError::NotPermitted)
+        Err(tilo_actions::remote::ActionCallError::NotPermitted)
     )
 }
 

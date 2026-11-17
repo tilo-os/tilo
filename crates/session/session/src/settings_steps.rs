@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use tilo_actions::remote::settings_resources as wire;
-use tilo_actions::remote::{ActionHostError, Pending, pending};
+use tilo_actions::remote::{ActionCallError, Pending, pending};
 use tilo_actions::{ActionDescriptor, ActionFailure, ActionSpec, ResourceSpec};
 use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
@@ -160,19 +160,19 @@ impl HostStepServices for SettingsSteps {
 
 /// Why a step did not run, in the words the person at the window reads: what failed and what to
 /// do about it, never the name of a component nor a machine code.
-fn reason(error: &ActionHostError) -> String {
+fn reason(error: &ActionCallError) -> String {
     match error {
-        ActionHostError::UnknownAction => {
+        ActionCallError::UnknownAction => {
             "Settings does not offer that change here any more".to_owned()
         }
-        ActionHostError::NotPermitted => "you may not change this setting from here".to_owned(),
-        ActionHostError::ConfirmationRequired { .. } => {
+        ActionCallError::NotPermitted => "you may not change this setting from here".to_owned(),
+        ActionCallError::ConfirmationRequired { .. } => {
             "this change asks you first: answer its question, then try again".to_owned()
         }
-        ActionHostError::Unavailable { reason }
-        | ActionHostError::InvalidRequest { reason }
-        | ActionHostError::Refused { reason }
-        | ActionHostError::NotCancellable { reason } => reason.clone(),
+        ActionCallError::Unavailable { reason }
+        | ActionCallError::InvalidRequest { reason }
+        | ActionCallError::Refused { reason }
+        | ActionCallError::NotCancellable { reason } => reason.clone(),
         other => other.to_string(),
     }
 }

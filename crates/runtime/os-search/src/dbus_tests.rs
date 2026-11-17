@@ -64,7 +64,7 @@ fn catalogue() -> Host {
 }
 
 #[tokio::test]
-async fn gnome_shell_finds_describes_and_opens_through_the_action_host() {
+async fn gnome_shell_finds_describes_and_opens_through_the_action_provider() {
     let host = catalogue();
     let (_bus, _server, client) = client(&host).await;
     let ids: Vec<String> = call(
@@ -152,7 +152,7 @@ async fn gnome_shell_opens_nothing_the_owner_may_no_longer_open() {
 }
 
 #[tokio::test]
-async fn krunner_matches_and_runs_through_the_action_host() {
+async fn krunner_matches_and_runs_through_the_action_provider() {
     let host = catalogue();
     let (_bus, _server, client) = client(&host).await;
     let actions: Vec<(String, String, String)> =

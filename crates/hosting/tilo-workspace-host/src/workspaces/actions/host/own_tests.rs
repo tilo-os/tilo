@@ -13,7 +13,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::host_account::{self, HostAccount, Reason};
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
+    ActionCallError, ActionProvider as _, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
 };
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_server_protocol::workspaces::JoinReply;
@@ -44,7 +44,7 @@ async fn invoke(
     host: &HostWorkspaceActions,
     device: &DeviceCert,
     request: InvokeRequest,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     let receipt = settled(host.as_host(device).invoke(&caller(device), request)).await?;
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
@@ -56,7 +56,7 @@ pub(super) async fn create_own(
     host: &HostWorkspaceActions,
     device: &DeviceCert,
     argument: Value,
-) -> Result<CreatedWorkspace, ActionHostError> {
+) -> Result<CreatedWorkspace, ActionCallError> {
     invoke(host, device, own_request(argument))
         .await
         .map(|value| serde_json::from_value(value).unwrap())
@@ -175,7 +175,7 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     assert!(offered(&host, &guest, &caller(&guest)).await.is_empty());
     assert!(matches!(
         create_own(&host, &guest, json!({})).await,
-        Err(ActionHostError::UnknownAction)
+        Err(ActionCallError::UnknownAction)
     ));
 
     assert!(
@@ -273,7 +273,7 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
         .await
         .unwrap_err();
     assert!(
-        matches!(refused, ActionHostError::Refused { .. }),
+        matches!(refused, ActionCallError::Refused { .. }),
         "{refused:?}"
     );
 
@@ -628,7 +628,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     let narrow = grant(AgentScope::Workspace([7; 16]));
     assert!(matches!(
         create_own(&host, &narrow, json!({})).await,
-        Err(ActionHostError::Refused { .. })
+        Err(ActionCallError::Refused { .. })
     ));
     assert!(matches!(
         create_own(
@@ -637,7 +637,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
             json!({"workspace": "08080808-0808-4808-8808-080808080808"})
         )
         .await,
-        Err(ActionHostError::Refused { .. })
+        Err(ActionCallError::Refused { .. })
     ));
     let all = grant(AgentScope::AllWorkspaces);
     // The grant asks as its session makes it: its person's agent.
@@ -819,7 +819,7 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
         .delegated_to("assistant");
     let refused = settled(host.as_host(&consented).invoke(&assistant, read())).await;
     assert!(
-        matches!(refused, Err(ActionHostError::UnknownAction)),
+        matches!(refused, Err(ActionCallError::UnknownAction)),
         "{refused:?}"
     );
     // The key it mints for one workspace reads no account.
@@ -837,7 +837,7 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
         .delegated_to("minted");
     let refused = settled(host.as_host(&minted).invoke(&narrow, read())).await;
     assert!(
-        matches!(refused, Err(ActionHostError::UnknownAction)),
+        matches!(refused, Err(ActionCallError::UnknownAction)),
         "{refused:?}"
     );
     server.shutdown().await;
@@ -901,7 +901,7 @@ async fn govern(
     cert: &DeviceCert,
     verb: &str,
     argument: Value,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     let request = super::super::tests::request(&workspace.workspace, verb, argument);
     let receipt = settled(
         host.in_workspace(workspace.workspace_id)
@@ -945,13 +945,13 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     )
     .await;
     assert!(
-        matches!(above, Err(ActionHostError::Refused { .. })),
+        matches!(above, Err(ActionCallError::Refused { .. })),
         "{above:?}"
     );
     let unban = json!({"person": hex::encode([3; 32])});
     let unban = govern(&host, workspace, &backend, governance::UNBAN, unban).await;
     assert!(
-        matches!(unban, Err(ActionHostError::UnknownAction)),
+        matches!(unban, Err(ActionCallError::UnknownAction)),
         "{unban:?}"
     );
     let issued = govern(
@@ -980,7 +980,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     )
     .await;
     assert!(
-        matches!(by_agent, Err(ActionHostError::UnknownAction)),
+        matches!(by_agent, Err(ActionCallError::UnknownAction)),
         "{by_agent:?}"
     );
 
@@ -1105,7 +1105,7 @@ async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in(
     );
     let refused = add_member(&host, workspace, &hal_key, &ivy, "owner").await;
     assert!(
-        matches!(refused, Err(ActionHostError::Refused { .. })),
+        matches!(refused, Err(ActionCallError::Refused { .. })),
         "{refused:?}"
     );
     assert!(!workspaces.is_owner(&workspace.workspace, ivy_person).await);
@@ -1142,7 +1142,7 @@ async fn add_member(
     cert: &DeviceCert,
     person: &SigningKey,
     role: &str,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     govern(
         host,
         workspace,
@@ -1373,13 +1373,13 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
                 .invoke(&as_key(&narrow), delete_request(&workspace))
         )
         .await,
-        Err(ActionHostError::UnknownAction)
+        Err(ActionCallError::UnknownAction)
     ));
     // Nor does anyone else, who learns only that it is not theirs.
     let (_, stranger) = guest_device();
     let refused = invoke(&host, &stranger, delete_request(&workspace)).await;
     assert!(
-        matches!(&refused, Err(ActionHostError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
         "{refused:?}"
     );
     assert!(record.exists(), "a refusal deletes nothing");
@@ -1435,7 +1435,7 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     )
     .await;
     assert!(
-        matches!(&again, Err(ActionHostError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
+        matches!(&again, Err(ActionCallError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
         "{again:?}"
     );
     assert!(
@@ -1594,9 +1594,9 @@ async fn the_wait_list_holds_the_entry_and_lets_nobody_in_on_an_address() {
 
 /// The wait list's refusal `result` carries: the entry's own, offering the
 /// wait list it keeps, as the host refuses a person it never let in.
-fn waits(result: &Result<impl std::fmt::Debug, ActionHostError>) {
+fn waits(result: &Result<impl std::fmt::Debug, ActionCallError>) {
     use tilo_server_protocol::directory::{EntryRefusalCode, EntryRefused};
-    let Err(ActionHostError::Refused { reason }) = result else {
+    let Err(ActionCallError::Refused { reason }) = result else {
         panic!("a person never let in is refused: {result:?}");
     };
     let entry = EntryRefused::from_reason(reason)
@@ -1710,7 +1710,7 @@ async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
     )
     .await;
     assert!(
-        matches!(&refused, Err(ActionHostError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
         "{refused:?}"
     );
     let entered = own_as_key(
@@ -1929,7 +1929,7 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
     let unknown = uuid::Uuid::new_v4().to_string();
     let refused = create_own(&host, &later, json!({"workspace": unknown})).await;
     assert!(
-        matches!(&refused, Err(ActionHostError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
         "{refused:?}"
     );
     assert_eq!(
@@ -1949,7 +1949,7 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
     )
     .await;
     assert!(
-        matches!(&refused, Err(ActionHostError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
         "{refused:?}"
     );
     assert!(
@@ -1966,7 +1966,7 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
         .workspace;
     let refused = create_own(&host, &later, json!({"workspace": theirs})).await;
     assert!(
-        matches!(&refused, Err(ActionHostError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
         "{refused:?}"
     );
     server.shutdown().await;

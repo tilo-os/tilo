@@ -6,18 +6,18 @@
 //! signature", "scrolling" against "Scroll down with `PageDown`". Reducing
 //! both to a stem is what makes those the same word.
 //!
-//! [`ResourceSearch`] is a host's search of what its workspace holds: on a
+//! [`ResourceSearch`] is a provider's search of what its workspace holds: on a
 //! desktop the one search it runs — the palette, text typed on the canvas
-//! and an agent's `find` — and on a host with no desktop its ranking of the
+//! and an agent's `find` — and on a provider with no desktop its ranking of the
 //! records it holds. Its results are the ranking's own, best first, each
 //! naming the resource a caller addresses.
 
-use super::{ActionHost, ActionHostError, Caller, Pending, RemoteActionMessage};
+use super::{ActionCallError, ActionProvider, Caller, Pending, RemoteActionMessage};
 
-/// What `needle` finds in `caller`'s workspace, by `host`'s own search,
-/// answered for `correlation` ([`ActionHost::resource_search`]).
-pub(super) fn searched<H: ActionHost>(
-    host: &H,
+/// What `needle` finds in `caller`'s workspace, by `provider`'s own search,
+/// answered for `correlation` ([`ActionProvider::resource_search`]).
+pub(super) fn searched<H: ActionProvider>(
+    provider: &H,
     caller: &Caller,
     correlation: u64,
     needle: &str,
@@ -26,17 +26,17 @@ pub(super) fn searched<H: ActionHost>(
         correlation,
         result,
     };
-    match host.resource_search() {
+    match provider.resource_search() {
         Some(search) => search.find(caller, needle).map(respond),
-        None => Pending::ready(respond(Err(ActionHostError::Unavailable {
-            reason: "this host holds no records to search".into(),
+        None => Pending::ready(respond(Err(ActionCallError::Unavailable {
+            reason: "this provider holds no records to search".into(),
         }))),
     }
 }
 
 /// One resource a search found, as every caller of the one search reads a
 /// result: the resource it is about, what it is, and what it reads as. It
-/// crosses the wire as a host's answer to a search asked over its API
+/// crosses the wire as a provider's answer to a search asked over its API
 /// ([`super::RemoteActionMessage::SearchRequest`]).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Found {
@@ -69,9 +69,9 @@ pub struct Found {
 /// a computer that logged in has below the workspace's folder.
 pub const FOUND_FILE: &str = "file";
 
-/// A host's search of what its workspace holds, as it offers it to a caller
+/// A provider's search of what its workspace holds, as it offers it to a caller
 /// who asks by words. A desktop answers with its one search, the palette's
-/// ranking, the same results in the same order; a host with no desktop (a
+/// ranking, the same results in the same order; a provider with no desktop (a
 /// server's workspace) ranks the records it holds by what they say. Either
 /// way the search lives where the records are, so an answer comes back
 /// later, as an action's does, and a caller across the wire asks the same
@@ -81,13 +81,13 @@ pub trait ResourceSearch: Send + Sync {
     /// and what it may read there.
     ///
     /// # Errors
-    /// The search could not be run: the host has none, or it refuses
+    /// The search could not be run: the provider has none, or it refuses
     /// `caller`.
     fn find(
         &self,
         caller: &super::Caller,
         needle: &str,
-    ) -> super::Pending<Result<Vec<Found>, ActionHostError>>;
+    ) -> super::Pending<Result<Vec<Found>, ActionCallError>>;
 }
 
 /// The stem an English word is matched by: its plural, its participle and

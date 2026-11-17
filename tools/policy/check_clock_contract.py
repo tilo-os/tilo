@@ -89,7 +89,7 @@ TIMERS = {
         "crates/collab/tilo-action-broker/src/collab_app_broker.rs"
     ): TIMER_REASON,
     Path(
-        "crates/collab/tilo-action-broker/src/collab_app_broker/action_host.rs"
+        "crates/collab/tilo-action-broker/src/collab_app_broker/action_provider.rs"
     ): TIMER_REASON,
     Path(
         "crates/collab/tilo-action-broker/src/collab_app_broker/committed_document.rs"

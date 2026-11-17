@@ -25,7 +25,7 @@ use tilo_actions::remote::person_telling::{
     self, Cause, Kind, Offered, OfferedTarget, Tell, Teller, Told, ToldList, WhyCode,
 };
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, ReceiptStatus, WORKSPACE_GOVERNANCE_PROVIDER,
+    ActionCallError, ActionProvider, Caller, ReceiptStatus, WORKSPACE_GOVERNANCE_PROVIDER,
 };
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
@@ -107,7 +107,7 @@ async fn ask_told(
     caller: &Caller,
     action: &str,
     argument: Value,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     let page = setup.host.in_workspace_as(workspace, device);
     let mut request = super::accounts_tests::asking(action, argument);
     request.target = person_telling::target(person_telling::TOLD, action);
@@ -664,7 +664,7 @@ async fn only_the_person_acknowledges_and_the_first_time_stands() {
     )
     .await;
     assert!(
-        matches!(theirs, Err(ActionHostError::Refused { .. })),
+        matches!(theirs, Err(ActionCallError::Refused { .. })),
         "{theirs:?}"
     );
     assert!(listed(&setup, 0).await.told[0].waits());
@@ -719,7 +719,7 @@ async fn only_the_person_acknowledges_and_the_first_time_stands() {
     )
     .await;
     assert!(
-        matches!(nothing, Err(ActionHostError::Refused { .. })),
+        matches!(nothing, Err(ActionCallError::Refused { .. })),
         "{nothing:?}"
     );
 }
@@ -806,7 +806,7 @@ async fn whoever_tells_outside_reads_who_changed_and_writes_down_what_it_told() 
 }
 
 /// What `answer` carries, read as a thing told.
-fn a_told(answer: Result<Value, ActionHostError>) -> Told {
+fn a_told(answer: Result<Value, ActionCallError>) -> Told {
     serde_json::from_value(answer.expect("the host answers")).expect("a thing told")
 }
 
@@ -953,7 +953,7 @@ async fn only_its_person_makes_a_quiet_thing_insist() {
     )
     .await;
     assert!(
-        matches!(refused, Err(ActionHostError::Refused { .. })),
+        matches!(refused, Err(ActionCallError::Refused { .. })),
         "{refused:?}"
     );
     assert!(!listed(&setup, 0).await.told[0].reaches);
@@ -1194,7 +1194,7 @@ async fn an_agent_offers_only_buttons_it_may_invoke_itself_and_is_named_for_them
         )
         .await;
         assert!(
-            matches!(refused, Err(ActionHostError::Refused { .. })),
+            matches!(refused, Err(ActionCallError::Refused { .. })),
             "a button aimed at {target} was taken: {refused:?}"
         );
     }

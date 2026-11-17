@@ -550,7 +550,7 @@ async fn a_host_at_its_capacity_takes_no_second_job() {
         .run(workspace, &work, requester, invocation(workspace, &named))
         .await
         .expect("the host answers the job it was sent");
-    let Err(tilo_actions::remote::ActionHostError::Unavailable { reason }) = second else {
+    let Err(tilo_actions::remote::ActionCallError::Unavailable { reason }) = second else {
         panic!("a host at its capacity takes no more: {second:?}");
     };
     assert!(reason.contains("as many jobs as it takes on"), "{reason}");
@@ -599,7 +599,7 @@ async fn a_host_refuses_a_job_it_does_not_hold_the_inputs_for() {
         .run(workspace, &work, [9; 32], invocation(workspace, &named))
         .await
         .expect("the host answers the job it was sent");
-    let Err(tilo_actions::remote::ActionHostError::Refused { reason }) = ran else {
+    let Err(tilo_actions::remote::ActionCallError::Refused { reason }) = ran else {
         panic!("a job over content the host does not have is refused: {ran:?}");
     };
     assert!(reason.contains("the job did not run"), "{reason}");

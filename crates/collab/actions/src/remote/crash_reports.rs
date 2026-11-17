@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use super::RemoteActionTarget;
 use crate::api::ActionAddress;
 
-/// The provider the host answers the reports under.
+/// The provider that answers the reports under.
 pub const PROVIDER: &str = "tilo.crash-reports";
 /// The resource the steps are actions of, and the session's reading of
 /// every report, newest first.

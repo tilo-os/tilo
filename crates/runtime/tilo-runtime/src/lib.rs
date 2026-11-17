@@ -54,7 +54,7 @@ pub type Joiner = std::sync::Arc<dyn Fn(&str) -> io::Result<String> + Send + Syn
 /// collaboration and content services.
 pub trait RuntimeServices: Sized {
     /// The action host MCP callers browse and invoke through.
-    type ActionHost: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static;
+    type ActionProvider: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static;
 
     /// Start the services on `root`, naming each step to `stage` before taking
     /// it, so whoever waits can tell a slow start from a stuck one. Holds the
@@ -109,16 +109,16 @@ pub trait RuntimeServices: Sized {
     /// The profile's fixed actor, as which MCP callers act.
     fn actor(&self) -> &str;
 
-    fn action_host(&self) -> io::Result<Self::ActionHost>;
+    fn action_provider(&self) -> io::Result<Self::ActionProvider>;
 
     /// Construct one transport run for this exact configured audience. Hosts
     /// with original certified ownership override this; client labels never enter.
     fn mcp_session_factory(
         &self,
         workspace: &str,
-    ) -> io::Result<tilo_mcp::SessionFactory<Self::ActionHost>> {
+    ) -> io::Result<tilo_mcp::SessionFactory<Self::ActionProvider>> {
         let workspace = self.mcp_workspace(Some(workspace))?;
-        let host = self.action_host()?;
+        let host = self.action_provider()?;
         let actor = self.actor().to_owned();
         Ok(std::sync::Arc::new(move || {
             Ok(

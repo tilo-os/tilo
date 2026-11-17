@@ -17,7 +17,7 @@
 use super::Session;
 use crate::account::{Outcome, answer, failed, refused};
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::ActionHost as _;
+use tilo_actions::remote::ActionProvider as _;
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_server_session::workspaces::RUN_UNATTENDED;
 

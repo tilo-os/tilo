@@ -3,7 +3,7 @@
 //! branch holds is the workspaces' (`crate::workspaces::branch`).
 
 use serde_json::Value;
-use tilo_actions::remote::ActionHostError;
+use tilo_actions::remote::ActionCallError;
 use tilo_actions::{ActionParam, ParamType};
 use tilo_peer_state::join::Role;
 use tilo_server_session::workspaces::{Refusal, WorkspaceLabels, check_labels};
@@ -53,7 +53,7 @@ impl Workspaces {
         args: &Args,
         request_id: [u8; 32],
         now: u64,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let person = device.user_public_key;
         let source = args.required_text("workspace")?;
         let name = args.required_text("name")?;
@@ -124,7 +124,7 @@ impl Workspaces {
         branch: &str,
         name: &str,
         person: [u8; 32],
-    ) -> Result<crate::workspaces::WorkspaceSummary, ActionHostError> {
+    ) -> Result<crate::workspaces::WorkspaceSummary, ActionCallError> {
         self.branch_own(source, branch, name, person)
             .await
             .map_err(|not_made| refused(&not_made.refusal()))
@@ -142,7 +142,7 @@ impl Workspaces {
         _branch: &str,
         _name: &str,
         _person: [u8; 32],
-    ) -> Result<crate::workspaces::WorkspaceSummary, ActionHostError> {
+    ) -> Result<crate::workspaces::WorkspaceSummary, ActionCallError> {
         Err(refused(&"this host does not branch workspaces"))
     }
 }

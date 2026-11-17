@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{ActionAddress, CatalogueRow, RemoteActionTarget, person_accounts, person_models};
 
-/// The provider the host answers the person's vault under.
+/// The provider that answers the person's vault under.
 pub const PROVIDER: &str = "tilo.vault";
 /// The resource the items are actions of.
 pub const RESOURCE: &str = "vault";

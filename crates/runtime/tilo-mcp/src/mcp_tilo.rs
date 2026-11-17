@@ -45,7 +45,7 @@ use tilo_actions::remote::workspace_invocations::{
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_lock::MutexRecover as _;
 
-use super::{ActionHost, Addressed, Failure, McpServer, OneCall, Reply, app_names};
+use super::{ActionProvider, Addressed, Failure, McpServer, OneCall, Reply, app_names};
 
 /// How long a program waits for an action it invoked to settle before it gives up on the
 /// action's outcome: as long as any caller of an invoke may ask. A program cannot poll and a trap
@@ -890,7 +890,7 @@ pub struct TaskProgram {
     pub source: Option<String>,
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// One task of agent `agent_id` in `workspace`, acting for `person` who started it (the Tasks
     /// agent's run of an issue): it may do what both the agent and that person may, as the
     /// agent's own calls of the run do. Each session is its own fresh execution.
@@ -917,7 +917,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// One program of this task for a runner of the task's own (the Tasks agent's loop) rather
     /// than an MCP client: the same step as the `tilo` tool, read back with what it did.
     /// `this` is what the person pointed at, as a resource literal, which `this` then names.
@@ -1516,13 +1516,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     json!({"failed": answer.get("failed").and_then(Value::as_str).map_or_else(|| answer.to_string(), str::to_owned)})
                 }
             }
-            Ok(Err(tilo_actions::remote::ActionHostError::ConfirmationRequired { .. })) => {
+            Ok(Err(tilo_actions::remote::ActionCallError::ConfirmationRequired { .. })) => {
                 json!({"asks": format!("{action}: asks the person first")})
             }
             Ok(Err(
-                error @ (tilo_actions::remote::ActionHostError::Refused { .. }
-                | tilo_actions::remote::ActionHostError::NotPermitted
-                | tilo_actions::remote::ActionHostError::UnknownAction),
+                error @ (tilo_actions::remote::ActionCallError::Refused { .. }
+                | tilo_actions::remote::ActionCallError::NotPermitted
+                | tilo_actions::remote::ActionCallError::UnknownAction),
             )) => {
                 json!({"refused": format!("{action}: {error}")})
             }
@@ -1611,14 +1611,14 @@ type Providers = BTreeMap<String, Addressed>;
 
 /// Whether the API's error `why` is the policy's refusal, not a failure of the action.
 const fn refused(why: &super::Failure) -> bool {
-    use tilo_actions::remote::ActionHostError;
+    use tilo_actions::remote::ActionCallError;
     matches!(
         why.host,
         Some(
-            ActionHostError::NotPermitted
-                | ActionHostError::Refused { .. }
-                | ActionHostError::ConfirmationRequired { .. }
-                | ActionHostError::UnknownAction
+            ActionCallError::NotPermitted
+                | ActionCallError::Refused { .. }
+                | ActionCallError::ConfirmationRequired { .. }
+                | ActionCallError::UnknownAction
         )
     )
 }
@@ -1839,7 +1839,7 @@ fn run_line(run: &Invocation) -> String {
     }
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Take back this task's last step in each of `apps` (ids), the last changed first.
     async fn undo_in(&self, history: &[History]) -> Result<(), String> {
         let mut providers: Providers = BTreeMap::new();
@@ -1970,7 +1970,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 mod tests {
     use super::*;
     use tilo_actions::remote::{
-        ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+        ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
         CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest,
         Pending,
     };
@@ -2128,15 +2128,15 @@ mod tests {
 
         phase the_policys_refusals_are_told_from_failures;
         {
-            use tilo_actions::remote::ActionHostError;
-            let host = |error: ActionHostError| {
+            use tilo_actions::remote::ActionCallError;
+            let host = |error: ActionCallError| {
                 crate::Failure::from(crate::BridgeError::Host(error))
             };
-            assert!(refused(&host(ActionHostError::NotPermitted)));
-            assert!(refused(&host(ActionHostError::Refused {
+            assert!(refused(&host(ActionCallError::NotPermitted)));
+            assert!(refused(&host(ActionCallError::Refused {
                 reason: "asks the person first".into()
             })));
-            assert!(refused(&host(ActionHostError::UnknownAction)));
+            assert!(refused(&host(ActionCallError::UnknownAction)));
             assert!(!refused(&crate::Failure::from("the action failed: no such note")));
         }
 
@@ -2286,12 +2286,12 @@ mod tests {
         }
     }
 
-    impl ActionHost for Native {
+    impl ActionProvider for Native {
         fn query(
             &self,
             _caller: &Caller,
             query: CatalogueQuery,
-        ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
             let Some(provider) = query.provider else {
                 return Pending::ready(Ok(CataloguePage {
                     revision: "v1".into(),
@@ -2327,7 +2327,7 @@ mod tests {
             &self,
             _caller: &Caller,
             request: InvokeRequest,
-        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
             let arguments = match &request.argument {
                 tilo_actions::remote::InvokeArgument::Json(arguments) => {
                     Value::Object(arguments.clone())
@@ -2389,7 +2389,7 @@ mod tests {
             &self,
             _caller: &Caller,
             _id: &InvocationId,
-        ) -> Pending<Result<(), ActionHostError>> {
+        ) -> Pending<Result<(), ActionCallError>> {
             Pending::ready(Ok(()))
         }
     }

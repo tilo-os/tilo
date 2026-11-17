@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider as _, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RemoteActionTarget,
     settle_with,
 };
@@ -2128,13 +2128,13 @@ fn legacy_target(provider: &str, id: &str, workspace: &str) -> Result<RemoteActi
 }
 
 /// A host's refusal as the tools read it: the codes they know, and what they mean here.
-fn action_refusal(error: &ActionHostError) -> Json {
+fn action_refusal(error: &ActionCallError) -> Json {
     let code = match error {
         // This shared's own refusal is `not_permitted` , which a tool reads as the socket not serving
         // it at all; an action the person may not run is another answer.
-        ActionHostError::NotPermitted => "not_allowed",
-        ActionHostError::StaleRevision => "stale_cursor",
-        ActionHostError::ConfirmationRequired { .. } => "needs_confirmation",
+        ActionCallError::NotPermitted => "not_allowed",
+        ActionCallError::StaleRevision => "stale_cursor",
+        ActionCallError::ConfirmationRequired { .. } => "needs_confirmation",
         other => other.code(),
     };
     refusal(code, &error.to_string())
@@ -2811,19 +2811,19 @@ mod tests {
         phase an_action_the_person_may_not_run_is_not_a_refused_socket;
         {
             assert_eq!(
-                action_refusal(&ActionHostError::NotPermitted)["err"]["code"],
+                action_refusal(&ActionCallError::NotPermitted)["err"]["code"],
                 "not_allowed"
             );
             assert_eq!(
-                action_refusal(&ActionHostError::StaleRevision)["err"]["code"],
+                action_refusal(&ActionCallError::StaleRevision)["err"]["code"],
                 "stale_cursor"
             );
             assert_eq!(
-                action_refusal(&ActionHostError::UnknownAction)["err"]["code"],
+                action_refusal(&ActionCallError::UnknownAction)["err"]["code"],
                 "unknown_action"
             );
             assert_eq!(
-                action_refusal(&ActionHostError::InvalidRequest {
+                action_refusal(&ActionCallError::InvalidRequest {
                     reason: "bad".into()
                 })["err"]["code"],
                 "invalid_arguments"

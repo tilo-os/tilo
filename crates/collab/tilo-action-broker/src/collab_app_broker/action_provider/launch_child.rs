@@ -2,7 +2,7 @@
 //! application action that will only become authoritative after publication.
 
 use super::{
-    ActionDescriptor, ActionHostError, AppBrokerState, Caller, InvokeRequest, LaunchDestination,
+    ActionCallError, ActionDescriptor, AppBrokerState, Caller, InvokeRequest, LaunchDestination,
     LaunchPlace, app_open_descriptor, refusal, workspace_provider,
 };
 use crate::collab_app_broker::{InvocationCaller, host_action_admission::HostActionAdmission};
@@ -59,7 +59,7 @@ impl AppBrokerState {
         parent: &InvokeRequest,
         destination: &LaunchDestination,
         place: &LaunchPlace,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         let record = destination
             .record
             .as_deref()
@@ -73,7 +73,7 @@ impl AppBrokerState {
                 .map_err(refusal);
         };
         if parent.invocation.0.is_nil() {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let workspace = destination.workspace.id().to_string();
         self.check_launch_origin(caller, Some(origin), &workspace)?;
@@ -87,7 +87,7 @@ impl AppBrokerState {
                     .into_iter()
                     .find(|app| app.package_id == destination.app_id && !app.unconfined)
             })
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         let descriptor = app_open_descriptor(&app);
         let request = child_request(parent.invocation, &workspace, &descriptor, &app.package_id);
         let mut child_origin = origin.clone();
@@ -95,7 +95,7 @@ impl AppBrokerState {
             // Only retained, protected native evidence may be rebound, and only
             // after checking it belongs to this exact parent invocation.
             if *invocation != parent.invocation {
-                return Err(ActionHostError::NotPermitted);
+                return Err(ActionCallError::NotPermitted);
             }
             *invocation = request.invocation;
         }

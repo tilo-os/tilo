@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{ActionAddress, RemoteActionTarget};
 
-/// The provider the host answers the person's mail accounts under.
+/// The provider that answers the person's mail accounts under.
 pub const PROVIDER: &str = "tilo.accounts";
 /// The resource the accounts are actions of.
 pub const RESOURCE: &str = "accounts";

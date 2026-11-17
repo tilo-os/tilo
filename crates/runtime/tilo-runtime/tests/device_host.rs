@@ -22,7 +22,7 @@ use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use serde_json::{Value, json};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest, Pending,
     ReceiptStatus,
 };
@@ -125,12 +125,12 @@ struct Broker {
     invoked: Arc<Mutex<Vec<InvokeRequest>>>,
 }
 
-impl ActionHost for Broker {
+impl ActionProvider for Broker {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.callers.lock().unwrap().push(caller.clone());
         let page = match query.provider.as_deref() {
             None => CataloguePage {
@@ -158,7 +158,7 @@ impl ActionHost for Broker {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.callers.lock().unwrap().push(caller.clone());
         let invocation = request.invocation;
         self.invoked.lock().unwrap().push(request);
@@ -196,7 +196,7 @@ impl ActionHost for Broker {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionHostError>> {
+    ) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Ok(()))
     }
 }

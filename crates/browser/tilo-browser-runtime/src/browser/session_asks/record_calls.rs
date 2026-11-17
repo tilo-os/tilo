@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending,
 };
 use tilo_server_protocol::WorkspaceId;
@@ -33,21 +33,21 @@ impl WorkspaceHost {
         }))
     }
 
-    fn api(&self) -> Result<SessionActions, ActionHostError> {
+    fn api(&self) -> Result<SessionActions, ActionCallError> {
         crate::peer_sync::actions_of(self.peer, self.workspace).ok_or_else(|| {
-            ActionHostError::Unavailable {
+            ActionCallError::Unavailable {
                 reason: "The workspace's host can't be reached from here right now".into(),
             }
         })
     }
 }
 
-impl ActionHost for WorkspaceHost {
+impl ActionProvider for WorkspaceHost {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         match self.api() {
             Ok(api) => api.query(caller, query),
             Err(error) => Pending::ready(Err(error)),
@@ -58,7 +58,7 @@ impl ActionHost for WorkspaceHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         match self.api() {
             Ok(api) => api.invoke(caller, request),
             Err(error) => Pending::ready(Err(error)),
@@ -73,7 +73,7 @@ impl ActionHost for WorkspaceHost {
         self.api().ok()?.next_change(caller, id)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         match self.api() {
             Ok(api) => api.cancel(caller, id),
             Err(error) => Pending::ready(Err(error)),

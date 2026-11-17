@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, ResourceAddress,
+    ActionCallError, Caller, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, ResourceAddress,
     ResourceCopy,
 };
 use tilo_desktop_surface::session::{HeldRecords, Openings, RecordAnswers};
@@ -151,9 +151,9 @@ impl HeldRecords for Held<'_> {
         &self,
         caller: &Caller,
         address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionHostError> {
+    ) -> Result<ResourceCopy, ActionCallError> {
         let desktop = self.desktop;
-        let refused = |reason: &str| ActionHostError::Refused {
+        let refused = |reason: &str| ActionCallError::Refused {
             reason: reason.into(),
         };
         // As the broker: a device hands its agents nothing here, and a read is its person's, in
@@ -174,7 +174,7 @@ impl HeldRecords for Held<'_> {
         // What this person may read is the workspace's to say: until it has, nothing is read on a
         // guess, and the read waits as for a record still arriving.
         if hosted && desktop.shared.role.role().is_none() {
-            return Err(ActionHostError::Unavailable {
+            return Err(ActionCallError::Unavailable {
                 reason: "the workspace has not said yet what you may read here".into(),
             });
         }
@@ -193,7 +193,7 @@ impl HeldRecords for Held<'_> {
         }
         match self.committed(address) {
             Some(record) => Ok(ResourceCopy::Document(record)),
-            None if hosted => Err(ActionHostError::Unavailable {
+            None if hosted => Err(ActionCallError::Unavailable {
                 reason: "the record is still arriving from the workspace".into(),
             }),
             None => Ok(ResourceCopy::Absent),

@@ -3866,9 +3866,9 @@ mod tests {
             // The bar's Open Photos asks the window's session to open Photos,
             // and the bar says so.
             let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
-            let session = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
+            let session = std::sync::Arc::new(ui::tilo_actions::remote::TestProvider::new());
             app.harness().set_session_api(
-                ui::RemoteActions::with_host(
+                ui::RemoteActions::with_provider(
                     session.clone(),
                     ui::tilo_actions::remote::Caller::local_app("so.tilo.camera")
                         .in_workspace(TEST_WORKSPACE),
@@ -5024,9 +5024,9 @@ mod tests {
             "{refused}"
         );
 
-        let session = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
+        let session = std::sync::Arc::new(ui::tilo_actions::remote::TestProvider::new());
         app.harness().set_session_api(
-            ui::RemoteActions::with_host(
+            ui::RemoteActions::with_provider(
                 session.clone(),
                 ui::tilo_actions::remote::Caller::local_app("so.tilo.camera")
                     .in_workspace(TEST_WORKSPACE),

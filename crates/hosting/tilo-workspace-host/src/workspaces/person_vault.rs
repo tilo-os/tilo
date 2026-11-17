@@ -39,7 +39,7 @@ use tilo_actions::remote::person_vault::{
     self, AddItem, AlwaysUse, ItemKind, ItemRef, ItemUse, ItemUses, ItemView, KeptItems,
     RemoveItem, TakeBack, UsesOf,
 };
-use tilo_actions::remote::{ActionHostError, Caller, InvokeArgument, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
@@ -52,7 +52,7 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let person = Self::asking_person(caller, certificate, workspace_id)?;
         let root = self.person_settings_root(&person);
         match request.target.address.action.as_str() {
@@ -80,7 +80,7 @@ impl Workspaces {
                 )?;
                 answer(take_back(&root, &taking))
             }
-            _ => Err(ActionHostError::UnknownAction),
+            _ => Err(ActionCallError::UnknownAction),
         }
     }
 
@@ -95,18 +95,18 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         workspace_id: Option<collab_types::WorkspaceId>,
-    ) -> Result<([u8; 32], String), ActionHostError> {
-        workspace_id.ok_or(ActionHostError::UnknownAction)?;
+    ) -> Result<([u8; 32], String), ActionCallError> {
+        workspace_id.ok_or(ActionCallError::UnknownAction)?;
         let acting = caller.acting();
         if acting.app().is_some() || !(acting.is_person() || acting.is_agent()) {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         }
         let certificate = certificate
             .filter(|certificate| {
                 caller.device_public_key() == Some(&certificate.device_public_key)
                     && caller.user_public_key() == Some(&certificate.user_public_key)
             })
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         let by = if acting.is_agent() {
             caller
                 .agent_name()
@@ -128,7 +128,7 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let (person, by) = Self::asking_for_person(caller, certificate, workspace_id)?;
         let root = self.person_settings_root(&person);
         let target = &request.target;
@@ -151,7 +151,7 @@ impl Workspaces {
                 )?;
                 said(key_from_item(&root, &setting, &by))
             }
-            _ => Err(ActionHostError::UnknownAction),
+            _ => Err(ActionCallError::UnknownAction),
         }
     }
 }
@@ -161,8 +161,8 @@ impl Workspaces {
 pub(super) fn argument<T: serde::de::DeserializeOwned>(
     request: &InvokeRequest,
     what: &str,
-) -> Result<T, ActionHostError> {
-    let invalid = || ActionHostError::InvalidRequest {
+) -> Result<T, ActionCallError> {
+    let invalid = || ActionCallError::InvalidRequest {
         reason: what.to_owned(),
     };
     let InvokeArgument::Json(argument) = &request.argument else {
@@ -174,8 +174,8 @@ pub(super) fn argument<T: serde::de::DeserializeOwned>(
 /// What the caller reads of an outcome, or the reason it was refused.
 fn answer<T: serde::Serialize>(
     outcome: Result<T, vault_items::ItemError>,
-) -> Result<Value, ActionHostError> {
-    let refused = |reason: String| ActionHostError::Refused { reason };
+) -> Result<Value, ActionCallError> {
+    let refused = |reason: String| ActionCallError::Refused { reason };
     let value = outcome.map_err(|error| refused(error.to_string()))?;
     serde_json::to_value(value).map_err(|error| refused(error.to_string()))
 }
@@ -239,8 +239,8 @@ fn remove(root: &Path, item: &ItemRef) -> Result<KeptItems, vault_items::ItemErr
 }
 
 /// What the caller reads of a use's outcome, or the reason it was refused.
-fn said<T: serde::Serialize>(outcome: Result<T, String>) -> Result<Value, ActionHostError> {
-    let refused = |reason: String| ActionHostError::Refused { reason };
+fn said<T: serde::Serialize>(outcome: Result<T, String>) -> Result<Value, ActionCallError> {
+    let refused = |reason: String| ActionCallError::Refused { reason };
     serde_json::to_value(outcome.map_err(refused)?).map_err(|error| refused(error.to_string()))
 }
 

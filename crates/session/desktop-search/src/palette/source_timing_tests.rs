@@ -70,7 +70,7 @@ impl Source for Failing {
 
 /// Where the host's answer to one query is completed.
 type Answer = tilo_actions::remote::Completer<
-    Result<Vec<tilo_actions::remote::Found>, tilo_actions::remote::ActionHostError>,
+    Result<Vec<tilo_actions::remote::Found>, tilo_actions::remote::ActionCallError>,
 >;
 
 /// A workspace host whose answer the test hands over, as the session brings it.
@@ -85,7 +85,7 @@ impl tilo_actions::remote::ResourceSearch for Host {
         _: &tilo_actions::remote::Caller,
         needle: &str,
     ) -> tilo_actions::remote::Pending<
-        Result<Vec<tilo_actions::remote::Found>, tilo_actions::remote::ActionHostError>,
+        Result<Vec<tilo_actions::remote::Found>, tilo_actions::remote::ActionCallError>,
     > {
         let (done, answer) = tilo_actions::remote::pending();
         self.asked

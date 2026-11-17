@@ -12,7 +12,7 @@ use serde_json::{Map, Value, json};
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CatalogueQuery, Confirmation, InvokeArgument,
+    ActionCallError, ActionProvider, Caller, CatalogueQuery, Confirmation, InvokeArgument,
     InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
     WORKSPACE_GOVERNANCE_PROVIDER,
 };
@@ -171,7 +171,7 @@ async fn invoke(
     workspace_id: WorkspaceId,
     caller: &Caller,
     request: InvokeRequest,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     let receipt = settled(host.in_workspace(workspace_id).invoke(caller, request)).await?;
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
@@ -387,7 +387,7 @@ async fn invitations_run_through_the_workspaces_own_methods() {
         request(&workspace, governance::INVITE, json!({ "role": "viewer" })),
     )
     .await;
-    assert_eq!(refused, Err(ActionHostError::UnknownAction));
+    assert_eq!(refused, Err(ActionCallError::UnknownAction));
 
     // Cancelling takes it off the pending list.
     let mut cancel = Map::new();
@@ -421,7 +421,7 @@ async fn invitations_run_through_the_workspaces_own_methods() {
         ),
     )
     .await;
-    assert_eq!(elsewhere, Err(ActionHostError::UnknownAction));
+    assert_eq!(elsewhere, Err(ActionCallError::UnknownAction));
     server.shutdown().await;
 }
 
@@ -457,7 +457,7 @@ async fn an_editor_invites_up_to_her_own_role_and_no_further() {
     )
     .await;
     assert!(
-        matches!(&above, Err(ActionHostError::Refused { reason }) if reason.contains("Moderator")),
+        matches!(&above, Err(ActionCallError::Refused { reason }) if reason.contains("Moderator")),
         "{above:?}"
     );
     server.shutdown().await;
@@ -540,7 +540,7 @@ async fn an_administrator_is_an_editor_the_invitation_also_governs() {
     )
     .await;
     assert!(
-        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason.contains("may not make administrators")),
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason.contains("may not make administrators")),
         "{refused:?}"
     );
 
@@ -619,7 +619,7 @@ async fn destructive_governance_waits_for_the_person() {
     ban.confirmation = Some(Confirmation::Confirmed);
     assert_eq!(
         invoke(&host, workspace_id, &caller(&bo), ban).await,
-        Err(ActionHostError::confirmation_required())
+        Err(ActionCallError::confirmation_required())
     );
     let remove = request(
         &workspace,
@@ -628,7 +628,7 @@ async fn destructive_governance_waits_for_the_person() {
     );
     assert_eq!(
         invoke(&host, workspace_id, &caller(&bo), remove).await,
-        Err(ActionHostError::confirmation_required())
+        Err(ActionCallError::confirmation_required())
     );
     let end = request(
         &workspace,
@@ -637,7 +637,7 @@ async fn destructive_governance_waits_for_the_person() {
     );
     assert_eq!(
         invoke(&host, workspace_id, &caller(&owner), end).await,
-        Err(ActionHostError::confirmation_required())
+        Err(ActionCallError::confirmation_required())
     );
     let members = workspaces.summary(&workspace).await.unwrap().members;
     assert!(
@@ -655,7 +655,7 @@ async fn destructive_governance_waits_for_the_person() {
     );
     assert_eq!(
         invoke(&host, workspace_id, &caller(&ada), ban).await,
-        Err(ActionHostError::UnknownAction)
+        Err(ActionCallError::UnknownAction)
     );
 
     server.shutdown().await;
@@ -718,7 +718,7 @@ async fn a_host_without_apps_answers_only_its_workspaces_governance() {
     assert_eq!(
         receipt.status,
         ReceiptStatus::Rejected {
-            error: ActionHostError::UnknownAction
+            error: ActionCallError::UnknownAction
         }
     );
 }
@@ -748,7 +748,7 @@ async fn a_member_who_may_install_bots_asks_the_workspaces_host_for_one_and_take
             request(&workspace, super::REQUEST_BOT, standup.clone()),
         )
         .await,
-        Err(ActionHostError::UnknownAction)
+        Err(ActionCallError::UnknownAction)
     ));
     assert!(
         workspaces
@@ -798,7 +798,7 @@ async fn a_member_who_may_install_bots_asks_the_workspaces_host_for_one_and_take
             request(&workspace, super::WITHDRAW_BOT_REQUEST, withdraw.clone()),
         )
         .await,
-        Err(ActionHostError::UnknownAction)
+        Err(ActionCallError::UnknownAction)
     ));
     invoke(
         &host,
@@ -829,7 +829,7 @@ async fn a_member_who_may_install_bots_asks_the_workspaces_host_for_one_and_take
             ),
         )
         .await,
-        Err(ActionHostError::InvalidRequest { .. })
+        Err(ActionCallError::InvalidRequest { .. })
     ));
     server.shutdown().await;
 }
@@ -904,7 +904,7 @@ async fn an_editor_installs_nothing(
             ),
         )
         .await,
-        Err(ActionHostError::UnknownAction)
+        Err(ActionCallError::UnknownAction)
     ));
     assert!(workspaces.app_versions(workspace).await.unwrap().is_empty());
 }
@@ -977,7 +977,7 @@ async fn a_developer_installs_its_own_build(
             ),
         )
         .await,
-        Err(ActionHostError::InvalidRequest { .. })
+        Err(ActionCallError::InvalidRequest { .. })
     ));
 }
 
@@ -1045,7 +1045,7 @@ pub(super) async fn ask_own(
     device: &DeviceCert,
     verb: &str,
     argument: Value,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     let mut request = request("", "", argument);
     request.target = tilo_actions::remote::person_models::target(verb);
     let receipt = settled(
@@ -1159,7 +1159,7 @@ async fn reaches_none_of_hers(
     for (verb, argument) in naming {
         let refused = ask_own(host, workspace_id, other, verb, argument).await;
         assert!(
-            matches!(refused, Err(ActionHostError::Refused { .. })),
+            matches!(refused, Err(ActionCallError::Refused { .. })),
             "{verb}: {refused:?}"
         );
     }
@@ -1297,7 +1297,7 @@ async fn no_agent_reaches_a_persons_model_providers() {
             .await
             .map(|_| ());
             assert!(
-                matches!(refused, Err(ActionHostError::UnknownAction)),
+                matches!(refused, Err(ActionCallError::UnknownAction)),
                 "{verb}: {refused:?}"
             );
         }
@@ -1471,7 +1471,7 @@ async fn each_person_links_a_provider_and_chooses_their_own_models() {
         )
         .await;
         assert!(
-            matches!(refused, Err(ActionHostError::Refused { .. })),
+            matches!(refused, Err(ActionCallError::Refused { .. })),
             "{refused:?}"
         );
     }
@@ -1502,7 +1502,7 @@ async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
     )
     .await;
     assert!(
-        matches!(unkept, Err(ActionHostError::Refused { .. })),
+        matches!(unkept, Err(ActionCallError::Refused { .. })),
         "{unkept:?}"
     );
     assert!(fake.drain_requests().is_empty());
@@ -1530,9 +1530,9 @@ async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
 const SAID_INSIDE: &str = "what a service inside says";
 
 /// Why what was asked about a workspace's holders was refused.
-fn holder_refused(answered: Result<Value, ActionHostError>) -> String {
+fn holder_refused(answered: Result<Value, ActionCallError>) -> String {
     match answered {
-        Err(ActionHostError::Refused { reason }) => reason,
+        Err(ActionCallError::Refused { reason }) => reason,
         other => panic!("naming a holder was not refused: {other:?}"),
     }
 }

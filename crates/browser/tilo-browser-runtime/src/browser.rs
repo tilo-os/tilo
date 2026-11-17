@@ -693,7 +693,7 @@ impl Desktop {
     /// Ask the session to run `action` as this person, and draw the frame that shows what it did.
     /// A refused action is the session's to report.
     fn invoke_as_person(&self, action: &tilo_desktop_search::InvokeTarget) {
-        use tilo_actions::remote::{ActionHost as _, InvokeArgument, InvokeRequest};
+        use tilo_actions::remote::{ActionProvider as _, InvokeArgument, InvokeRequest};
         let argument = if action.arguments.is_empty() {
             InvokeArgument::None
         } else {
@@ -1418,7 +1418,7 @@ fn mount_search(
     let woken = Arc::clone(woken);
     let host = config.peer.and_then(|peer| {
         let workspace = crate::peer::workspace_id(&config.workspace).ok()?;
-        let search = tilo_actions::remote::ActionHost::resource_search(
+        let search = tilo_actions::remote::ActionProvider::resource_search(
             &crate::peer_sync::actions_of(peer, workspace)?,
         )?;
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
@@ -1828,7 +1828,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         // A window opens another app by asking the session, as on a native
         // desktop; this page's desktop is that session.
         frame.set_session_api(
-            ui::RemoteActions::with_host(desktop.session.clone(), desktop.caller()),
+            ui::RemoteActions::with_provider(desktop.session.clone(), desktop.caller()),
             Some(desktop.workspace.clone()),
         );
     }

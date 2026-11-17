@@ -514,7 +514,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use tilo_actions::remote::{
-        ActionHostError, Caller, InvocationReceipt, Pending as HostPending, ReceiptStatus, TestHost,
+        ActionCallError, Caller, InvocationReceipt, Pending as HostPending, ReceiptStatus,
+        TestProvider,
     };
 
     use super::*;
@@ -540,20 +541,20 @@ mod tests {
 
     const URL: &str = "https://tilo.so/app/#/host.example/workspace/so.tilo.notes/r/page:1";
 
-    type Answer = tilo_actions::remote::Completer<Result<InvocationReceipt, ActionHostError>>;
+    type Answer = tilo_actions::remote::Completer<Result<InvocationReceipt, ActionCallError>>;
 
     /// The resource's app behind the API: answers `share-link` with `URL`.
-    fn api() -> TestHost {
-        TestHost::new().completing(|_| tilo_actions::ActionOutput {
+    fn api() -> TestProvider {
+        TestProvider::new().completing(|_| tilo_actions::ActionOutput {
             value: Some(serde_json::json!({"url": URL})),
             resources: Vec::new(),
         })
     }
 
     /// The resource's app behind the API, refusing with `message`.
-    fn refusing(message: &str) -> TestHost {
+    fn refusing(message: &str) -> TestProvider {
         let message = message.to_owned();
-        TestHost::new().answering(move |_, request| {
+        TestProvider::new().answering(move |_, request| {
             HostPending::ready(Ok(InvocationReceipt {
                 invocation: request.invocation,
                 status: ReceiptStatus::Failed {
@@ -570,10 +571,10 @@ mod tests {
 
     /// The resource's app behind the API, answering only once the test
     /// hands over the answers it keeps.
-    fn holding() -> (TestHost, Arc<Mutex<Vec<Answer>>>) {
+    fn holding() -> (TestProvider, Arc<Mutex<Vec<Answer>>>) {
         let held = Arc::new(Mutex::new(Vec::new()));
         let keep = Arc::clone(&held);
-        let api = TestHost::new().answering(move |_, _| {
+        let api = TestProvider::new().answering(move |_, _| {
             let (answer, pending) = tilo_actions::remote::pending();
             keep.lock().unwrap().push(answer);
             pending

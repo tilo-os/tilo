@@ -13,7 +13,7 @@ use ui::lock::MutexRecover as _;
 use ui::tilo_actions::ActionOutput;
 use ui::tilo_actions::remote::person_models::{Assignment, OfferedModel};
 use ui::tilo_actions::remote::{
-    ActionHost, Caller, InvocationReceipt, Pending, ReceiptStatus, TestHost,
+    ActionProvider, Caller, InvocationReceipt, Pending, ReceiptStatus, TestProvider,
 };
 use ui::widget::FieldRole;
 use zeroize::Zeroizing;
@@ -52,7 +52,7 @@ struct Kept {
 }
 
 impl Kept {
-    fn provider(&mut self, id: &str) -> Result<&mut ProviderView, ActionHostError> {
+    fn provider(&mut self, id: &str) -> Result<&mut ProviderView, ActionCallError> {
         self.providers
             .providers
             .iter_mut()
@@ -65,7 +65,7 @@ impl Kept {
         &mut self,
         action: &str,
         argument: &serde_json::Value,
-    ) -> Result<serde_json::Value, ActionHostError> {
+    ) -> Result<serde_json::Value, ActionCallError> {
         match action {
             person_models::LIST => {}
             person_models::REMOVE_PROVIDER
@@ -81,7 +81,7 @@ impl Kept {
         &mut self,
         action: &str,
         argument: &serde_json::Value,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         let text = |name: &str| argument[name].as_str().unwrap_or_default().to_owned();
         let id = text("provider");
         match action {
@@ -130,14 +130,15 @@ impl Kept {
         &mut self,
         action: &str,
         argument: &serde_json::Value,
-    ) -> Result<serde_json::Value, ActionHostError> {
+    ) -> Result<serde_json::Value, ActionCallError> {
         let text = |name: &str| argument[name].as_str().unwrap_or_default().to_owned();
         let view = |provider: &ProviderView| serde_json::to_value(provider).unwrap();
         let id = text("provider");
         match action {
             person_models::ADD_PRESET => {
-                let preset = Preset::from_slug(&text("preset"))
-                    .ok_or_else(|| refused("That provider is not one this host adds by name"))?;
+                let preset = Preset::from_slug(&text("preset")).ok_or_else(|| {
+                    refused("That provider is not one this provider adds by name")
+                })?;
                 let added = ProviderView {
                     id: preset.slug().to_owned(),
                     name: preset.label().to_owned(),
@@ -203,23 +204,23 @@ impl Kept {
                 });
                 Ok(view(provider))
             }
-            _ => Err(ActionHostError::UnknownAction),
+            _ => Err(ActionCallError::UnknownAction),
         }
     }
 }
 
-fn refused(reason: &str) -> ActionHostError {
-    ActionHostError::Refused {
+fn refused(reason: &str) -> ActionCallError {
+    ActionCallError::Refused {
         reason: reason.to_owned(),
     }
 }
 
 /// A host that keeps a person's providers as the real one does, and what it
 /// keeps.
-fn host() -> (Arc<TestHost>, Arc<Mutex<Kept>>) {
+fn provider() -> (Arc<TestProvider>, Arc<Mutex<Kept>>) {
     let kept = Arc::new(Mutex::new(Kept::default()));
     let answering = Arc::clone(&kept);
-    let host = TestHost::new().answering(move |_, request| {
+    let provider = TestProvider::new().answering(move |_, request| {
         let argument = match &request.argument {
             InvokeArgument::Json(map) => serde_json::Value::Object(map.clone()),
             _ => serde_json::Value::Null,
@@ -237,12 +238,12 @@ fn host() -> (Arc<TestHost>, Arc<Mutex<Kept>>) {
             },
         }))
     });
-    (Arc::new(host), kept)
+    (Arc::new(provider), kept)
 }
 
-fn remote(host: &Arc<TestHost>) -> ui::RemoteActions {
-    let api: Arc<dyn ActionHost + Send + Sync> = host.clone();
-    ui::RemoteActions::with_host(api, Caller::local_person("owner"))
+fn remote(provider: &Arc<TestProvider>) -> ui::RemoteActions {
+    let api: Arc<dyn ActionProvider + Send + Sync> = provider.clone();
+    ui::RemoteActions::with_provider(api, Caller::local_person("owner"))
 }
 
 /// Take every answer the host has for `models`.
@@ -263,16 +264,17 @@ fn type_key(models: &PersonModels, provider: &str, key: &str) {
 }
 
 /// The actions `host` was asked, oldest first.
-fn asked(host: &TestHost) -> Vec<String> {
-    host.asked()
+fn asked(provider: &TestProvider) -> Vec<String> {
+    provider
+        .asked()
         .into_iter()
         .map(|request| request.target.address.action)
         .collect()
 }
 
 /// A person with one provider linked, its key kept and its models listed.
-fn linked_provider(host: &Arc<TestHost>) -> PersonModels {
-    let mut models = PersonModels::new(remote(host));
+fn linked_provider(provider: &Arc<TestProvider>) -> PersonModels {
+    let mut models = PersonModels::new(remote(provider));
     settle(&mut models);
     models
         .apply(PersonModelsEffect::LinkProvider {
@@ -292,8 +294,8 @@ fn linked_provider(host: &Arc<TestHost>) -> PersonModels {
 #[test]
 fn the_first_minute_links_a_provider_takes_its_key_and_picks_a_model() {
     en();
-    let (host, kept) = host();
-    let mut models = PersonModels::new(remote(&host));
+    let (provider, kept) = provider();
+    let mut models = PersonModels::new(remote(&provider));
     settle(&mut models);
     assert_eq!(models.served(), Some(true));
     assert_eq!(models.linked(), Some(false));
@@ -328,7 +330,7 @@ fn the_first_minute_links_a_provider_takes_its_key_and_picks_a_model() {
     assert_eq!(models.key.provider, None);
     assert!(models.key.buffer.lock_recover().is_empty());
     assert_eq!(
-        asked(&host),
+        asked(&provider),
         [
             person_models::LIST,
             person_models::ADD_PRESET,
@@ -337,7 +339,7 @@ fn the_first_minute_links_a_provider_takes_its_key_and_picks_a_model() {
         ]
     );
     assert_eq!(kept.lock_recover().keys["gemini"], GOOD_KEY);
-    for request in host.asked() {
+    for request in provider.asked() {
         if request.target.address.action != person_models::SET_KEY {
             let carried = format!("{:?}", request.argument);
             assert!(!carried.contains(GOOD_KEY), "{carried}");
@@ -372,8 +374,8 @@ fn the_first_minute_links_a_provider_takes_its_key_and_picks_a_model() {
 #[test]
 fn a_key_the_provider_refuses_is_asked_for_again() {
     en();
-    let (host, _) = host();
-    let mut models = PersonModels::new(remote(&host));
+    let (provider, _) = provider();
+    let mut models = PersonModels::new(remote(&provider));
     settle(&mut models);
     models
         .apply(PersonModelsEffect::LinkProvider {
@@ -408,8 +410,8 @@ fn a_key_the_provider_refuses_is_asked_for_again() {
 #[test]
 fn a_provider_with_no_list_takes_a_model_by_name() {
     en();
-    let (host, _) = host();
-    let mut models = PersonModels::new(remote(&host));
+    let (provider, _) = provider();
+    let mut models = PersonModels::new(remote(&provider));
     settle(&mut models);
     models.form_name.set("Our server".into());
     models.form_endpoint.set("https://models.example/v1".into());
@@ -434,11 +436,11 @@ fn a_provider_with_no_list_takes_a_model_by_name() {
     settle(&mut models);
     assert_eq!(models.providers()[0].models[0].id, "typed-model");
     assert_eq!(models.model_name("other").get(), "");
-    let named = host
+    let named = provider
         .asked()
         .into_iter()
         .find(|request| request.target.address.action == person_models::ADD_MODEL)
-        .expect("the host was asked to add the model");
+        .expect("the provider was asked to add the model");
     let InvokeArgument::Json(argument) = named.argument else {
         panic!("a model is named as JSON");
     };
@@ -458,8 +460,8 @@ fn a_provider_with_no_list_takes_a_model_by_name() {
 #[test]
 fn each_kind_of_work_takes_a_model_in_a_persons_words() {
     en();
-    let (host, kept) = host();
-    let mut models = linked_provider(&host);
+    let (provider, kept) = provider();
+    let mut models = linked_provider(&provider);
     let choose = |models: &mut PersonModels, work: Work, model: Option<&str>| {
         models
             .apply(PersonModelsEffect::ChooseWorkModel {
@@ -515,11 +517,11 @@ fn each_kind_of_work_takes_a_model_in_a_persons_words() {
     assert_eq!(stored("request"), None);
     assert_eq!(stored("task"), None);
     assert_eq!(models.work_choice(Work::MainThread), "");
-    let together = host
+    let together = provider
         .asked()
         .into_iter()
         .rfind(|request| request.target.address.action == person_models::SET_ASSIGNMENTS)
-        .expect("the choice went to the host");
+        .expect("the choice went to the provider");
     let InvokeArgument::Json(argument) = together.argument else {
         panic!("a choice travels as JSON");
     };
@@ -580,8 +582,8 @@ fn a_choosers_choice_is_the_effect_that_records_it() {
 #[test]
 fn a_provider_removed_is_gone_with_its_key_field() {
     en();
-    let (host, kept) = host();
-    let mut models = linked_provider(&host);
+    let (provider, kept) = provider();
+    let mut models = linked_provider(&provider);
     models
         .apply(PersonModelsEffect::EnterProviderKey {
             provider: "gemini".into(),
@@ -610,12 +612,12 @@ fn a_provider_removed_is_gone_with_its_key_field() {
 #[test]
 fn where_no_host_is_in_reach_the_piece_says_so() {
     en();
-    let host = Arc::new(TestHost::new().answering(|_, _| {
-        Pending::ready(Err(ActionHostError::Unavailable {
+    let provider = Arc::new(TestProvider::new().answering(|_, _| {
+        Pending::ready(Err(ActionCallError::Unavailable {
             reason: "Your devices can't be reached from here".into(),
         }))
     }));
-    let mut models = PersonModels::new(remote(&host));
+    let mut models = PersonModels::new(remote(&provider));
     settle(&mut models);
     assert_eq!(models.served(), Some(false));
     assert_eq!(models.linked(), None);
@@ -626,7 +628,7 @@ fn where_no_host_is_in_reach_the_piece_says_so() {
 
     models.apply(PersonModelsEffect::ReadProviders).unwrap();
     settle(&mut models);
-    assert_eq!(host.asked().len(), 2);
+    assert_eq!(provider.asked().len(), 2);
 }
 
 /// The Model Providers window of a person whose workspace runs on a host
@@ -636,8 +638,8 @@ fn where_no_host_is_in_reach_the_piece_says_so() {
 #[test]
 fn the_window_links_a_provider_through_its_own_controls() {
     en();
-    let (host, kept) = host();
-    let api: Arc<dyn ActionHost + Send + Sync> = host.clone();
+    let (provider, kept) = provider();
+    let api: Arc<dyn ActionProvider + Send + Sync> = provider.clone();
     let _served = ui::RemoteActions::enter(api, Caller::local_person("owner"));
     let mut app = TestApp::<crate::ProviderSettingsApp>::for_person("owner").unwrap();
     app.settle();
@@ -648,7 +650,7 @@ fn the_window_links_a_provider_through_its_own_controls() {
     app.harness().click_named("models.link.anthropic").unwrap();
     app.settle();
     assert_eq!(
-        asked(&host),
+        asked(&provider),
         [person_models::LIST, person_models::ADD_PRESET]
     );
     let asking = app.harness().inspection_json().unwrap();

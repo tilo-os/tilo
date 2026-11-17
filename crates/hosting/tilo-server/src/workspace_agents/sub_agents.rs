@@ -34,7 +34,7 @@ use tilo_workspace_agent::{Agent, Stands, WorkspaceAgents, sub};
 use ui::permissions::MemberId;
 
 use super::{
-    Ask, Asks, CHAT, HostAgents, Outcome, Turn, WorkspaceActionHost, WorkspaceId, going,
+    Ask, Asks, CHAT, HostAgents, Outcome, Turn, WorkspaceActionProvider, WorkspaceId, going,
     invoke_named,
 };
 use crate::workspaces::person_model::Interaction;
@@ -576,7 +576,7 @@ impl HostAgents {
         &self,
         workspace: &str,
         person: &str,
-    ) -> Result<(WorkspaceActionHost, Caller), String> {
+    ) -> Result<(WorkspaceActionProvider, Caller), String> {
         let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
         // The person as the workspace's list of its agents names a keeper.
         let key: [u8; 32] = tilo_action_policy::PersonId::parse(person)
@@ -589,7 +589,7 @@ impl HostAgents {
             .await
             .ok_or("the person a sub-agent works for is admitted here on no device")?;
         Ok((
-            WorkspaceActionHost::new(self.actions.clone(), workspace_id),
+            WorkspaceActionProvider::new(self.actions.clone(), workspace_id),
             Caller::authenticated(key, device).in_workspace(workspace),
         ))
     }
@@ -841,7 +841,7 @@ impl HostAgents {
             && let Err(error) = self
                 .tell_starter(
                     &acting.workspace,
-                    (&acting.person, &acting.host),
+                    (&acting.person, &acting.provider),
                     turn,
                     (stands, said),
                 )
@@ -856,7 +856,7 @@ impl HostAgents {
     async fn tell_starter(
         &self,
         workspace: &str,
-        (person, service): (&Caller, &WorkspaceActionHost),
+        (person, service): (&Caller, &WorkspaceActionProvider),
         turn: &Turn,
         (stands, said): (Stands, &str),
     ) -> Result<(), String> {
@@ -927,7 +927,7 @@ impl HostAgents {
 /// Ask the agents of the conversation `conversation` with `text` through Chat's `ask-agent`, as
 /// `caller`, under the cause (`kind`, `label`, `key`).
 async fn ask_agent(
-    service: &WorkspaceActionHost,
+    service: &WorkspaceActionProvider,
     caller: &Caller,
     workspace: &str,
     (conversation, text): (&str, &str),

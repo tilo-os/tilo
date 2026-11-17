@@ -3,7 +3,7 @@
 //! held here ([`tilo_desktop_model::asked`]). Nothing waits for the window.
 
 use super::{
-    APPLICATION_OPEN_ACTION, ActionHostError, ActionOutput, Arc, Caller, DocumentMutation,
+    APPLICATION_OPEN_ACTION, ActionCallError, ActionOutput, Arc, Caller, DocumentMutation,
     DocumentRoute, InvokeRequest, Needs, Outcome, Worker, WorkspaceDocuments, WorkspaceId,
     application_provider_resource, caller_context, commit_failed,
 };
@@ -30,7 +30,7 @@ impl Worker {
         if request.target.address.action != APPLICATION_OPEN_ACTION
             || WorkspaceId::parse(named) != Some(workspace_id)
         {
-            return Err(Outcome::Rejected(ActionHostError::UnknownAction));
+            return Err(Outcome::Rejected(ActionCallError::UnknownAction));
         }
         let document = application_provider_resource(&request.target.provider).unwrap_or_default();
         self.place_window(workspace_id, caller, (named, app, document), request)?;
@@ -58,7 +58,7 @@ impl Worker {
         (named, app, document): (&str, &str, &str),
         request: &InvokeRequest,
     ) -> Result<(), Outcome> {
-        let unknown = || Outcome::Rejected(ActionHostError::UnknownAction);
+        let unknown = || Outcome::Rejected(ActionCallError::UnknownAction);
         let person = if self.acts_for_owner(caller) {
             self.member.clone()
         } else {
@@ -103,7 +103,7 @@ impl Worker {
             && !state.holds(&route)
             && !self.held_or_owed(workspace_id, &route)?
         {
-            return Err(Outcome::Rejected(ActionHostError::Refused {
+            return Err(Outcome::Rejected(ActionCallError::Refused {
                 reason: format!("this workspace has no {app} record {}", route.document),
             }));
         }
@@ -183,7 +183,7 @@ impl Worker {
 
 /// The refusal of a window that is not on the person's layout: `title`'s, and why.
 fn not_placed(title: &str, why: &tilo_desktop_model::place::NotPlaced) -> Outcome {
-    Outcome::Rejected(ActionHostError::Unavailable {
+    Outcome::Rejected(ActionCallError::Unavailable {
         reason: format!("{title}'s window is not on the person's layout: {why}"),
     })
 }

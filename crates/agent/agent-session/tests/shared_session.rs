@@ -119,7 +119,7 @@ async fn start_host(
             device_cert: host.cert.clone(),
             revocations: RevocationList::new(),
         },
-        Some(Arc::new(tilo_server::ActionHostServer::new(
+        Some(Arc::new(tilo_server::ActionProviderServer::new(
             SupervisorHost(supervisor.clone()),
         ))),
     )

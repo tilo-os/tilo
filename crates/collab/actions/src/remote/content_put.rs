@@ -9,7 +9,7 @@
 //! A put is invisible to everyone until an action at its own node
 //! references it: storing content is never authority over any document.
 
-use super::{ActionHostError, Caller};
+use super::{ActionCallError, Caller};
 
 /// The most raw bytes one append carries. MCP requests are bounded at
 /// 1 MiB; 512 KiB is about 683 KiB of base64, leaving room for the rest of
@@ -19,14 +19,14 @@ pub const MAX_CONTENT_PUT_CHUNK: usize = 512 * 1024;
 /// Uploads one session keeps open at once.
 pub const MAX_OPEN_CONTENT_PUTS: usize = 4;
 
-/// What a host without a content store answers.
+/// What a provider without a content store answers.
 pub const CONTENT_PUTS_UNAVAILABLE: &str = "content uploads are not available here";
 
-/// A host's API for content puts.
+/// A provider's API for content puts.
 pub trait ContentPuts: Send + Sync {
     /// Open an upload of exactly `size` bytes into the content store of
     /// `caller`'s workspace.
-    fn begin(&self, caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionHostError>;
+    fn begin(&self, caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionCallError>;
 }
 
 /// One upload in progress, owned by the session that began it: dropped
@@ -42,13 +42,13 @@ pub trait ContentPut: Send {
     /// `offset` must be exactly what was accepted so far, so a chunk sent
     /// again is refused, never stored twice; the refusal names the offset
     /// to resume at.
-    fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionHostError>;
+    fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionCallError>;
 
     /// Store the content and answer its reference, `tilo.content:<hash>`.
-    fn finish(self: Box<Self>) -> Result<String, ActionHostError>;
+    fn finish(self: Box<Self>) -> Result<String, ActionCallError>;
 }
 
-/// Open uploads one host keeps for all its callers at once; past it, the
+/// Open uploads one provider keeps for all its callers at once; past it, the
 /// upload left untouched longest is dropped and stores nothing.
 pub const MAX_HOSTED_CONTENT_PUTS: usize = 64;
 
@@ -99,7 +99,7 @@ pub enum ContentPutAnswer {
     Finished { content: String },
 }
 
-/// The uploads a host keeps open for the callers that began them over a
+/// The uploads a provider keeps open for the callers that began them over a
 /// session, each answerable only to its own caller.
 #[derive(Default)]
 pub struct HostedContentPuts {
@@ -139,9 +139,9 @@ impl HostedContentPuts {
         puts: &dyn ContentPuts,
         caller: &Caller,
         step: ContentPutStep,
-    ) -> Result<ContentPutAnswer, ActionHostError> {
+    ) -> Result<ContentPutAnswer, ActionCallError> {
         use tilo_lock::MutexRecover as _;
-        let gone = |upload: u64| ActionHostError::InvalidRequest {
+        let gone = |upload: u64| ActionCallError::InvalidRequest {
             reason: format!("no upload {upload} is open in this session"),
         };
         match step {
@@ -153,7 +153,7 @@ impl HostedContentPuts {
                     .filter(|(owner, _, _)| owner == caller)
                     .count();
                 if mine >= MAX_OPEN_CONTENT_PUTS {
-                    return Err(ActionHostError::InvalidRequest {
+                    return Err(ActionCallError::InvalidRequest {
                         reason: format!(
                             "this session already has {MAX_OPEN_CONTENT_PUTS} uploads open: finish one first"
                         ),
@@ -185,14 +185,14 @@ impl HostedContentPuts {
                 bytes,
             } => {
                 if bytes.len() > super::MAX_CONTENT_FRAME_BYTES.saturating_mul(2) {
-                    return Err(ActionHostError::InvalidRequest {
+                    return Err(ActionCallError::InvalidRequest {
                         reason: format!(
                             "a piece carries at most {} bytes",
                             super::MAX_CONTENT_FRAME_BYTES
                         ),
                     });
                 }
-                let chunk = hex::decode(bytes).map_err(|_| ActionHostError::InvalidRequest {
+                let chunk = hex::decode(bytes).map_err(|_| ActionCallError::InvalidRequest {
                     reason: "a piece's bytes must be hex".into(),
                 })?;
                 let mut open = self.open.lock_recover();
@@ -205,7 +205,7 @@ impl HostedContentPuts {
                     .ok_or_else(|| gone(upload))?;
                 entry.1 = now;
                 let appended = entry.2.append(offset, &chunk);
-                if matches!(appended, Err(ActionHostError::Refused { .. })) {
+                if matches!(appended, Err(ActionCallError::Refused { .. })) {
                     // The store refused the bytes: the upload is over.
                     open.uploads.remove(&upload);
                 }
@@ -224,7 +224,7 @@ impl HostedContentPuts {
                     .ok_or_else(|| gone(upload))?;
                 // Short of its size, the upload stays open to be completed.
                 if put.written() != put.size() {
-                    return Err(ActionHostError::InvalidRequest {
+                    return Err(ActionCallError::InvalidRequest {
                         reason: format!(
                             "the upload has {} of {} bytes: append the rest at offset {}",
                             put.written(),
@@ -254,7 +254,7 @@ mod tests {
     struct Held(u64, Vec<u8>);
 
     impl ContentPuts for Memory {
-        fn begin(&self, _: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionHostError> {
+        fn begin(&self, _: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionCallError> {
             Ok(Box::new(Held(size, Vec::new())))
         }
     }
@@ -266,16 +266,16 @@ mod tests {
         fn written(&self) -> u64 {
             u64::try_from(self.1.len()).unwrap()
         }
-        fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionHostError> {
+        fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionCallError> {
             if offset != self.written() {
-                return Err(ActionHostError::InvalidRequest {
+                return Err(ActionCallError::InvalidRequest {
                     reason: "offset".into(),
                 });
             }
             self.1.extend_from_slice(chunk);
             Ok(self.written())
         }
-        fn finish(self: Box<Self>) -> Result<String, ActionHostError> {
+        fn finish(self: Box<Self>) -> Result<String, ActionCallError> {
             Ok(format!("{} bytes", self.1.len()))
         }
     }

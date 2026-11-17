@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow,
+    ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow,
     InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
@@ -30,10 +30,10 @@ const KEPT: usize = 64;
 
 /// How a call ends, when it has: what the tools are told, or the provider's refusal.
 pub(super) type Ending =
-    Pin<Box<dyn Future<Output = Result<InvocationUpdate, ActionHostError>> + Send>>;
+    Pin<Box<dyn Future<Output = Result<InvocationUpdate, ActionCallError>> + Send>>;
 
 /// The rows a provider answers a listing with, when it has them.
-pub(super) type Rows = Pending<Result<Vec<CatalogueRow>, ActionHostError>>;
+pub(super) type Rows = Pending<Result<Vec<CatalogueRow>, ActionCallError>>;
 
 /// A provider one turn's action service answers itself.
 pub(super) trait TurnProvider: Send + Sync {
@@ -76,7 +76,7 @@ impl Ended {
         &self,
         answers: Vec<Rows>,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         let (completer, page) = tilo_actions::remote::pending();
         self.runtime.spawn(async move {
             let mut rows = Vec::new();
@@ -100,7 +100,7 @@ impl Ended {
         provider: Arc<dyn TurnProvider>,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let (completer, answer) = tilo_actions::remote::pending();
         let (kept, caller) = (self.clone(), caller.clone());
         self.runtime.spawn(async move {

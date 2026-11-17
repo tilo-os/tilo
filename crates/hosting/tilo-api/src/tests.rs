@@ -1144,7 +1144,7 @@ async fn health_says_when_the_site_serves_no_sign_in_page() {
 /// the caller must act on.
 #[test]
 fn a_busy_server_answers_rate_limited_with_its_wait() {
-    let busy = tilo_actions::remote::ActionHostError::Busy {
+    let busy = tilo_actions::remote::ActionCallError::Busy {
         retry_after_ms: 480,
     };
     let server = server::ServerError::from(tilo_session_client::device::HostRefusal::of(&busy));
@@ -1168,7 +1168,7 @@ fn a_busy_server_answers_rate_limited_with_its_wait() {
 fn a_workspace_refusal_is_read_by_its_case() {
     use tilo_server_session::workspaces::Refusal;
     let refused = |refusal: Refusal| {
-        let error = tilo_actions::remote::ActionHostError::Refused {
+        let error = tilo_actions::remote::ActionCallError::Refused {
             reason: refusal.to_reason(),
         };
         server::ServerError::from(tilo_session_client::device::HostRefusal::of(&error))

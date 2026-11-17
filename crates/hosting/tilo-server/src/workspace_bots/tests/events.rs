@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use tilo_actions::remote::person_events::{self, Ended, EventView, Events, Sort};
 use tilo_actions::remote::{
-    ActionHostError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
+    ActionCallError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionMessage,
 };
 use tilo_server_protocol::WorkspaceId;
@@ -24,8 +24,8 @@ fn take(
     caller: &Caller,
     action: &str,
     arguments: serde_json::Value,
-) -> Result<serde_json::Value, ActionHostError> {
-    let unanswered = |why: &str| ActionHostError::Unavailable {
+) -> Result<serde_json::Value, ActionCallError> {
+    let unanswered = |why: &str| ActionCallError::Unavailable {
         reason: why.to_owned(),
     };
     let workspace = WorkspaceId::parse(workspace).ok_or_else(|| unanswered("not a workspace"))?;
@@ -61,7 +61,7 @@ fn take(
 }
 
 /// The event `answer` describes.
-fn event(answer: Result<serde_json::Value, ActionHostError>) -> EventView {
+fn event(answer: Result<serde_json::Value, ActionCallError>) -> EventView {
     serde_json::from_value(answer.expect("the action is taken")).expect("an event is answered")
 }
 
@@ -154,7 +154,7 @@ impl Theirs {
         caller: &Caller,
         action: &str,
         arguments: serde_json::Value,
-    ) -> Result<serde_json::Value, ActionHostError> {
+    ) -> Result<serde_json::Value, ActionCallError> {
         take(&self.events, &self.workspace, caller, action, arguments)
     }
 
@@ -249,7 +249,7 @@ async fn another_persons_agent_and_a_bot_set_nothing_up_and_reach_no_event() {
     ] {
         let refused = theirs.take(&other, person_events::SET_UP, morning_numbers());
         assert!(
-            matches!(refused, Err(ActionHostError::Refused { .. })),
+            matches!(refused, Err(ActionCallError::Refused { .. })),
             "{refused:?}"
         );
         for action in [
@@ -272,7 +272,7 @@ async fn another_persons_agent_and_a_bot_set_nothing_up_and_reach_no_event() {
         Caller::bot(GREETER.to_owned(), cert.user_public_key, [5; 32]).in_workspace(&workspace);
     assert!(matches!(
         theirs.take(&bot, person_events::LIST, json!({})),
-        Err(ActionHostError::UnknownAction)
+        Err(ActionCallError::UnknownAction)
     ));
     assert_eq!(theirs.listed(), vec![made], "nothing of it changed");
 }
@@ -320,7 +320,7 @@ async fn an_event_is_changed_paused_and_removed_by_its_persons_assistant() {
         json!({"event": made.id, "when": "when someone presses \"ctrl+k\""}),
     );
     assert!(
-        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason.contains("every device off")),
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason.contains("every device off")),
         "{refused:?}"
     );
     assert_eq!(theirs.listed(), vec![changed]);
@@ -373,7 +373,7 @@ async fn what_lets_an_events_work_act_unasked_is_its_persons_alone_to_give() {
     // Their assistant cannot give it to an event it set up.
     let asked = theirs.take(&theirs.agent(), person_events::PERMIT, permission.clone());
     assert!(
-        matches!(&asked, Err(ActionHostError::Refused { reason }) if reason.contains("only the person")),
+        matches!(&asked, Err(ActionCallError::Refused { reason }) if reason.contains("only the person")),
         "{asked:?}"
     );
     assert!(theirs.listed().iter().all(|event| event.permits.is_empty()));

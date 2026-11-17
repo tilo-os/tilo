@@ -24,7 +24,7 @@ use serde_json::Value;
 
 use super::{ActionAddress, RemoteActionTarget};
 
-/// The provider the host answers a person's events under.
+/// The provider that answers a person's events under.
 pub const PROVIDER: &str = "tilo.events";
 /// The resource the events are actions of.
 pub const RESOURCE: &str = "events";

@@ -45,12 +45,12 @@ fn canonical_host(
     workspace: &signed_worker::OriginalWorkspace,
 ) -> (
     tilo_actions::remote::Caller,
-    Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>,
+    Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
 ) {
     let caller = canonical_caller(workspace);
     let host = workspace
         .state
-        .certified_local_action_host(
+        .certified_local_action_provider(
             &caller,
             &signed_worker::presentation(
                 &workspace.route.cluster_id,

@@ -16,10 +16,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ActionHostError, InvokeArgument, InvokeRequest, RemoteActionTarget};
+use super::{ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use crate::api::ActionAddress;
 
-/// The provider the host answers own-device invocations under.
+/// The provider that answers own-device invocations under.
 pub const PROVIDER: &str = "tilo.own-device";
 /// The resource the invocation is an action of.
 pub const RESOURCE: &str = "identity.device";
@@ -62,8 +62,8 @@ pub struct Checked {
     pub argument: InvokeArgument,
 }
 
-fn invalid(reason: &str) -> ActionHostError {
-    ActionHostError::InvalidRequest {
+fn invalid(reason: &str) -> ActionCallError {
+    ActionCallError::InvalidRequest {
         reason: reason.to_owned(),
     }
 }
@@ -82,8 +82,8 @@ impl Invocation {
     ///
     /// # Errors
     ///
-    /// [`ActionHostError::InvalidRequest`] when the argument is not one.
-    pub fn from_argument(argument: &InvokeArgument) -> Result<Self, ActionHostError> {
+    /// [`ActionCallError::InvalidRequest`] when the argument is not one.
+    pub fn from_argument(argument: &InvokeArgument) -> Result<Self, ActionCallError> {
         let InvokeArgument::Json(map) = argument else {
             return Err(invalid("an own-device invocation takes JSON arguments"));
         };
@@ -96,8 +96,8 @@ impl Invocation {
     ///
     /// # Errors
     ///
-    /// [`ActionHostError::InvalidRequest`] naming the part that is not.
-    pub fn check(&self) -> Result<Checked, ActionHostError> {
+    /// [`ActionCallError::InvalidRequest`] naming the part that is not.
+    pub fn check(&self) -> Result<Checked, ActionCallError> {
         let device = decode_device(&self.device).ok_or_else(|| invalid("not a device key"))?;
         if self.app.is_empty() || self.app.contains(':') {
             return Err(invalid("not an application id"));

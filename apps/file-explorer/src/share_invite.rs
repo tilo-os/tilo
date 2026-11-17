@@ -94,7 +94,7 @@ impl ShareInvite {
 mod tests {
     use super::*;
     use tilo_actions::InvocationUpdate;
-    use tilo_actions::remote::{ActionHostError, InvocationReceipt, InvocationState};
+    use tilo_actions::remote::{ActionCallError, InvocationReceipt, InvocationState};
     use ui::collaboration::CollabEvent;
 
     fn receipt(invocation: InvocationId, status: ReceiptStatus) -> CollabEvent {
@@ -189,10 +189,10 @@ mod tests {
                 invite.handle_event(&receipt(
                     invocation,
                     ReceiptStatus::Rejected {
-                        error: ActionHostError::NotPermitted,
+                        error: ActionCallError::NotPermitted,
                     },
                 )),
-                Some(Err(ActionHostError::NotPermitted.to_string())),
+                Some(Err(ActionCallError::NotPermitted.to_string())),
                 "a member who may not invite is refused by the workspace"
             );
             assert!(!invite.asking());

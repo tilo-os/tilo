@@ -43,7 +43,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
-use crate::workspace_agents::{WorkspaceActionHost, invoke_named};
+use crate::workspace_agents::{WorkspaceActionProvider, invoke_named};
 
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::protocol::ErrorKind;
@@ -334,7 +334,7 @@ impl Hosted {
         };
         runtime
             .block_on(invoke_named(
-                &WorkspaceActionHost::new(actions.clone(), workspace),
+                &WorkspaceActionProvider::new(actions.clone(), workspace),
                 &caller,
                 &route,
                 &ui::resource::chain_resource_id(&chat::parts::chain()),

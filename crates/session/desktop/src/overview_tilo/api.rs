@@ -2,7 +2,7 @@
 //! server's live read ([`mcp_server::SERVER`]), asked of the host that serves it
 //! and followed as agents connect, work and leave. It is the read Console's
 //! agent card shows, not a second one: the same server, asked of the same host
-//! ([`ActionHost`]), and each host's answer is what its own run names.
+//! ([`ActionProvider`]), and each host's answer is what its own run names.
 //!
 //! A host that refuses the read, or a session that reaches none, leaves the
 //! rows as they are: the overview says nothing of agents it cannot hear
@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{
-    ActionHost, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget, mcp_server,
+    ActionProvider, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget, mcp_server,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 
@@ -41,7 +41,7 @@ impl ApiRead {
     /// are to be drawn again.
     pub fn follow(
         &mut self,
-        host: &dyn ActionHost,
+        host: &dyn ActionProvider,
         caller: &Caller,
         wake: &Arc<dyn Fn() + Send + Sync>,
     ) -> bool {
@@ -98,7 +98,7 @@ impl ApiRead {
     /// device's revocation to their root to sign, as it revokes any of
     /// their devices. The MCP server answers in its own time; what it says next
     /// is what the read shows.
-    pub fn revoke(host: &dyn ActionHost, caller: &Caller, grant: &str) {
+    pub fn revoke(host: &dyn ActionProvider, caller: &Caller, grant: &str) {
         let request = request(
             InvocationId::new(),
             mcp_server::REVOKE,

@@ -5,7 +5,7 @@ use super::*;
 
 use ui::prelude::TestApp;
 use ui::tilo_actions::remote::{
-    ActionHostError, Caller, Completer, InvocationReceipt, InvokeRequest, identity_admin,
+    ActionCallError, Caller, Completer, InvocationReceipt, InvokeRequest, identity_admin,
 };
 
 use crate::resource::SettingsShell;
@@ -72,7 +72,7 @@ enum Sheet {
     Held(Vec<(ui::tilo_actions::InvocationId, Completer<Answer>)>),
 }
 
-type Answer = Result<InvocationReceipt, ActionHostError>;
+type Answer = Result<InvocationReceipt, ActionCallError>;
 
 fn opened(invocation: ui::tilo_actions::InvocationId) -> InvocationReceipt {
     InvocationReceipt {
@@ -156,16 +156,16 @@ impl RecordingHost {
     }
 }
 
-impl ui::tilo_actions::remote::ActionHost for RecordingHost {
+impl ui::tilo_actions::remote::ActionProvider for RecordingHost {
     fn query(
         &self,
         _: &Caller,
         _: ui::tilo_actions::remote::CatalogueQuery,
     ) -> ui::tilo_actions::remote::Pending<
-        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionHostError>,
+        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionCallError>,
     > {
         ui::tilo_actions::remote::Pending::ready(Err(
-            ui::tilo_actions::remote::ActionHostError::NotPermitted,
+            ui::tilo_actions::remote::ActionCallError::NotPermitted,
         ))
     }
 
@@ -176,7 +176,7 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
     ) -> ui::tilo_actions::remote::Pending<
         Result<
             ui::tilo_actions::remote::InvocationReceipt,
-            ui::tilo_actions::remote::ActionHostError,
+            ui::tilo_actions::remote::ActionCallError,
         >,
     > {
         let invocation = request.invocation;
@@ -191,7 +191,7 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
             return match &mut *self.sheet.lock().unwrap() {
                 Sheet::Opens => ui::tilo_actions::remote::Pending::ready(Ok(opened(invocation))),
                 Sheet::Refused => {
-                    ui::tilo_actions::remote::Pending::ready(Err(ActionHostError::NotPermitted))
+                    ui::tilo_actions::remote::Pending::ready(Err(ActionCallError::NotPermitted))
                 }
                 Sheet::Held(held) => {
                     let (answer, pending) = ui::tilo_actions::remote::pending();
@@ -221,7 +221,7 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
             let answer = self.served.lock().unwrap().clone();
             let Some(answer) = answer else {
                 return ui::tilo_actions::remote::Pending::ready(Err(
-                    ActionHostError::UnknownAction,
+                    ActionCallError::UnknownAction,
                 ));
             };
             answer
@@ -231,7 +231,7 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
         let refused = self.refused.lock().unwrap().contains(&request.target);
         self.asked.lock().unwrap().push(request);
         if refused {
-            return ui::tilo_actions::remote::Pending::ready(Err(ActionHostError::NotPermitted));
+            return ui::tilo_actions::remote::Pending::ready(Err(ActionCallError::NotPermitted));
         }
         ui::tilo_actions::remote::Pending::ready(Ok(ui::tilo_actions::remote::InvocationReceipt {
             invocation,
@@ -288,7 +288,7 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
         &self,
         _: &Caller,
         id: &ui::tilo_actions::InvocationId,
-    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
+    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionCallError>>
     {
         if let Some(current) = &mut *self.current.lock().unwrap() {
             current.reads.retain(|(read, _)| read != id);
@@ -320,7 +320,7 @@ fn record(now: i64) -> serde_json::Value {
 }
 
 fn model_on(host: &std::sync::Arc<RecordingHost>) -> (AccessModel, ui::RemoteActions) {
-    let remote = ui::RemoteActions::with_host(host.clone(), Caller::local_person("owner"));
+    let remote = ui::RemoteActions::with_provider(host.clone(), Caller::local_person("owner"));
     let mut model = AccessModel::asking(&remote);
     model.poll(&remote);
     (model, remote)
@@ -741,7 +741,7 @@ fn window_on(host: &std::sync::Arc<RecordingHost>) -> TestApp<SettingsShell> {
     crate::area::replace_in_next_window(move |context| {
         DevicesAccessArea::new(
             context,
-            ui::RemoteActions::with_host(served, Caller::local_person("owner")),
+            ui::RemoteActions::with_provider(served, Caller::local_person("owner")),
         )
     });
     let mut app = TestApp::<SettingsShell>::new().expect("Settings opens");
@@ -865,7 +865,7 @@ tilo_test_env::scenario! {
                 matches!(
                     &refused,
                     ui::tilo_actions::ApiError::Failed(why)
-                        if *why == ActionHostError::NotPermitted.to_string()
+                        if *why == ActionCallError::NotPermitted.to_string()
                 ),
                 "{refused:?}"
             );
@@ -1438,7 +1438,7 @@ tilo_test_env::scenario! {
         let said = format!("{:?}", app.harness().refusal_said());
         let told = format!("{failed} {said}");
         assert!(
-            told.contains(&ActionHostError::NotPermitted.to_string()),
+            told.contains(&ActionCallError::NotPermitted.to_string()),
             "{told}"
         );
         assert_eq!(

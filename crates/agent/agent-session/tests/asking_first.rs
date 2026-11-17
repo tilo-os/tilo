@@ -1,6 +1,6 @@
 //! An agent never confirms by its own word. Over the real session, a task
 //! step whose action asks a person first is put to the person through their
-//! own host (`ActionHost::confirm`) while the agent shows it is waiting; it
+//! own host (`ActionProvider::confirm`) while the agent shows it is waiting; it
 //! runs only on the person's approved answer, and is refused when nobody
 //! is there to ask or the person says no.
 
@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::common::{KeywordModel, catalogue};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
     ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
 };
 use tilo_agent_session::{AgentControl, AgentIdentity, AgentMember, MemberConfig, ModelPlanner};
@@ -39,24 +39,24 @@ const EBOOK: &str = "so.tilo.ebook";
 struct PersonHost {
     asked: Mutex<Vec<(Caller, InvokeRequest)>>,
     answers:
-        Mutex<Vec<tilo_actions::remote::Completer<Result<ConfirmedInvocation, ActionHostError>>>>,
+        Mutex<Vec<tilo_actions::remote::Completer<Result<ConfirmedInvocation, ActionCallError>>>>,
 }
 
-impl ActionHost for PersonHost {
+impl ActionProvider for PersonHost {
     fn query(
         &self,
         _: &Caller,
         _: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        Pending::ready(Err(ActionHostError::UnknownAction))
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
     }
 
     fn invoke(
         &self,
         _: &Caller,
         _: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        Pending::ready(Err(ActionHostError::UnknownAction))
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
     }
 
     fn observe(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Option<InvocationState> {
@@ -67,15 +67,15 @@ impl ActionHost for PersonHost {
         &self,
         _: &Caller,
         _: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 
     fn confirm(
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
         self.asked
             .lock()
             .unwrap()
@@ -87,7 +87,7 @@ impl ActionHost for PersonHost {
 }
 
 impl PersonHost {
-    fn answer(&self, answer: Result<Confirmation, ActionHostError>) {
+    fn answer(&self, answer: Result<Confirmation, ActionCallError>) {
         let completer = self.answers.lock().unwrap().remove(0);
         completer.complete(answer.map(ConfirmedInvocation::unchanged));
     }
@@ -252,7 +252,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     control.message(&shelve_then_remove()).unwrap();
     let deadline = tilo_test_env::hang_deadline();
     agent.run_until(Some(deadline), |_| person.asked.lock().unwrap().len() == 2);
-    person.answer(Err(ActionHostError::NotPermitted));
+    person.answer(Err(ActionCallError::NotPermitted));
     until_done(&mut agent, &control);
     let declined = last_task(&control);
     assert_eq!(declined.state, TaskState::Failed, "{declined:?}");

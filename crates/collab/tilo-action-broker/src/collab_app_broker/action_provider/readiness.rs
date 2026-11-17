@@ -13,7 +13,7 @@ use super::{
 };
 use crate::collab_app_broker::Arc;
 use tilo_actions::remote::{APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX};
-use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_desktop_model::Workspace;
 
 /// How long an action waits for the shell to say who the workspace it names is whose, when the shell
@@ -63,7 +63,7 @@ impl AppBrokerState {
         request: &InvokeRequest,
         argument: Option<&str>,
         (mut workspace, mut policy, now): (Workspace, BrokerActor, u64),
-    ) -> Result<Option<u64>, ActionHostError> {
+    ) -> Result<Option<u64>, ActionCallError> {
         let address = &request.target.address;
         let Some(app_id) = address
             .resource
@@ -84,7 +84,7 @@ impl AppBrokerState {
         }
         if caller.workspace().is_none() {
             tracing::warn!("opening an app was refused: the caller names no workspace");
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         }
         if !policy.may_in(
             &workspace,
@@ -101,7 +101,7 @@ impl AppBrokerState {
                 answer = ?policy.answer_in(&workspace, &node, tilo_action_policy::ActionKind::Undoable, now),
                 "opening an app was refused: the workspace does not let the caller open it"
             );
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         if !launch_content_hash(argument).is_empty() && launch.is_none() {
             return Err(refusal(
@@ -126,7 +126,7 @@ impl AppBrokerState {
                     .into_iter()
                     .find(|app| app.package_id == app_id)
             })
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         let admitted = self.admit_host_action(
             caller,
             origin,

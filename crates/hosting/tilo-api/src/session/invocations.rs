@@ -16,9 +16,9 @@ use super::Session;
 use crate::account::{Outcome, answer, failed, refused};
 use serde_json::{Value, json};
 use std::fmt::Write as _;
-use tilo_actions::remote::ActionHost as _;
+use tilo_actions::remote::ActionProvider as _;
 use tilo_actions::remote::workspace_invocations::{self, Invocations, InvocationsQuery};
-use tilo_actions::remote::{ActionHostError, InvokeArgument, InvokeRequest, ReceiptStatus};
+use tilo_actions::remote::{ActionCallError, InvokeArgument, InvokeRequest, ReceiptStatus};
 
 /// The path of a workspace's invocations.
 pub const ROOT: &str = "workspace/invocations";
@@ -99,14 +99,14 @@ fn said(invocations: &Invocations) -> String {
 }
 
 /// What the host's refusal `error` tells the caller.
-fn host_refused(error: &ActionHostError) -> Outcome {
+fn host_refused(error: &ActionCallError) -> Outcome {
     match error {
-        ActionHostError::NotPermitted => failed(
+        ActionCallError::NotPermitted => failed(
             "not_permitted",
             "the workspace does not let this key read its invocations",
             "a key reaching the workspace reads them",
         ),
-        ActionHostError::InvalidRequest { reason } => failed(
+        ActionCallError::InvalidRequest { reason } => failed(
             "invalid_arguments",
             reason.clone(),
             "pass `limit` (at most 200) and the `cursor` a page answered",
@@ -204,7 +204,7 @@ impl Session {
             ReceiptStatus::Rejected { error } => Err(match error {
                 // A host that knows no listing of items: older, or not one that
                 // keeps invocations.
-                ActionHostError::UnknownAction => failed(
+                ActionCallError::UnknownAction => failed(
                     "not_found",
                     "this workspace's host lists no invocations",
                     "tilo_status {invocation_id} reads one invocation",

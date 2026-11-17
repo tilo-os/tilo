@@ -969,7 +969,7 @@ impl crate::app_serving::AppActionServer for CountingServer {
         // A request is always answered: this app action server counts it and refuses it.
         tilo_actions::remote::refuse(
             &message,
-            tilo_actions::remote::ActionHostError::Refused {
+            tilo_actions::remote::ActionCallError::Refused {
                 reason: "counted".into(),
             },
         )

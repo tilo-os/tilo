@@ -248,7 +248,7 @@ impl AppBrokerState {
     fn live_view_permitted(
         &self,
         following: &Following,
-    ) -> Result<(), tilo_actions::remote::ActionHostError> {
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
         let (workspace, actor, now) = self.current_framework_authority(
             &following.caller,
             following.origin.as_ref(),

@@ -355,7 +355,7 @@ mod external_moderation_rpc_tests {
                             None,
                             &binding,
                         ),
-                        Err(tilo_actions::remote::ActionHostError::ConfirmationRequired { .. })
+                        Err(tilo_actions::remote::ActionCallError::ConfirmationRequired { .. })
                     ));
                     assert!(actor.direct(), "the app's own identity is a direct person");
                     assert!(matches!(
@@ -368,7 +368,7 @@ mod external_moderation_rpc_tests {
                             Some(&tilo_actions::remote::Confirmation::Confirmed),
                             &binding,
                         ),
-                        Err(tilo_actions::remote::ActionHostError::ConfirmationRequired { .. })
+                        Err(tilo_actions::remote::ActionCallError::ConfirmationRequired { .. })
                     ));
                     for altered in ["missing", "payload", "destination"] {
                         let approval = workspace.state.approval_confirmation(&binding).unwrap();
@@ -468,7 +468,7 @@ mod external_moderation_rpc_tests {
                             Some(&tilo_actions::remote::Confirmation::Confirmed),
                             &binding,
                         ),
-                        Err(tilo_actions::remote::ActionHostError::ConfirmationRequired { .. })
+                        Err(tilo_actions::remote::ActionCallError::ConfirmationRequired { .. })
                     ));
                     // A generic internal/native-task approval is not evidence
                     // that the host showed this external disclosure.

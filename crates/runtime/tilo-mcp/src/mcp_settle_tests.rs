@@ -506,7 +506,7 @@ tilo_test_env::scenario! {
             assert_eq!(revisions_and_reads(&host).0.last(), Some(&None), "{reply}");
         });
         let told = String::from(BridgeError::Host(
-            tilo_actions::remote::ActionHostError::StaleRevision,
+            tilo_actions::remote::ActionCallError::StaleRevision,
         ));
         for expected in ["changed", "now", "omit revision", "tilo_query"] {
             assert!(told.contains(expected), "{expected}: {told}");

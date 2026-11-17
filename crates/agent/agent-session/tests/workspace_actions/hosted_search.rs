@@ -2,7 +2,7 @@
 //! as may read, and nothing else. All through the server's own action service, with no device
 //! doing anything while it is asked.
 use super::*;
-use tilo_actions::remote::{ActionHost as _, Caller};
+use tilo_actions::remote::{ActionProvider as _, Caller};
 use tilo_server::{
     workspace_agents as turns, workspace_join,
     workspaces::{IssueInvitationRequest, Workspaces},
@@ -140,7 +140,7 @@ fn names_in(answered: &str, app: &str) -> bool {
 /// The action service of a server for one of its workspaces, as a turn's tools reach it.
 macro_rules! service {
     ($served:expr, $workspace:expr) => {
-        turns::WorkspaceActionHost::new(
+        turns::WorkspaceActionProvider::new(
             $served.actions.clone(),
             WorkspaceId::parse($workspace).unwrap(),
         )

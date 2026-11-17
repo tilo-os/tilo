@@ -350,7 +350,7 @@ fn catalogue_request() -> Vec<u8> {
 }
 
 /// The catalogue refusal a `HostAction` or `RemoteAction` answer carries.
-fn refusal(frame: &[u8]) -> tilo_actions::remote::ActionHostError {
+fn refusal(frame: &[u8]) -> tilo_actions::remote::ActionCallError {
     match tilo_actions::remote::RemoteActionFrame::decode(frame)
         .unwrap()
         .message
@@ -463,7 +463,7 @@ async fn requests_the_server_does_not_answer_are_refused() {
     };
     assert!(matches!(
         refusal(&frame),
-        tilo_actions::remote::ActionHostError::Unavailable { .. }
+        tilo_actions::remote::ActionCallError::Unavailable { .. }
     ));
 
     // An answer the app action server abandons arrives as a refusal on the connection.
@@ -483,7 +483,7 @@ async fn requests_the_server_does_not_answer_are_refused() {
     };
     assert!(matches!(
         refusal(&frame),
-        tilo_actions::remote::ActionHostError::Unavailable { .. }
+        tilo_actions::remote::ActionCallError::Unavailable { .. }
     ));
     assert_eq!(
         handle_host_action(&a, &abandoned, &catalogue_request()),
@@ -494,7 +494,7 @@ async fn requests_the_server_does_not_answer_are_refused() {
     };
     assert!(matches!(
         refusal(&frame),
-        tilo_actions::remote::ActionHostError::Unavailable { .. }
+        tilo_actions::remote::ActionCallError::Unavailable { .. }
     ));
 
     // A frame that does not decode names no request; nothing is answered.

@@ -19,7 +19,7 @@ use neighbour_wire::offer::{Answer, Decline, Power, Query, Rank, Route, Work};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::TestHost;
+use tilo_actions::remote::TestProvider;
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, OFFER_DEADLINE, Offering};
 use tilo_peer_state::direct::Replica;
 use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
@@ -93,7 +93,7 @@ struct Engine {
 impl Engine {
     async fn serving(replica: Replica, key: SigningKey, reported: Option<Answer>) -> Self {
         let endpoint = localhost_endpoint(&key).await;
-        let action_service = ActionService::new(key.clone(), Arc::new(TestHost::new()));
+        let action_service = ActionService::new(key.clone(), Arc::new(TestProvider::new()));
         action_service.hold(replica);
         if let Some(state) = reported {
             action_service.offering(Reported(state));
@@ -177,7 +177,7 @@ async fn the_device_that_reports_the_lowest_cost_wins_and_the_rest_say_why() {
     let busy = Engine::serving(replica.clone(), busy.0.clone(), Some(willing(750))).await;
     let idle = Engine::serving(replica.clone(), idle.0.clone(), Some(willing(0))).await;
     let asker = localhost_endpoint(&here.0).await;
-    let action_service = ActionService::new(here.0.clone(), Arc::new(TestHost::new()));
+    let action_service = ActionService::new(here.0.clone(), Arc::new(TestProvider::new()));
     action_service.hold(replica.clone());
     let targets = vec![busy.addr(), idle.addr()];
 
@@ -225,7 +225,7 @@ async fn nobody_offering_leaves_the_run_where_it_was_asked() {
     let without_app = Answer::declining(Decline::AppNotInstalled);
     let other = Engine::serving(replica.clone(), other.0.clone(), Some(without_app)).await;
     let asker = localhost_endpoint(&here.0).await;
-    let action_service = ActionService::new(here.0.clone(), Arc::new(TestHost::new()));
+    let action_service = ActionService::new(here.0.clone(), Arc::new(TestProvider::new()));
 
     let choice = asked(&action_service, &asker, vec![other.addr()], OFFER_DEADLINE).await;
     assert!(choice.is_local(), "no device takes it: {choice}");
@@ -267,7 +267,7 @@ async fn a_device_that_is_away_is_ranked_as_away_inside_the_deadline() {
             )));
 
     let asker = localhost_endpoint(&here.0).await;
-    let action_service = ActionService::new(here.0, Arc::new(TestHost::new()));
+    let action_service = ActionService::new(here.0, Arc::new(TestProvider::new()));
     action_service.hold(replica);
 
     let started = Instant::now();
@@ -305,7 +305,7 @@ async fn a_device_asked_from_outside_the_workspace_answers_nothing() {
 
     let answering = Engine::serving(replica, member.0.clone(), Some(willing(0))).await;
     let asker = localhost_endpoint(&stranger.0).await;
-    let action_service = ActionService::new(stranger.0.clone(), Arc::new(TestHost::new()));
+    let action_service = ActionService::new(stranger.0.clone(), Arc::new(TestProvider::new()));
 
     let choice = asked(
         &action_service,
@@ -352,7 +352,7 @@ async fn the_devices_a_round_asks_are_the_workspaces_own() {
             ))
             .unwrap()
     );
-    let action_service = ActionService::new(here.0, Arc::new(TestHost::new()));
+    let action_service = ActionService::new(here.0, Arc::new(TestProvider::new()));
     action_service.hold(replica);
 
     assert_eq!(
@@ -379,7 +379,7 @@ async fn a_device_with_nothing_to_say_offers_nothing() {
 
     let quiet = Engine::serving(replica, quiet.0.clone(), None).await;
     let asker = localhost_endpoint(&here.0).await;
-    let action_service = ActionService::new(here.0.clone(), Arc::new(TestHost::new()));
+    let action_service = ActionService::new(here.0.clone(), Arc::new(TestProvider::new()));
 
     let choice = asked(&action_service, &asker, vec![quiet.addr()], OFFER_DEADLINE).await;
     assert!(choice.is_local());
@@ -418,7 +418,7 @@ async fn the_jobs_inputs_decide_before_rank_does() {
     )
     .await;
     let asker = localhost_endpoint(&here.0).await;
-    let action_service = ActionService::new(here.0.clone(), Arc::new(TestHost::new()));
+    let action_service = ActionService::new(here.0.clone(), Arc::new(TestProvider::new()));
     action_service.hold(replica);
 
     let choice = asked_about(
@@ -470,7 +470,7 @@ async fn a_job_whose_inputs_move_slower_than_it_runs_stays_here() {
 
     let other = Engine::serving(replica, other.0.clone(), Some(willing(0))).await;
     let asker = localhost_endpoint(&here.0).await;
-    let action_service = ActionService::new(here.0.clone(), Arc::new(TestHost::new()));
+    let action_service = ActionService::new(here.0.clone(), Arc::new(TestProvider::new()));
 
     let choice = asked_about(
         &action_service,

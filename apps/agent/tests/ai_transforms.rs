@@ -24,7 +24,7 @@ use serde_json::{Map, Value, json};
 use tilo_actions::outcome::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
     CatalogueRow, Confirmation, InvocationLog, InvocationReceipt, InvocationState, InvokeRequest,
     Pending,
 };
@@ -159,12 +159,12 @@ impl AgentHost {
     }
 }
 
-impl ActionHost for AgentHost {
+impl ActionProvider for AgentHost {
     fn query(
         &self,
         _caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(CataloguePage::from_rows(
             "1".into(),
             self.rows.clone(),
@@ -176,13 +176,13 @@ impl ActionHost for AgentHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let offered = self.rows.iter().any(|row| {
             row.provider == request.target.provider
                 && row.action.as_ref().map(|a| &a.address) == Some(&request.target.address)
         });
         if !offered {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let receipt = self
             .log
@@ -205,8 +205,8 @@ impl ActionHost for AgentHost {
         &self,
         _caller: &Caller,
         _id: &InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(Err(ActionHostError::NotCancellable {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionCallError::NotCancellable {
             reason: "finished".into(),
         }))
     }

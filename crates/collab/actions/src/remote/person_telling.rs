@@ -23,7 +23,7 @@ use serde_json::{Map, Value};
 
 use super::{ActionAddress, RemoteActionTarget};
 
-/// The provider the host answers a person's importance and tellings under.
+/// The provider that answers a person's importance and tellings under.
 pub const PROVIDER: &str = "tilo.telling";
 /// The resource the person's rule is actions of.
 pub const IMPORTANCE: &str = "importance";

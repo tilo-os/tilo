@@ -112,7 +112,7 @@ use run_context::{caller_context, said_invocation_title};
 use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
-    ActionHostError, ActorPlace, Caller, CataloguePage, CatalogueQuery, CatalogueRow, Completer,
+    ActionCallError, ActorPlace, Caller, CataloguePage, CatalogueQuery, CatalogueRow, Completer,
     Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest,
     MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionMessage, application_provider,
     application_provider_resource, pending, provider_workspace,
@@ -140,13 +140,13 @@ enum Job {
         workspace_id: WorkspaceId,
         query: Box<tilo_actions::remote::feedback::FeedbackQuery>,
         caller: Caller,
-        done: Completer<Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionHostError>>,
+        done: Completer<Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionCallError>>,
     },
     Catalogue {
         workspace_id: WorkspaceId,
         query: Box<CatalogueQuery>,
         caller: Caller,
-        done: Completer<Result<CataloguePage, ActionHostError>>,
+        done: Completer<Result<CataloguePage, ActionCallError>>,
     },
     Invoke {
         workspace_id: WorkspaceId,
@@ -161,7 +161,7 @@ enum Job {
         workspace_id: WorkspaceId,
         caller: Caller,
         step: tilo_actions::remote::ContentPutStep,
-        done: Completer<Result<tilo_actions::remote::ContentPutAnswer, ActionHostError>>,
+        done: Completer<Result<tilo_actions::remote::ContentPutAnswer, ActionCallError>>,
     },
     /// A piece of content asked of a workspace whose store the service has
     /// not found yet.
@@ -171,36 +171,36 @@ enum Job {
         content: String,
         offset: u64,
         length: u64,
-        done: Completer<Result<tilo_actions::remote::ContentGetAnswer, ActionHostError>>,
+        done: Completer<Result<tilo_actions::remote::ContentGetAnswer, ActionCallError>>,
     },
     /// A link to content of a workspace, for a caller who may read it.
     ContentLink {
         workspace_id: WorkspaceId,
         caller: Caller,
         link: tilo_actions::remote::ContentLinkAsk,
-        done: Completer<Result<tilo_actions::remote::ContentLink, ActionHostError>>,
+        done: Completer<Result<tilo_actions::remote::ContentLink, ActionCallError>>,
     },
     /// A search of what a workspace holds.
     Search {
         workspace_id: WorkspaceId,
         caller: Caller,
         needle: String,
-        done: Completer<Result<Vec<tilo_actions::remote::Found>, ActionHostError>>,
+        done: Completer<Result<Vec<tilo_actions::remote::Found>, ActionCallError>>,
     },
     /// The changes to a workspace's records after a cursor.
     Changes {
         workspace_id: WorkspaceId,
         caller: Caller,
         after: Option<String>,
-        done: Completer<Result<tilo_actions::remote::ChangePage, ActionHostError>>,
+        done: Completer<Result<tilo_actions::remote::ChangePage, ActionCallError>>,
     },
     /// A caller waits for what it follows in a workspace to change
-    /// ([`tilo_actions::remote::ActionHost::changed`]): a write landing in the workspace's
+    /// ([`tilo_actions::remote::ActionProvider::changed`]): a write landing in the workspace's
     /// records, or who is in it moving.
     Changed {
         workspace_id: WorkspaceId,
         caller: Caller,
-        done: Completer<Result<(), ActionHostError>>,
+        done: Completer<Result<(), ActionCallError>>,
     },
     /// A page of a workspace's runs ([`runs`]).
     Invocations {
@@ -208,7 +208,7 @@ enum Job {
         caller: Caller,
         query: tilo_actions::remote::workspace_invocations::InvocationsQuery,
         done: Completer<
-            Result<tilo_actions::remote::workspace_invocations::Invocations, ActionHostError>,
+            Result<tilo_actions::remote::workspace_invocations::Invocations, ActionCallError>,
         >,
     },
     /// An agent's run connected to a workspace and has asked nothing yet:
@@ -533,7 +533,7 @@ impl WorkspaceActions {
         caller: &Caller,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
-        let unavailable = || ActionHostError::Unavailable {
+        let unavailable = || ActionCallError::Unavailable {
             reason: "the host's workspace actions are not running".into(),
         };
         Some(match message {
@@ -712,7 +712,7 @@ impl WorkspaceActions {
         };
         if !self.admits(caller, &request) {
             return receipt(ReceiptStatus::Rejected {
-                error: ActionHostError::UnknownAction,
+                error: ActionCallError::UnknownAction,
             });
         }
         {
@@ -720,7 +720,7 @@ impl WorkspaceActions {
             if let Some(entry) = log.entries.get(&invocation) {
                 if entry.caller != *caller || !entry.request.same_invocation(&request) {
                     return receipt(ReceiptStatus::Rejected {
-                        error: ActionHostError::InvocationConflict,
+                        error: ActionCallError::InvocationConflict,
                     });
                 }
                 let state = InvocationState::new(invocation, entry.update.clone());
@@ -728,7 +728,7 @@ impl WorkspaceActions {
             }
             if !log.insert(caller, request) {
                 return receipt(ReceiptStatus::Rejected {
-                    error: ActionHostError::Unavailable {
+                    error: ActionCallError::Unavailable {
                         reason: "the host is running as many actions as it keeps track of; \
                                  ask again shortly"
                             .into(),
@@ -750,7 +750,7 @@ impl WorkspaceActions {
             done.complete(InvocationReceipt {
                 invocation,
                 status: ReceiptStatus::Rejected {
-                    error: ActionHostError::Unavailable {
+                    error: ActionCallError::Unavailable {
                         reason: "the host's workspace actions are not running".into(),
                     },
                 },
@@ -774,7 +774,7 @@ impl WorkspaceActions {
             done,
         };
         if let Err(Job::Feedback { done, .. }) = self.submit(job) {
-            done.complete(Err(ActionHostError::Unavailable {
+            done.complete(Err(ActionCallError::Unavailable {
                 reason: "the host's workspace actions are not running".into(),
             }));
         }
@@ -784,16 +784,16 @@ impl WorkspaceActions {
         })
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionCallError> {
         let mut log = self.log();
         let running = log.running.contains(id);
         let entry = log
             .entries
             .get_mut(id)
             .filter(|entry| entry.caller == *caller)
-            .ok_or(ActionHostError::UnknownInvocation)?;
+            .ok_or(ActionCallError::UnknownInvocation)?;
         if entry.update.is_terminal() {
-            return Err(ActionHostError::NotCancellable {
+            return Err(ActionCallError::NotCancellable {
                 reason: "the invocation has finished".into(),
             });
         }
@@ -804,12 +804,12 @@ impl WorkspaceActions {
             return Ok(());
         }
         if running {
-            return Err(ActionHostError::NotCancellable {
+            return Err(ActionCallError::NotCancellable {
                 reason: "the action is already running".into(),
             });
         }
         if entry.saving {
-            return Err(ActionHostError::NotCancellable {
+            return Err(ActionCallError::NotCancellable {
                 reason: "the action ran; its change is being saved".into(),
             });
         }
@@ -1128,10 +1128,10 @@ impl Workspace {
         workspace_id: WorkspaceId,
         needs: Needs<'_>,
         link: Option<&dyn WorkspaceDocumentsLink>,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         self.pump(workspace_id);
         if !self.ready {
-            return Err(ActionHostError::Unavailable {
+            return Err(ActionCallError::Unavailable {
                 reason: "the host has not joined the workspace yet".into(),
             });
         }
@@ -1164,7 +1164,7 @@ impl Workspace {
         match needs {
             Needs::Act { app_id, record } if !sealed.is_empty() => {
                 let record = named_document(app_id, record);
-                Err(ActionHostError::Unavailable {
+                Err(ActionCallError::Unavailable {
                     reason: format!("the host does not hold the keys to {record} yet"),
                 })
             }
@@ -1196,7 +1196,7 @@ impl Workspace {
         needs: Needs<'_>,
         link: &dyn WorkspaceDocumentsLink,
         handed: &mut HashSet<DocumentRoute>,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         for route in routes {
             handed.insert(route.clone());
             match link.host_keys(&route, false) {
@@ -1204,13 +1204,13 @@ impl Workspace {
                 Some(Ok(keys)) => {
                     self.peer
                         .send(Cmd::InstallGroupKeys(route, keys))
-                        .map_err(|closed| ActionHostError::Unavailable {
+                        .map_err(|closed| ActionCallError::Unavailable {
                             reason: closed.to_string(),
                         })?;
                 }
                 Some(Err(reason)) => {
                     if let Needs::Act { app_id, record } = needs {
-                        return Err(ActionHostError::Unavailable {
+                        return Err(ActionCallError::Unavailable {
                             reason: format!(
                                 "the host holds no keys to {app_id} record {record}: {reason}"
                             ),
@@ -1298,7 +1298,7 @@ struct Worker {
 
 /// The API's answer for an action it has nothing by that address.
 fn unknown_action() -> Outcome {
-    Outcome::Rejected(ActionHostError::UnknownAction)
+    Outcome::Rejected(ActionCallError::UnknownAction)
 }
 
 /// Whether the page a request names was listed before `current` moved on.
@@ -1761,7 +1761,7 @@ impl Worker {
                         *query,
                         done,
                     ),
-                    None => done.complete(Err(ActionHostError::Unavailable {
+                    None => done.complete(Err(ActionCallError::Unavailable {
                         reason: "feedback host unavailable".into(),
                     })),
                 },
@@ -1878,7 +1878,7 @@ impl Worker {
     /// records have not merged yet.
     /// The service's membership of `workspace_id`: the one joined when its
     /// first request arrived, or joined now.
-    fn membership(&mut self, workspace_id: WorkspaceId) -> Result<&mut Workspace, ActionHostError> {
+    fn membership(&mut self, workspace_id: WorkspaceId) -> Result<&mut Workspace, ActionCallError> {
         if !self.workspaces.contains_key(&workspace_id) {
             let ahead = self
                 .shared
@@ -1889,13 +1889,13 @@ impl Worker {
             let workspace = match ahead {
                 Some(workspace) => workspace,
                 None => Workspace::join(&self.host_device, workspace_id, &self.shared)
-                    .map_err(|reason| ActionHostError::Unavailable { reason })?,
+                    .map_err(|reason| ActionCallError::Unavailable { reason })?,
             };
             self.workspaces.insert(workspace_id, workspace);
         }
         self.workspaces
             .get_mut(&workspace_id)
-            .ok_or_else(|| ActionHostError::Unavailable {
+            .ok_or_else(|| ActionCallError::Unavailable {
                 reason: "the workspace was not joined".into(),
             })
     }
@@ -1904,12 +1904,12 @@ impl Worker {
         &mut self,
         workspace_id: WorkspaceId,
         needs: Needs<'_>,
-    ) -> Result<WorkspaceState, ActionHostError> {
+    ) -> Result<WorkspaceState, ActionCallError> {
         self.membership(workspace_id)?;
         let workspace =
             self.workspaces
                 .get_mut(&workspace_id)
-                .ok_or_else(|| ActionHostError::Unavailable {
+                .ok_or_else(|| ActionCallError::Unavailable {
                     reason: "the workspace was not joined".into(),
                 })?;
         workspace.wait_for(
@@ -2122,8 +2122,8 @@ impl Worker {
         workspace: WorkspaceId,
         caller: &Caller,
         query: &CatalogueQuery,
-    ) -> Result<CataloguePage, ActionHostError> {
-        let refuse = || ActionHostError::UnknownAction;
+    ) -> Result<CataloguePage, ActionCallError> {
+        let refuse = || ActionCallError::UnknownAction;
         let (wanted, provider) = exact_view_query(query)?;
         let route_hint = resource_of(provider, "").ok_or_else(refuse)?;
         let link = self.shared.link.get().cloned().ok_or_else(refuse)?;
@@ -2133,7 +2133,7 @@ impl Worker {
         let route = resource_of(provider, &first.workspace).ok_or_else(refuse)?;
         let source = link
             .view_document(workspace, caller, &route)
-            .map_err(|reason| ActionHostError::Unavailable { reason })?;
+            .map_err(|reason| ActionCallError::Unavailable { reason })?;
         let app_id = self
             .catalogue
             .get(&route.app_id)
@@ -2142,7 +2142,7 @@ impl Worker {
         // The document is decoded and the app's resource published in a
         // confined worker, never here.
         let mut views = ConfinedViews::load(app_id, source.bytes)
-            .map_err(|reason| ActionHostError::Unavailable { reason })?;
+            .map_err(|reason| ActionCallError::Unavailable { reason })?;
         let descriptors = views.views(wanted, &first).map_err(|_| refuse())?;
         let fresh = link
             .view_read_policy(workspace, caller, &route.app_id, &route.document)
@@ -2271,7 +2271,7 @@ impl Worker {
     ) -> Result<(Caller, InvokeRequest), InvocationReceipt> {
         let mut log = self.log();
         let claimed = match log.entries.get(&invocation) {
-            None => Err(rejected(invocation, ActionHostError::UnknownInvocation)),
+            None => Err(rejected(invocation, ActionCallError::UnknownInvocation)),
             Some(entry) if entry.update.is_terminal() => {
                 // Cancelled before it started.
                 Err(InvocationState::new(invocation, entry.update.clone()).receipt())
@@ -2345,7 +2345,7 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<Option<tilo_actions::Appearance>, ActionHostError> {
+    ) -> Result<Option<tilo_actions::Appearance>, ActionCallError> {
         let Some(appearance) = &request.appearance else {
             return Ok(None);
         };
@@ -2357,7 +2357,7 @@ impl Worker {
             |hash| link.and_then(|link| link.content_blob(workspace_id, hash)),
         )?;
         if provider_workspace(&request.target.provider).is_some() {
-            return Err(ActionHostError::Refused {
+            return Err(ActionCallError::Refused {
                 reason: "an appearance is shown only on a record's own actions".into(),
             });
         }
@@ -2420,7 +2420,7 @@ impl Worker {
         let owner = self.serves_as_owner(caller);
         if let Some(named) = provider_workspace(&target.provider) {
             if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
-                return Err(Outcome::Rejected(ActionHostError::StaleRevision));
+                return Err(Outcome::Rejected(ActionCallError::StaleRevision));
             }
             return self.open_in_workspace(workspace_id, caller, request, (named, &state));
         }
@@ -2444,7 +2444,7 @@ impl Worker {
             return Ok((output, None));
         }
         if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
-            return Err(Outcome::Rejected(ActionHostError::StaleRevision));
+            return Err(Outcome::Rejected(ActionCallError::StaleRevision));
         }
         let mounted = self.mount(&route, &state).map_err(|_| unknown_action())?;
         if target.address.action == ui::tilo_resource::share::SHARE_LINK {
@@ -2632,7 +2632,7 @@ impl Worker {
             .as_deref()
             .is_some_and(|revision| revision != read.revision())
         {
-            return Err(Box::new(Outcome::Rejected(ActionHostError::Refused {
+            return Err(Box::new(Outcome::Rejected(ActionCallError::Refused {
                 reason: "the committed source changed".into(),
             })));
         }
@@ -2641,7 +2641,7 @@ impl Worker {
             InvokeArgument::Json(arguments) => arguments.clone(),
             InvokeArgument::Text(_) => {
                 return Err(Box::new(Outcome::Rejected(
-                    ActionHostError::InvalidRequest {
+                    ActionCallError::InvalidRequest {
                         reason: "a registered read requires typed arguments".into(),
                     },
                 )));
@@ -2673,7 +2673,7 @@ impl Worker {
         app: &str,
         who: Option<&bounded::Bounded>,
     ) -> Result<ActionOutput, Outcome> {
-        let refused = |reason: String| Outcome::Rejected(ActionHostError::Refused { reason });
+        let refused = |reason: String| Outcome::Rejected(ActionCallError::Refused { reason });
         let (creator, actor, permissions) = match who {
             None => (self.member.clone(), crate::ReplicaActor::Owner, None),
             Some(who) => {
@@ -2685,7 +2685,7 @@ impl Worker {
                 if permissions.answer(&TreePath::root().app(app), ActionKind::Undoable)
                     != Answer::Allow
                 {
-                    return Err(Outcome::Rejected(ActionHostError::NotPermitted));
+                    return Err(Outcome::Rejected(ActionCallError::NotPermitted));
                 }
                 let actor = bounded::member_actor(&policy, who).map_err(Outcome::Rejected)?;
                 (who.person.clone(), actor, Some(permissions))
@@ -2742,7 +2742,7 @@ impl Worker {
                 bounded::refused_writes(permissions, (app, None), None, mutation, (None, false))
                     .map_err(|reason| commit_failed(reason, false))?;
             if !unwritable.is_empty() {
-                return Err(Outcome::Rejected(ActionHostError::NotPermitted));
+                return Err(Outcome::Rejected(ActionCallError::NotPermitted));
             }
         }
         // When the host device takes part in the workspace's documents, it opens a
@@ -2756,7 +2756,7 @@ impl Worker {
                 .and_then(|link| link.host_keys(&route, true))
         {
             let keys = keys.map_err(|reason| {
-                Outcome::Rejected(ActionHostError::Unavailable {
+                Outcome::Rejected(ActionCallError::Unavailable {
                     reason: format!("the host holds no keys to a new {app} record: {reason}"),
                 })
             })?;
@@ -2802,15 +2802,15 @@ fn confirms(
 
 fn exact_view_query(
     query: &CatalogueQuery,
-) -> Result<(&tilo_actions::remote::ViewResourceQuery, &str), ActionHostError> {
+) -> Result<(&tilo_actions::remote::ViewResourceQuery, &str), ActionCallError> {
     let wanted = query
         .view_resource
         .as_ref()
-        .ok_or(ActionHostError::UnknownAction)?;
+        .ok_or(ActionCallError::UnknownAction)?;
     let provider = query
         .provider
         .as_deref()
-        .ok_or(ActionHostError::UnknownAction)?;
+        .ok_or(ActionCallError::UnknownAction)?;
     if wanted.id.is_empty()
         || wanted.id.trim().is_empty()
         || wanted.id.chars().any(char::is_control)
@@ -2825,7 +2825,7 @@ fn exact_view_query(
         || !query.cursor.is_empty()
         || query.parent_resource.is_some()
     {
-        return Err(ActionHostError::UnknownAction);
+        return Err(ActionCallError::UnknownAction);
     }
     Ok((wanted, provider))
 }
@@ -2850,7 +2850,7 @@ fn speaks_for_a_member(caller: &Caller) -> bool {
 }
 
 /// The receipt of an invocation the host turns away outright, with why.
-fn rejected(invocation: InvocationId, error: ActionHostError) -> InvocationReceipt {
+fn rejected(invocation: InvocationId, error: ActionCallError) -> InvocationReceipt {
     InvocationReceipt {
         invocation,
         status: ReceiptStatus::Rejected { error },

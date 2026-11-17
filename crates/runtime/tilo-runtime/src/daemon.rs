@@ -811,7 +811,7 @@ fn serve_profile<S: RuntimeServices + Send + Sync + 'static>(
             S::start_admission_reporting(profile, owner_uid, &mut stage)?
         }
     });
-    let host = session.action_host()?;
+    let host = session.action_provider()?;
     let search = crate::os_search::start(host, session.workspace(), session.actor())?;
     let path = profile.join("native.sock");
     // Session already owns runtime.lock. Only that owner may remove a stale
@@ -874,7 +874,7 @@ fn refuse_busy(mut stream: UnixStream) {
     }
 }
 
-impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
+impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> Endpoint<H> {
     /// Serve each connection to `listener` on its own thread, at most
     /// [`MAX_CONNECTIONS`] at once. One more is told there is no room and
     /// closed ([`refuse_busy`]).
@@ -967,7 +967,7 @@ impl Drop for ConnectionSlot {
 
 /// Answer one native connection: the daemon's own requests in order, and
 /// MCP requests as [`serve_lines`] does, overlapping one another.
-fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync + 'static>(
+fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static>(
     mut stream: UnixStream,
     input: impl Read + Send + 'static,
     server: &Arc<McpServer<H>>,
@@ -1011,7 +1011,7 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync + 'static>
 
 /// A native activation request's answer: the newest live instance of the
 /// named application brought forward, or that none runs.
-async fn answer_activate<H: tilo_actions::remote::ActionHost + Send + Sync + 'static>(
+async fn answer_activate<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static>(
     server: &McpServer<H>,
     request: &Value,
 ) -> Value {

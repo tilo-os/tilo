@@ -1,4 +1,4 @@
-//! Feeding the index from the action host, and opening what a host search
+//! Feeding the index from the action provider, and opening what its search
 //! hands back through the same action API the palette and automation use.
 
 use std::collections::hash_map::Entry;
@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CatalogueLimits, CataloguePage, CatalogueQuery,
+    ActionCallError, ActionProvider, Caller, CatalogueLimits, CataloguePage, CatalogueQuery,
     InvokeArgument, InvokeRequest, ReceiptStatus, provider_workspace,
 };
 use tilo_actions::{ActionFailure, InvocationId};
@@ -17,7 +17,7 @@ use crate::index::{Changes, ResourceIndex};
 use tilo_lock::MutexRecover as _;
 
 const PAGE: u32 = 128;
-/// Entries one walk collects at most; a host search is not an archive.
+/// Entries one walk collects at most; a provider's search is not an archive.
 const MAX_ENTRIES: usize = 4096;
 const MAX_PAGES: usize = 64;
 const MAX_DEPTH: usize = 8;
@@ -28,34 +28,34 @@ const LIMITS: CatalogueLimits = CatalogueLimits {
     max_depth: Some(16),
 };
 
-/// Why a host search's result did not open.
+/// Why a provider search's result did not open.
 #[derive(Debug, PartialEq)]
 pub enum OpenError {
     NotOffered,
-    Host(ActionHostError),
+    Provider(ActionCallError),
     Failed(ActionFailure),
 }
 
-impl From<ActionHostError> for OpenError {
-    fn from(error: ActionHostError) -> Self {
-        Self::Host(error)
+impl From<ActionCallError> for OpenError {
+    fn from(error: ActionCallError) -> Self {
+        Self::Provider(error)
     }
 }
 
-/// The resources the action host offers this runtime's owner, as one index
-/// every host search reads. Only what the catalogue offers `caller` is
+/// The resources the action provider offers this runtime's owner, as one index
+/// every provider search reads. Only what the catalogue offers `caller` is
 /// indexed, and opening re-resolves the action as `caller`, so authority is
 /// checked when the person acts.
 pub struct OsSearch {
-    host: Arc<dyn ActionHost + Send + Sync>,
+    provider: Arc<dyn ActionProvider + Send + Sync>,
     caller: Caller,
     index: Mutex<ResourceIndex>,
 }
 
 impl OsSearch {
-    pub fn new(host: Arc<dyn ActionHost + Send + Sync>, caller: Caller) -> Self {
+    pub fn new(provider: Arc<dyn ActionProvider + Send + Sync>, caller: Caller) -> Self {
         Self {
-            host,
+            provider,
             caller,
             index: Mutex::new(ResourceIndex::default()),
         }
@@ -65,7 +65,7 @@ impl OsSearch {
         self.index.lock_recover()
     }
 
-    pub async fn refresh(&self) -> Result<Changes, ActionHostError> {
+    pub async fn refresh(&self) -> Result<Changes, ActionCallError> {
         let providers = self
             .ask(CatalogueQuery {
                 max_results: 0,
@@ -95,7 +95,7 @@ impl OsSearch {
         &self,
         provider: &str,
         budget: usize,
-    ) -> Result<Vec<SearchEntry>, ActionHostError> {
+    ) -> Result<Vec<SearchEntry>, ActionCallError> {
         let mut found: Vec<(u8, SearchEntry)> = Vec::new();
         let mut positions: HashMap<EntryId, usize> = HashMap::new();
         let mut parents = VecDeque::from([(None::<String>, 0_usize)]);
@@ -120,7 +120,7 @@ impl OsSearch {
                     .await?;
                 pages = pages.saturating_add(1);
                 if page.stale_cursor {
-                    return Err(ActionHostError::Unavailable {
+                    return Err(ActionCallError::Unavailable {
                         reason: "the catalogue changed during the walk".into(),
                     });
                 }
@@ -200,7 +200,7 @@ impl OsSearch {
         if !still_opens {
             return Err(OpenError::NotOffered);
         }
-        let receipt = answer(self.host.invoke(
+        let receipt = answer(self.provider.invoke(
             &self.caller,
             InvokeRequest {
                 on_behalf_of: None,
@@ -217,26 +217,26 @@ impl OsSearch {
         .await??;
         match receipt.status {
             ReceiptStatus::Accepted | ReceiptStatus::Completed { .. } => Ok(()),
-            ReceiptStatus::Rejected { error } => Err(OpenError::Host(error)),
+            ReceiptStatus::Rejected { error } => Err(OpenError::Provider(error)),
             ReceiptStatus::Failed { error } => Err(OpenError::Failed(error)),
             ReceiptStatus::Cancelled { .. } => Err(OpenError::NotOffered),
         }
     }
 
-    async fn ask(&self, query: CatalogueQuery) -> Result<CataloguePage, ActionHostError> {
-        answer(self.host.query(&self.caller, query)).await?
+    async fn ask(&self, query: CatalogueQuery) -> Result<CataloguePage, ActionCallError> {
+        answer(self.provider.query(&self.caller, query)).await?
     }
 }
 
 /// A host answer within [`ANSWER`], or why there is none.
-async fn answer<T>(pending: tilo_actions::remote::Pending<T>) -> Result<T, ActionHostError> {
+async fn answer<T>(pending: tilo_actions::remote::Pending<T>) -> Result<T, ActionCallError> {
     match tokio::time::timeout(ANSWER, pending).await {
         Ok(Some(value)) => Ok(value),
-        Ok(None) => Err(ActionHostError::Unavailable {
+        Ok(None) => Err(ActionCallError::Unavailable {
             reason: "the action host dropped the answer".into(),
         }),
-        Err(_) => Err(ActionHostError::Unavailable {
-            reason: "the action host did not answer in time".into(),
+        Err(_) => Err(ActionCallError::Unavailable {
+            reason: "the action provider did not answer in time".into(),
         }),
     }
 }

@@ -167,7 +167,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
     // listed to the agent, asked over its own session.
     let session = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let anyone = tilo_actions::remote::Caller::local_person("unused");
-    let offered = tilo_actions::remote::ActionHost::query(
+    let offered = tilo_actions::remote::ActionProvider::query(
         &session,
         &anyone,
         CatalogueQuery {
@@ -257,7 +257,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
     };
     let own_word = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let caller = tilo_actions::remote::Caller::local_person("unused");
-    let refused = tilo_actions::remote::ActionHost::invoke(
+    let refused = tilo_actions::remote::ActionProvider::invoke(
         &own_word,
         &caller,
         InvokeRequest {
@@ -268,10 +268,10 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
     .await
     .unwrap();
     assert!(
-        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason.contains("person")),
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason.contains("person")),
         "an agent confirms nothing by its own word: {refused:?}"
     );
-    let forged = tilo_actions::remote::ActionHost::invoke(
+    let forged = tilo_actions::remote::ActionProvider::invoke(
         &own_word,
         &caller,
         InvokeRequest {
@@ -282,11 +282,11 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
     .await
     .unwrap();
     assert!(
-        matches!(&forged, Err(ActionHostError::Refused { .. })),
+        matches!(&forged, Err(ActionCallError::Refused { .. })),
         "a token the host did not issue confirms nothing: {forged:?}"
     );
     let asked = remove();
-    let accepted = tilo_actions::remote::ActionHost::invoke(&own_word, &caller, asked.clone())
+    let accepted = tilo_actions::remote::ActionProvider::invoke(&own_word, &caller, asked.clone())
         .await
         .unwrap()
         .unwrap();
@@ -296,7 +296,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
     );
     // Asked again under its id, the host answers how it stands.
     loop {
-        let now = tilo_actions::remote::ActionHost::invoke(&own_word, &caller, asked.clone())
+        let now = tilo_actions::remote::ActionProvider::invoke(&own_word, &caller, asked.clone())
             .await
             .unwrap();
         match now {

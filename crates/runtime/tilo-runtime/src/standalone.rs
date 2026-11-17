@@ -52,7 +52,7 @@ use tilo_action_broker::{
     services::{HostServices, LauncherServices, LegacyWorkspaceProjection, WorkspaceAuthority},
 };
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending,
 };
 use tilo_desktop_model::WorkspaceId;
@@ -434,7 +434,7 @@ fn execution_policy_clock() -> io::Result<(
 }
 
 impl RuntimeServices for Standalone {
-    type ActionHost = RuntimeActionHost;
+    type ActionProvider = RuntimeActionProvider;
 
     fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
         Self::start(root, stage, Serving::Profile)
@@ -470,7 +470,7 @@ impl RuntimeServices for Standalone {
         &self.actor
     }
 
-    fn action_host(&self) -> io::Result<RuntimeActionHost> {
+    fn action_provider(&self) -> io::Result<RuntimeActionProvider> {
         let broker = self
             .broker
             .app_action_broker()
@@ -479,18 +479,18 @@ impl RuntimeServices for Standalone {
             .joined
             .admit_mcp_execution(&self.workspace, &self.actor)
             .map_err(io::Error::other)?;
-        let host = broker
-            .certified_local_action_host(admission.caller(), admission.presentation())
+        let provider = broker
+            .certified_local_action_provider(admission.caller(), admission.presentation())
             .map_err(io::Error::other)?;
         admission.check(&self.joined).map_err(io::Error::other)?;
-        Ok(RuntimeActionHost {
+        Ok(RuntimeActionProvider {
             broker,
             workspace: self.workspace.clone(),
             joined: Arc::clone(&self.joined),
             apps: Some(self.apps.clone()),
             session: Some(Arc::new(AdmittedRuntimeSession {
                 policy_time: self.policy_origin.capture().map_err(io::Error::other)?,
-                host,
+                provider,
                 admission,
                 agent: None,
                 projection: Some(Caller::local_person(&self.actor).in_workspace(&self.workspace)),
@@ -501,10 +501,10 @@ impl RuntimeServices for Standalone {
     fn mcp_session_factory(
         &self,
         requested: &str,
-    ) -> io::Result<tilo_mcp::SessionFactory<RuntimeActionHost>> {
+    ) -> io::Result<tilo_mcp::SessionFactory<RuntimeActionProvider>> {
         let workspace = self.mcp_workspace(Some(requested))?;
         let actor = self.actor.clone();
-        let host = self.action_host()?;
+        let host = self.action_provider()?;
         Ok(host.session_factory(
             workspace,
             actor,
@@ -561,7 +561,7 @@ impl RuntimeServices for Standalone {
 /// The broker's action links as one more local caller, standing for no app
 /// connection. Its callers act from this foreign device.
 #[derive(Clone)]
-pub struct RuntimeActionHost {
+pub struct RuntimeActionProvider {
     broker: AppActionBroker,
     workspace: String,
     joined: Arc<Joined>,
@@ -576,7 +576,7 @@ pub struct RuntimeActionHost {
 
 struct AdmittedRuntimeSession {
     policy_time: tilo_action_broker::policy_clock::PolicyTime,
-    host: Arc<dyn ActionHost + Send + Sync>,
+    provider: Arc<dyn ActionProvider + Send + Sync>,
     admission: Arc<joined::SessionAdmission>,
     /// The agent the person's device handed this run to.
     agent: Option<String>,
@@ -636,17 +636,17 @@ impl AdmittedRuntimeSession {
         self: &Arc<Self>,
         joined: Arc<Joined>,
         caller: Caller,
-        answer: Pending<Result<T, ActionHostError>>,
-    ) -> Pending<Result<T, ActionHostError>> {
+        answer: Pending<Result<T, ActionCallError>>,
+    ) -> Pending<Result<T, ActionCallError>> {
         let session = Arc::clone(self);
         let (complete, pending) = tilo_actions::remote::pending();
         answer.then(move |result| {
             let result = session
                 .check(&caller, &joined)
-                .map_err(ActionHostError::from)
+                .map_err(ActionCallError::from)
                 .and_then(|()| {
                     result.unwrap_or_else(|| {
-                        Err(ActionHostError::Unavailable {
+                        Err(ActionCallError::Unavailable {
                             reason: "action links closed".into(),
                         })
                     })
@@ -657,21 +657,21 @@ impl AdmittedRuntimeSession {
     }
 }
 
-impl RuntimeActionHost {
+impl RuntimeActionProvider {
     fn session_factory(
         self,
         workspace: String,
         actor: String,
         policy_time: tilo_action_broker::policy_clock::PolicyTime,
     ) -> tilo_mcp::SessionFactory<Self> {
-        let host = self;
+        let provider = self;
         Arc::new(move || {
             // The MCP client is an agent the person's device hands this
             // session to; the admission stays the person's. Its name is part
             // of the durable owner, so people are shown a short label for it
             // instead of the whole run id.
             let (session_host, caller, agent) =
-                host.agent_session(&workspace, &actor, &policy_time, tilo_mcp::agent_id)?;
+                provider.agent_session(&workspace, &actor, &policy_time, tilo_mcp::agent_id)?;
             let label = tilo_mcp::agent_label(&agent);
             Ok(tilo_mcp::McpServer::admitted(session_host, caller)?
                 .with_agent_session(agent, label))
@@ -679,7 +679,7 @@ impl RuntimeActionHost {
     }
 
     /// A run of an agent the person's device hands it, in `workspace`, as
-    /// `actor`: the host its calls go through, the caller its admission is,
+    /// `actor`: the provider its calls go through, the caller its admission is,
     /// and the agent `agent` names for that caller.
     fn agent_session(
         &self,
@@ -696,7 +696,7 @@ impl RuntimeActionHost {
         let agent = agent(&caller);
         let qualified = self
             .broker
-            .certified_local_agent_host(&caller, admission.presentation(), &agent)
+            .certified_local_agent_provider(&caller, admission.presentation(), &agent)
             .map_err(io::Error::other)?;
         admission.check(&self.joined).map_err(io::Error::other)?;
         let run = Self {
@@ -706,7 +706,7 @@ impl RuntimeActionHost {
             apps: self.apps.clone(),
             session: Some(Arc::new(AdmittedRuntimeSession {
                 policy_time: policy_time.clone(),
-                host: qualified,
+                provider: qualified,
                 admission,
                 agent: Some(agent.clone()),
                 projection: None,
@@ -741,7 +741,7 @@ fn on_this_device(caller: &Caller) -> Caller {
     caller.clone().from_foreign_device(true)
 }
 
-impl ActionHost for RuntimeActionHost {
+impl ActionProvider for RuntimeActionProvider {
     fn installed_surface(&self, app_id: &str) -> tilo_actions::remote::Pending<Option<Vec<u8>>> {
         tilo_actions::remote::Pending::ready(
             self.apps
@@ -771,13 +771,13 @@ impl ActionHost for RuntimeActionHost {
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         if let Some(session) = &self.session {
             // Owner discovery remains the ordinary read path: no per-query
             // identity-store resolution. Opening a result uses retained ownership.
             if session.projection.as_ref() == Some(caller) {
                 if !self.admitted(caller) {
-                    return Pending::ready(Err(ActionHostError::NotPermitted));
+                    return Pending::ready(Err(ActionCallError::NotPermitted));
                 }
                 return self
                     .broker
@@ -792,7 +792,7 @@ impl ActionHost for RuntimeActionHost {
                 .as_ref()
                 .is_some_and(|provider| certified_provider(provider))
             {
-                return session.host.query(caller, query);
+                return session.provider.query(caller, query);
             }
             // Existing general catalogue/builtin APIs retain the exact
             // authenticated run. They make no SDK original-ownership claim.
@@ -800,7 +800,7 @@ impl ActionHost for RuntimeActionHost {
             return session.guarded(Arc::clone(&self.joined), caller.clone(), answer);
         }
         if !self.admitted(caller) {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         self.broker
             .state()
@@ -811,7 +811,7 @@ impl ActionHost for RuntimeActionHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
         }
@@ -819,15 +819,15 @@ impl ActionHost for RuntimeActionHost {
             if let Err(refusal) = session.check(caller, &self.joined) {
                 return Pending::ready(Err(refusal.into()));
             }
-            return session.host.invoke(session.admission.caller(), request);
+            return session.provider.invoke(session.admission.caller(), request);
         }
-        Pending::ready(Err(ActionHostError::NotPermitted))
+        Pending::ready(Err(ActionCallError::NotPermitted))
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
         if let Some(session) = &self.session {
             session.check(caller, &self.joined).ok()?;
-            return session.host.observe(session.admission.caller(), id);
+            return session.provider.observe(session.admission.caller(), id);
         }
         if !self.admitted(caller) {
             return None;
@@ -843,7 +843,7 @@ impl ActionHost for RuntimeActionHost {
     fn here(&self, caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
         if let Some(session) = &self.session {
             session.check(caller, &self.joined).ok()?;
-            return session.host.here(session.admission.caller());
+            return session.provider.here(session.admission.caller());
         }
         if !self.admitted(caller) {
             return None;
@@ -857,14 +857,14 @@ impl ActionHost for RuntimeActionHost {
     fn session_state(&self, caller: &Caller) -> Option<tilo_actions::remote::SessionState> {
         let session = self.session.as_ref()?;
         session.check(caller, &self.joined).ok()?;
-        session.host.session_state(session.admission.caller())
+        session.provider.session_state(session.admission.caller())
     }
 
     fn session_state_changed(&self, caller: &Caller) -> Option<Pending<()>> {
         let session = self.session.as_ref()?;
         session.check(caller, &self.joined).ok()?;
         session
-            .host
+            .provider
             .session_state_changed(session.admission.caller())
     }
 
@@ -878,7 +878,7 @@ impl ActionHost for RuntimeActionHost {
     ) -> Option<Pending<()>> {
         if let Some(session) = &self.session {
             session.check(caller, &self.joined).ok()?;
-            return session.host.changed(session.admission.caller(), scope);
+            return session.provider.changed(session.admission.caller(), scope);
         }
         if !self.admitted(caller) {
             return None;
@@ -891,7 +891,7 @@ impl ActionHost for RuntimeActionHost {
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
         if let Some(session) = &self.session {
             session.check(caller, &self.joined).ok()?;
-            return session.host.next_change(session.admission.caller(), id);
+            return session.provider.next_change(session.admission.caller(), id);
         }
         if !self.admitted(caller) {
             return None;
@@ -909,32 +909,34 @@ impl ActionHost for RuntimeActionHost {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionCallError>> {
         let Some(session) = &self.session else {
-            return Pending::ready(Err(ActionHostError::confirmation_required()));
+            return Pending::ready(Err(ActionCallError::confirmation_required()));
         };
         if session.agent.is_none() {
-            return Pending::ready(Err(ActionHostError::confirmation_required()));
+            return Pending::ready(Err(ActionCallError::confirmation_required()));
         }
         if let Err(refusal) = session.check(caller, &self.joined) {
             return Pending::ready(Err(refusal.into()));
         }
-        session.host.confirm(session.admission.caller(), request)
+        session
+            .provider
+            .confirm(session.admission.caller(), request)
     }
 
     fn cancel(
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionHostError>> {
+    ) -> Pending<Result<(), ActionCallError>> {
         if let Some(session) = &self.session {
             if let Err(refusal) = session.check(caller, &self.joined) {
                 return Pending::ready(Err(refusal.into()));
             }
-            return session.host.cancel(session.admission.caller(), id);
+            return session.provider.cancel(session.admission.caller(), id);
         }
         if !self.admitted(caller) {
-            return Pending::ready(Err(ActionHostError::UnknownInvocation));
+            return Pending::ready(Err(ActionCallError::UnknownInvocation));
         }
         self.broker
             .state()
@@ -1397,7 +1399,7 @@ fn serve_key_sessions(
     key_sessions.serve(
         Arc::new(PersonalDevices::new(personal.clone())),
         Arc::new(host_runs::HostRuns {
-            host: RuntimeActionHost {
+            provider: RuntimeActionProvider {
                 broker,
                 workspace: workspace.to_owned(),
                 joined: Arc::clone(joined),

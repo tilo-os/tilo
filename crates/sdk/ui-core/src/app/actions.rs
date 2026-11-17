@@ -591,7 +591,7 @@ impl App {
     /// once it has gone. Otherwise they keep waiting: the publication the
     /// route's readiness brings settles them.
     fn settle_held_own_invocations(&mut self, carried: bool) {
-        use tilo_actions::remote::{ActionHostError, RemoteActionMessage};
+        use tilo_actions::remote::{ActionCallError, RemoteActionMessage};
         if self.actions.held_own_invocations.is_empty() {
             return;
         }
@@ -613,7 +613,7 @@ impl App {
             }
             let reason = self.collaboration.manager.state().reason().to_owned();
             if let Some(answer) =
-                tilo_actions::remote::refuse(&refusal, ActionHostError::Unavailable { reason })
+                tilo_actions::remote::refuse(&refusal, ActionCallError::Unavailable { reason })
             {
                 self.apply_remote_action_answer(answer);
             }

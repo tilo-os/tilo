@@ -161,16 +161,16 @@ async fn on_broker_turn<T>(
 /// cancel there is theirs.
 struct PersonSession {
     caller: tilo_actions::remote::Caller,
-    host: Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>,
+    provider: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
 }
 
 impl PersonSession {
     fn open(state: &Arc<AppBrokerState>, workspace: &signed_worker::OriginalWorkspace) -> Self {
         let (caller, evidence) = person(workspace);
-        let host = state
-            .certified_local_action_host(&caller, &evidence)
+        let provider = state
+            .certified_local_action_provider(&caller, &evidence)
             .unwrap();
-        Self { caller, host }
+        Self { caller, provider }
     }
 
     /// Ask `peer`'s approved check on `resource`.
@@ -186,7 +186,7 @@ impl PersonSession {
             runtime_collab::approved_checks::ACTION_ID,
             Some(serde_json::json!({"check_id": "regression"})),
         );
-        let receipt = on_broker_turn(broker, self.host.invoke(&self.caller, request))
+        let receipt = on_broker_turn(broker, self.provider.invoke(&self.caller, request))
             .await
             .unwrap();
         assert!(
@@ -205,7 +205,7 @@ impl PersonSession {
         broker: (&Arc<AppBrokerState>, &Rc<LocalActionDirectoryRegistry>),
         invocation: tilo_actions::InvocationId,
     ) {
-        on_broker_turn(broker, self.host.cancel(&self.caller, &invocation))
+        on_broker_turn(broker, self.provider.cancel(&self.caller, &invocation))
             .await
             .unwrap();
     }

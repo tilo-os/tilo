@@ -1,25 +1,25 @@
 //! Using another peer's actions: a transport-neutral vocabulary.
 //!
-//! A peer that hosts live apps (a desktop session, a headless app-serving
-//! host) can let an authenticated remote caller list the actions it
+//! A peer that serves live apps (a desktop session, a headless app server)
+//! can let an authenticated remote caller list the actions it
 //! publishes, invoke one, follow its progress, and cancel it. This module is
 //! the whole contract between the two sides:
 //!
 //! - [`RemoteActionMessage`] — requests and their answers, wrapped in a
 //!   versioned [`RemoteActionFrame`] that any transport carries as opaque
 //!   bytes.
-//! - [`ActionHost`] — what a peer implements to answer them, and [`serve`],
-//!   which maps one request frame onto a host. Answers that need an
+//! - [`ActionProvider`] — what a peer implements to answer them, and [`serve`],
+//!   which maps one request frame onto a provider. Answers that need an
 //!   application's help arrive later as a [`Pending`], so no caller blocks.
-//! - [`CatalogueQuery`] — paged, filtered browsing of what a host offers.
-//! - [`InvocationLog`] — the idempotency rule every host shares: an
+//! - [`CatalogueQuery`] — paged, filtered browsing of what a provider offers.
+//! - [`InvocationLog`] — the idempotency rule every provider shares: an
 //!   invocation is keyed by its caller-chosen [`InvocationId`], so a retry
 //!   after a lost reply observes the original invocation instead of running
 //!   the action twice.
 //!
 //! Who is calling is never read from a payload. The transport that
 //! authenticated the connection constructs the [`Caller`] and hands it to the
-//! host beside the message; nothing in a frame can name or change it.
+//! provider beside the message; nothing in a frame can name or change it.
 //!
 //! Descriptors, addresses, arguments, outputs and lifecycle updates are the
 //! same types the local action surface already uses ([`ActionDescriptor`](crate::api::ActionDescriptor),
@@ -73,10 +73,10 @@ pub mod session_actions;
 mod session_state;
 mod surfaces;
 pub use session_state::{SessionState, SyncState, WorkspaceState};
-mod shared_host;
+mod shared_provider;
 pub mod task_programs;
 #[cfg(any(test, feature = "test-support"))]
-mod test_host;
+mod test_provider;
 mod wait;
 mod watch;
 pub use watch::{CHANGED_UNAVAILABLE, Here, WatchScope};
@@ -127,7 +127,7 @@ pub use resource_read::{
 };
 pub use search::{FOUND_FILE, Found, ResourceSearch, stem_word};
 #[cfg(any(test, feature = "test-support"))]
-pub use test_host::TestHost;
+pub use test_provider::TestProvider;
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
 
 use crate::api::ActionAddress;
@@ -137,25 +137,22 @@ use crate::params::ARGUMENTS_JSON_PREFIX;
 
 /// Version of the [`RemoteActionFrame`] schema this build speaks.
 ///
-/// Additive changes (a new optional field) keep the version; a change an
-/// older peer would misread bumps it, and [`RemoteActionFrame::decode`]
-/// refuses a version it does not know instead of guessing.
+/// Additive changes keep the version; a change an older peer would misread
+/// bumps it, and [`RemoteActionFrame::decode`] refuses a version it does not know.
 pub const REMOTE_ACTIONS_VERSION: u16 = 1;
 
-/// Upper bound on one encoded frame. Catalogues are the largest messages;
-/// a host that needs more pages them rather than raising this.
+/// Upper bound on one encoded frame: a provider pages its catalogue rather than raise this.
 pub const MAX_REMOTE_ACTION_FRAME_BYTES: usize = 1024 * 1024;
 
 /// The most raw bytes one piece of content carries, into a workspace's store
-/// ([`ContentPutStep::Append`]) or out of it ([`ContentGetAnswer`]): hex
-/// doubles them, and the frame stays within
-/// [`MAX_REMOTE_ACTION_FRAME_BYTES`]. A caller splits anything larger.
+/// ([`ContentPutStep::Append`]) or out of it ([`ContentGetAnswer`]): hex doubles
+/// them, and a caller splits anything larger.
 pub const MAX_CONTENT_FRAME_BYTES: usize = 384 * 1024;
 
 /// Default number of invocations an [`InvocationLog`] remembers.
 pub const DEFAULT_LOG_CAPACITY: usize = 1024;
 
-/// Host-owned execution lifetime. Clones share closure, never authority.
+/// Provider-owned execution lifetime. Clones share closure, never authority.
 /// Equality and hashing use the immutable minted identity, not liveness.
 #[derive(Clone, Debug)]
 pub struct ExecutionLease {
@@ -174,7 +171,7 @@ impl std::hash::Hash for ExecutionLease {
     }
 }
 impl ExecutionLease {
-    /// A new execution, live until [`Self::close`]: the host that admitted a
+    /// A new execution, live until [`Self::close`]: the provider that admitted a
     /// connection mints one for it.
     #[must_use]
     pub fn mint() -> Self {
@@ -194,9 +191,9 @@ impl ExecutionLease {
     }
 }
 
-/// Which published action an invocation names on the host.
+/// Which published action an invocation names on the provider.
 ///
-/// `provider` is an opaque token the host issued in a [`CataloguePage`]
+/// `provider` is an opaque token the provider issued in a [`CataloguePage`]
 /// (which live app published the action); `address` is the app's own stable
 /// resource/action pair. A caller copies both from a catalogue entry and
 /// never constructs a provider itself.
@@ -207,7 +204,7 @@ pub struct RemoteActionTarget {
 }
 
 /// The provider a workspace's own governance actions (membership, roles, grants,
-/// bans) are answered under. It is the host's, not an app's, so it is the
+/// bans) are answered under. It is the provider's, not an app's, so it is the
 /// one provider a caller names without reading it from a catalogue page.
 pub const WORKSPACE_GOVERNANCE_PROVIDER: &str = "tilo.workspace";
 /// The resource kind of a workspace's governance resource.
@@ -230,35 +227,33 @@ pub fn workspace_governance_resource(workspace: &str) -> String {
     format!("{WORKSPACE_GOVERNANCE_KIND}:{workspace}")
 }
 
-/// Pairing a nearby device with the person's identity. The host runs it —
+/// Pairing a nearby device with the person's identity. The provider runs it —
 /// LAN discovery, and the approval an administrator authenticates — so no
-/// application starts a privileged process. It is answered under the
-/// host's provider, which a caller names without reading a catalogue, for
-/// the person at this device in the workspace their connection was admitted to.
+/// application starts a privileged process. It is answered under its own
+/// provider name, for the person at this device in the workspace they joined.
 pub mod device_pairing;
 
-/// The person's settings, kept by the host whether or not the app that shows
+/// The person's settings, kept by the provider whether or not the app that shows
 /// them is open: each section a record published with its field edits and
 /// verbs (`settings:<kind>`), changed through them as that app's window
-/// changes them. It is answered under the host's provider for the person at
-/// this device in the workspace their connection was admitted to.
+/// changes them. It is answered under the settings provider.
 pub mod settings_resources {
-    /// The provider the host answers the person's settings under.
+    /// The provider that answers the person's settings.
     pub const PROVIDER: &str = "tilo.settings";
 }
 
 /// Administering the person's identities and the devices trusted under
-/// them. The host keeps the identity store — records, root secrets, the
+/// them. The provider keeps the identity store — records, root secrets, the
 /// active selector, device fleets — and runs every step, so no application
 /// reads a secret or signs with the root key. It is answered under the
-/// host's provider, which a caller names without reading a catalogue, for
-/// the person at this device in the workspace their connection was admitted to.
+/// identity provider, which a caller names without reading a catalogue, for the
+/// person at this device in the workspace their connection was admitted to.
 pub mod identity_admin {
     use serde::{Deserialize, Serialize};
 
     use super::{ActionAddress, RemoteActionTarget};
 
-    /// The provider the host answers identity administration under.
+    /// The provider that answers identity administration.
     pub const PROVIDER: &str = "tilo.identity";
     /// The resource the steps are actions of.
     pub const RESOURCE: &str = "identity";
@@ -276,7 +271,7 @@ pub mod identity_admin {
     /// `confirm`).
     pub const REVOKE: &str = "revoke";
     /// Name one of the person's devices (`device`, `name`): what their device
-    /// lists read it by from now on. A page's API forwards it to the host
+    /// lists read it by from now on. A page's API forwards it to the provider
     /// that keeps their record; it is no step of the device's own store.
     pub const RENAME: &str = "rename-device";
     /// Root-revoke and stop a paired home server (`device`, `service`,
@@ -374,7 +369,7 @@ pub mod identity_admin {
     }
 }
 
-/// Why a host refuses a directory action that asks for confirmation when
+/// Why a provider refuses a directory action that asks for confirmation when
 /// the request names no revision: the confirmation covers the action as the
 /// person was shown it, which only that revision identifies. A caller that
 /// confirms on its own policy rather than a person's reads the current
@@ -430,7 +425,7 @@ impl InvokeArgument {
 /// A request to run one published action.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InvokeRequest {
-    /// Chosen by the caller and reused verbatim on retry; the host runs the
+    /// Chosen by the caller and reused verbatim on retry; the provider runs the
     /// action at most once per id.
     pub invocation: InvocationId,
     pub target: RemoteActionTarget,
@@ -440,38 +435,38 @@ pub struct InvokeRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<ActionContext>,
     /// The caller's explicit confirmation, for an action whose contract
-    /// requires one. The host checks it against the contract; it is
+    /// requires one. The provider checks it against the contract; it is
     /// evidence, not authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmation: Option<Confirmation>,
     /// The catalogue revision the caller chose the target from, for a
-    /// provider whose actions are resolved live at that revision. A host
+    /// provider whose actions are resolved live at that revision. A provider
     /// refuses a target that no longer exists at it rather than guessing.
     ///
     /// Omitted, a directory target resolves against the directory as it is
     /// now, and the admission is bound to the revision the provider
-    /// resolved it at: an executing host still refuses the action once the
+    /// resolved it at: an executing provider still refuses the action once the
     /// directory moved on before it ran. An action whose contract asks for
     /// confirmation needs the revision it was shown at; without one the
-    /// host refuses with [`CONFIRMED_ACTION_NEEDS_REVISION`].
+    /// provider refuses with [`CONFIRMED_ACTION_NEEDS_REVISION`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
     /// The live invocation this request continues: an edit an effect
-    /// submits while running for someone else. The host admits it as that
+    /// submits while running for someone else. The provider admits it as that
     /// invocation's original caller, with their grants, never as the app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_behalf_of: Option<InvocationId>,
     /// Hold the receipt until the invocation settles or this many
     /// milliseconds pass (at most [`MAX_REMOTE_WAIT`]), so a quick action
     /// answers in one round trip. How the answer travels, not what runs:
-    /// [`serve`] takes it off the request before the host sees it, and
-    /// [`InvocationLog`] ignores it. A host that predates it answers at
+    /// [`serve`] takes it off the request before the provider sees it, and
+    /// [`InvocationLog`] ignores it. A provider that predates it answers at
     /// admission, as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_ms: Option<u32>,
     /// The name and avatar a bot asks to show for this action. Only an API
     /// that can check the caller is a bot allowed it admits one
-    /// (the workspace-action API a bot host drives); every other API refuses the request
+    /// (the workspace-action API a bot drives); every other API refuses the request
     /// ([`crate::appearance::refuse_here`]) rather than dropping the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<crate::Appearance>,
@@ -533,7 +528,7 @@ pub enum ReceiptStatus {
     /// Ran and failed.
     Failed { error: ActionFailure },
     /// Never admitted: nothing ran.
-    Rejected { error: ActionHostError },
+    Rejected { error: ActionCallError },
     /// Stopped at the caller's request.
     Cancelled { message: Option<String> },
 }
@@ -546,7 +541,7 @@ impl ReceiptStatus {
     }
 }
 
-/// The host's answer to an [`InvokeRequest`].
+/// The provider's answer to an [`InvokeRequest`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InvocationReceipt {
     pub invocation: InvocationId,
@@ -579,7 +574,7 @@ pub struct ActorPlace {
 }
 
 impl InvocationState {
-    /// Wrap a host-side update, rebinding it to the caller's invocation id.
+    /// Wrap a provider-side update, rebinding it to the caller's invocation id.
     #[must_use]
     pub fn new(invocation: InvocationId, update: InvocationUpdate) -> Self {
         Self {
@@ -629,7 +624,7 @@ impl InvocationState {
             // is a refusal to the caller, not a failure of the action.
             InvocationUpdate::Failed { error, .. } if error.code == CONFIRMATION_REQUIRED_CODE => {
                 ReceiptStatus::Rejected {
-                    error: ActionHostError::ConfirmationRequired {
+                    error: ActionCallError::ConfirmationRequired {
                         departure: browser::departure_stated(error.details.as_ref()),
                     },
                 }
@@ -656,7 +651,7 @@ impl InvocationState {
 /// [`ApiError::ConfirmationRequired`]: crate::api::ApiError::ConfirmationRequired
 pub const CONFIRMATION_REQUIRED_CODE: &str = "action_confirmation_required";
 
-/// Why a host would not do what was asked. Every variant but [`Self::Unanswered`] means
+/// Why a provider would not do what was asked. Every variant but [`Self::Unanswered`] means
 /// nothing ran.
 ///
 /// On the wire it keeps the shape peers decoded before
@@ -665,9 +660,9 @@ pub const CONFIRMATION_REQUIRED_CODE: &str = "action_confirmation_required";
 /// refusal from them reads back as it. A variant an older peer cannot
 /// decode would fail its whole frame.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
-#[serde(from = "WireHostError", into = "WireHostError")]
-pub enum ActionHostError {
-    /// The host serves no actions right now (no live apps, service off).
+#[serde(from = "WireActionCallError", into = "WireActionCallError")]
+pub enum ActionCallError {
+    /// The provider serves no actions right now (no live apps, service off).
     #[error("remote actions are unavailable: {reason}")]
     Unavailable { reason: String },
     /// The target is not offered to this caller — unknown and forbidden are
@@ -690,7 +685,7 @@ pub enum ActionHostError {
     #[error("invalid request: {reason}")]
     InvalidRequest { reason: String },
     /// The target changed since the revision the request named, or the one
-    /// its host resolved it against: list it again and invoke what is
+    /// its provider resolved it against: list it again and invoke what is
     /// offered now.
     #[error("invalid request: {}", STALE_REVISION_REASON)]
     StaleRevision,
@@ -703,26 +698,26 @@ pub enum ActionHostError {
     /// The invocation cannot be cancelled (finished, or never cancellable).
     #[error("the invocation cannot be cancelled: {reason}")]
     NotCancellable { reason: String },
-    /// The host refused for a reason of its own.
+    /// The provider refused for a reason of its own.
     #[error("refused: {reason}")]
     Refused { reason: String },
-    /// The host is busy with this person's changes: the same call works
+    /// The provider is busy with this person's changes: the same call works
     /// once `retry_after_ms` passed.
-    #[error("the host is busy with this person's changes; retry in {retry_after_ms} ms")]
+    #[error("the provider is busy with this person's changes; retry in {retry_after_ms} ms")]
     Busy { retry_after_ms: u64 },
     /// The workspace is not serving this caller here yet: the same call
     /// works once it is (its `serving` state).
     #[error("the workspace is not ready for this call yet")]
     NotReady,
-    /// The device or host that runs the call did not answer in time. Unlike
+    /// The device or provider that runs the call did not answer in time. Unlike
     /// every other variant this one does not say that nothing ran: the same
     /// call under the same invocation id is answered by what it did, and runs
     /// it once if it never arrived.
-    #[error("the action's host did not answer in time")]
+    #[error("the action's provider did not answer in time")]
     Unanswered,
 }
 
-impl ActionHostError {
+impl ActionCallError {
     /// The refusal for want of the person's answer, for an action that
     /// reached no page departure to name.
     #[must_use]
@@ -760,7 +755,7 @@ impl ActionHostError {
         matches!(self, Self::Busy { .. } | Self::NotReady | Self::Unanswered)
     }
 
-    /// Whether the host refused a directory action that asks for
+    /// Whether the provider refused a directory action that asks for
     /// confirmation because the request named no revision
     /// ([`CONFIRMED_ACTION_NEEDS_REVISION`]).
     #[must_use]
@@ -769,14 +764,14 @@ impl ActionHostError {
     }
 }
 
-/// What [`ActionHostError::StaleRevision`] says, and the reason it carries
-/// on the wire as an [`ActionHostError::InvalidRequest`].
+/// What [`ActionCallError::StaleRevision`] says, and the reason it carries
+/// on the wire as an [`ActionCallError::InvalidRequest`].
 pub const STALE_REVISION_REASON: &str = "the target changed since that revision; list it again";
 
-/// [`ActionHostError`] as it travels: only variants every peer decodes.
+/// [`ActionCallError`] as it travels: only variants every peer decodes.
 #[derive(Serialize, Deserialize)]
-#[serde(rename = "ActionHostError")]
-enum WireHostError {
+#[serde(rename = "ActionCallError")]
+enum WireActionCallError {
     Unavailable {
         reason: String,
     },
@@ -806,50 +801,50 @@ enum WireHostError {
     Unanswered,
 }
 
-impl From<ActionHostError> for WireHostError {
-    fn from(error: ActionHostError) -> Self {
+impl From<ActionCallError> for WireActionCallError {
+    fn from(error: ActionCallError) -> Self {
         match error {
-            ActionHostError::Unavailable { reason } => Self::Unavailable { reason },
-            ActionHostError::UnknownAction => Self::UnknownAction,
-            ActionHostError::NotPermitted => Self::NotPermitted,
-            ActionHostError::ConfirmationRequired { departure } => {
+            ActionCallError::Unavailable { reason } => Self::Unavailable { reason },
+            ActionCallError::UnknownAction => Self::UnknownAction,
+            ActionCallError::NotPermitted => Self::NotPermitted,
+            ActionCallError::ConfirmationRequired { departure } => {
                 Self::ConfirmationRequired { departure }
             }
-            ActionHostError::InvalidRequest { reason } => Self::InvalidRequest { reason },
-            ActionHostError::StaleRevision => Self::InvalidRequest {
+            ActionCallError::InvalidRequest { reason } => Self::InvalidRequest { reason },
+            ActionCallError::StaleRevision => Self::InvalidRequest {
                 reason: STALE_REVISION_REASON.to_owned(),
             },
-            ActionHostError::UnknownInvocation => Self::UnknownInvocation,
-            ActionHostError::InvocationConflict => Self::InvocationConflict,
-            ActionHostError::NotCancellable { reason } => Self::NotCancellable { reason },
-            ActionHostError::Refused { reason } => Self::Refused { reason },
-            ActionHostError::Busy { retry_after_ms } => Self::Busy { retry_after_ms },
-            ActionHostError::NotReady => Self::NotReady,
-            ActionHostError::Unanswered => Self::Unanswered,
+            ActionCallError::UnknownInvocation => Self::UnknownInvocation,
+            ActionCallError::InvocationConflict => Self::InvocationConflict,
+            ActionCallError::NotCancellable { reason } => Self::NotCancellable { reason },
+            ActionCallError::Refused { reason } => Self::Refused { reason },
+            ActionCallError::Busy { retry_after_ms } => Self::Busy { retry_after_ms },
+            ActionCallError::NotReady => Self::NotReady,
+            ActionCallError::Unanswered => Self::Unanswered,
         }
     }
 }
 
-impl From<WireHostError> for ActionHostError {
-    fn from(error: WireHostError) -> Self {
+impl From<WireActionCallError> for ActionCallError {
+    fn from(error: WireActionCallError) -> Self {
         match error {
-            WireHostError::InvalidRequest { reason } if reason == STALE_REVISION_REASON => {
+            WireActionCallError::InvalidRequest { reason } if reason == STALE_REVISION_REASON => {
                 Self::StaleRevision
             }
-            WireHostError::Unavailable { reason } => Self::Unavailable { reason },
-            WireHostError::UnknownAction => Self::UnknownAction,
-            WireHostError::NotPermitted => Self::NotPermitted,
-            WireHostError::ConfirmationRequired { departure } => {
+            WireActionCallError::Unavailable { reason } => Self::Unavailable { reason },
+            WireActionCallError::UnknownAction => Self::UnknownAction,
+            WireActionCallError::NotPermitted => Self::NotPermitted,
+            WireActionCallError::ConfirmationRequired { departure } => {
                 Self::ConfirmationRequired { departure }
             }
-            WireHostError::InvalidRequest { reason } => Self::InvalidRequest { reason },
-            WireHostError::UnknownInvocation => Self::UnknownInvocation,
-            WireHostError::InvocationConflict => Self::InvocationConflict,
-            WireHostError::NotCancellable { reason } => Self::NotCancellable { reason },
-            WireHostError::Refused { reason } => Self::Refused { reason },
-            WireHostError::Busy { retry_after_ms } => Self::Busy { retry_after_ms },
-            WireHostError::NotReady => Self::NotReady,
-            WireHostError::Unanswered => Self::Unanswered,
+            WireActionCallError::InvalidRequest { reason } => Self::InvalidRequest { reason },
+            WireActionCallError::UnknownInvocation => Self::UnknownInvocation,
+            WireActionCallError::InvocationConflict => Self::InvocationConflict,
+            WireActionCallError::NotCancellable { reason } => Self::NotCancellable { reason },
+            WireActionCallError::Refused { reason } => Self::Refused { reason },
+            WireActionCallError::Busy { retry_after_ms } => Self::Busy { retry_after_ms },
+            WireActionCallError::NotReady => Self::NotReady,
+            WireActionCallError::Unanswered => Self::Unanswered,
         }
     }
 }
@@ -859,9 +854,9 @@ impl From<WireHostError> for ActionHostError {
 /// Implementations resolve authority from `caller` alone and must be
 /// idempotent per [`InvocationId`]: invoking an id again with the same
 /// request reports the original invocation, with a different request fails
-/// with [`ActionHostError::InvocationConflict`]. [`InvocationLog`]
+/// with [`ActionCallError::InvocationConflict`]. [`InvocationLog`]
 /// implements that rule.
-pub trait ActionHost {
+pub trait ActionProvider {
     /// End this admitted transport run without cancelling its app jobs.
     fn retire_execution(&self, caller: &Caller) {
         caller.retire_execution();
@@ -873,17 +868,17 @@ pub trait ActionHost {
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>>;
+    ) -> Pending<Result<CataloguePage, ActionCallError>>;
 
     /// Admit and start one invocation, or report the one already admitted
     /// under the same id. Never blocks: the answer is the admission (an
-    /// accepted receipt, an immediate outcome, or a refusal) once the host
+    /// accepted receipt, an immediate outcome, or a refusal) once the provider
     /// has it; completion is followed with [`Self::observe`].
     fn invoke(
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>>;
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>>;
 
     /// The latest state of an invocation `caller` started, or `None` for an
     /// id this caller does not own.
@@ -891,11 +886,11 @@ pub trait ActionHost {
 
     /// Resolves the next time invocation `id` (owned by `caller`) may have
     /// changed state, so a waiter observes it again then instead of on a
-    /// timer. `None` when this host cannot tell; the caller then observes on
+    /// timer. `None` when this provider cannot tell; the caller then observes on
     /// its own schedule.
     ///
     /// Wakeups may be spurious: the waiter must [`observe`](Self::observe)
-    /// again and tolerate finding nothing new. A host that answers `Some`
+    /// again and tolerate finding nothing new. A provider that answers `Some`
     /// must resolve it within a bounded interval even when nothing changes
     /// (the broker's is a second), so a change it failed to signal costs
     /// latency, never a stalled waiter: a waiting answer ([`settle_with`])
@@ -906,14 +901,14 @@ pub trait ActionHost {
     }
 
     /// Where `caller`'s workspace and this device's writes stand on the session that serves
-    /// it; `None` for a host that serves from no session.
+    /// it; `None` for a provider that serves from no session.
     fn session_state(&self, caller: &Caller) -> Option<SessionState> {
         let _ = caller;
         None
     }
 
     /// Resolves the next time [`Self::session_state`] changed, so a waiter reads it again then
-    /// instead of on a timer; `None` when this host cannot tell. It may never resolve when
+    /// instead of on a timer; `None` when this provider cannot tell. It may never resolve when
     /// nothing changes: a waiter bounds its own wait.
     fn session_state_changed(&self, caller: &Caller) -> Option<Pending<()>> {
         let _ = caller;
@@ -921,10 +916,10 @@ pub trait ActionHost {
     }
 
     /// Resolves the next time what a watch of the workspace follows under `scope` may have
-    /// changed, so a waiter reads it again then instead of on a timer; `None` when this host
+    /// changed, so a waiter reads it again then instead of on a timer; `None` when this provider
     /// cannot tell, and the waiter then waits until its own deadline.
     ///
-    /// Wakeups may be spurious: the waiter reads again and tolerates finding nothing new. A host
+    /// Wakeups may be spurious: the waiter reads again and tolerates finding nothing new. A provider
     /// that answers `Some` must resolve it within a bounded interval even when nothing changes,
     /// so a change it failed to signal costs latency rather than a stalled waiter.
     fn changed(&self, caller: &Caller, scope: WatchScope) -> Option<Pending<()>> {
@@ -932,45 +927,45 @@ pub trait ActionHost {
         None
     }
 
-    /// Ask a running invocation to stop, answered once the host has kept
+    /// Ask a running invocation to stop, answered once the provider has kept
     /// the request as durably as it keeps the invocation.
     ///
     /// # Errors
     ///
-    /// Returns [`ActionHostError::UnknownInvocation`] for an id this caller
-    /// does not own, or [`ActionHostError::NotCancellable`].
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>>;
+    /// Returns [`ActionCallError::UnknownInvocation`] for an id this caller
+    /// does not own, or [`ActionCallError::NotCancellable`].
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>>;
 
     /// Ask the person `caller` acts for to confirm `request` on their own
-    /// device, as the host shows it to them. The answer carries a
+    /// device, as the provider shows it to them. The answer carries a
     /// [`Confirmation::Approved`] that `caller` invokes `request` again
     /// with, and the arguments as the person changed them, if they did
     /// ([`ConfirmedInvocation::apply`]); a caller never confirms by its own
-    /// word. A host with nobody to ask answers
-    /// [`ActionHostError::ConfirmationRequired`].
+    /// word. A provider with nobody to ask answers
+    /// [`ActionCallError::ConfirmationRequired`].
     fn confirm(
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
         let _ = (caller, request);
-        Pending::ready(Err(ActionHostError::confirmation_required()))
+        Pending::ready(Err(ActionCallError::confirmation_required()))
     }
 
-    /// Where this host's callers put content into their workspace's content
-    /// store ([`ContentPuts`]); `None` for a host without one.
+    /// Where this provider's callers put content into their workspace's content
+    /// store ([`ContentPuts`]); `None` for a provider without one.
     fn content_puts(&self) -> Option<std::sync::Arc<dyn ContentPuts>> {
         None
     }
 
-    /// Where this host's callers read content back out of their workspace's
-    /// content store ([`ContentGets`]); `None` for a host without one.
+    /// Where this provider's callers read content back out of their workspace's
+    /// content store ([`ContentGets`]); `None` for a provider without one.
     fn content_gets(&self) -> Option<std::sync::Arc<dyn ContentGets>> {
         None
     }
 
-    /// Who is in the workspace now, as this host's collaboration knows it:
-    /// its people and the agents its roster names. `None` for a host that
+    /// Who is in the workspace now, as this provider's collaboration knows it:
+    /// its people and the agents its roster names. `None` for a provider that
     /// keeps no roster, which reports no presence rather than an empty one.
     fn here(&self, caller: &Caller) -> Option<Vec<Here>> {
         let _ = caller;
@@ -978,14 +973,14 @@ pub trait ActionHost {
     }
 
     /// Where an agent task reads its workspace's records outside their apps ([`ResourceReads`]);
-    /// `None` for a host without them.
+    /// `None` for a provider without them.
     fn resource_reads(&self) -> Option<std::sync::Arc<dyn ResourceReads>> {
         None
     }
 
-    /// Where a task's programs read the resources this host publishes itself, rather than from
+    /// Where a task's programs read the resources this provider publishes itself, rather than from
     /// an app's record (a desktop's device, its windows, its styles, Settings' sections): one
-    /// reading for the shell's parts and a program alike ([`Readings`]). `None` for a host that
+    /// reading for the shell's parts and a program alike ([`Readings`]). `None` for a provider that
     /// publishes no such resource.
     fn readings(&self) -> Option<std::sync::Arc<dyn Readings>> {
         None
@@ -996,17 +991,17 @@ pub trait ActionHost {
         None
     }
 
-    /// This host's search of what its workspace holds ([`ResourceSearch`]),
+    /// This provider's search of what its workspace holds ([`ResourceSearch`]),
     /// which an agent's `find` asks: a desktop's one search, or the records
-    /// a host with no desktop holds, ranked by what they say. `None` for a
-    /// host that holds no records to search.
+    /// a provider with no desktop holds, ranked by what they say. `None` for a
+    /// provider that holds no records to search.
     fn resource_search(&self) -> Option<std::sync::Arc<dyn ResourceSearch>> {
         None
     }
 
-    /// Every change to the records of a caller's workspace, as this host
+    /// Every change to the records of a caller's workspace, as this provider
     /// keeps them ([`ChangeFeed`]): what a watch of the whole workspace
-    /// reads. `None` for a host that keeps no records.
+    /// reads. `None` for a provider that keeps no records.
     fn change_feed(&self) -> Option<std::sync::Arc<dyn ChangeFeed>> {
         None
     }
@@ -1035,7 +1030,7 @@ pub enum RemoteActionMessage {
     },
     FeedbackResponse {
         correlation: u64,
-        result: Result<feedback::FeedbackAnswer, ActionHostError>,
+        result: Result<feedback::FeedbackAnswer, ActionCallError>,
     },
     /// Ask for one page of the actions offered to the caller.
     CatalogueRequest {
@@ -1046,7 +1041,7 @@ pub enum RemoteActionMessage {
     /// Answer to a [`Self::CatalogueRequest`] with the same correlation.
     CatalogueResponse {
         correlation: u64,
-        result: Result<CataloguePage, ActionHostError>,
+        result: Result<CataloguePage, ActionCallError>,
     },
     /// Invocation one action.
     Invoke(InvokeRequest),
@@ -1057,7 +1052,7 @@ pub enum RemoteActionMessage {
         invocation: InvocationId,
         /// Hold the answer until the invocation moves past `seen` (or, with
         /// no `seen`, settles) or this many milliseconds pass, at most
-        /// [`MAX_REMOTE_WAIT`]; then answer with the state as it is. A host
+        /// [`MAX_REMOTE_WAIT`]; then answer with the state as it is. A provider
         /// that predates it answers at once, as before.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wait_ms: Option<u32>,
@@ -1066,7 +1061,7 @@ pub enum RemoteActionMessage {
         seen: Option<UpdateMark>,
     },
     /// Answer to [`Self::Observe`]; `None` for an id the caller does not own.
-    /// A host may also push this unprompted as an invocation progresses.
+    /// A provider may also push this unprompted as an invocation progresses.
     Update {
         invocation: InvocationId,
         state: Option<InvocationState>,
@@ -1076,7 +1071,7 @@ pub enum RemoteActionMessage {
     /// Answer to [`Self::Cancel`].
     CancelResponse {
         invocation: InvocationId,
-        result: Result<(), ActionHostError>,
+        result: Result<(), ActionCallError>,
     },
     /// Retired: records are read through the record API ([`Self::ResourceRead`]). Kept in
     /// place because the variants after it are encoded by position.
@@ -1091,7 +1086,7 @@ pub enum RemoteActionMessage {
     /// Answer to [`Self::ConfirmationRequest`], same correlation.
     ConfirmationResponse {
         correlation: u64,
-        result: Result<ConfirmationReply, ActionHostError>,
+        result: Result<ConfirmationReply, ActionCallError>,
     },
     /// Retired: the reading of a resource is a session resource, read over
     /// the session's services as any app reads one. Kept in place because
@@ -1107,7 +1102,7 @@ pub enum RemoteActionMessage {
         reading: Option<String>,
     },
     /// What the surface offers changed: the page it lists now, sent without
-    /// being asked, so the host that placed it reads what the surface can do
+    /// being asked, so the provider that placed it reads what the surface can do
     /// as it is rather than as it was when it first joined.
     CatalogueChanged { page: CataloguePage },
     /// One step of putting bytes into the content store of the device's
@@ -1121,7 +1116,7 @@ pub enum RemoteActionMessage {
     /// Answer to [`Self::ContentPutRequest`] with the same correlation.
     ContentPutResponse {
         correlation: u64,
-        result: Result<ContentPutAnswer, ActionHostError>,
+        result: Result<ContentPutAnswer, ActionCallError>,
     },
     /// Ask the device for a piece of content in its workspace's store: what a
     /// client of another device's actions (an agent's MCP session through its
@@ -1140,13 +1135,13 @@ pub enum RemoteActionMessage {
     /// Answer to [`Self::ContentGetRequest`] with the same correlation.
     ContentGetResponse {
         correlation: u64,
-        result: Result<ContentGetAnswer, ActionHostError>,
+        result: Result<ContentGetAnswer, ActionCallError>,
     },
-    /// Ask the host to put `request` to the person the caller acts for and
+    /// Ask the provider to put `request` to the person the caller acts for and
     /// answer with their confirmation of that one invocation
-    /// ([`ActionHost::confirm`]): where they are asked is the host's, and a
-    /// host with nobody to ask answers
-    /// [`ActionHostError::ConfirmationRequired`].
+    /// ([`ActionProvider::confirm`]): where they are asked is the provider's, and a
+    /// provider with nobody to ask answers
+    /// [`ActionCallError::ConfirmationRequired`].
     Confirm {
         correlation: u64,
         request: Box<InvokeRequest>,
@@ -1154,11 +1149,11 @@ pub enum RemoteActionMessage {
     /// Answer to [`Self::Confirm`], same correlation.
     ConfirmResponse {
         correlation: u64,
-        result: Result<Box<ConfirmedInvocation>, ActionHostError>,
+        result: Result<Box<ConfirmedInvocation>, ActionCallError>,
     },
     /// Read a record of the caller's workspace through the one record API
     /// ([`ResourceReads`]), decided as every reader of it is; continuing
-    /// `on_behalf_of`, an invocation the host delivered to the caller, it is
+    /// `on_behalf_of`, an invocation the provider delivered to the caller, it is
     /// that invocation's caller's read.
     ResourceRead {
         correlation: u64,
@@ -1170,19 +1165,19 @@ pub enum RemoteActionMessage {
     /// JSON text ([`ResourceReadings::readable`]).
     ResourceReading {
         correlation: u64,
-        result: Result<String, ActionHostError>,
+        result: Result<String, ActionCallError>,
     },
-    /// Search what the caller's workspace holds by words, as the host
-    /// searches it ([`ActionHost::resource_search`]).
+    /// Search what the caller's workspace holds by words, as the provider
+    /// searches it ([`ActionProvider::resource_search`]).
     SearchRequest { correlation: u64, needle: String },
     /// Answer to [`Self::SearchRequest`], same correlation: what it found,
     /// best first.
     SearchResponse {
         correlation: u64,
-        result: Result<Vec<Found>, ActionHostError>,
+        result: Result<Vec<Found>, ActionCallError>,
     },
     /// Ask for the changes to the caller's workspace's records after
-    /// `after`, a cursor an earlier answer gave ([`ActionHost::change_feed`]).
+    /// `after`, a cursor an earlier answer gave ([`ActionProvider::change_feed`]).
     ChangesRequest {
         correlation: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1191,14 +1186,14 @@ pub enum RemoteActionMessage {
     /// Answer to [`Self::ChangesRequest`], same correlation.
     ChangesResponse {
         correlation: u64,
-        result: Result<ChangePage, ActionHostError>,
+        result: Result<ChangePage, ActionCallError>,
     },
     /// Ask for the surface `app`'s signed package publishes, as its text.
     SurfaceRequest { correlation: u64, app: String },
     /// Answer to [`Self::SurfaceRequest`]: the text, when the workspace has it.
     SurfaceResponse {
         correlation: u64,
-        result: Result<Option<String>, ActionHostError>,
+        result: Result<Option<String>, ActionCallError>,
     },
     /// Ask the device for a link its web origin serves the content of
     /// `link.files` at, for a little while ([`ContentLink`]): what a page
@@ -1210,17 +1205,17 @@ pub enum RemoteActionMessage {
     /// Answer to [`Self::ContentLinkRequest`] with the same correlation.
     ContentLinkResponse {
         correlation: u64,
-        result: Result<ContentLink, ActionHostError>,
+        result: Result<ContentLink, ActionCallError>,
     },
     /// Ask the device to answer when what a watch follows under `scope` may have
-    /// changed ([`ActionHost::changed`]): a write landed in the workspace's records,
+    /// changed ([`ActionProvider::changed`]): a write landed in the workspace's records,
     /// or who is in it moved.
     ChangedRequest { correlation: u64, scope: WatchScope },
     /// Answer to [`Self::ChangedRequest`], same correlation: it may have changed, or
-    /// why this host cannot tell when it does.
+    /// why this provider cannot tell when it does.
     ChangedResponse {
         correlation: u64,
-        result: Result<(), ActionHostError>,
+        result: Result<(), ActionCallError>,
     },
 }
 
@@ -1253,7 +1248,7 @@ impl RemoteActionMessage {
         }
     }
 
-    /// Whether this request asks its host to hold the answer until the
+    /// Whether this request asks its provider to hold the answer until the
     /// invocation moves, or until a person answers, so whatever carries it must not wait behind
     /// it.
     #[must_use]
@@ -1271,7 +1266,7 @@ impl RemoteActionMessage {
         )
     }
 
-    /// Whether a host answers this message (as opposed to a caller
+    /// Whether a provider answers this message (as opposed to a caller
     /// receiving it).
     #[must_use]
     pub const fn is_request(&self) -> bool {
@@ -1297,14 +1292,15 @@ impl RemoteActionMessage {
 }
 
 /// `request` put to the person `caller` acts for, answered for
-/// `correlation` ([`ActionHost::confirm`]).
-fn confirmed<H: ActionHost>(
-    host: &H,
+/// `correlation` ([`ActionProvider::confirm`]).
+fn confirmed<H: ActionProvider>(
+    provider: &H,
     caller: &Caller,
     correlation: u64,
     request: &InvokeRequest,
 ) -> Pending<RemoteActionMessage> {
-    host.confirm(caller, request)
+    provider
+        .confirm(caller, request)
         .map(move |result| RemoteActionMessage::ConfirmResponse {
             correlation,
             result: result.map(Box::new),
@@ -1313,7 +1309,7 @@ fn confirmed<H: ActionHost>(
 
 /// The refusal of a request [`serve`] keeps nothing for: canonical feedback,
 /// which only its own service answers; uploads over a session, kept by a
-/// host that keeps them open between steps ([`HostedContentPuts`]); and
+/// provider that keeps them open between steps ([`HostedContentPuts`]); and
 /// content, read from a store a device keeps. `None` for any other message.
 fn not_kept(message: &RemoteActionMessage) -> Option<RemoteActionMessage> {
     let reason = match message {
@@ -1325,23 +1321,23 @@ fn not_kept(message: &RemoteActionMessage) -> Option<RemoteActionMessage> {
     };
     refuse(
         message,
-        ActionHostError::Unavailable {
+        ActionCallError::Unavailable {
             reason: reason.into(),
         },
     )
 }
 
 /// The changes to `caller`'s workspace's records after `after`, from
-/// `host`'s feed, answered for `correlation` ([`ActionHost::change_feed`]).
-fn changed<H: ActionHost>(
-    host: &H,
+/// `provider`'s feed, answered for `correlation` ([`ActionProvider::change_feed`]).
+fn changed<H: ActionProvider>(
+    provider: &H,
     caller: &Caller,
     correlation: u64,
     after: Option<&str>,
 ) -> Pending<RemoteActionMessage> {
-    let result = match host.change_feed() {
+    let result = match provider.change_feed() {
         Some(feed) => feed.since(caller, after),
-        None => Pending::ready(Err(ActionHostError::Unavailable {
+        None => Pending::ready(Err(ActionCallError::Unavailable {
             reason: CHANGE_FEED_UNAVAILABLE.into(),
         })),
     };
@@ -1420,35 +1416,35 @@ impl RemoteActionFrame {
     }
 }
 
-/// Answer one request from `caller` against `host`.
+/// Answer one request from `caller` against `provider`.
 ///
 /// Returns `None` for a message that is not a request (a response arriving
-/// at a host is dropped, never answered). A refused invocation becomes a
+/// at a provider is dropped, never answered). A refused invocation becomes a
 /// [`ReceiptStatus::Rejected`] receipt so the caller always learns the fate
-/// of the id it chose; an answer the host abandons becomes a refusal too.
+/// of the id it chose; an answer the provider abandons becomes a refusal too.
 ///
 /// A request that asks to wait (`wait_ms` on [`RemoteActionMessage::Observe`]
 /// or [`InvokeRequest`]) is answered once the invocation moves, through
-/// [`ActionHost::next_change`] and without holding a thread; see
-/// [`settle_with`]. A host that cannot signal changes answers at once.
-pub fn serve<H: ActionHost + Clone + Send + 'static>(
-    host: &H,
+/// [`ActionProvider::next_change`] and without holding a thread; see
+/// [`settle_with`]. A provider that cannot signal changes answers at once.
+pub fn serve<H: ActionProvider + Clone + Send + 'static>(
+    provider: &H,
     caller: &Caller,
     message: RemoteActionMessage,
 ) -> Option<Pending<RemoteActionMessage>> {
     let abandoned = refuse(
         &message,
-        ActionHostError::Unavailable {
-            reason: "the host dropped the request".into(),
+        ActionCallError::Unavailable {
+            reason: "the provider dropped the request".into(),
         },
     )?;
     let answer = match message {
-        // What a stateless host keeps none of, it refuses.
+        // What a stateless provider keeps none of, it refuses.
         RemoteActionMessage::FeedbackRequest { .. }
         | RemoteActionMessage::ContentPutRequest { .. }
         | RemoteActionMessage::ContentGetRequest { .. }
         | RemoteActionMessage::ContentLinkRequest { .. } => Pending::ready(not_kept(&message)?),
-        RemoteActionMessage::CatalogueRequest { correlation, query } => host
+        RemoteActionMessage::CatalogueRequest { correlation, query } => provider
             .query(caller, query)
             .map(move |result| RemoteActionMessage::CatalogueResponse {
                 correlation,
@@ -1458,14 +1454,14 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
             // How the answer travels is not part of what runs.
             let until = request.wait_ms.take().map(wait::deadline);
             let invocation = request.invocation;
-            let receipt = host.invoke(caller, request).map(move |result| {
+            let receipt = provider.invoke(caller, request).map(move |result| {
                 result.unwrap_or_else(|error| InvocationReceipt {
                     invocation,
                     status: ReceiptStatus::Rejected { error },
                 })
             });
             match until {
-                Some(until) => wait::settle_receipt(host, caller, receipt, until),
+                Some(until) => wait::settle_receipt(provider, caller, receipt, until),
                 None => receipt,
             }
             .map(RemoteActionMessage::Receipt)
@@ -1474,45 +1470,45 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
             invocation,
             wait_ms: Some(wait_ms),
             seen,
-        } => settle_with(host, caller, invocation, seen, wait::deadline(wait_ms))
+        } => settle_with(provider, caller, invocation, seen, wait::deadline(wait_ms))
             .map(move |state| RemoteActionMessage::Update { invocation, state }),
         RemoteActionMessage::Observe { invocation, .. } => {
             Pending::ready(RemoteActionMessage::Update {
                 invocation,
-                state: host.observe(caller, &invocation),
+                state: provider.observe(caller, &invocation),
             })
         }
-        RemoteActionMessage::Cancel { invocation } => host
+        RemoteActionMessage::Cancel { invocation } => provider
             .cancel(caller, &invocation)
             .map(move |result| RemoteActionMessage::CancelResponse { invocation, result }),
-        // Read by a host's own reader, which answers through its trait object: what a reading is
-        // made of loads with the code that reads records, not with every host's API.
+        // Read by a provider's own reader, which answers through its trait object: what a reading is
+        // made of loads with the code that reads records, not with every provider's API.
         RemoteActionMessage::ResourceRead {
             correlation, read, ..
-        } => host.resource_reads().map_or_else(
+        } => provider.resource_reads().map_or_else(
             || resource_read::unanswered(correlation),
             |reads| reads.answer_read(caller, correlation, read),
         ),
         // A question is the person's to answer, on the device they are at.
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
-            confirmation::unanswered(correlation, ActionHostError::confirmation_required()),
+            confirmation::unanswered(correlation, ActionCallError::confirmation_required()),
         ),
         RemoteActionMessage::Confirm {
             correlation,
             request,
-        } => confirmed(host, caller, correlation, &request),
+        } => confirmed(provider, caller, correlation, &request),
         RemoteActionMessage::SearchRequest {
             correlation,
             needle,
-        } => search::searched(host, caller, correlation, &needle),
+        } => search::searched(provider, caller, correlation, &needle),
         RemoteActionMessage::ChangesRequest { correlation, after } => {
-            changed(host, caller, correlation, after.as_deref())
+            changed(provider, caller, correlation, after.as_deref())
         }
         RemoteActionMessage::ChangedRequest { correlation, scope } => {
-            watch::noticed(host, caller, correlation, scope)
+            watch::noticed(provider, caller, correlation, scope)
         }
         RemoteActionMessage::SurfaceRequest { correlation, app } => {
-            surfaces::surfaced(host, correlation, &app)
+            surfaces::surfaced(provider, correlation, &app)
         }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
@@ -1541,13 +1537,13 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
     Some(answered)
 }
 
-/// The answer that refuses request `message` with `error` — for a host that
+/// The answer that refuses request `message` with `error` — for a provider that
 /// cannot be reached or is not running. Returns `None` for a message that
 /// is not a request.
 #[must_use]
 pub fn refuse(
     message: &RemoteActionMessage,
-    error: ActionHostError,
+    error: ActionCallError,
 ) -> Option<RemoteActionMessage> {
     Some(match message {
         RemoteActionMessage::FeedbackRequest { correlation, .. } => {
@@ -1642,10 +1638,10 @@ struct LogEntry<T> {
     handle: Option<T>,
 }
 
-/// The idempotency log behind [`ActionHost::invoke`].
+/// The idempotency log behind [`ActionProvider::invoke`].
 ///
 /// Maps each admitted [`InvocationId`] to the caller and request that
-/// admitted it and to the host's own handle for the running job. A retry
+/// admitted it and to the provider's own handle for the running job. A retry
 /// with the same caller and request returns the existing handle without
 /// starting anything; any other reuse of the id is a conflict. Only admitted
 /// invocations are remembered — a refused one ran nothing, so retrying it
@@ -1694,15 +1690,15 @@ impl<T> InvocationLog<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`ActionHostError::InvocationConflict`] when the id was
-    /// admitted for another caller or request, [`ActionHostError::Unavailable`]
+    /// Returns [`ActionCallError::InvocationConflict`] when the id was
+    /// admitted for another caller or request, [`ActionCallError::Unavailable`]
     /// when all slots are reserved, or whatever `start` returns.
     pub fn admit(
         &mut self,
         caller: &Caller,
         request: &InvokeRequest,
-        start: impl FnOnce() -> Result<T, ActionHostError>,
-    ) -> Result<(&T, Admission), ActionHostError> {
+        start: impl FnOnce() -> Result<T, ActionCallError>,
+    ) -> Result<(&T, Admission), ActionCallError> {
         let id = request.invocation;
         let admission = match self.reserve(caller, request)? {
             Reservation::Admitted => Admission::Retried,
@@ -1721,7 +1717,7 @@ impl<T> InvocationLog<T> {
             .get(&id)
             .and_then(|entry| entry.handle.as_ref())
             .map(|handle| (handle, admission))
-            .ok_or(ActionHostError::UnknownInvocation)
+            .ok_or(ActionCallError::UnknownInvocation)
     }
 
     /// First half of an admission whose start completes later (for example
@@ -1731,24 +1727,24 @@ impl<T> InvocationLog<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`ActionHostError::InvocationConflict`] when the id belongs to
-    /// another caller or request, and [`ActionHostError::Unavailable`] while
+    /// Returns [`ActionCallError::InvocationConflict`] when the id belongs to
+    /// another caller or request, and [`ActionCallError::Unavailable`] while
     /// an earlier start of the same invocation is still in flight or every
     /// slot is held by an in-flight reservation.
     pub fn reserve(
         &mut self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<Reservation, ActionHostError> {
+    ) -> Result<Reservation, ActionCallError> {
         let id = request.invocation;
         if let Some(entry) = self.entries.get(&id) {
             if entry.caller != *caller || !entry.request.same_invocation(request) {
-                return Err(ActionHostError::InvocationConflict);
+                return Err(ActionCallError::InvocationConflict);
             }
             return if entry.handle.is_some() {
                 Ok(Reservation::Admitted)
             } else {
-                Err(ActionHostError::Unavailable {
+                Err(ActionCallError::Unavailable {
                     reason: "the invocation is still being admitted; retry".into(),
                 })
             };
@@ -1760,7 +1756,7 @@ impl<T> InvocationLog<T> {
                     .is_some_and(|entry| entry.handle.is_some())
             });
             let Some(index) = oldest_completed else {
-                return Err(ActionHostError::Unavailable {
+                return Err(ActionCallError::Unavailable {
                     reason: "all invocation slots are still being admitted; retry".into(),
                 });
             };
@@ -1784,7 +1780,7 @@ impl<T> InvocationLog<T> {
         Ok(Reservation::Reserved)
     }
 
-    /// Record the host's handle for a reserved invocation.
+    /// Record the provider's handle for a reserved invocation.
     pub fn complete(&mut self, id: &InvocationId, handle: T) {
         if let Some(entry) = self.entries.get_mut(id) {
             entry.handle = Some(handle);
@@ -2034,7 +2030,7 @@ mod tests {
         }
     }
 
-    /// A host with one action whose runs are counted, so a test can prove
+    /// A provider with one action whose runs are counted, so a test can prove
     /// how many times the action actually started.
     struct CountingHost {
         runs: AtomicU32,
@@ -2064,15 +2060,15 @@ mod tests {
     }
 
     impl CountingHost {
-        fn cancel_now(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
+        fn cancel_now(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionCallError> {
             let log = self.log.lock().unwrap();
             let mut update = log
                 .get(caller, id)
-                .ok_or(ActionHostError::UnknownInvocation)?
+                .ok_or(ActionCallError::UnknownInvocation)?
                 .lock()
                 .unwrap();
             if update.is_terminal() {
-                return Err(ActionHostError::NotCancellable {
+                return Err(ActionCallError::NotCancellable {
                     reason: "finished".into(),
                 });
             }
@@ -2086,12 +2082,12 @@ mod tests {
         }
     }
 
-    impl ActionHost for CountingHost {
+    impl ActionProvider for CountingHost {
         fn query(
             &self,
             _caller: &Caller,
             query: CatalogueQuery,
-        ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
             Pending::ready(Ok(CataloguePage::from_rows(
                 "1".into(),
                 vec![catalogue_row("note:1", "archive")],
@@ -2103,10 +2099,10 @@ mod tests {
             &self,
             caller: &Caller,
             request: InvokeRequest,
-        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
             Pending::ready((|| {
                 if request.target.address != ActionAddress::new("note:1", "archive") {
-                    return Err(ActionHostError::UnknownAction);
+                    return Err(ActionCallError::UnknownAction);
                 }
                 let update = {
                     let mut log = self.log.lock().unwrap();
@@ -2136,7 +2132,7 @@ mod tests {
             &self,
             caller: &Caller,
             id: &InvocationId,
-        ) -> Pending<Result<(), ActionHostError>> {
+        ) -> Pending<Result<(), ActionCallError>> {
             Pending::ready(self.cancel_now(caller, id))
         }
     }
@@ -2159,11 +2155,11 @@ mod tests {
         }
     }
 
-    /// The answer of a host that answers immediately.
+    /// The answer of a provider that answers immediately.
     fn now<T>(mut answer: Pending<T>) -> T {
         match answer.poll_ready() {
             PendingPoll::Ready(value) => value,
-            PendingPoll::Waiting | PendingPoll::Abandoned => panic!("the host answers at once"),
+            PendingPoll::Waiting | PendingPoll::Abandoned => panic!("the provider answers at once"),
         }
     }
 
@@ -2221,7 +2217,7 @@ mod tests {
             },
             RemoteActionMessage::CatalogueResponse {
                 correlation: 4,
-                result: Err(ActionHostError::Unavailable {
+                result: Err(ActionCallError::Unavailable {
                     reason: "no apps".into(),
                 }),
             },
@@ -2279,7 +2275,7 @@ mod tests {
             RemoteActionMessage::Receipt(InvocationReceipt {
                 invocation,
                 status: ReceiptStatus::Rejected {
-                    error: ActionHostError::InvocationConflict,
+                    error: ActionCallError::InvocationConflict,
                 },
             }),
             RemoteActionMessage::Receipt(InvocationReceipt {
@@ -2315,7 +2311,7 @@ mod tests {
             RemoteActionMessage::Cancel { invocation },
             RemoteActionMessage::CancelResponse {
                 invocation,
-                result: Err(ActionHostError::NotCancellable {
+                result: Err(ActionCallError::NotCancellable {
                     reason: "finished".into(),
                 }),
             },
@@ -2328,31 +2324,31 @@ mod tests {
         phase a_stale_revision_is_typed_and_travels_as_older_peers_read_it;
         // A stale revision is typed in this build and travels in the shape
         // every peer decodes: an older peer reads the invalid request it always
-        // sent, and the reasons older hosts gave it read back as the variant.
+        // sent, and the reasons older providers gave it read back as the variant.
         {
-            let encoded = serde_json::to_value(ActionHostError::StaleRevision).unwrap();
+            let encoded = serde_json::to_value(ActionCallError::StaleRevision).unwrap();
             assert_eq!(
                 encoded,
                 serde_json::json!({"InvalidRequest": {"reason": STALE_REVISION_REASON}})
             );
             assert_eq!(
-                serde_json::from_value::<ActionHostError>(encoded).unwrap(),
-                ActionHostError::StaleRevision
+                serde_json::from_value::<ActionCallError>(encoded).unwrap(),
+                ActionCallError::StaleRevision
             );
-            assert_eq!(ActionHostError::StaleRevision.code(), "stale_revision");
+            assert_eq!(ActionCallError::StaleRevision.code(), "stale_revision");
             // Only that exact reason: a refusal that merely mentions a revision
             // is the refusal it is.
-            let other = ActionHostError::Refused {
+            let other = ActionCallError::Refused {
                 reason: "the call changed since that revision, honestly".into(),
             };
-            let round_trip: ActionHostError =
+            let round_trip: ActionCallError =
                 serde_json::from_value(serde_json::to_value(&other).unwrap()).unwrap();
             assert_eq!(round_trip, other);
-            let needs = ActionHostError::InvalidRequest {
+            let needs = ActionCallError::InvalidRequest {
                 reason: CONFIRMED_ACTION_NEEDS_REVISION.into(),
             };
             assert!(needs.needs_revision());
-            assert!(!ActionHostError::StaleRevision.needs_revision());
+            assert!(!ActionCallError::StaleRevision.needs_revision());
         }
 
         phase a_failure_with_details_round_trips;
@@ -2380,7 +2376,7 @@ mod tests {
         phase a_refusal_for_want_of_the_person_carries_the_departure_the_run_stated;
         // A run that reached something only the person may allow is refused for
         // want of their answer, and that refusal carries what the run stated
-        // about it: the page departure it holds, as it travels to the host that
+        // about it: the page departure it holds, as it travels to the provider that
         // asks them.
         {
             let departure = vec![
@@ -2405,20 +2401,20 @@ mod tests {
             );
             let receipt = state.receipt();
             let ReceiptStatus::Rejected {
-                error: ActionHostError::ConfirmationRequired { departure: stated },
+                error: ActionCallError::ConfirmationRequired { departure: stated },
             } = &receipt.status
             else {
                 panic!("a run waiting on the person is a refusal: {receipt:?}");
             };
             assert_eq!(*stated, departure);
-            // The refusal travels with it, so a host in another process asks the
+            // The refusal travels with it, so a provider in another process asks the
             // person about what leaves and not about a name for it.
-            let error = ActionHostError::ConfirmationRequired {
+            let error = ActionCallError::ConfirmationRequired {
                 departure: stated.clone(),
             };
             let wire = serde_json::to_value(&error).unwrap();
             assert_eq!(
-                serde_json::from_value::<ActionHostError>(wire).unwrap(),
+                serde_json::from_value::<ActionCallError>(wire).unwrap(),
                 error
             );
         }
@@ -2485,50 +2481,50 @@ mod tests {
     }
 
     fn a_retried_invocation_reports_the_original_and_runs_once() {
-        let host = CountingHost::new();
+        let provider = CountingHost::new();
         let id = InvocationId::new();
-        let first = now(host.invoke(&alice(), archive(id))).unwrap();
+        let first = now(provider.invoke(&alice(), archive(id))).unwrap();
         assert_eq!(first.status, ReceiptStatus::Accepted);
-        let retry = now(host.invoke(&alice(), archive(id))).unwrap();
+        let retry = now(provider.invoke(&alice(), archive(id))).unwrap();
         assert_eq!(retry, first);
-        assert_eq!(host.runs(), 1, "a retry never starts a second run");
+        assert_eq!(provider.runs(), 1, "a retry never starts a second run");
 
-        host.finish(&alice(), &id);
-        let after = now(host.invoke(&alice(), archive(id))).unwrap();
+        provider.finish(&alice(), &id);
+        let after = now(provider.invoke(&alice(), archive(id))).unwrap();
         assert!(matches!(after.status, ReceiptStatus::Completed { .. }));
-        assert_eq!(host.runs(), 1, "a retry after completion reports it");
+        assert_eq!(provider.runs(), 1, "a retry after completion reports it");
     }
 
     fn an_invocation_id_cannot_be_reused_or_borrowed() {
-        let host = CountingHost::new();
+        let provider = CountingHost::new();
         let id = InvocationId::new();
-        now(host.invoke(&alice(), archive(id))).unwrap();
+        now(provider.invoke(&alice(), archive(id))).unwrap();
 
         let mut different = archive(id);
         different.argument = InvokeArgument::Text("other".into());
         assert_eq!(
-            now(host.invoke(&alice(), different)),
-            Err(ActionHostError::InvocationConflict)
+            now(provider.invoke(&alice(), different)),
+            Err(ActionCallError::InvocationConflict)
         );
         assert_eq!(
-            now(host.invoke(&mallory(), archive(id))),
-            Err(ActionHostError::InvocationConflict),
+            now(provider.invoke(&mallory(), archive(id))),
+            Err(ActionCallError::InvocationConflict),
             "another actor cannot attach to someone else's invocation"
         );
-        assert_eq!(host.observe(&mallory(), &id), None);
+        assert_eq!(provider.observe(&mallory(), &id), None);
         assert_eq!(
-            now(host.cancel(&mallory(), &id)),
-            Err(ActionHostError::UnknownInvocation)
+            now(provider.cancel(&mallory(), &id)),
+            Err(ActionCallError::UnknownInvocation)
         );
-        assert_eq!(host.runs(), 1);
+        assert_eq!(provider.runs(), 1);
     }
 
     fn a_refused_invocation_is_not_remembered() {
         let mut log = InvocationLog::<u32>::default();
         let request = archive(InvocationId::new());
         assert_eq!(
-            log.admit(&alice(), &request, || Err(ActionHostError::NotPermitted)),
-            Err(ActionHostError::NotPermitted)
+            log.admit(&alice(), &request, || Err(ActionCallError::NotPermitted)),
+            Err(ActionCallError::NotPermitted)
         );
         let (handle, admission) = log.admit(&alice(), &request, || Ok(5)).unwrap();
         assert_eq!((*handle, admission), (5, Admission::Started));
@@ -2545,11 +2541,14 @@ mod tests {
     }
 
     fn serve_answers_requests_and_ignores_responses() {
-        let host = std::sync::Arc::new(CountingHost::new());
+        let provider = std::sync::Arc::new(CountingHost::new());
         let id = InvocationId::new();
-        let Some(RemoteActionMessage::Receipt(receipt)) =
-            serve(&host, &alice(), RemoteActionMessage::Invoke(archive(id))).map(now)
-        else {
+        let Some(RemoteActionMessage::Receipt(receipt)) = serve(
+            &provider,
+            &alice(),
+            RemoteActionMessage::Invoke(archive(id)),
+        )
+        .map(now) else {
             panic!("an invoke is answered with a receipt");
         };
         assert_eq!(receipt.status, ReceiptStatus::Accepted);
@@ -2558,7 +2557,7 @@ mod tests {
         unknown.target.address = ActionAddress::new("note:2", "delete");
         assert_eq!(
             serve(
-                &host,
+                &provider,
                 &alice(),
                 RemoteActionMessage::Invoke(unknown.clone())
             )
@@ -2566,13 +2565,13 @@ mod tests {
             Some(RemoteActionMessage::Receipt(InvocationReceipt {
                 invocation: unknown.invocation,
                 status: ReceiptStatus::Rejected {
-                    error: ActionHostError::UnknownAction
+                    error: ActionCallError::UnknownAction
                 },
             }))
         );
         assert_eq!(
             serve(
-                &host,
+                &provider,
                 &alice(),
                 RemoteActionMessage::Cancel { invocation: id }
             )
@@ -2584,7 +2583,7 @@ mod tests {
         );
         let Some(RemoteActionMessage::Update {
             state: Some(state), ..
-        }) = serve(&host, &alice(), RemoteActionMessage::observe(id)).map(now)
+        }) = serve(&provider, &alice(), RemoteActionMessage::observe(id)).map(now)
         else {
             panic!("an observe is answered with the invocation state");
         };
@@ -2592,7 +2591,7 @@ mod tests {
             state.receipt().status,
             ReceiptStatus::Cancelled { .. }
         ));
-        assert!(serve(&host, &alice(), RemoteActionMessage::Receipt(receipt)).is_none());
+        assert!(serve(&provider, &alice(), RemoteActionMessage::Receipt(receipt)).is_none());
     }
 
     fn typed_arguments_use_the_local_invocation_slot() {
@@ -2639,7 +2638,7 @@ mod tests {
     }
 
     fn a_refusal_answers_every_request_and_nothing_else() {
-        let error = ActionHostError::Unavailable {
+        let error = ActionCallError::Unavailable {
             reason: "down".into(),
         };
         let id = InvocationId::new();
@@ -2675,13 +2674,13 @@ mod tests {
         RemoteActionMessage::Invoke(archive(id))
     }
 
-    /// A host's search and its change feed are asked across the API as any
-    /// request is, each answer the host's own; a host keeping neither says
+    /// A provider's search and its change feed are asked across the API as any
+    /// request is, each answer the provider's own; a provider keeping neither says
     /// so in the words a caller tells apart.
     #[test]
     #[expect(
         clippy::too_many_lines,
-        reason = "one host answering both asks, and one keeping neither, in order"
+        reason = "one provider answering both asks, and one keeping neither, in order"
     )]
     fn search_and_changes_cross_the_api_as_the_host_answers_them() {
         struct Held;
@@ -2690,7 +2689,7 @@ mod tests {
                 &self,
                 _caller: &Caller,
                 needle: &str,
-            ) -> Pending<Result<Vec<Found>, ActionHostError>> {
+            ) -> Pending<Result<Vec<Found>, ActionCallError>> {
                 Pending::ready(Ok(vec![Found {
                     resource: needle.to_owned(),
                     kind: "notes.Note".into(),
@@ -2707,7 +2706,7 @@ mod tests {
                 &self,
                 _caller: &Caller,
                 after: Option<&str>,
-            ) -> Pending<Result<ChangePage, ActionHostError>> {
+            ) -> Pending<Result<ChangePage, ActionCallError>> {
                 Pending::ready(Ok(ChangePage {
                     changes: vec![ResourceChanged {
                         app: "so.tilo.notes".into(),
@@ -2719,20 +2718,20 @@ mod tests {
             }
         }
         #[derive(Clone)]
-        struct Holding(std::sync::Arc<TestHost>);
-        impl ActionHost for Holding {
+        struct Holding(std::sync::Arc<TestProvider>);
+        impl ActionProvider for Holding {
             fn query(
                 &self,
                 caller: &Caller,
                 query: CatalogueQuery,
-            ) -> Pending<Result<CataloguePage, ActionHostError>> {
+            ) -> Pending<Result<CataloguePage, ActionCallError>> {
                 self.0.query(caller, query)
             }
             fn invoke(
                 &self,
                 caller: &Caller,
                 request: InvokeRequest,
-            ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+            ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
                 self.0.invoke(caller, request)
             }
             fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
@@ -2742,7 +2741,7 @@ mod tests {
                 &self,
                 caller: &Caller,
                 id: &InvocationId,
-            ) -> Pending<Result<(), ActionHostError>> {
+            ) -> Pending<Result<(), ActionCallError>> {
                 self.0.cancel(caller, id)
             }
             fn resource_search(&self) -> Option<std::sync::Arc<dyn ResourceSearch>> {
@@ -2752,7 +2751,7 @@ mod tests {
                 Some(std::sync::Arc::new(Held))
             }
         }
-        let holding = Holding(std::sync::Arc::new(TestHost::new()));
+        let holding = Holding(std::sync::Arc::new(TestProvider::new()));
         let search = RemoteActionMessage::SearchRequest {
             correlation: 7,
             needle: "note:1".into(),
@@ -2765,7 +2764,7 @@ mod tests {
             result: Ok(found),
         }) = serve(&holding, &alice(), search.clone()).map(now)
         else {
-            panic!("a search is answered with what the host found");
+            panic!("a search is answered with what the provider found");
         };
         assert_eq!(found[0].resource, "note:1");
         let changes = RemoteActionMessage::ChangesRequest {
@@ -2777,26 +2776,26 @@ mod tests {
             result: Ok(page),
         }) = serve(&holding, &alice(), changes.clone()).map(now)
         else {
-            panic!("a watch is answered with the host's changes");
+            panic!("a watch is answered with the provider's changes");
         };
         assert_eq!((page.cursor.as_str(), page.changes.len()), ("c+1", 1));
 
-        // A host keeping neither refuses each, the feed in the words a
+        // A provider keeping neither refuses each, the feed in the words a
         // watch tells from a failure.
-        let bare = std::sync::Arc::new(TestHost::new());
+        let bare = std::sync::Arc::new(TestProvider::new());
         assert!(matches!(
             serve(&bare, &alice(), search).map(now),
             Some(RemoteActionMessage::SearchResponse {
-                result: Err(ActionHostError::Unavailable { .. }),
+                result: Err(ActionCallError::Unavailable { .. }),
                 ..
             })
         ));
         let Some(RemoteActionMessage::ChangesResponse {
-            result: Err(ActionHostError::Unavailable { reason }),
+            result: Err(ActionCallError::Unavailable { reason }),
             ..
         }) = serve(&bare, &alice(), changes).map(now)
         else {
-            panic!("a host with no feed refuses a watch of it");
+            panic!("a provider with no feed refuses a watch of it");
         };
         assert_eq!(reason, CHANGE_FEED_UNAVAILABLE);
     }
@@ -2840,18 +2839,18 @@ mod tests {
             assert_eq!(first.acting(), second.acting());
             assert_eq!(first.workspace(), second.workspace());
             assert_ne!(first.execution_id(), second.execution_id());
-            let host = CountingHost::new();
+            let provider = CountingHost::new();
             let id = InvocationId::new();
-            let admitted = now(host.invoke(&first, archive(id))).unwrap();
-            assert_eq!(now(host.invoke(&first, archive(id))).unwrap(), admitted);
+            let admitted = now(provider.invoke(&first, archive(id))).unwrap();
+            assert_eq!(now(provider.invoke(&first, archive(id))).unwrap(), admitted);
             assert_eq!(
-                now(host.invoke(&second, archive(id))),
-                Err(ActionHostError::InvocationConflict)
+                now(provider.invoke(&second, archive(id))),
+                Err(ActionCallError::InvocationConflict)
             );
-            assert_eq!(host.observe(&second, &id), None);
+            assert_eq!(provider.observe(&second, &id), None);
             assert_eq!(
-                now(host.cancel(&second, &id)),
-                Err(ActionHostError::UnknownInvocation)
+                now(provider.cancel(&second, &id)),
+                Err(ActionCallError::UnknownInvocation)
             );
             let retained = first.clone();
             let hash = |caller: &Caller| {
@@ -2860,7 +2859,7 @@ mod tests {
                 std::hash::Hasher::finish(&hasher)
             };
             let before = hash(&first);
-            host.retire_execution(&first);
+            provider.retire_execution(&first);
             assert!(!retained.execution_is_live());
             assert!(second.execution_is_live());
             assert_eq!(first, retained);
@@ -2868,14 +2867,14 @@ mod tests {
             let reconnected = retained.in_new_execution();
             assert!(reconnected.execution_is_live());
             assert_ne!(reconnected.execution_id(), first.execution_id());
-            host.finish(&first, &id);
+            provider.finish(&first, &id);
             assert!(matches!(
-                now(host.invoke(&first, archive(id))).unwrap().status,
+                now(provider.invoke(&first, archive(id))).unwrap().status,
                 ReceiptStatus::Completed { .. }
             ));
-            assert!(host.observe(&first, &id).is_some());
-            assert!(host.observe(&second, &id).is_none());
-            assert_eq!(host.runs(), 1);
+            assert!(provider.observe(&first, &id).is_some());
+            assert!(provider.observe(&second, &id).is_none());
+            assert_eq!(provider.runs(), 1);
         }
 
         phase serving_answers_each_request_as_the_person_the_device_belongs_to;
@@ -2913,11 +2912,11 @@ mod tests {
                 }
                 assert!(matches!(
                     log.admit(&caller, &pending, || panic!("duplicate dispatch")),
-                    Err(ActionHostError::Unavailable { .. })
+                    Err(ActionCallError::Unavailable { .. })
                 ));
                 assert_eq!(
                     log.reserve(&mallory(), &pending),
-                    Err(ActionHostError::InvocationConflict)
+                    Err(ActionCallError::InvocationConflict)
                 );
             }
             log.complete(&pending.invocation, 99);
@@ -2946,12 +2945,12 @@ mod tests {
                 for _ in 0..4 {
                     assert!(matches!(
                         log.admit(&caller, &refused, || panic!("dispatch at capacity")),
-                        Err(ActionHostError::Unavailable { .. })
+                        Err(ActionCallError::Unavailable { .. })
                     ));
                     for request in &pending {
                         assert!(matches!(
                             log.admit(&caller, request, || panic!("duplicate dispatch")),
-                            Err(ActionHostError::Unavailable { .. })
+                            Err(ActionCallError::Unavailable { .. })
                         ));
                     }
                 }
@@ -2978,7 +2977,7 @@ mod tests {
         assert!(
             matches!(
                 log.reserve(&alice(), &request),
-                Err(ActionHostError::Unavailable { .. })
+                Err(ActionCallError::Unavailable { .. })
             ),
             "a retry during the start neither runs twice nor pretends to be admitted"
         );

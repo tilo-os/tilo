@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
     ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_agent_session::workspace_actions::{HostDevice, ShellRan, Watching, WorkspaceShell};
@@ -188,27 +188,27 @@ impl ServerApprover {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<PendingConfirmation, ActionHostError> {
+    ) -> Result<PendingConfirmation, ActionCallError> {
         let agent = &self.delegation;
         // Only agents ask their person; a bot runs unattended.
         let agent_id = agent
             .delegate
             .agent_id()
-            .ok_or(ActionHostError::NotPermitted)?;
+            .ok_or(ActionCallError::NotPermitted)?;
         let its_own = caller.acting().agent_id() == Some(agent_id)
             && caller.user_public_key() == Some(&agent.user_public_key)
             && caller.device_public_key() == Some(&agent.device_public_key);
         if !its_own {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let workspace = caller
             .workspace()
             .filter(|workspace| {
                 WorkspaceId::parse(workspace).is_some_and(|id| agent.scope.workspaces.contains(&id))
             })
-            .ok_or(ActionHostError::NotPermitted)?;
+            .ok_or(ActionCallError::NotPermitted)?;
         let mut id = [0_u8; 32];
-        getrandom::fill(&mut id).map_err(|error| ActionHostError::Unavailable {
+        getrandom::fill(&mut id).map_err(|error| ActionCallError::Unavailable {
             reason: error.to_string(),
         })?;
         let address = &request.target.address;
@@ -241,21 +241,21 @@ impl ServerApprover {
     }
 }
 
-impl ActionHost for ServerApprover {
+impl ActionProvider for ServerApprover {
     fn query(
         &self,
         _: &Caller,
         _: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        Pending::ready(Err(ActionHostError::UnknownAction))
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
     }
 
     fn invoke(
         &self,
         _: &Caller,
         _: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        Pending::ready(Err(ActionHostError::UnknownAction))
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
     }
 
     fn observe(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Option<InvocationState> {
@@ -266,15 +266,15 @@ impl ActionHost for ServerApprover {
         &self,
         _: &Caller,
         _: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 
     fn confirm(
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
         let question = match self.question(caller, request) {
             Ok(question) => question,
             Err(error) => return Pending::ready(Err(error)),
@@ -288,8 +288,8 @@ impl ActionHost for ServerApprover {
                 Ok(ConfirmationAnswer::AllowOnce) => Ok(ConfirmedInvocation::unchanged(
                     Confirmation::Approved(token),
                 )),
-                Ok(ConfirmationAnswer::Deny) => Err(ActionHostError::NotPermitted),
-                Err(_) => Err(ActionHostError::confirmation_required()),
+                Ok(ConfirmationAnswer::Deny) => Err(ActionCallError::NotPermitted),
+                Err(_) => Err(ActionCallError::confirmation_required()),
             });
         });
         answer
@@ -867,7 +867,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         _workspace: WorkspaceId,
         caller: &Caller,
         question: tilo_actions::remote::ConfirmationQuestion,
-    ) -> Option<Pending<Result<tilo_actions::remote::ConfirmationReply, ActionHostError>>> {
+    ) -> Option<Pending<Result<tilo_actions::remote::ConfirmationReply, ActionCallError>>> {
         let person = *caller.user_public_key()?;
         let agent_id = caller.acting().agent_id().unwrap_or_default().to_owned();
         let pending = PendingConfirmation {
@@ -901,7 +901,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                     Ok(tilo_actions::remote::ConfirmationReply::AllowOnce)
                 }
                 Ok(ConfirmationAnswer::Deny) => Ok(tilo_actions::remote::ConfirmationReply::Deny),
-                Err(_) => Err(ActionHostError::confirmation_required()),
+                Err(_) => Err(ActionCallError::confirmation_required()),
             });
         });
         Some(answer)

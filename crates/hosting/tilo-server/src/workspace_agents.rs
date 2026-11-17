@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage,
     RemoteActionTarget,
 };
@@ -106,10 +106,10 @@ const WRITE_WAIT: Duration = Duration::from_secs(30);
 /// `answer-with-view`, on the reply to the turn's ask.
 const ANSWER_WITH_VIEW: &str = "answer_with_view";
 
-/// The host's action service, answering for one workspace as an [`ActionHost`]: what the agent's
+/// The provider serving one workspace's actions as an [`ActionProvider`]: what the agent's
 /// tools run on, and what its replies are written through.
 #[derive(Clone)]
-pub struct WorkspaceActionHost {
+pub struct WorkspaceActionProvider {
     actions: WorkspaceActions,
     workspace: WorkspaceId,
     /// The events this host runs for its people, where it runs any: what an agent sets up, pauses,
@@ -125,7 +125,7 @@ pub struct WorkspaceActionHost {
     kept_to: Option<sub_agents::Own>,
 }
 
-impl WorkspaceActionHost {
+impl WorkspaceActionProvider {
     #[must_use]
     pub const fn new(actions: WorkspaceActions, workspace: WorkspaceId) -> Self {
         Self {
@@ -177,18 +177,18 @@ impl WorkspaceActionHost {
     }
 }
 
-fn unavailable() -> ActionHostError {
-    ActionHostError::Unavailable {
-        reason: "the host's workspace actions are not running".into(),
+fn unavailable() -> ActionCallError {
+    ActionCallError::Unavailable {
+        reason: "the provider's workspace actions are not running".into(),
     }
 }
 
-impl ActionHost for WorkspaceActionHost {
+impl ActionProvider for WorkspaceActionProvider {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         if let Some(events) = &self.events
             && query.provider.as_deref() == Some(person_events::PROVIDER)
         {
@@ -243,11 +243,11 @@ impl ActionHost for WorkspaceActionHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Some(own) = &self.kept_to
             && !sub_agents::admits(own, caller, &request)
         {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         if let Some(events) = &self.events
             && request.target.provider == person_events::PROVIDER
@@ -275,7 +275,7 @@ impl ActionHost for WorkspaceActionHost {
             .or_else(|| self.actions.observe(caller, id))
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         self.serve(caller, RemoteActionMessage::Cancel { invocation: *id })
             .map(|answer| match answer {
                 RemoteActionMessage::CancelResponse { result, .. } => result,
@@ -299,12 +299,12 @@ impl ActionHost for WorkspaceActionHost {
 /// handed to the agent on that turn with the rules the turn is decided by. So a turn finds what
 /// that caller may read and nothing else, decided where every other caller's search is decided,
 /// and nothing is searched a second way here.
-impl tilo_actions::remote::ResourceSearch for WorkspaceActionHost {
+impl tilo_actions::remote::ResourceSearch for WorkspaceActionProvider {
     fn find(
         &self,
         caller: &Caller,
         needle: &str,
-    ) -> Pending<Result<Vec<tilo_actions::remote::Found>, ActionHostError>> {
+    ) -> Pending<Result<Vec<tilo_actions::remote::Found>, ActionCallError>> {
         self.serve(
             caller,
             RemoteActionMessage::SearchRequest {
@@ -809,7 +809,7 @@ impl HostAgents {
             .await
             .ok_or("the person who asked is admitted here on no device")?;
         let mut scope = TurnScope {
-            host: WorkspaceActionHost::new(self.actions.clone(), workspace_id)
+            provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
                 .offering(self.events.clone())
                 .keeping_to(self.own_of(workspace, turn).await),
             person: Caller::authenticated(person, device).in_workspace(workspace),
@@ -819,7 +819,7 @@ impl HostAgents {
         // What the turn's tools reach beside the workspace's resources, each a provider of the
         // turn's own ([`TurnProvider`]): what its person's vault lets it use by reference.
         let uses = vault_uses::TurnUses::for_turn(self, turn, &scope.reply(turn)).await;
-        scope.host = scope.host.answering(uses);
+        scope.provider = scope.provider.answering(uses);
         Ok(scope)
     }
 
@@ -1099,7 +1099,7 @@ pub enum Outcome {
 /// Whom a turn's agent acts for in a workspace, and through what: the same for every ask the
 /// turn goes on with.
 struct TurnScope {
-    host: WorkspaceActionHost,
+    provider: WorkspaceActionProvider,
     /// The person, as their own device is admitted here.
     person: Caller,
     workspace: String,
@@ -1133,7 +1133,7 @@ impl TurnScope {
                 turn.agent.turn_rules(&self.workspace),
             );
         Reply {
-            host: self.host.clone(),
+            provider: self.provider.clone(),
             caller,
             workspace: self.workspace.clone(),
             ask: turn.ask.clone(),
@@ -1144,7 +1144,7 @@ impl TurnScope {
 /// Where a turn's answer is written: the reply Chat derives for the message, or the agent's
 /// comment on the issue.
 struct Reply {
-    host: WorkspaceActionHost,
+    provider: WorkspaceActionProvider,
     caller: Caller,
     workspace: String,
     ask: Ask,
@@ -1207,7 +1207,7 @@ impl Reply {
                     }),
                 );
                 invoke_named(
-                    &self.host,
+                    &self.provider,
                     &self.caller,
                     &route,
                     &tasks_model::issue_resource(&tilo_resource::Id::from_raw(issue)),
@@ -1267,7 +1267,7 @@ impl Reply {
         arguments.insert("reads".into(), reads.clone());
         let resource = format!("{}/messages/{message}", chat::parts::ChatPart::KIND);
         match invoke_named(
-            &self.host,
+            &self.provider,
             &self.caller,
             &route,
             &resource,
@@ -1304,7 +1304,7 @@ impl Reply {
         }
         let resource = format!("{}/messages/{message}", chat::parts::ChatPart::KIND);
         if let Err(error) = invoke_named(
-            &self.host,
+            &self.provider,
             &self.caller,
             &route,
             &resource,
@@ -1485,9 +1485,9 @@ fn issue_request(issue: &tasks_model::Issue, ask: &tasks_model::IssueAsk) -> Str
 /// Invoke `action` on `resource` of the record at `route` as `caller`, and wait for it to end.
 ///
 /// # Errors
-/// The host refused or failed the action, or it did not end in time.
+/// The provider refused or failed the action, or it did not end in time.
 pub async fn invoke_named(
-    host: &WorkspaceActionHost,
+    provider: &WorkspaceActionProvider,
     caller: &Caller,
     route: &DocumentRoute,
     resource: &str,
@@ -1511,14 +1511,14 @@ pub async fn invoke_named(
         wait_ms: None,
         appearance: None,
     };
-    let (host, caller) = (host.clone(), caller.clone());
+    let (provider, caller) = (provider.clone(), caller.clone());
     tokio::task::spawn_blocking(move || {
         let invocation = request.invocation;
-        let receipt = host
+        let receipt = provider
             .invoke(&caller, request)
             .wait_timeout(WRITE_WAIT)
-            .map_err(|_| "the host did not take the write in time".to_owned())?
-            .ok_or("the host dropped the write")?
+            .map_err(|_| "the provider did not take the write in time".to_owned())?
+            .ok_or("the provider dropped the write")?
             .map_err(|error| error.to_string())?;
         match receipt.status {
             tilo_actions::remote::ReceiptStatus::Completed { output } => {
@@ -1527,7 +1527,7 @@ pub async fn invoke_named(
             tilo_actions::remote::ReceiptStatus::Accepted => {
                 let deadline = later(WRITE_WAIT);
                 loop {
-                    if let Some(state) = host.observe(&caller, &invocation) {
+                    if let Some(state) = provider.observe(&caller, &invocation) {
                         match state.update {
                             InvocationUpdate::Succeeded { output, .. } => {
                                 return Ok(serde_json::to_value(output).unwrap_or(Value::Null));
@@ -1582,7 +1582,7 @@ async fn work(
         );
     };
     let turns = Arc::new(Mutex::new(turns));
-    let mut server = match McpServer::for_turn(scope.host.clone(), reply.caller.clone()) {
+    let mut server = match McpServer::for_turn(scope.provider.clone(), reply.caller.clone()) {
         Ok(server) => server,
         Err(error) => return (Outcome::Failed(error.to_string()), 0),
     };
@@ -1679,7 +1679,7 @@ async fn go_on(
     messages: &mut Vec<Message>,
     turn: &mut Turn,
     reply: &mut Reply,
-) -> Result<Option<McpServer<WorkspaceActionHost>>, String> {
+) -> Result<Option<McpServer<WorkspaceActionProvider>>, String> {
     let came = going.take();
     let Some((newest, passed)) = came.split_last() else {
         return Ok(None);
@@ -1702,7 +1702,7 @@ async fn go_on(
     *turn = newest.clone();
     *reply = scope.reply(turn);
     reply.taken().await;
-    McpServer::for_turn(scope.host.clone(), reply.caller.clone())
+    McpServer::for_turn(scope.provider.clone(), reply.caller.clone())
         .map(Some)
         .map_err(|error| error.to_string())
 }
@@ -1758,7 +1758,7 @@ fn words_of(response: &ModelResponse) -> String {
 /// answers the model with what each did. `None` when its person stopped the turn: no tool is
 /// begun after a stop.
 async fn run_calls(
-    server: &McpServer<WorkspaceActionHost>,
+    server: &McpServer<WorkspaceActionProvider>,
     calls: Vec<tilo_model_gateway::host_backend::protocol::ToolCall>,
     reply: &Reply,
     going: &going::Going,
@@ -1843,7 +1843,7 @@ fn instructions(turn: &Turn) -> String {
 
 /// The tools the turn's server offers, as the model is told them.
 async fn tool_definitions(
-    server: &McpServer<WorkspaceActionHost>,
+    server: &McpServer<WorkspaceActionProvider>,
 ) -> Result<Vec<ToolDefinition>, String> {
     let listed = tokio::time::timeout(
         TOOL_TIME,
@@ -1897,7 +1897,7 @@ fn view_tool(turn: &Turn) -> Option<ToolDefinition> {
 /// Run tool `name` with `arguments` on the turn's server: what it answered, as the model reads it,
 /// and whether it failed.
 async fn call_tool(
-    server: &McpServer<WorkspaceActionHost>,
+    server: &McpServer<WorkspaceActionProvider>,
     name: &str,
     arguments: Value,
 ) -> (String, bool) {

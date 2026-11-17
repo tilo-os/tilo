@@ -25,7 +25,7 @@ use super::bounded::About;
 use super::link::{AskedInTurn, AsksInConversation};
 use super::publish::Unsaved;
 use super::{
-    ActionHostError, Arc, Caller, Confirmation, InvocationId, InvokeRequest, Outcome, Performed,
+    ActionCallError, Arc, Caller, Confirmation, InvocationId, InvokeRequest, Outcome, Performed,
     Worker,
 };
 use tilo_actions::InvocationUpdate;
@@ -83,7 +83,7 @@ const fn waits(outcome: &Performed) -> bool {
     matches!(
         outcome,
         Err(Outcome::Rejected(
-            ActionHostError::ConfirmationRequired { .. }
+            ActionCallError::ConfirmationRequired { .. }
         ))
     )
 }

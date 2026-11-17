@@ -158,8 +158,8 @@ impl AppBrokerState {
     }
 }
 
-fn unavailable(reason: impl Into<String>) -> tilo_actions::remote::ActionHostError {
-    tilo_actions::remote::ActionHostError::Unavailable {
+fn unavailable(reason: impl Into<String>) -> tilo_actions::remote::ActionCallError {
+    tilo_actions::remote::ActionCallError::Unavailable {
         reason: reason.into(),
     }
 }
@@ -281,7 +281,7 @@ impl AppBrokerState {
         caller: &Caller,
         origin: &InvocationCaller,
         invocation: tilo_actions::InvocationId,
-    ) -> Result<Option<tilo_actions::remote::InvocationState>, tilo_actions::remote::ActionHostError>
+    ) -> Result<Option<tilo_actions::remote::InvocationState>, tilo_actions::remote::ActionCallError>
     {
         let workspace = caller
             .workspace()

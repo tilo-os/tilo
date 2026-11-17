@@ -5,7 +5,7 @@
 //! the same failure twice, or one step failing over and over still ends it.
 
 use tilo_actions::api::ApiError;
-use tilo_actions::remote::ActionHostError;
+use tilo_actions::remote::ActionCallError;
 
 use super::running::step_brief;
 use crate::planner::{Step, StepAction};
@@ -161,7 +161,7 @@ fn step_key(step: &Step) -> String {
 pub(super) fn is_final(error: &str) -> bool {
     [
         ApiError::ConfirmationRequired.code(),
-        ActionHostError::NotPermitted.code(),
+        ActionCallError::NotPermitted.code(),
         "the agent is not delegated",
         "the agent is paused or stopped",
     ]

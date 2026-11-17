@@ -25,8 +25,8 @@ fn only(app: &TestApp<App>) -> Id {
 
 /// A workspace host that says where its resource is served, so a link to a
 /// resource of it can be made: what its web entry renders.
-fn served() -> ui::tilo_actions::remote::TestHost {
-    ui::tilo_actions::remote::TestHost::new().with_catalogue(|_, query| {
+fn served() -> ui::tilo_actions::remote::TestProvider {
+    ui::tilo_actions::remote::TestProvider::new().with_catalogue(|_, query| {
         Ok(ui::tilo_actions::remote::CataloguePage {
             locator: Some(ui::tilo_actions::remote::ResourceViewLocator {
                 origin: "https://host.example".into(),
@@ -419,7 +419,7 @@ tilo_test_env::scenario! {
         let mut env = tilo_test_env::ScopedEnv::new();
         let workspace = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
         env.set("TILO_WORKSPACE_ID", workspace);
-        let api = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
+        let api = std::sync::Arc::new(ui::tilo_actions::remote::TestProvider::new());
         let _served = ui::RemoteActions::enter(
             api.clone(),
             ui::tilo_actions::remote::Caller::local_person("ada"),
@@ -1066,9 +1066,9 @@ fn choose(app: &mut TestApp<App>, name: &str) {
 
 /// Notes as the session's api reaches it: makes the note each call asks
 /// for and answers its resource, as `create-page` does.
-fn notes_api() -> ui::tilo_actions::remote::TestHost {
+fn notes_api() -> ui::tilo_actions::remote::TestProvider {
     let made = std::sync::atomic::AtomicUsize::new(0);
-    ui::tilo_actions::remote::TestHost::new().completing(move |_| {
+    ui::tilo_actions::remote::TestProvider::new().completing(move |_| {
         let count = made
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .saturating_add(1);

@@ -43,7 +43,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHost, ActionHostError, Caller,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, ActionProvider, Caller,
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending, ReceiptStatus,
     SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, application_provider, application_provider_resource,
@@ -61,7 +61,7 @@ use crate::DesktopHandle;
 use crate::navigation::{ChromeEffect, LayoutEffect};
 
 /// What one admitted open answers to.
-type Answer = Completer<Result<InvocationReceipt, ActionHostError>>;
+type Answer = Completer<Result<InvocationReceipt, ActionCallError>>;
 
 /// What a window asking a record for an action hears where no window shows the record and no
 /// host of the workspace runs it.
@@ -145,7 +145,7 @@ impl NodeAsk {
                     },
                 },
                 Err(reason) => ReceiptStatus::Rejected {
-                    error: ActionHostError::Refused { reason },
+                    error: ActionCallError::Refused { reason },
                 },
             },
         }));
@@ -153,16 +153,16 @@ impl NodeAsk {
 }
 
 /// What a window asked of `node` , from its request's action and arguments.
-fn node_action(request: &InvokeRequest) -> Result<NodeAction, ActionHostError> {
+fn node_action(request: &InvokeRequest) -> Result<NodeAction, ActionCallError> {
     let text = |name: &str| match &request.argument {
         InvokeArgument::Json(arguments) => arguments
             .get(name)
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
-            .ok_or_else(|| ActionHostError::Refused {
+            .ok_or_else(|| ActionCallError::Refused {
                 reason: format!("`{name}` is missing"),
             }),
-        _ => Err(ActionHostError::Refused {
+        _ => Err(ActionCallError::Refused {
             reason: format!("`{name}` is missing"),
         }),
     };
@@ -175,7 +175,7 @@ fn node_action(request: &InvokeRequest) -> Result<NodeAction, ActionHostError> {
             share: text("share")?,
         },
         NODE_PERMITS_ACTION => NodeAction::Permits,
-        _ => return Err(ActionHostError::UnknownAction),
+        _ => return Err(ActionCallError::UnknownAction),
     })
 }
 
@@ -206,13 +206,13 @@ pub struct DesktopSession {
     activity: Arc<activity::Api>,
     /// Where the person's asks of each provider only they reach go, once the
     /// host serves one.
-    person_apis: std::sync::Mutex<HashMap<String, Arc<dyn ActionHost + Send + Sync>>>,
+    person_apis: std::sync::Mutex<HashMap<String, Arc<dyn ActionProvider + Send + Sync>>>,
     /// The invocations a person's action API admitted, and that API, which
     /// answers for them.
-    api_invocations: std::sync::Mutex<HashMap<InvocationId, Arc<dyn ActionHost + Send + Sync>>>,
+    api_invocations: std::sync::Mutex<HashMap<InvocationId, Arc<dyn ActionProvider + Send + Sync>>>,
     /// The action API of the workspace's host, where the desktop reaches one: what runs an action
     /// asked of a record of the workspace ([`Self::serve_workspace_api`]).
-    workspace_api: std::sync::Mutex<Option<Arc<dyn ActionHost + Send + Sync>>>,
+    workspace_api: std::sync::Mutex<Option<Arc<dyn ActionProvider + Send + Sync>>>,
     /// The host actions a window asked the shell to choose for the person
     /// ([`session_actions::SHOW_CONNECT`], [`session_actions::SHOW_PAIR_DEVICE`]), for the
     /// desktop to take.
@@ -318,7 +318,7 @@ impl RevealAnswer {
     }
 
     /// The action did not run: the window's own refusal, or why nothing took it.
-    pub fn refused(&self, error: ActionHostError) {
+    pub fn refused(&self, error: ActionCallError) {
         let unanswered = self.0.answer.lock_recover().take();
         if let Some(answer) = unanswered {
             answer.complete(Err(error));
@@ -381,7 +381,7 @@ pub fn serve(
 impl DesktopSession {
     /// Carry the person's asks of `provider`, one only they reach
     /// ([`PERSON_PROVIDERS`]), to `api` from now on.
-    pub fn serve_person_api(&self, provider: &str, api: Arc<dyn ActionHost + Send + Sync>) {
+    pub fn serve_person_api(&self, provider: &str, api: Arc<dyn ActionProvider + Send + Sync>) {
         self.person_apis
             .lock_recover()
             .insert(provider.to_owned(), api);
@@ -390,7 +390,7 @@ impl DesktopSession {
     /// Carry every action a window asks of a record of the workspace (provider
     /// `record:<app>:<record>`) to `api` from now on: the action API of the workspace's host,
     /// which runs it whoever has the record open and decides it by the caller's own access.
-    pub fn serve_workspace_api(&self, api: Arc<dyn ActionHost + Send + Sync>) {
+    pub fn serve_workspace_api(&self, api: Arc<dyn ActionProvider + Send + Sync>) {
         *self.workspace_api.lock_recover() = Some(api);
     }
 
@@ -402,13 +402,13 @@ impl DesktopSession {
         caller: &Caller,
         (app, record): (String, String),
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // As the broker: what a record offers is its workspace's members' to ask, in this
         // workspace only.
         if caller.workspace() != Some(self.workspace.as_str())
             || request.target.address.action.is_empty()
         {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let host = self.workspace_api.lock_recover().clone();
         if let Some(host) = host {
@@ -421,7 +421,7 @@ impl DesktopSession {
             InvokeArgument::None => serde_json::Map::new(),
             InvokeArgument::Json(arguments) => arguments,
             InvokeArgument::Text(_) => {
-                return Pending::ready(Err(ActionHostError::Refused {
+                return Pending::ready(Err(ActionCallError::Refused {
                     reason: "Asking another app for that isn't available here yet".into(),
                 }));
             }
@@ -443,7 +443,7 @@ impl DesktopSession {
     }
 
     /// The person's action API that admitted `id`, when one did.
-    fn api_of(&self, id: &InvocationId) -> Option<Arc<dyn ActionHost + Send + Sync>> {
+    fn api_of(&self, id: &InvocationId) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
         self.api_invocations.lock_recover().get(id).cloned()
     }
 
@@ -453,9 +453,9 @@ impl DesktopSession {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if !(caller.acting().is_person() && caller.acting().app().is_none()) {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let api = self
             .person_apis
@@ -463,7 +463,7 @@ impl DesktopSession {
             .get(&request.target.provider)
             .cloned();
         let Some(api) = api else {
-            return Pending::ready(Err(ActionHostError::Unavailable {
+            return Pending::ready(Err(ActionCallError::Unavailable {
                 reason: if request.target.provider == mcp_server::PROVIDER {
                     "No MCP server answers here".into()
                 } else {
@@ -488,7 +488,7 @@ impl DesktopSession {
         &self,
         caller: &Caller,
         request: &'a InvokeRequest,
-    ) -> Result<(&'a str, Option<&'a str>, Option<&'a str>), ActionHostError> {
+    ) -> Result<(&'a str, Option<&'a str>, Option<&'a str>), ActionCallError> {
         let address = &request.target.address;
         if let Some((workspace, app)) = application_provider(&request.target.provider) {
             return self
@@ -499,13 +499,13 @@ impl DesktopSession {
             .resource
             .strip_prefix(APPLICATION_RESOURCE_PREFIX)
             .filter(|_| address.action == APPLICATION_OPEN_ACTION)
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         // As the broker: opening an app is something a workspace member asks of their workspace.
         if caller.workspace().is_none() {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         }
         if provider_workspace(&request.target.provider) != Some(self.workspace.as_str()) {
-            return Err(ActionHostError::Unavailable {
+            return Err(ActionCallError::Unavailable {
                 reason: "That workspace isn't open here".into(),
             });
         }
@@ -516,7 +516,7 @@ impl DesktopSession {
             InvokeArgument::Text(hash) if ui::content::valid_reference(hash) => {
                 Ok((app, None, Some(hash)))
             }
-            _ => Err(ActionHostError::Refused {
+            _ => Err(ActionCallError::Refused {
                 reason: "That isn't something an app can open".into(),
             }),
         }
@@ -532,12 +532,12 @@ impl DesktopSession {
         caller: &Caller,
         request: &'a InvokeRequest,
         workspace: &str,
-    ) -> Result<Option<&'a str>, ActionHostError> {
+    ) -> Result<Option<&'a str>, ActionCallError> {
         if request.target.address.action.is_empty() || caller.workspace().is_none() {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         }
         if workspace != self.workspace {
-            return Err(ActionHostError::Unavailable {
+            return Err(ActionCallError::Unavailable {
                 reason: "That workspace isn't open here".into(),
             });
         }
@@ -555,10 +555,10 @@ impl DesktopSession {
         caller: &Caller,
         request: &InvokeRequest,
         host_action: &str,
-    ) -> Result<InvocationReceipt, ActionHostError> {
+    ) -> Result<InvocationReceipt, ActionCallError> {
         // Shown to the person on their own screen, as their card shows it: never an agent's.
         if !(caller.acting().is_person() && caller.acting().app().is_none()) {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         }
         self.chosen.lock_recover().push(host_action.to_owned());
         self.woken.store(true, Ordering::Release);
@@ -571,12 +571,12 @@ impl DesktopSession {
     }
 }
 
-impl ActionHost for DesktopSession {
+impl ActionProvider for DesktopSession {
     fn query(
         &self,
         _caller: &Caller,
         _query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         // The windows find what they may open in their own catalogue; this session only opens it.
         Pending::ready(Ok(CataloguePage {
             exhausted: true,
@@ -588,11 +588,11 @@ impl ActionHost for DesktopSession {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if request.target.provider == wire::PROVIDER {
             // As the broker: a workspace's activity is its members' to read.
             if caller.workspace().is_none() {
-                return Pending::ready(Err(ActionHostError::UnknownAction));
+                return Pending::ready(Err(ActionCallError::UnknownAction));
             }
             return self.activity.invoke(caller, request);
         }
@@ -623,10 +623,10 @@ impl ActionHost for DesktopSession {
             // As the broker: what a node grants is its workspace members' business, in this
             // workspace only.
             if caller.workspace().is_none() {
-                return Pending::ready(Err(ActionHostError::UnknownAction));
+                return Pending::ready(Err(ActionCallError::UnknownAction));
             }
             if provider_workspace(&request.target.provider) != Some(self.workspace.as_str()) {
-                return Pending::ready(Err(ActionHostError::Unavailable {
+                return Pending::ready(Err(ActionCallError::Unavailable {
                     reason: "That workspace isn't open here".into(),
                 }));
             }
@@ -665,7 +665,7 @@ impl ActionHost for DesktopSession {
             InvokeArgument::Text(_) if content.is_some() => serde_json::Map::new(),
             InvokeArgument::Json(arguments) => arguments,
             InvokeArgument::Text(_) => {
-                return Pending::ready(Err(ActionHostError::Refused {
+                return Pending::ready(Err(ActionCallError::Refused {
                     reason: "Asking another app for that isn't available here yet".into(),
                 }));
             }
@@ -718,7 +718,7 @@ impl ActionHost for DesktopSession {
         self.records.changed(caller, scope)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         if self.activity.serves(id) {
             return Pending::ready(self.activity.cancel(caller, id));
         }
@@ -726,7 +726,7 @@ impl ActionHost for DesktopSession {
             self.api_invocations.lock_recover().remove(id);
             return api.cancel(caller, id);
         }
-        Pending::ready(Err(ActionHostError::Refused {
+        Pending::ready(Err(ActionCallError::Refused {
             reason: "Opening an app can't be cancelled".into(),
         }))
     }
@@ -775,7 +775,7 @@ impl Openings {
     pub fn open(
         &self,
         handle: &DesktopHandle,
-        may_open: impl Fn(&str, bool) -> Result<(), ActionHostError>,
+        may_open: impl Fn(&str, bool) -> Result<(), ActionCallError>,
         showing: impl Fn(&str, &str) -> Option<TabId>,
     ) -> bool {
         let chosen = std::mem::take(&mut *self.chosen.lock_recover());
@@ -808,7 +808,7 @@ impl Openings {
                     // and that window stays where it is.
                     return window
                         .map(|_| ())
-                        .ok_or_else(|| ActionHostError::Unavailable {
+                        .ok_or_else(|| ActionCallError::Unavailable {
                             reason: NOT_OPEN_HERE.into(),
                         });
                 }
@@ -834,7 +834,7 @@ impl Openings {
                         background: None,
                         float: None,
                     })
-                    .map_err(|reason| ActionHostError::Unavailable { reason })
+                    .map_err(|reason| ActionCallError::Unavailable { reason })
             });
             match (opened, resource) {
                 (Err(error), _) => answer.complete(Err(error)),

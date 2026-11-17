@@ -278,23 +278,23 @@ impl Default for Setup {
 }
 
 /// Where one of the host's answers stands.
-type Answer = Arrival<InvocationUpdate, ui::tilo_actions::remote::ActionHostError>;
+type Answer = Arrival<InvocationUpdate, ui::tilo_actions::remote::ActionCallError>;
 
 /// What to tell the person when the host refused or the request failed.
 fn failure(answer: &Answer) -> Option<String> {
-    use ui::tilo_actions::remote::ActionHostError;
+    use ui::tilo_actions::remote::ActionCallError;
     match answer {
         Arrival::Ready(InvocationUpdate::Failed { error, .. }) => Some(error.message.clone()),
         Arrival::Ready(InvocationUpdate::Cancelled { .. }) => {
             Some(CATALOG.t("discord-setup-cancelled"))
         }
         Arrival::Pending { .. } | Arrival::Ready(_) => None,
-        Arrival::Failed(ActionHostError::Unavailable { .. }) => {
+        Arrival::Failed(ActionCallError::Unavailable { .. }) => {
             Some(CATALOG.t("discord-setup-host-unreachable"))
         }
         // The workspace's server runs no bots: nobody can bridge it.
-        Arrival::Failed(ActionHostError::UnknownAction) => Some(CATALOG.t("discord-setup-no-bots")),
-        Arrival::Failed(ActionHostError::NotPermitted) => {
+        Arrival::Failed(ActionCallError::UnknownAction) => Some(CATALOG.t("discord-setup-no-bots")),
+        Arrival::Failed(ActionCallError::NotPermitted) => {
             Some(CATALOG.t("discord-setup-not-allowed"))
         }
         Arrival::Failed(_) => Some(CATALOG.t("discord-setup-host-refused")),

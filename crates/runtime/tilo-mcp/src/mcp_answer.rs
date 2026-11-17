@@ -78,7 +78,7 @@ pub(super) fn text_result(
 /// The typed answer of a call that did not run: what it was, and what would
 /// work instead.
 fn refused(failure: &Failure, retry_safe: bool) -> Value {
-    use tilo_actions::remote::ActionHostError;
+    use tilo_actions::remote::ActionCallError;
     let message = failure.message.as_str();
     // A failure with no host error of its own may name the code itself
     // (`unknown_action: …`): that is what a caller acts on, and the words
@@ -89,19 +89,19 @@ fn refused(failure: &Failure, retry_safe: bool) -> Value {
         Some(_) => message,
     };
     let (code, next, wait) = match &failure.host {
-        Some(ActionHostError::Busy { retry_after_ms }) if retry_safe => (
+        Some(ActionCallError::Busy { retry_after_ms }) if retry_safe => (
             "rate_limited",
             format!("wait {retry_after_ms} ms and retry the same call"),
             Some(*retry_after_ms),
         ),
-        Some(ActionHostError::NotReady) if retry_safe => (
+        Some(ActionCallError::NotReady) if retry_safe => (
             "not_ready",
             "retry the same call once what it waits for arrived: tilo_watch says when the \
              workspace serves this session"
                 .to_owned(),
             None,
         ),
-        Some(ActionHostError::Unanswered) => (
+        Some(ActionCallError::Unanswered) => (
             "unanswered",
             "call again with the same invocation_id: it answers what the call did, and runs it \
              once if it never arrived"

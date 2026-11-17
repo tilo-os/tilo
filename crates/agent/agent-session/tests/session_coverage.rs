@@ -31,7 +31,7 @@ use crate::common::{Driveable, KeywordModel, catalogue, find_edit};
 use tilo_actions::InvocationId;
 use tilo_actions::api::ActionDescriptor;
 use tilo_actions::remote::{
-    ActionHostError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
+    ActionCallError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, application_open_target,
 };
 use tilo_agent_session::{
@@ -501,7 +501,7 @@ async fn every_web_app_over_the_session() {
     assert_eq!(
         conflict.status,
         ReceiptStatus::Rejected {
-            error: ActionHostError::InvocationConflict
+            error: ActionCallError::InvocationConflict
         }
     );
     // The workspace's provider opens an app on a new record.
@@ -562,7 +562,7 @@ async fn every_web_app_over_the_session() {
     assert_eq!(
         unknown.status,
         ReceiptStatus::Rejected {
-            error: ActionHostError::UnknownAction
+            error: ActionCallError::UnknownAction
         }
     );
 

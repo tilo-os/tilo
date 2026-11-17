@@ -17,7 +17,7 @@ use collab_types::DocumentMutation;
 use fs_protocol::files::TreeChunk;
 use fs_protocol::tree;
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_fs::namespace::Namespace;
 use tilo_fs::tree_document::{FILES_APP, document_id as tree_document};
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -46,7 +46,7 @@ pub(super) struct Putting {
 }
 
 fn refused(reason: impl Into<String>) -> Outcome {
-    Outcome::Rejected(ActionHostError::Refused {
+    Outcome::Rejected(ActionCallError::Refused {
         reason: reason.into(),
     })
 }
@@ -270,7 +270,7 @@ impl Worker {
             caller,
             ui::permissions::policy::ActionKind::Undoable,
         ) {
-            return Err(Outcome::Rejected(ActionHostError::NotPermitted));
+            return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
         let putting = Putting::named(&invoke_arguments(&request.argument))?;
         let store = self

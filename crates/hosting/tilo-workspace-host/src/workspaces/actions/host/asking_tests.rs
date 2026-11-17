@@ -12,7 +12,7 @@ use tilo_actions::remote::person_asking::{
     self, ActionName, ActionTarget, AgentName, Asked, AskedBy, Thing, Waiting, WaitingAnswer, Words,
 };
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
+    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId};
@@ -36,7 +36,7 @@ async fn ask_at(
     (device, caller): (&DeviceCert, &Caller),
     target: RemoteActionTarget,
     argument: Value,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     let argument = match argument {
         Value::Object(map) if !map.is_empty() => InvokeArgument::Json(map),
         _ => InvokeArgument::None,
@@ -71,7 +71,7 @@ async fn ask(
     who: (&DeviceCert, &Caller),
     action: &str,
     argument: Value,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     ask_at(
         holder,
         workspace_id,
@@ -252,7 +252,7 @@ async fn a_person_reads_what_stands_for_them_and_takes_it_back_at_once() {
     )
     .await;
     assert!(
-        matches!(again, Err(ActionHostError::Refused { .. })),
+        matches!(again, Err(ActionCallError::Refused { .. })),
         "{again:?}"
     );
     server.shutdown().await;
@@ -321,7 +321,7 @@ async fn nobody_but_the_person_reads_or_takes_back_what_stands_for_them() {
         ] {
             let refused = ask(&holder, workspace_id, (device, asking), action, argument).await;
             assert!(
-                matches!(refused, Err(ActionHostError::UnknownAction)),
+                matches!(refused, Err(ActionCallError::UnknownAction)),
                 "{who}, {action}: {refused:?}"
             );
         }
@@ -349,7 +349,7 @@ async fn nobody_but_the_person_reads_or_takes_back_what_stands_for_them() {
     )
     .await;
     assert!(
-        matches!(not_his, Err(ActionHostError::Refused { .. })),
+        matches!(not_his, Err(ActionCallError::Refused { .. })),
         "{not_his:?}"
     );
     assert_eq!(
@@ -421,7 +421,7 @@ async fn no_request_lets_anything_stand() {
                 )
                 .await;
                 assert!(
-                    matches!(refused, Err(ActionHostError::UnknownAction)),
+                    matches!(refused, Err(ActionCallError::UnknownAction)),
                     "{who}, {resource} {action}: {refused:?}"
                 );
             }
@@ -676,7 +676,7 @@ async fn the_questions_that_wait_are_listed_to_the_person_they_ask_alone() {
     ] {
         let refused = asked(device, asking).await;
         assert!(
-            matches!(refused, Err(ActionHostError::UnknownAction)),
+            matches!(refused, Err(ActionCallError::UnknownAction)),
             "{who}: {refused:?}"
         );
     }

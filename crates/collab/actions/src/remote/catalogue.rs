@@ -1,6 +1,6 @@
-//! Browsing what a host offers: a paged, filtered catalogue query.
+//! Browsing what a provider offers: a paged, filtered catalogue query.
 //!
-//! A host may offer many actions, some behind applications that publish a
+//! A provider may offer many actions, some behind applications that publish a
 //! live, revision-bound directory rather than a flat list. A caller never
 //! pulls the whole corpus: it asks for one bounded [`CataloguePage`] at a
 //! time — everything, one provider, one application's rows, the children of
@@ -15,7 +15,7 @@ use crate::resource::ResourcePresentation;
 
 use super::RemoteActionTarget;
 
-/// Largest page a host returns, whatever a query asks for.
+/// Largest page a provider returns, whatever a query asks for.
 pub const MAX_CATALOGUE_PAGE: u32 = 256;
 
 const fn default_page() -> u32 {
@@ -33,21 +33,21 @@ pub struct ViewResourceQuery {
     pub kind: String,
 }
 
-/// A host-issued navigation locator. It carries no access grant or credentials.
+/// A provider-issued navigation locator. It carries no access grant or credentials.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceViewLocator {
-    /// Host-configured HTTPS listener origin.
+    /// Provider-configured HTTPS listener origin.
     pub origin: String,
-    /// Current governed workspace, supplied by the host.
+    /// Current governed workspace, supplied by the provider.
     pub workspace: String,
-    /// Certified host device key as hexadecimal.
+    /// Certified provider device key as hexadecimal.
     #[serde(rename = "hostDevice")]
     pub host_device: String,
-    /// Exact existing record provider checked by the host.
+    /// Exact existing record provider checked by the provider.
     pub provider: String,
     /// The web entry base (`https://tilo.so/`, ending in `/`) the operator serves
-    /// the browser bundle under; links to this host's resources are minted
+    /// the browser bundle under; links to this provider's resources are minted
     /// under it. Absent until a compatible bundle is hosted.
     #[serde(default, rename = "webEntry", skip_serializing_if = "Option::is_none")]
     pub web_entry: Option<String>,
@@ -75,7 +75,7 @@ pub struct CatalogueQuery {
     /// Only rows from this provider (a token a previous page issued).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// Only rows published by this application. It narrows the rows a host
+    /// Only rows published by this application. It narrows the rows a provider
     /// builds and pages — before the page bound — while the providers the
     /// caller may browse are listed either way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -92,9 +92,9 @@ pub struct CatalogueQuery {
     pub needle: String,
     /// Only resources this names: their kind, or their label ignoring ASCII
     /// case, at the top level or, with [`Self::parent_resource`], among that
-    /// resource's direct children. A host answers it whole, wherever the
+    /// resource's direct children. A provider answers it whole, wherever the
     /// resource would fall in a paged listing; it takes no cursor or needle.
-    /// A host from before parents were named answers with top-level rows,
+    /// A provider from before parents were named answers with top-level rows,
     /// whose parent says so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_name: Option<String>,
@@ -102,7 +102,7 @@ pub struct CatalogueQuery {
     /// check to make immediately before invoking a row from an older page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<ActionAddress>,
-    /// The revision `cursor` (or `target`) was obtained at. A host refuses a
+    /// The revision `cursor` (or `target`) was obtained at. A provider refuses a
     /// cursor from another revision as stale rather than skipping rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
@@ -150,7 +150,7 @@ impl CatalogueQuery {
         }
     }
 
-    /// The page size a host honours for this query.
+    /// The page size a provider honours for this query.
     #[must_use]
     pub fn page_size(&self) -> usize {
         usize::try_from(self.max_results.clamp(1, MAX_CATALOGUE_PAGE)).unwrap_or(1)
@@ -158,7 +158,7 @@ impl CatalogueQuery {
 }
 
 /// Bounds on how much work a provider spends on one page. Each is an upper
-/// bound a host may lower, never a hint to exceed.
+/// bound a provider may lower, never a hint to exceed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogueLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -191,7 +191,7 @@ impl CatalogueResource {
 /// One row: an action on a resource, or a resource that contains more.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CatalogueRow {
-    /// Host-issued token naming the publisher; copy it into an invocation.
+    /// Provider-issued token naming the publisher; copy it into an invocation.
     pub provider: String,
     /// Stable id of the publishing application.
     pub app_id: String,
@@ -271,7 +271,7 @@ impl CatalogueRow {
         })
     }
 
-    /// Whether this row is worth returning for `needle`. A host narrows a
+    /// Whether this row is worth returning for `needle`. A provider narrows a
     /// query to one word here; whatever it keeps is then matched more
     /// closely, so this keeps every row a word begins in any of the row's
     /// names — the action's id, label and description, its parameters, the
@@ -344,7 +344,7 @@ pub struct CataloguePage {
     /// Opaque revision the page, its cursor and its targets belong to.
     pub revision: String,
     pub rows: Vec<CatalogueRow>,
-    /// Present only on a fresh authorized view lookup with a routable host.
+    /// Present only on a fresh authorized view lookup with a routable provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locator: Option<ResourceViewLocator>,
     /// For a query naming no provider: the publishers the caller may use.
@@ -365,7 +365,7 @@ pub struct CataloguePage {
 }
 
 impl CataloguePage {
-    /// Filter and page rows a host holds in memory: the publishing
+    /// Filter and page rows a provider holds in memory: the publishing
     /// application, parent, needle, exact target and the offset cursor, all
     /// against `revision`. Every filter narrows before the page bound, so a
     /// wanted row is never left out because another row came first.
@@ -398,7 +398,7 @@ impl CataloguePage {
     /// The page `query` asks for, from `rows`: the rows it admits
     /// ([`CatalogueQuery::admits`]) from its cursor on ([`CatalogueQuery::offset`]),
     /// at most [`CatalogueQuery::page_size`] of them, and whether `more` follow.
-    /// What a host that pages its rows where they are kept answers with, so
+    /// What a provider that pages its rows where they are kept answers with, so
     /// that a page costs its rows and not every row there is.
     #[must_use]
     pub fn window(

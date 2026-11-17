@@ -155,7 +155,7 @@ async fn certified_launch_aliases_preserve_actual_worker_origin_and_original_req
                         rig.state.clone(),
                     );
                     let host = facade
-                        .certified_local_action_host(&caller, &evidence)
+                        .certified_local_action_provider(&caller, &evidence)
                         .unwrap();
                     let mut request = local_host_request(false);
                     request.target.provider = provider;
@@ -231,7 +231,7 @@ async fn certified_launch_wait_refuses_retirement_certificate_expiry_and_origin_
                         rig.state.clone(),
                     );
                     let host = facade
-                        .certified_local_action_host(&caller, &evidence)
+                        .certified_local_action_provider(&caller, &evidence)
                         .unwrap();
                     let mut request = local_host_request(false);
                     request.target.provider = provider;

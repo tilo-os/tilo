@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_actions::policy::MemberId;
 use tilo_actions::remote::{
-    ActionHostError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeRequest,
+    ActionCallError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeRequest,
     Pending, RemoteActionTarget, person_vault,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationUpdate};
@@ -43,7 +43,7 @@ use tilo_workspace_agent::Agent;
 
 use super::turn_provider::{Ending, Rows};
 use super::{
-    Ask, CHAT, HostAgents, Reply, Turn, TurnProvider, WorkspaceActionHost, WorkspaceId,
+    Ask, CHAT, HostAgents, Reply, Turn, TurnProvider, WorkspaceActionProvider, WorkspaceId,
     invoke_named,
 };
 use crate::workspaces::hosted_use::{HostedTurn, OpenAsk, TurnUse, UseAnswer};
@@ -90,14 +90,14 @@ pub(super) struct TurnUses {
     /// The uses this turn is offered: none for a turn the entry refuses.
     offered: Vec<CatalogueRow>,
     /// The workspace's own actions, through which the question is put.
-    service: WorkspaceActionHost,
+    service: WorkspaceActionProvider,
 }
 
 impl TurnUses {
     /// What `turn` uses of its person's vault, where `reply` holds what its
     /// tools begin as and act through.
     pub(super) async fn for_turn(agents: &HostAgents, turn: &Turn, reply: &Reply) -> Arc<Self> {
-        let workspace_id = reply.host.workspace;
+        let workspace_id = reply.provider.workspace;
         let narrowed = narrowing(&turn.agent, &reply.workspace);
         let hosted = HostedTurn {
             workspace: workspace_id,
@@ -114,7 +114,7 @@ impl TurnUses {
             person: turn.person.clone(),
             ask: turn.ask.clone(),
             offered,
-            service: reply.host.clone(),
+            service: reply.provider.clone(),
         })
     }
 
@@ -124,7 +124,7 @@ impl TurnUses {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<InvocationUpdate, ActionHostError> {
+    ) -> Result<InvocationUpdate, ActionCallError> {
         let invocation = request.invocation;
         let narrowed = narrowing(&self.agent, &self.workspace);
         let hosted = HostedTurn {
@@ -337,7 +337,7 @@ fn question_about<'a>(
 /// Say on the question `message` in the part `document` what came of its
 /// answer.
 async fn settle(
-    (service, asker): (&WorkspaceActionHost, &Caller),
+    (service, asker): (&WorkspaceActionProvider, &Caller),
     workspace: &str,
     (document, message): (&str, &str),
     outcome: &str,
@@ -520,7 +520,7 @@ impl HostAgents {
             self.workspaces.use_not_asked(&ask);
             return;
         };
-        let service = WorkspaceActionHost::new(self.actions.clone(), workspace_id);
+        let service = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
         let said = (&service, &outside);
         let at = (document.as_str(), message.as_str());
         // Claimed before anything is said or done: saying that it started
@@ -580,7 +580,7 @@ impl HostAgents {
         let Some((_, outside)) = self.asker(&ask.workspace, workspace_id, &ask, agent).await else {
             return;
         };
-        let service = WorkspaceActionHost::new(self.actions.clone(), workspace_id);
+        let service = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
         let told =
             "The server restarted while this was being done. Ask again if it is still needed.";
         if let Err(error) = settle(

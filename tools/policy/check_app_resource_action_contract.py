@@ -507,9 +507,9 @@ PRODUCTION_RATCHETS = {"closure_control", "closure_action_button"}
 # `Action::apply` writes that document. These count production code only (test
 # files and `#[cfg(test)]` items are exempt) and may only go down.
 MODEL_RATCHETS = {
-    "app_action_host": (
-        re.compile(r"\bActionHost\b"),
-        "app-owned ActionHost; submit edits through the framework Dispatcher",
+    "app_action_provider": (
+        re.compile(r"\bActionProvider\b"),
+        "app-owned ActionProvider; submit edits through the framework Dispatcher",
     ),
     "standalone_launch": (
         re.compile(

@@ -224,8 +224,8 @@ impl AppBrokerState {
         original_request: &tilo_actions::remote::InvokeRequest,
         request: &tilo_actions::remote::InvokeRequest,
         argument: Option<&str>,
-    ) -> Result<super::action_host::Started, tilo_actions::remote::ActionHostError> {
-        use tilo_actions::remote::ActionHostError;
+    ) -> Result<super::action_provider::Started, tilo_actions::remote::ActionCallError> {
+        use tilo_actions::remote::ActionCallError;
         let address = &request.target.address;
         let Some(workspace) = address
             .resource
@@ -235,24 +235,24 @@ impl AppBrokerState {
             ))
             .filter(|workspace| !workspace.is_empty())
         else {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         };
         let Some((surface, action)) =
             self.governance_surface(workspace, &address.resource, &address.action)
         else {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         };
         let Some((committed, actor, now)) =
             self.decide_for(caller, workspace, |committed, actor, now| {
                 (committed.clone(), actor.clone(), now)
             })
         else {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         };
         // A workspace's people change at its own host person's device, never
         // by an agent acting for them.
         if actor.direct_person().is_none() {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let need = action.contract.need();
         let node = tilo_action_policy::roles::governance_action(workspace, &address.action);
@@ -260,7 +260,7 @@ impl AppBrokerState {
             .answer_in(&committed, &node, need.kind, now)
             .admits(actor.direct())
         {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let token = self.confirmation_token(
             surface.peer_id,
@@ -287,8 +287,8 @@ impl AppBrokerState {
             },
             origin.cloned(),
         )
-        .map(super::action_host::Started::Staged)
-        .map_err(super::action_host::refusal)
+        .map(super::action_provider::Started::Staged)
+        .map_err(super::action_provider::refusal)
     }
 
     /// The published surface of `workspace`'s governance offering `action` on
@@ -1727,7 +1727,7 @@ mod tests {
                     assert!(
                         matches!(
                             state.start_governance_action(&caller, None, &request, &request, None),
-                            Err(tilo_actions::remote::ActionHostError::UnknownAction)
+                            Err(tilo_actions::remote::ActionCallError::UnknownAction)
                         ),
                         "{action} on {resource} is not one of the people's changes"
                     );

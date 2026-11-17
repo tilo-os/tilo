@@ -18,7 +18,7 @@
 
 use serde_json::Value;
 use tilo_action_policy::roles;
-use tilo_actions::remote::{ActionHostError, CatalogueRow, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::Role;
 use tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE;
@@ -274,7 +274,7 @@ fn host_workspace_params() -> Vec<ActionParam> {
 }
 
 /// `value`, postcard in hex, as the host operations carry signed values.
-fn hex_postcard(value: &impl serde::Serialize) -> Result<String, ActionHostError> {
+fn hex_postcard(value: &impl serde::Serialize) -> Result<String, ActionCallError> {
     postcard::to_stdvec(value)
         .map(hex::encode)
         .map_err(|error| refused(&error))
@@ -380,7 +380,7 @@ fn listing(summary: &WorkspaceSummary) -> WorkspaceListing {
     }
 }
 
-fn answer(value: &impl serde::Serialize) -> Result<Value, ActionHostError> {
+fn answer(value: &impl serde::Serialize) -> Result<Value, ActionCallError> {
     serde_json::to_value(value).map_err(|error| refused(&error))
 }
 
@@ -395,7 +395,7 @@ fn first_invitation(
     args: &Args,
     request_id: [u8; 32],
     now: u64,
-) -> Result<Option<(IssueInvitationRequest, bool)>, ActionHostError> {
+) -> Result<Option<(IssueInvitationRequest, bool)>, ActionCallError> {
     if args.text("invite_role")?.is_none() {
         return Ok(None);
     }
@@ -466,20 +466,20 @@ impl Workspaces {
         device: &DeviceCert,
         asking: Asking,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let address = &request.target.address;
         let now = tilo_clock::unix_now_ns();
         let operation = HOST_VERBS
             .iter()
             .find(|(verb, _)| verb.id == address.action)
             .map(|(_, operation)| *operation)
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         // Unknown and forbidden are the same answer.
         if address.resource != HOST_WORKSPACES_RESOURCE
             || !asking.reaches(operation)
             || !self.permits(device, None, WorkspaceOp::Host(operation), now)
         {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         }
         let args = Args::of(&request.argument)?;
         let request_id = request_id(&device.user_public_key, request.invocation);
@@ -562,7 +562,7 @@ impl Workspaces {
             HostOperation::HostWorkspace | HostOperation::UnhostWorkspace => {
                 self.serving_invoke(device, operation, &args, now).await
             }
-            _ => Err(ActionHostError::UnknownAction),
+            _ => Err(ActionCallError::UnknownAction),
         }
     }
 
@@ -572,7 +572,7 @@ impl Workspaces {
         device: &DeviceCert,
         operation: HostOperation,
         args: &Args,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         if operation == HostOperation::ReadPersonalList {
             self.note_own_device(device);
             // A page names its browser's tab keys; one it can't name as the
@@ -624,7 +624,7 @@ impl Workspaces {
         args: &Args,
         request_id: [u8; 32],
         now: u64,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let name = args.required_text("name")?;
         let workspace = args.text("workspace")?;
         let first = first_invitation(args, request_id, now)?;
@@ -781,7 +781,7 @@ impl Workspaces {
         args: &Args,
         request_id: [u8; 32],
         now: u64,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let person = device.user_public_key;
         let name = args.text("name")?;
         let language = args.text("language")?;
@@ -910,7 +910,7 @@ impl Workspaces {
         workspace: Option<&str>,
         request_id: [u8; 32],
         expires_at_ns: u64,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let workspace = match (name, workspace) {
             (None, Some(workspace)) if self.lists_to(device, workspace) => workspace,
             _ => return Err(refused(&Refusal::NotYourOwn.to_reason())),
@@ -955,7 +955,7 @@ impl Workspaces {
         role: Role,
         request_id: [u8; 32],
         expires_at_ns: u64,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let terms = IssueInvitationRequest {
             request_id,
             role,
@@ -1026,7 +1026,7 @@ impl Workspaces {
         operation: HostOperation,
         args: &Args,
         now: u64,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         match operation {
             HostOperation::HostWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -1065,7 +1065,7 @@ impl Workspaces {
                     .map_err(|error| refused(&error))?;
                 Ok(serde_json::json!({ "stopped": stopped }))
             }
-            _ => Err(ActionHostError::UnknownAction),
+            _ => Err(ActionCallError::UnknownAction),
         }
     }
 }

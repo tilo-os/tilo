@@ -15,14 +15,14 @@ use std::sync::Arc;
 
 use collab_types::WorkspaceId;
 use tilo_actions::InvocationId;
-use tilo_actions::remote::{ActionHost, Caller, RemoteActionFrame};
+use tilo_actions::remote::{ActionProvider, Caller, RemoteActionFrame};
 
-/// The session's device host, shared: an [`ActionHost`] that is itself [`Clone`],
+/// The session's device host, shared: an [`ActionProvider`] that is itself [`Clone`],
 /// which the broker's is not — so a request's answer may outlive this pass.
 #[derive(Clone)]
-struct Shared(Arc<dyn ActionHost + Send + Sync>);
+struct Shared(Arc<dyn ActionProvider + Send + Sync>);
 
-impl ActionHost for Shared {
+impl ActionProvider for Shared {
     fn retire_execution(&self, caller: &Caller) {
         self.0.retire_execution(caller);
     }
@@ -32,7 +32,7 @@ impl ActionHost for Shared {
         caller: &Caller,
         query: tilo_actions::remote::CatalogueQuery,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
     > {
         self.0.query(caller, query)
     }
@@ -42,7 +42,7 @@ impl ActionHost for Shared {
         caller: &Caller,
         request: tilo_actions::remote::InvokeRequest,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
         self.0.invoke(caller, request)
     }
@@ -75,7 +75,7 @@ impl ActionHost for Shared {
         &self,
         caller: &Caller,
         id: &InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
         self.0.cancel(caller, id)
     }
 
@@ -84,7 +84,7 @@ impl ActionHost for Shared {
         caller: &Caller,
         request: &tilo_actions::remote::InvokeRequest,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionCallError>,
     > {
         self.0.confirm(caller, request)
     }
@@ -126,15 +126,15 @@ type Say = Arc<dyn Fn(WorkspaceId, [u8; 32], Vec<u8>) + Send + Sync>;
 /// action host, and where the answer is said.
 pub(crate) struct Inbox {
     /// The host the session's broker is for the person's devices.
-    host: Shared,
+    provider: Shared,
     /// Say `frame` to the device `to` in `workspace`.
     say: Say,
 }
 
 impl Inbox {
-    pub(crate) fn new(host: Arc<dyn ActionHost + Send + Sync>, say: Say) -> Self {
+    pub(crate) fn new(provider: Arc<dyn ActionProvider + Send + Sync>, say: Say) -> Self {
         Self {
-            host: Shared(host),
+            provider: Shared(provider),
             say,
         }
     }
@@ -164,10 +164,10 @@ impl Inbox {
             return;
         }
         let caller = Caller::authenticated(user, from).in_workspace(workspace.to_string());
-        let host = self.host.clone();
+        let provider = self.provider.clone();
         let say = Arc::clone(&self.say);
         let serve = move || {
-            let Some(answer) = tilo_actions::remote::serve(&host, &caller, message) else {
+            let Some(answer) = tilo_actions::remote::serve(&provider, &caller, message) else {
                 return;
             };
             answer.then(move |answer| {
@@ -210,7 +210,7 @@ pub(crate) mod testing {
     use std::sync::Mutex;
     use tilo_actions::InvocationId;
     use tilo_actions::remote::{
-        ActionHostError, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState,
+        ActionCallError, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState,
         InvokeRequest, Pending, ReceiptStatus, pending,
     };
 
@@ -225,12 +225,12 @@ pub(crate) mod testing {
         }
     }
 
-    impl ActionHost for RecordingHost {
+    impl ActionProvider for RecordingHost {
         fn query(
             &self,
             caller: &Caller,
             _query: CatalogueQuery,
-        ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
             self.callers.lock().unwrap().push(caller.clone());
             let (completer, answer) = pending();
             completer.complete(Ok(CataloguePage::default()));
@@ -241,7 +241,7 @@ pub(crate) mod testing {
             &self,
             caller: &Caller,
             request: InvokeRequest,
-        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
             self.callers.lock().unwrap().push(caller.clone());
             Pending::ready(Ok(InvocationReceipt {
                 invocation: request.invocation,
@@ -259,7 +259,7 @@ pub(crate) mod testing {
             &self,
             _caller: &Caller,
             _id: &InvocationId,
-        ) -> Pending<Result<(), ActionHostError>> {
+        ) -> Pending<Result<(), ActionCallError>> {
             Pending::ready(Ok(()))
         }
     }
@@ -277,11 +277,11 @@ mod tests {
     type Said = Arc<Mutex<Vec<(WorkspaceId, [u8; 32], Vec<u8>)>>>;
 
     /// An inbox whose answers are kept, over `host`.
-    fn inbox(host: Arc<RecordingHost>) -> (Inbox, Said) {
+    fn inbox(provider: Arc<RecordingHost>) -> (Inbox, Said) {
         let said = Arc::new(Mutex::new(Vec::new()));
         let said_to = Arc::clone(&said);
         let inbox = Inbox::new(
-            host,
+            provider,
             Arc::new(move |workspace, to, frame| {
                 said_to.lock().unwrap().push((workspace, to, frame));
             }),
@@ -293,8 +293,8 @@ mod tests {
     /// the device that asked, from this one.
     #[test]
     fn a_listing_routed_here_is_answered_to_the_device_that_asked() {
-        let host = Arc::new(RecordingHost::default());
-        let (inbox, said) = inbox(Arc::clone(&host));
+        let provider = Arc::new(RecordingHost::default());
+        let (inbox, said) = inbox(Arc::clone(&provider));
         let (workspace, user, from) = (WorkspaceId::from_u128(7), [0x11; 32], [0x22; 32]);
         let frame = RemoteActionFrame::new(RemoteActionMessage::CatalogueRequest {
             correlation: 5,
@@ -313,7 +313,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let callers = host.callers();
+        let callers = provider.callers();
         let caller = callers.first().expect("the broker was asked");
         assert_eq!(
             (caller.user_public_key(), caller.device_public_key()),
@@ -340,8 +340,8 @@ mod tests {
     /// is dropped, and nothing is said back.
     #[test]
     fn only_a_request_is_served() {
-        let host = Arc::new(RecordingHost::default());
-        let (inbox, said) = inbox(Arc::clone(&host));
+        let provider = Arc::new(RecordingHost::default());
+        let (inbox, said) = inbox(Arc::clone(&provider));
         let frame = RemoteActionFrame::new(RemoteActionMessage::CatalogueResponse {
             correlation: 1,
             result: Ok(CataloguePage::default()),
@@ -351,7 +351,7 @@ mod tests {
 
         inbox.take(WorkspaceId::from_u128(7), [0x11; 32], [0x22; 32], &frame);
 
-        assert!(host.callers().is_empty());
+        assert!(provider.callers().is_empty());
         assert!(said.lock().unwrap().is_empty());
     }
 }

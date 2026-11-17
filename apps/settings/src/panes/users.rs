@@ -1329,7 +1329,7 @@ mod tests {
         {
             use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
             let host = Arc::new(IdentityHost::default());
-            let remote = ui::RemoteActions::with_host(
+            let remote = ui::RemoteActions::with_provider(
                 host.clone(),
                 ui::tilo_actions::remote::Caller::local_person("owner"),
             );
@@ -1398,7 +1398,7 @@ mod tests {
         asked: Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
     }
 
-    impl ui::tilo_actions::remote::ActionHost for IdentityHost {
+    impl ui::tilo_actions::remote::ActionProvider for IdentityHost {
         fn query(
             &self,
             _: &ui::tilo_actions::remote::Caller,
@@ -1406,11 +1406,11 @@ mod tests {
         ) -> ui::tilo_actions::remote::Pending<
             Result<
                 ui::tilo_actions::remote::CataloguePage,
-                ui::tilo_actions::remote::ActionHostError,
+                ui::tilo_actions::remote::ActionCallError,
             >,
         > {
             ui::tilo_actions::remote::Pending::ready(Err(
-                ui::tilo_actions::remote::ActionHostError::NotPermitted,
+                ui::tilo_actions::remote::ActionCallError::NotPermitted,
             ))
         }
 
@@ -1421,7 +1421,7 @@ mod tests {
         ) -> ui::tilo_actions::remote::Pending<
             Result<
                 ui::tilo_actions::remote::InvocationReceipt,
-                ui::tilo_actions::remote::ActionHostError,
+                ui::tilo_actions::remote::ActionCallError,
             >,
         > {
             use ui::tilo_actions::remote::identity_admin;
@@ -1457,7 +1457,7 @@ mod tests {
             &self,
             _: &ui::tilo_actions::remote::Caller,
             _: &ui::tilo_actions::InvocationId,
-        ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
+        ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionCallError>>
         {
             ui::tilo_actions::remote::Pending::ready(Ok(()))
         }

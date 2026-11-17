@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use tilo_actions::remote::host_account::{NextStepKind, Reason, Refusal};
 use tilo_actions::remote::{
-    ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, Confirmation,
+    ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, Confirmation,
     ConfirmedInvocation, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
@@ -530,7 +530,7 @@ async fn window_session(
             });
             let status = if asks.asks(&request.target.address.action) && !approved {
                 ReceiptStatus::Rejected {
-                    error: ActionHostError::ConfirmationRequired {
+                    error: ActionCallError::ConfirmationRequired {
                         departure: asks.departure(),
                     },
                 }
@@ -1024,7 +1024,7 @@ async fn a_page_action_past_the_allowance_is_refused_and_says_how_to_continue() 
     };
     assert_eq!(receipt.invocation, id);
     let ReceiptStatus::Rejected {
-        error: ActionHostError::Refused { reason },
+        error: ActionCallError::Refused { reason },
     } = receipt.status
     else {
         panic!("refused: {receipt:?}");
@@ -1506,8 +1506,8 @@ async fn the_persons_denial_ends_a_page_action_refused_and_counts_nothing() {
         tilo_actions::InvocationUpdate::Failed {
             invocation: id,
             error: tilo_actions::ActionFailure {
-                code: ActionHostError::NotPermitted.code().to_owned(),
-                message: ActionHostError::NotPermitted.to_string(),
+                code: ActionCallError::NotPermitted.code().to_owned(),
+                message: ActionCallError::NotPermitted.to_string(),
                 details: None,
                 retryable: false,
             },
@@ -1614,7 +1614,7 @@ async fn only_this_hosts_answer_for_this_invocation_runs_a_page_action() {
     assert_eq!(
         receipt_of(next(&caller, "caller").await).status,
         ReceiptStatus::Rejected {
-            error: ActionHostError::NotPermitted
+            error: ActionCallError::NotPermitted
         },
         "another host's word is no answer here"
     );
@@ -2099,7 +2099,7 @@ fn held(correlation: u64, id: u32) -> RemoteActionMessage {
 async fn hold_answer(
     window: &ServerClient,
     correlation: u64,
-) -> Result<Box<ConfirmedInvocation>, ActionHostError> {
+) -> Result<Box<ConfirmedInvocation>, ActionCallError> {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let Envelope::RemoteAction { frame, .. } = next(window, "window").await else {
@@ -2216,7 +2216,7 @@ async fn a_departure_the_person_does_not_allow_is_answered_kept() {
         .expect("the person answers");
     assert_eq!(
         hold_answer(&window, 1).await,
-        Err(ActionHostError::NotPermitted),
+        Err(ActionCallError::NotPermitted),
         "kept: the session drops the held request and nothing leaves"
     );
     assert_eq!(*fixture.meter.recorded.lock().unwrap(), 0);
@@ -2308,7 +2308,7 @@ async fn an_environment_asks_the_host_for_its_own_media_keys_and_nobody_else_may
         matches!(
             &receipt.status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::Unavailable { reason }
+                error: ActionCallError::Unavailable { reason }
             } if reason.contains("keys")
         ),
         "the environment's own ask is the host's to answer: {receipt:?}"
@@ -2332,7 +2332,7 @@ async fn an_environment_asks_the_host_for_its_own_media_keys_and_nobody_else_may
         matches!(
             receipt.status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::NotPermitted
+                error: ActionCallError::NotPermitted
             }
         ),
         "a member that is no environment of the workspace is lent nothing: {receipt:?}"
@@ -2370,7 +2370,7 @@ async fn an_environment_shares_no_window_it_did_not_mint() {
             matches!(
                 receipt.status,
                 ReceiptStatus::Rejected {
-                    error: ActionHostError::NotPermitted
+                    error: ActionCallError::NotPermitted
                 }
             ),
             "{action} of another device's window is refused: {receipt:?}"

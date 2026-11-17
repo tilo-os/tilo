@@ -35,7 +35,7 @@ async fn answered(browser: &mut Browser, request: InvokeRequest) -> ReceiptStatu
         let receipt = browser.invoke(attempt).await;
         match &receipt.status {
             ReceiptStatus::Rejected {
-                error: ActionHostError::Unavailable { .. },
+                error: ActionCallError::Unavailable { .. },
             } if Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }

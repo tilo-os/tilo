@@ -217,7 +217,7 @@ tilo_test_env::scenario! {
         changed.revision = Some("different-revision".into());
         assert!(matches!(
             fixture.invoke(&changed),
-            Err(ActionHostError::Refused { .. })
+            Err(ActionCallError::Refused { .. })
         ));
         fixture.state.stop();
         assert!(fixture.invoke(&request).is_err());

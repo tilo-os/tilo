@@ -37,7 +37,7 @@ impl Refusal {
     }
 }
 
-impl From<Refusal> for tilo_actions::remote::ActionHostError {
+impl From<Refusal> for tilo_actions::remote::ActionCallError {
     /// The client sees what it can act on: an ended run stays ended, and a
     /// check that could not be made names itself as retryable.
     fn from(refusal: Refusal) -> Self {

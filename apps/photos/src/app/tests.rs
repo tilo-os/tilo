@@ -1544,7 +1544,7 @@ tilo_test_env::scenario! {
         assert!(app.state().pending_resource_open.is_none());
     }
 
-    phase library_removal_requires_confirmation_and_routes_through_the_action_host;
+    phase library_removal_requires_confirmation_and_routes_through_the_action_provider;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();

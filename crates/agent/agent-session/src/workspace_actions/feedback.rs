@@ -6,7 +6,7 @@ use std::sync::Arc;
 use ed25519_dalek::Signer as _;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::feedback::{FeedbackAdmission, FeedbackAnswer, FeedbackQuery};
-use tilo_actions::remote::{ActionHostError, Caller, Completer};
+use tilo_actions::remote::{ActionCallError, Caller, Completer};
 use tilo_feedback_transport::{
     CanonicalDestination, CanonicalReceiptSource, Enrollment, ReceiptSigner, ReceiptSigningRequest,
 };
@@ -16,8 +16,8 @@ use ui::feedback::{Error, Receipt, Submission};
 use super::{AppCatalogue, DocumentRoute, HostDevice, WorkspaceDocumentsLink, reads, resource_of};
 use tilo_server_protocol::WorkspaceId;
 
-fn unavailable(reason: &(impl ToString + ?Sized)) -> ActionHostError {
-    ActionHostError::Unavailable {
+fn unavailable(reason: &(impl ToString + ?Sized)) -> ActionCallError {
+    ActionCallError::Unavailable {
         reason: reason.to_string(),
     }
 }
@@ -32,7 +32,7 @@ pub(super) fn answer_and_review(
     workspace: WorkspaceId,
     caller: Caller,
     mut query: FeedbackQuery,
-    done: Completer<Result<FeedbackAnswer, ActionHostError>>,
+    done: Completer<Result<FeedbackAnswer, ActionCallError>>,
 ) {
     let prompt = query.review.take();
     let reviewer = link.feedback_reviewer();
@@ -70,7 +70,7 @@ pub(super) fn answer(
     workspace: WorkspaceId,
     caller: Caller,
     mut query: FeedbackQuery,
-) -> Result<FeedbackAnswer, ActionHostError> {
+) -> Result<FeedbackAnswer, ActionCallError> {
     let destination = Destination {
         workspace: query.destination.workspace.clone(),
         provider: query.destination.provider.clone(),
@@ -178,7 +178,7 @@ fn admission(
     query: FeedbackQuery,
     enrollment: &Enrollment,
     fresh: super::ViewReadPolicy,
-) -> Result<FeedbackAdmission, ActionHostError> {
+) -> Result<FeedbackAdmission, ActionCallError> {
     let owner = &enrollment.owner;
     let caller = &enrollment.reporter;
     Ok(FeedbackAdmission {

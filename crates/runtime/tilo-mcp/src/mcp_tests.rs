@@ -528,7 +528,7 @@ tilo_test_env::scenario! {
     phase a_stale_revision_says_what_happened_and_what_to_do;
     {
         let refusal = String::from(BridgeError::Host(
-            tilo_actions::remote::ActionHostError::StaleRevision,
+            tilo_actions::remote::ActionCallError::StaleRevision,
         ));
         for said in [
             "changed since the revision",
@@ -548,11 +548,11 @@ tilo_test_env::scenario! {
         // always had.
         assert_eq!(
             String::from(BridgeError::Host(
-                tilo_actions::remote::ActionHostError::NotPermitted
+                tilo_actions::remote::ActionCallError::NotPermitted
             )),
             format!(
                 "not_permitted: {}",
-                tilo_actions::remote::ActionHostError::NotPermitted
+                tilo_actions::remote::ActionCallError::NotPermitted
             )
         );
         moved.clear();

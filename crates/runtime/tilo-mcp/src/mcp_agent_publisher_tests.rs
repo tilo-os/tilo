@@ -6,7 +6,7 @@
 use super::*;
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
-    ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueResource,
+    ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueResource,
     InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_actions::{InvocationUpdate, OperationKind};
@@ -81,12 +81,12 @@ impl Workspace {
     }
 }
 
-impl ActionHost for Workspace {
+impl ActionProvider for Workspace {
     fn query(
         &self,
         _caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         let Some(provider) = query.provider.clone() else {
             let listed = |provider: &str, app_id: &str| CatalogueProvider {
                 provider: provider.into(),
@@ -124,7 +124,7 @@ impl ActionHost for Workspace {
         &self,
         _caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         // A window shown on the person's layout is the host's own action.
         let known = tilo_actions::remote::application_provider(&request.target.provider).is_some()
@@ -134,7 +134,7 @@ impl ActionHost for Workspace {
                     .is_some_and(|a| a.address == request.target.address)
             });
         if !known {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         self.invoked.lock().unwrap().push(request);
         Pending::ready(Ok(InvocationState::new(
@@ -172,7 +172,7 @@ impl ActionHost for Workspace {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionHostError>> {
+    ) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Ok(()))
     }
 }

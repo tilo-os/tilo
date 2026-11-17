@@ -2,7 +2,7 @@
 //! device, and the invocation started again with their answer, as they
 //! allowed it.
 use super::{
-    ActionHost, Admission, BridgeError, CONFIRMATION_PATIENCE, InvokeRequest, McpServer,
+    ActionProvider, Admission, BridgeError, CONFIRMATION_PATIENCE, InvokeRequest, McpServer,
     RemoteActionTarget, Value,
 };
 
@@ -10,7 +10,7 @@ use super::{
 /// invocation to before allowing it: what ran instead of the agent's.
 pub(super) const EDITED_BY_PERSON: &str = "edited_by_person";
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Start `request`. An action that asks for confirmation is put to the
     /// person this agent acts for, on their own device, and started again
     /// with their answer; the agent never confirms by its own word.
@@ -28,7 +28,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         match self.start(request.clone(), wait, record).await {
             Ok(admission) => return Ok(admission),
             Err(BridgeError::Host(
-                tilo_actions::remote::ActionHostError::ConfirmationRequired { .. },
+                tilo_actions::remote::ActionCallError::ConfirmationRequired { .. },
             )) => {}
             Err(error) => return Err(error),
         }
@@ -46,7 +46,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         )
         .await
         .map_err(|_| {
-            BridgeError::Host(tilo_actions::remote::ActionHostError::confirmation_required())
+            BridgeError::Host(tilo_actions::remote::ActionCallError::confirmation_required())
         })?
         .ok_or_else(|| BridgeError::from("Unavailable"))?
         .map_err(BridgeError::Host)?;
@@ -57,12 +57,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 }
 
 /// Whether `failure`, a refusal a call got, is the person being asked: the
-/// host's own answer ([`tilo_actions::remote::ActionHostError::ConfirmationRequired`]),
+/// host's own answer ([`tilo_actions::remote::ActionCallError::ConfirmationRequired`]),
 /// which this bridge also answers while the person decides past its patience.
 /// A typed caller is answered `pending` for it instead of waiting.
 pub(super) const fn needs_the_person(failure: &super::Failure) -> bool {
     matches!(
         failure.host,
-        Some(tilo_actions::remote::ActionHostError::ConfirmationRequired { .. })
+        Some(tilo_actions::remote::ActionCallError::ConfirmationRequired { .. })
     )
 }

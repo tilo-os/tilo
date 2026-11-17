@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{ActionAddress, RemoteActionTarget};
 
-/// The provider the host answers the person's model providers under.
+/// The provider that answers the person's model providers under.
 pub const PROVIDER: &str = "tilo.models";
 /// The resource the providers are actions of.
 pub const RESOURCE: &str = "models";

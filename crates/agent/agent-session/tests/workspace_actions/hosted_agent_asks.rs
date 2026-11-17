@@ -56,7 +56,7 @@ async fn chat_action(
     arguments: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     use tilo_server::workspace_agents;
-    let host = workspace_agents::WorkspaceActionHost::new(
+    let provider = workspace_agents::WorkspaceActionProvider::new(
         actions.clone(),
         WorkspaceId::parse(workspace).unwrap(),
     );
@@ -66,7 +66,7 @@ async fn chat_action(
         document: record.into(),
     };
     workspace_agents::invoke_named(
-        &host,
+        &provider,
         caller,
         &route,
         resource,

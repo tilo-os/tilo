@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tilo_actions::offload::ActionOffload;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
     ConfirmationQuestion, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest,
     Pending, own_device, pending,
 };
@@ -95,8 +95,8 @@ impl DeviceActions {
     }
 
     /// Answer arriving requests through `host` from now on: the broker's own, once it serves.
-    pub(crate) fn install(&self, host: Arc<dyn ActionHost + Send + Sync>) {
-        self.0.dispatch.install(host);
+    pub(crate) fn install(&self, provider: Arc<dyn ActionProvider + Send + Sync>) {
+        self.0.dispatch.install(provider);
     }
 
     /// Hold this machine awake through `power` , the holds its idle timer reads, while another of
@@ -173,8 +173,8 @@ impl DeviceActions {
     }
 
     /// The device an app's action is for, with where it is reached.
-    fn device(&self, key: [u8; 32], workspace: &str) -> Result<Arc<RemoteDevice>, ActionHostError> {
-        let id = EndpointId::from_bytes(&key).map_err(|_| ActionHostError::InvalidRequest {
+    fn device(&self, key: [u8; 32], workspace: &str) -> Result<Arc<RemoteDevice>, ActionCallError> {
+        let id = EndpointId::from_bytes(&key).map_err(|_| ActionCallError::InvalidRequest {
             reason: "that is not a device key".into(),
         })?;
         Ok(Arc::new(self.0.action_service.remote(
@@ -191,11 +191,11 @@ impl OwnDeviceActions for DeviceActions {
         caller: &Caller,
         checked: &own_device::Checked,
         request: &InvokeRequest,
-    ) -> Result<Pending<OwnDeviceOutcome>, ActionHostError> {
+    ) -> Result<Pending<OwnDeviceOutcome>, ActionCallError> {
         // The workspace the two devices are to share: the one the app acts in, which is where the
         // other device decides whether this one may act at all.
         let Some(workspace) = caller.workspace() else {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         };
         let device = self.device(checked.device, workspace)?;
         let forwarded = checked.forwarded(workspace, request);
@@ -212,11 +212,11 @@ impl OwnDeviceActions for DeviceActions {
         &self,
         _caller: &Caller,
         _question: &ConfirmationQuestion,
-    ) -> Result<Pending<Result<Confirmation, ActionHostError>>, ActionHostError> {
+    ) -> Result<Pending<Result<Confirmation, ActionCallError>>, ActionCallError> {
         // A person's own word is asked of them where they are, by the device in front of them.
         // Reaching another of their devices to ask there is no part of this action service: nothing carries
         // a question to it.
-        Err(ActionHostError::Unavailable {
+        Err(ActionCallError::Unavailable {
             reason: "this device does not ask the person on another of their devices".into(),
         })
     }
@@ -224,7 +224,7 @@ impl OwnDeviceActions for DeviceActions {
 
 /// What the other device's answer comes to: the outcome the app on this device observes as its own
 /// invocation's.
-fn outcome_of(answer: Option<Result<InvocationUpdate, ActionHostError>>) -> OwnDeviceOutcome {
+fn outcome_of(answer: Option<Result<InvocationUpdate, ActionCallError>>) -> OwnDeviceOutcome {
     let failure = |code: &str, message: String| {
         Box::new(ActionFailure {
             code: code.to_owned(),
@@ -267,7 +267,7 @@ struct DeviceDispatch(Arc<DispatchInner>);
 
 struct DispatchInner {
     /// What answers a request that arrived here.
-    host: Mutex<Option<Arc<dyn ActionHost + Send + Sync>>>,
+    provider: Mutex<Option<Arc<dyn ActionProvider + Send + Sync>>>,
     /// The person this device belongs to: what arrives from another of their devices is them using
     /// this one.
     user: [u8; 32],
@@ -280,27 +280,27 @@ struct DispatchInner {
 impl DeviceDispatch {
     fn for_user(user: [u8; 32]) -> Self {
         Self(Arc::new(DispatchInner {
-            host: Mutex::default(),
+            provider: Mutex::default(),
             user,
             power: Mutex::default(),
             remote_use: Mutex::default(),
         }))
     }
 
-    fn install(&self, host: Arc<dyn ActionHost + Send + Sync>) {
-        *self.0.host.lock_recover() = Some(host);
+    fn install(&self, provider: Arc<dyn ActionProvider + Send + Sync>) {
+        *self.0.provider.lock_recover() = Some(provider);
     }
 
     fn attach_power(&self, power: tilo_session_power::PowerLink) {
         *self.0.power.lock_recover() = Some(power);
     }
 
-    fn host(&self) -> Result<Arc<dyn ActionHost + Send + Sync>, ActionHostError> {
+    fn provider(&self) -> Result<Arc<dyn ActionProvider + Send + Sync>, ActionCallError> {
         self.0
-            .host
+            .provider
             .lock_recover()
             .clone()
-            .ok_or_else(|| ActionHostError::Unavailable {
+            .ok_or_else(|| ActionCallError::Unavailable {
                 reason: "this device is not serving its actions".into(),
             })
     }
@@ -336,14 +336,14 @@ impl DeviceDispatch {
     }
 }
 
-impl ActionHost for DeviceDispatch {
+impl ActionProvider for DeviceDispatch {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        match self.host() {
-            Ok(host) => host.query(caller, query),
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        match self.provider() {
+            Ok(provider) => provider.query(caller, query),
             Err(error) => Pending::ready(Err(error)),
         }
     }
@@ -352,25 +352,25 @@ impl ActionHost for DeviceDispatch {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.note_remote_use(caller);
-        match self.host() {
-            Ok(host) => host.invoke(caller, request),
+        match self.provider() {
+            Ok(provider) => provider.invoke(caller, request),
             Err(error) => Pending::ready(Err(error)),
         }
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.host().ok()?.observe(caller, id)
+        self.provider().ok()?.observe(caller, id)
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        self.host().ok()?.next_change(caller, id)
+        self.provider().ok()?.next_change(caller, id)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
-        match self.host() {
-            Ok(host) => host.cancel(caller, id),
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        match self.provider() {
+            Ok(provider) => provider.cancel(caller, id),
             Err(error) => Pending::ready(Err(error)),
         }
     }
@@ -379,9 +379,9 @@ impl ActionHost for DeviceDispatch {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
-        match self.host() {
-            Ok(host) => host.confirm(caller, request),
+    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
+        match self.provider() {
+            Ok(provider) => provider.confirm(caller, request),
             Err(error) => Pending::ready(Err(error)),
         }
     }
@@ -480,7 +480,7 @@ mod tests {
     use tilo_action_broker::document_content::ContentState;
     use tilo_actions::offload::{OffloadRequest, Offloaded};
     use tilo_actions::remote::{
-        InvokeArgument, TestHost, application_action_target, application_provider, own_device,
+        InvokeArgument, TestProvider, application_action_target, application_provider, own_device,
     };
     use tilo_actions::{ActionAddress, ActionOutput, CONTENT_RESOURCE_KIND, Offload};
     use tilo_broker_core::route::CrdtRoute;
@@ -545,7 +545,7 @@ mod tests {
         key: &'a SigningKey,
         cert: &'a DeviceCert,
         asking: Option<&'a (SigningKey, DeviceCert)>,
-        host: Arc<TestHost>,
+        provider: Arc<TestProvider>,
     ) -> Pin<Box<dyn Future<Output = (Endpoint, Router, DeviceActions)> + 'a>> {
         Box::pin(async move {
             let directory = tempfile::TempDir::new().expect("a state directory");
@@ -591,7 +591,7 @@ mod tests {
             }
             let endpoint = endpoint(key).await;
             let actions = DeviceActions::start(&id, endpoint.clone(), Some(engine));
-            actions.install(host);
+            actions.install(provider);
             let router = Router::builder(endpoint.clone())
                 .accept(
                     tilo_peer_state::actions::ACTIONS_ALPN,
@@ -663,9 +663,9 @@ mod tests {
         let root = SigningKey::from_bytes(&[0x31; 32]);
         let here = device(&root, 0x32, "This device");
         let there = device(&root, 0x33, "The other device");
-        let host = Arc::new(TestHost::new());
+        let provider = Arc::new(TestProvider::new());
         let (there_endpoint, router, _) =
-            answering(&there.0, &there.1, Some(&here), host.clone()).await;
+            answering(&there.0, &there.1, Some(&here), provider.clone()).await;
         let (here_endpoint, actions) = asking(&here.0, &here.1, addr(&there_endpoint)).await;
         let caller =
             Caller::authenticated(root.verifying_key().to_bytes(), here.1.device_public_key)
@@ -681,7 +681,7 @@ mod tests {
         );
 
         // It ran there, as this device, in the workspace both are in.
-        let asked = host.asked();
+        let asked = provider.asked();
         assert_eq!(asked.len(), 1, "one request reached the other device");
         assert_eq!(asked[0].invocation, request.invocation, "under its own id");
         assert_eq!(asked[0].target.address.action, "insert");
@@ -690,7 +690,7 @@ mod tests {
             Some((WORKSPACE, APP)),
             "the app's action, in the workspace the two devices share"
         );
-        let seen = host.callers();
+        let seen = provider.callers();
         assert_eq!(seen.len(), 1);
         assert_eq!(
             seen[0].user_public_key(),
@@ -712,8 +712,9 @@ mod tests {
         let root = SigningKey::from_bytes(&[0x51; 32]);
         let here = device(&root, 0x52, "This device");
         let there = device(&root, 0x53, "The other device");
-        let host = Arc::new(TestHost::new());
-        let (there_endpoint, router, _) = answering(&there.0, &there.1, Some(&here), host).await;
+        let provider = Arc::new(TestProvider::new());
+        let (there_endpoint, router, _) =
+            answering(&there.0, &there.1, Some(&here), provider).await;
         let (here_endpoint, actions) = asking(&here.0, &here.1, addr(&there_endpoint)).await;
         let route = Route::new("so.tilo.nowhere", "notes.root", "insert");
         let work = Work {
@@ -760,8 +761,9 @@ mod tests {
             0x43,
             "A device of the same person, not in the workspace",
         );
-        let host = Arc::new(TestHost::new());
-        let (there_endpoint, router, _) = answering(&there.0, &there.1, None, host.clone()).await;
+        let provider = Arc::new(TestProvider::new());
+        let (there_endpoint, router, _) =
+            answering(&there.0, &there.1, None, provider.clone()).await;
         let (stranger_endpoint, actions) =
             asking(&stranger.0, &stranger.1, addr(&there_endpoint)).await;
         let caller = Caller::authenticated(
@@ -778,7 +780,7 @@ mod tests {
             "a device the workspace has no part for acts nowhere in it: {refused:?}"
         );
         assert!(
-            host.asked().is_empty(),
+            provider.asked().is_empty(),
             "the action never ran on the device it named"
         );
 
@@ -954,17 +956,18 @@ mod tests {
                 }
             }
         };
-        let host = Arc::new(TestHost::new().completing(written));
+        let provider = Arc::new(TestProvider::new().completing(written));
         let (there_endpoint, there_router, there_actions) =
-            answering(&there.0, &there.1, Some(&here), Arc::clone(&host)).await;
+            answering(&there.0, &there.1, Some(&here), Arc::clone(&provider)).await;
         // What that device says when offered the work: it has the app, and the photograph is
         // content it already keeps.
         let offering = SessionOffering::default();
         offering.holding(Arc::clone(&there_content.action_service));
         there_actions.action_service().offering(Willing(offering));
 
+        let answer_with = Arc::new(TestProvider::new());
         let (here_endpoint, here_router, actions) =
-            answering(&here.0, &here.1, Some(&there), Arc::new(TestHost::new())).await;
+            answering(&here.0, &here.1, Some(&there), answer_with).await;
         actions.learn(addr(&there_endpoint));
         // The workspace's topic reports the other device connected here: it is one of the devices
         // the round asks.
@@ -1013,7 +1016,7 @@ mod tests {
         );
 
         // It ran there, as the invocation the app made, in the workspace both devices are in.
-        let asked = host.asked();
+        let asked = provider.asked();
         assert_eq!(asked.len(), 1, "one invocation reached the other device");
         assert_eq!(
             asked[0].invocation, sent.invocation,
@@ -1024,7 +1027,7 @@ mod tests {
             Some((WORKSPACE, APP)),
             "the app's action, in the workspace the two devices share"
         );
-        let seen = host.callers();
+        let seen = provider.callers();
         assert_eq!(
             seen[0].device_public_key(),
             Some(&here.1.device_public_key),
@@ -1065,9 +1068,9 @@ mod tests {
         let here = device(&root, 0x92, "This device");
         let away = device(&root, 0x93, "A device that is away");
         let (away_endpoint, away_router, _) =
-            answering(&away.0, &away.1, Some(&here), Arc::new(TestHost::new())).await;
+            answering(&away.0, &away.1, Some(&here), Arc::new(TestProvider::new())).await;
         let (here_endpoint, here_router, actions) =
-            answering(&here.0, &here.1, Some(&away), Arc::new(TestHost::new())).await;
+            answering(&here.0, &here.1, Some(&away), Arc::new(TestProvider::new())).await;
         // Where the other device is, and nothing saying it is connected.
         actions.learn(addr(&away_endpoint));
 
@@ -1269,7 +1272,7 @@ mod tests {
             sequence: 1,
             value: serde_json::json!("a line"),
         };
-        let unavailable = ActionHostError::Unavailable {
+        let unavailable = ActionCallError::Unavailable {
             reason: "this device is not serving its actions".to_owned(),
         };
         let rows = [
@@ -1317,7 +1320,7 @@ mod tests {
             ),
             (
                 "not permitted there",
-                Some(Err(ActionHostError::NotPermitted)),
+                Some(Err(ActionCallError::NotPermitted)),
                 ours(
                     "own_device_refused",
                     "the caller may not invoke this action",

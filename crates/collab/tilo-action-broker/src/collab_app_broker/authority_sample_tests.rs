@@ -261,7 +261,7 @@ tilo_test_env::scenario! {
         assert!(copy_free_budget() < copied, "the budget admits a copy");
     }
 
-    phase action_host_invocation_admission_samples_authority_once_without_an_owned_snapshot;
+    phase action_provider_invocation_admission_samples_authority_once_without_an_owned_snapshot;
     {
         let (tree, workspace) = owned_workspace();
         let authority = SampledAuthority::new(tree);

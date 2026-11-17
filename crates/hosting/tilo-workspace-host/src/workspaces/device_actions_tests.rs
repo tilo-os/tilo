@@ -40,7 +40,7 @@ async fn a_member_device_asks_the_host_whether_it_would_run_work() {
         .unwrap();
     let action_service = ActionService::new(
         member_key.clone(),
-        Arc::new(tilo_actions::remote::TestHost::new()),
+        Arc::new(tilo_actions::remote::TestProvider::new()),
     );
     let choice = tokio::time::timeout(
         Duration::from_secs(20),
@@ -158,7 +158,7 @@ impl HostJobs for Recorded {
         requester: [u8; 32],
         request: tilo_actions::remote::InvokeRequest,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::ActionOutput, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::ActionOutput, tilo_actions::remote::ActionCallError>,
     > {
         let inputs: Vec<[u8; 32]> = work.inputs.iter().map(|(digest, _)| *digest).collect();
         self.ran
@@ -185,7 +185,7 @@ async fn asking_device(
         .unwrap();
     let action_service = tilo_peer_state::actions::ActionService::new(
         key.clone(),
-        Arc::new(tilo_actions::remote::TestHost::new()),
+        Arc::new(tilo_actions::remote::TestProvider::new()),
     );
     (endpoint, action_service)
 }
@@ -201,7 +201,7 @@ async fn asking_device(
 async fn each_device_runs_the_work_it_offered_and_no_other() {
     use neighbour_wire::offer::Route;
     use tilo_actions::InvocationUpdate;
-    use tilo_actions::remote::ActionHostError;
+    use tilo_actions::remote::ActionCallError;
     use tilo_peer_state::actions::OFFER_DEADLINE;
 
     let dir = tempfile::tempdir().unwrap();
@@ -332,7 +332,7 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
         let refused = invoke(&c_action_service, &c_endpoint, invocation).await;
         assert_eq!(
             refused,
-            Err(ActionHostError::UnknownAction),
+            Err(ActionCallError::UnknownAction),
             "a device that offered nothing runs nothing"
         );
     }
@@ -340,7 +340,7 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
     let refused = invoke(&a_action_service, &a_endpoint, b_offer).await;
     assert_eq!(
         refused,
-        Err(ActionHostError::UnknownAction),
+        Err(ActionCallError::UnknownAction),
         "an invocation runs only its own device's offer"
     );
 
@@ -366,7 +366,7 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
 async fn the_workspaces_permission_for_the_action_decides_who_runs_work_here() {
     use neighbour_wire::offer::Route;
     use tilo_actions::InvocationUpdate;
-    use tilo_actions::remote::ActionHostError;
+    use tilo_actions::remote::ActionCallError;
     use tilo_peer_state::actions::OFFER_DEADLINE;
     use tilo_server_protocol::workspaces::Role;
 
@@ -426,7 +426,7 @@ async fn the_workspaces_permission_for_the_action_decides_who_runs_work_here() {
         match role {
             Role::Viewer => assert_eq!(
                 update,
-                Err(ActionHostError::NotPermitted),
+                Err(ActionCallError::NotPermitted),
                 "a viewer may not use another device's compute"
             ),
             _ => assert!(

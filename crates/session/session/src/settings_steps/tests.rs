@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
-    ActionHostError, Caller, CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest,
+    ActionCallError, Caller, CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest,
     PendingPoll, RemoteActionTarget, settings_resources,
 };
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
@@ -139,8 +139,8 @@ fn local_person(session: &crate::Session) -> Caller {
 /// invocation are read on the loop, which steps here until the answer is in.
 fn answered<T: Send + 'static>(
     session: &mut crate::Session,
-    ask: impl FnOnce() -> tilo_actions::remote::Pending<Result<T, ActionHostError>>,
-) -> Result<T, ActionHostError> {
+    ask: impl FnOnce() -> tilo_actions::remote::Pending<Result<T, ActionCallError>>,
+) -> Result<T, ActionCallError> {
     let (done, mut answered) = tilo_actions::remote::pending();
     ask().then(move |answer| done.complete(answer));
     let deadline = tilo_test_env::hang_deadline();
@@ -150,7 +150,7 @@ fn answered<T: Send + 'static>(
             return answer.expect("the broker answers");
         }
     }
-    Err(ActionHostError::Refused {
+    Err(ActionCallError::Refused {
         reason: "the session did not answer".to_owned(),
     })
 }
@@ -266,7 +266,7 @@ fn settings_controls_change_the_settings_the_session_keeps() {
         matches!(
             answered(&mut session, || broker
                 .action_invoke_local_person(&person, &later)),
-            Err(ActionHostError::ConfirmationRequired { .. })
+            Err(ActionCallError::ConfirmationRequired { .. })
         ),
         "locking later waits for the person's answer"
     );

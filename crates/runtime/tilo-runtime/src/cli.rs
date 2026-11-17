@@ -136,7 +136,7 @@ pub(crate) fn owner_action<S: RuntimeServices>(
     profile: &Path,
     json: &str,
 ) -> io::Result<tilo_actions::remote::InvocationReceipt> {
-    use tilo_actions::remote::{ActionHost as _, Caller, InvokeRequest};
+    use tilo_actions::remote::{ActionProvider as _, Caller, InvokeRequest};
     crate::daemon::validate_profile(profile)?;
     if json.len() > 32 * 1024 {
         return Err(io::Error::other(
@@ -145,7 +145,7 @@ pub(crate) fn owner_action<S: RuntimeServices>(
     }
     let request: InvokeRequest = serde_json::from_str(json).map_err(io::Error::other)?;
     let session = S::start_reporting(profile, &mut |_| {})?;
-    let host = session.action_host()?;
+    let host = session.action_provider()?;
     let caller = Caller::local_person(session.actor()).in_workspace(session.workspace());
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let _entered = runtime.handle().enter();

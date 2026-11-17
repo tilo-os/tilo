@@ -98,7 +98,7 @@ pub trait Answering: Send + Sync {
 
 type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
-impl<A: tilo_actions::remote::ActionHost + Send + Sync + 'static> Answering for McpServer<A> {
+impl<A: tilo_actions::remote::ActionProvider + Send + Sync + 'static> Answering for McpServer<A> {
     fn handle(&self, request: Value) -> BoxFuture<'_, Option<Value>> {
         Box::pin(Self::handle(self, request))
     }

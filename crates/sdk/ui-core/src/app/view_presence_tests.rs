@@ -140,7 +140,7 @@ fn application_launch_receipts_are_bounded_terminal_and_admitted() {
                 message: RemoteActionMessage::Receipt(InvocationReceipt {
                     invocation: launch,
                     status: ReceiptStatus::Rejected {
-                        error: tilo_actions::remote::ActionHostError::UnknownAction,
+                        error: tilo_actions::remote::ActionCallError::UnknownAction,
                     },
                 }),
             });

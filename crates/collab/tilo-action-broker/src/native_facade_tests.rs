@@ -86,7 +86,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_ownership(
             let evidence = presentation(&env.route.cluster_id, &env.cert, &env.key);
             let native = rig
                 .state
-                .certified_native_action_host(&caller, &evidence)
+                .certified_native_action_provider(&caller, &evidence)
                 .unwrap();
             let original = rig
                 .state
@@ -294,11 +294,11 @@ async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_ot
             let evidence = presentation(&env.route.cluster_id, &env.cert, &env.key);
             let ordinary = rig
                 .state
-                .certified_local_action_host(&caller, &evidence)
+                .certified_local_action_provider(&caller, &evidence)
                 .unwrap();
             let native = rig
                 .state
-                .certified_native_action_host(&caller, &evidence)
+                .certified_native_action_provider(&caller, &evidence)
                 .unwrap();
             let mut request = local_host_request(false);
             request.target = tilo_actions::remote::RemoteActionTarget {
@@ -356,12 +356,12 @@ async fn signed_caller_without_protected_local_person_cannot_acquire_physical_in
             let (caller, evidence) = local_host_evidence(&env);
             assert!(
                 rig.state
-                    .certified_local_action_host(&caller, &evidence)
+                    .certified_local_action_provider(&caller, &evidence)
                     .is_ok()
             );
             assert!(
                 rig.state
-                    .certified_native_action_host(&caller, &evidence)
+                    .certified_native_action_provider(&caller, &evidence)
                     .is_err()
             );
             rig.stop().await;

@@ -10,13 +10,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tilo_actions::remote::task_programs as wire;
-use tilo_actions::remote::{ActionHost, Pending};
+use tilo_actions::remote::{ActionProvider, Pending};
 use tilo_broker_core::steps::HostStepOutcome;
 use tilo_lock::MutexRecover as _;
 
 use crate::platform::programs::{ProgramRequest, Programs};
 
-type Host = Arc<dyn ActionHost + Send + Sync>;
+type Provider = Arc<dyn ActionProvider + Send + Sync>;
 
 /// One agent session's api, over its own host.
 type Api = tilo_mcp::McpServer<Arc<Current>>;
@@ -55,11 +55,11 @@ impl TaskProgramHost {
         );
         let mut sessions = self.sessions.lock_recover();
         if let Some((current, api)) = sessions.get(&key) {
-            *current.0.lock_recover() = Arc::clone(&request.host);
+            *current.0.lock_recover() = Arc::clone(&request.provider);
             return Arc::clone(api);
         }
         let current = Arc::new(Current(
-            std::sync::Mutex::new(Arc::clone(&request.host)),
+            std::sync::Mutex::new(Arc::clone(&request.provider)),
             Arc::clone(&self.services),
         ));
         let api = Arc::new(
@@ -85,14 +85,14 @@ impl TaskProgramHost {
 /// The api the broker serves an agent session's latest step on: each turn of the session is
 /// served on its own, and its programs call through the turn going now.
 pub(crate) struct Current(
-    std::sync::Mutex<Host>,
+    std::sync::Mutex<Provider>,
     /// The session's own services: the records of the packages it runs itself (every tilolang
     /// app it serves) are read and changed there, on the loop's pass.
     Arc<crate::mcp_server::SessionServices>,
 );
 
 impl Current {
-    fn host(&self) -> Host {
+    fn provider(&self) -> Provider {
         Arc::clone(&self.0.lock_recover())
     }
 
@@ -104,7 +104,7 @@ impl Current {
                 agent_session: None,
             },
             services: Arc::clone(&self.1),
-            host: self.host(),
+            provider: self.provider(),
         }
     }
 }
@@ -118,16 +118,16 @@ impl Current {
 struct TurnRecords {
     kept: crate::mcp_server::ServiceRecords,
     services: Arc<crate::mcp_server::SessionServices>,
-    host: Host,
+    provider: Provider,
 }
 
 impl TurnRecords {
     fn elsewhere(
         &self,
-    ) -> Result<Arc<dyn tilo_actions::remote::ResourceReads>, tilo_actions::remote::ActionHostError>
+    ) -> Result<Arc<dyn tilo_actions::remote::ResourceReads>, tilo_actions::remote::ActionCallError>
     {
-        self.host.resource_reads().ok_or_else(|| {
-            tilo_actions::remote::ActionHostError::Unavailable {
+        self.provider.resource_reads().ok_or_else(|| {
+            tilo_actions::remote::ActionCallError::Unavailable {
                 reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.to_owned(),
             }
         })
@@ -139,7 +139,7 @@ impl tilo_actions::remote::ResourceReads for TurnRecords {
         &self,
         caller: &tilo_actions::remote::Caller,
         address: &tilo_actions::remote::ResourceAddress,
-    ) -> Result<tilo_actions::remote::ResourceCopy, tilo_actions::remote::ActionHostError> {
+    ) -> Result<tilo_actions::remote::ResourceCopy, tilo_actions::remote::ActionCallError> {
         if self.services.keeps(&address.app) {
             return self.kept.read(caller, address);
         }
@@ -160,7 +160,7 @@ impl tilo_actions::remote::ResourceReads for TurnRecords {
         caller: &tilo_actions::remote::Caller,
         address: &tilo_actions::remote::ResourceAddress,
         wake: &tilo_actions::remote::ResourceWake,
-    ) -> Result<(), tilo_actions::remote::ActionHostError> {
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
         // The records the session keeps are read as they are on its pass: nothing to wait on.
         if self.services.keeps(&address.app) {
             return Ok(());
@@ -174,31 +174,31 @@ impl tilo_actions::remote::ResourceChanges for TurnRecords {
         &self,
         caller: &tilo_actions::remote::Caller,
         change: &tilo_actions::remote::ResourceChange,
-    ) -> Result<serde_json::Value, tilo_actions::remote::ActionHostError> {
+    ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
         if self.services.keeps(&change.app) {
             return self.kept.apply(caller, change);
         }
-        self.host
+        self.provider
             .resource_changes()
-            .ok_or_else(|| tilo_actions::remote::ActionHostError::Unavailable {
+            .ok_or_else(|| tilo_actions::remote::ActionCallError::Unavailable {
                 reason: "this desktop applies no task's changes at a record's origin".to_owned(),
             })?
             .apply(caller, change)
     }
 }
 
-impl ActionHost for Current {
+impl ActionProvider for Current {
     fn retire_execution(&self, caller: &tilo_actions::remote::Caller) {
-        self.host().retire_execution(caller);
+        self.provider().retire_execution(caller);
     }
 
     fn query(
         &self,
         caller: &tilo_actions::remote::Caller,
         query: tilo_actions::remote::CatalogueQuery,
-    ) -> Pending<Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>>
+    ) -> Pending<Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>>
     {
-        self.host().query(caller, query)
+        self.provider().query(caller, query)
     }
 
     fn invoke(
@@ -206,9 +206,9 @@ impl ActionHost for Current {
         caller: &tilo_actions::remote::Caller,
         request: tilo_actions::remote::InvokeRequest,
     ) -> Pending<
-        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
-        self.host().invoke(caller, request)
+        self.provider().invoke(caller, request)
     }
 
     fn observe(
@@ -216,7 +216,7 @@ impl ActionHost for Current {
         caller: &tilo_actions::remote::Caller,
         id: &tilo_actions::InvocationId,
     ) -> Option<tilo_actions::remote::InvocationState> {
-        self.host().observe(caller, id)
+        self.provider().observe(caller, id)
     }
 
     fn next_change(
@@ -224,7 +224,7 @@ impl ActionHost for Current {
         caller: &tilo_actions::remote::Caller,
         id: &tilo_actions::InvocationId,
     ) -> Option<Pending<()>> {
-        self.host().next_change(caller, id)
+        self.provider().next_change(caller, id)
     }
 
     fn changed(
@@ -232,15 +232,15 @@ impl ActionHost for Current {
         caller: &tilo_actions::remote::Caller,
         scope: tilo_actions::remote::WatchScope,
     ) -> Option<Pending<()>> {
-        self.host().changed(caller, scope)
+        self.provider().changed(caller, scope)
     }
 
     fn cancel(
         &self,
         caller: &tilo_actions::remote::Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), tilo_actions::remote::ActionHostError>> {
-        self.host().cancel(caller, id)
+    ) -> Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        self.provider().cancel(caller, id)
     }
 
     fn confirm(
@@ -248,24 +248,24 @@ impl ActionHost for Current {
         caller: &tilo_actions::remote::Caller,
         request: &tilo_actions::remote::InvokeRequest,
     ) -> Pending<
-        Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionCallError>,
     > {
-        self.host().confirm(caller, request)
+        self.provider().confirm(caller, request)
     }
 
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
-        self.host().content_puts()
+        self.provider().content_puts()
     }
 
     fn content_gets(&self) -> Option<Arc<dyn tilo_actions::remote::ContentGets>> {
-        self.host().content_gets()
+        self.provider().content_gets()
     }
 
     fn here(
         &self,
         caller: &tilo_actions::remote::Caller,
     ) -> Option<Vec<tilo_actions::remote::Here>> {
-        self.host().here(caller)
+        self.provider().here(caller)
     }
 
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
@@ -277,11 +277,11 @@ impl ActionHost for Current {
     }
 
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
-        self.host().resource_search()
+        self.provider().resource_search()
     }
 
     fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {
-        self.host().change_feed()
+        self.provider().change_feed()
     }
 }
 

@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::host_account::Refusal;
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
+    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
 };
 use tilo_server_client::login::Admission;
@@ -875,7 +875,7 @@ pub async fn entered(peer: &Link) -> Result<Admission, HostRefusal> {
 /// caller (the CLI, the API server, the page) reads and shows, never a sentence to parse.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct HostRefusal {
-    /// What kind of answer it was: an [`ActionHostError::code`] when the host refused,
+    /// What kind of answer it was: an [`ActionCallError::code`] when the host refused,
     /// [`HostRefusal::FAILED`] when the operation ran and failed, [`HostRefusal::UNANSWERED`] when
     /// no answer came, [`HostRefusal::MALFORMED`] when the answer was not what the operation
     /// answers, and [`HostRefusal::NOT_ADMITTED`] when a workspace did not let the device in.
@@ -911,15 +911,15 @@ impl HostRefusal {
     /// The host's refusal `error`, its typed refusal read off it where it carries one. A host
     /// too busy to take the action reads as [`Self::RATE_LIMITED`], with the wait it said.
     #[must_use]
-    pub fn of(error: &ActionHostError) -> Self {
+    pub fn of(error: &ActionCallError) -> Self {
         match error {
-            ActionHostError::Refused { reason } => Self::said(error.code(), reason),
-            ActionHostError::Busy { retry_after_ms } => Self::rate_limited(*retry_after_ms),
+            ActionCallError::Refused { reason } => Self::said(error.code(), reason),
+            ActionCallError::Busy { retry_after_ms } => Self::rate_limited(*retry_after_ms),
             other => Self::plain(other),
         }
     }
 
-    fn plain(error: &ActionHostError) -> Self {
+    fn plain(error: &ActionCallError) -> Self {
         Self {
             code: error.code().to_owned(),
             message: error.to_string(),
@@ -1079,7 +1079,7 @@ mod tests {
 
         phase a_hosts_typed_refusal_reads_typed_with_its_own_words;
         {
-            let refused = HostRefusal::of(&ActionHostError::Refused {
+            let refused = HostRefusal::of(&ActionCallError::Refused {
                 reason: too_many().to_reason(),
             });
             assert_eq!(refused.code, "refused");
@@ -1093,7 +1093,7 @@ mod tests {
 
         phase a_busy_host_reads_as_rate_limited_with_its_wait_through_any_entry;
         {
-            let busy = ActionHostError::Busy { retry_after_ms: 480 };
+            let busy = ActionCallError::Busy { retry_after_ms: 480 };
             let refused = HostRefusal::of(&busy);
             assert_eq!(refused.code, HostRefusal::RATE_LIMITED);
             assert_eq!(refused.retry_after_ms, Some(480));
@@ -1110,7 +1110,7 @@ mod tests {
             );
             assert_eq!(HostRefusal::from(entry), refused);
             // Any other unavailability stays as it was.
-            let offline = HostRefusal::of(&ActionHostError::Unavailable {
+            let offline = HostRefusal::of(&ActionCallError::Unavailable {
                 reason: "offline: the device left".into(),
             });
             assert_eq!(offline.code, "remote_actions_unavailable");
@@ -1122,16 +1122,16 @@ mod tests {
             // Each refusal as it travels, with its code and words (tilo-actions holds the file to the
             // type): what the CLI, the API server and the page read off it.
             let file: Vec<Value> = serde_json::from_str(include_str!(
-                "../../../collab/actions/tests/host_refusals.json"
+                "../../../collab/actions/tests/provider_refusals.json"
             ))
             .unwrap();
             for entry in file {
-                let wire: ActionHostError = serde_json::from_value(entry["wire"].clone()).unwrap();
+                let wire: ActionCallError = serde_json::from_value(entry["wire"].clone()).unwrap();
                 let read = HostRefusal::of(&wire);
                 assert_eq!(read.code, entry["code"], "{entry}");
                 match (&wire, &read.refusal) {
                     (_, Some(typed)) => assert_eq!(read.message, typed.message),
-                    (ActionHostError::Refused { reason }, None) => assert_eq!(&read.message, reason),
+                    (ActionCallError::Refused { reason }, None) => assert_eq!(&read.message, reason),
                     (_, None) => assert_eq!(read.message, entry["display"], "{entry}"),
                 }
             }
@@ -1139,16 +1139,16 @@ mod tests {
 
         phase a_refusal_in_words_alone_keeps_them_and_every_other_answer_its_code;
         {
-            let refused = HostRefusal::of(&ActionHostError::Refused {
+            let refused = HostRefusal::of(&ActionCallError::Refused {
                 reason: "that workspace is not one of your own".into(),
             });
             assert_eq!(refused.message, "that workspace is not one of your own");
             assert_eq!(refused.refusal, None);
-            let unknown = HostRefusal::of(&ActionHostError::UnknownAction);
+            let unknown = HostRefusal::of(&ActionCallError::UnknownAction);
             assert_eq!(unknown.code, "unknown_action");
             assert_eq!(unknown.message, "no such action is offered");
             assert_eq!(
-                HostRefusal::of(&ActionHostError::StaleRevision).code,
+                HostRefusal::of(&ActionCallError::StaleRevision).code,
                 "stale_revision"
             );
         }
@@ -1160,7 +1160,7 @@ mod tests {
                 CertifyError::Request(_)
             ));
             assert!(matches!(
-                CertifyError::from(HostRefusal::of(&ActionHostError::NotPermitted)),
+                CertifyError::from(HostRefusal::of(&ActionCallError::NotPermitted)),
                 CertifyError::Denied(_)
             ));
             let admitted = HostRefusal::from(CertifyError::Denied("not in".into()));
@@ -1179,7 +1179,7 @@ mod tests {
                 contact: Some("hello@tilo.test".into()),
                 mail: true,
             };
-            let refusal = HostRefusal::of(&ActionHostError::Refused {
+            let refusal = HostRefusal::of(&ActionCallError::Refused {
                 reason: entry.to_reason(),
             });
             assert_eq!(refusal.code, HostRefusal::NOT_ADMITTED);
@@ -1190,7 +1190,7 @@ mod tests {
                 CertifyError::Denied(why) if why == entry.error
             ));
             // A host account's typed refusal is not the entry's.
-            let plain = HostRefusal::of(&ActionHostError::Refused {
+            let plain = HostRefusal::of(&ActionCallError::Refused {
                 reason: "no such workspace".into(),
             });
             assert_eq!(plain.entry, None);

@@ -97,7 +97,7 @@ impl WorkspaceDocumentsLink for Membership {
         _workspace: WorkspaceId,
         caller: &Caller,
         _question: ConfirmationQuestion,
-    ) -> Option<Pending<Result<ConfirmationReply, ActionHostError>>> {
+    ) -> Option<Pending<Result<ConfirmationReply, ActionCallError>>> {
         assert_eq!(
             caller.user_public_key(),
             Some(&self.person),
@@ -150,7 +150,7 @@ fn invoked(
         let again = matches!(
             &status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::Unavailable { .. }
+                error: ActionCallError::Unavailable { .. }
             }
         ) || matches!(&status, ReceiptStatus::Failed { error } if error.retryable);
         if again && Instant::now() < deadline {
@@ -188,7 +188,7 @@ fn put(
     workspace: WorkspaceId,
     caller: &Caller,
     bytes: &[u8],
-) -> Result<String, ActionHostError> {
+) -> Result<String, ActionCallError> {
     let step = |step| match served(
         actions,
         workspace,
@@ -224,7 +224,7 @@ fn got(
     workspace: WorkspaceId,
     caller: &Caller,
     content: &str,
-) -> Result<Vec<u8>, ActionHostError> {
+) -> Result<Vec<u8>, ActionCallError> {
     match served(
         actions,
         workspace,
@@ -475,7 +475,7 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     assert_eq!(
         viewer,
         ReceiptStatus::Rejected {
-            error: ActionHostError::NotPermitted
+            error: ActionCallError::NotPermitted
         }
     );
     assert!(
@@ -511,7 +511,7 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     assert_eq!(
         invoked(&actions, workspace, &member, &new_note("By the commenter")),
         ReceiptStatus::Rejected {
-            error: ActionHostError::NotPermitted
+            error: ActionCallError::NotPermitted
         }
     );
 
@@ -563,13 +563,13 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     for caller in [&member, &agent] {
         assert_eq!(
             put(&actions, workspace, caller, b"by a viewer"),
-            Err(ActionHostError::NotPermitted),
+            Err(ActionCallError::NotPermitted),
             "a viewer, and their agent, puts nothing"
         );
         assert_eq!(
             invoked(&actions, workspace, caller, &open()),
             ReceiptStatus::Rejected {
-                error: ActionHostError::NotPermitted
+                error: ActionCallError::NotPermitted
             },
             "a viewer, and their agent, opens nothing"
         );
@@ -583,7 +583,7 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     *membership.role.lock().unwrap() = None;
     assert_eq!(
         got(&actions, workspace, &member, &by_agent),
-        Err(ActionHostError::NotPermitted),
+        Err(ActionCallError::NotPermitted),
         "someone the workspace no longer admits gets nothing"
     );
     *membership.role.lock().unwrap() = Some(Role::Editor);
@@ -631,8 +631,8 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
             matches!(
                 status,
                 ReceiptStatus::Rejected {
-                    error: ActionHostError::InvalidRequest { .. }
-                        | ActionHostError::Unavailable { .. }
+                    error: ActionCallError::InvalidRequest { .. }
+                        | ActionCallError::Unavailable { .. }
                 }
             ),
             "listed {:?}, answered: {status:?}",
@@ -663,14 +663,14 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
             },
         );
         assert!(
-            matches!(&refused, ReceiptStatus::Rejected { error: ActionHostError::Refused { reason } } if reason.contains("person")),
+            matches!(&refused, ReceiptStatus::Rejected { error: ActionCallError::Refused { reason } } if reason.contains("person")),
             "{what} confirms nothing: {refused:?}"
         );
     }
     assert_eq!(
         invoked(&actions, workspace, &member, &remove()),
         ReceiptStatus::Rejected {
-            error: ActionHostError::confirmation_required()
+            error: ActionCallError::confirmation_required()
         },
         "with nobody to ask, it stays refused"
     );
@@ -717,7 +717,7 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     assert_eq!(
         invoked(&actions, workspace, &member, &new_note("By the removed")),
         ReceiptStatus::Rejected {
-            error: ActionHostError::NotPermitted
+            error: ActionCallError::NotPermitted
         }
     );
     *membership.role.lock().unwrap() = Some(Role::Editor);
@@ -725,7 +725,7 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     assert_eq!(
         invoked(&actions, workspace, &member, &new_note("By the revoked")),
         ReceiptStatus::Rejected {
-            error: ActionHostError::NotPermitted
+            error: ActionCallError::NotPermitted
         }
     );
     assert_eq!(
@@ -736,7 +736,7 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
             &new_note("By the revoked agent")
         ),
         ReceiptStatus::Rejected {
-            error: ActionHostError::NotPermitted
+            error: ActionCallError::NotPermitted
         }
     );
 

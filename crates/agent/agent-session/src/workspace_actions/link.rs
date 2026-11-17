@@ -11,7 +11,7 @@ use std::sync::Arc;
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::person_asking::{Asked, Words};
 use tilo_actions::remote::{
-    ActionHostError, Caller, ConfirmationQuestion, ConfirmationReply, Pending,
+    ActionCallError, Caller, ConfirmationQuestion, ConfirmationReply, Pending,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 
@@ -213,7 +213,7 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
         _workspace: WorkspaceId,
         _caller: &Caller,
         _question: ConfirmationQuestion,
-    ) -> Option<Pending<Result<ConfirmationReply, ActionHostError>>> {
+    ) -> Option<Pending<Result<ConfirmationReply, ActionCallError>>> {
         None
     }
     /// Whether `caller` runs a command in the machine of `workspace` without

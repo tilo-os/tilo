@@ -893,7 +893,7 @@ pub(crate) mod entry_tests {
         reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
     )]
     use tilo_actions::remote::{
-        ActionHost as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
+        ActionProvider as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
         RemoteActionTarget,
     };
     use tilo_peer_state::join::Role;

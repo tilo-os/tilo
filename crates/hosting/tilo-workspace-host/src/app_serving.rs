@@ -11,7 +11,7 @@
 //! undeliverable — all but the governance of the workspaces the server governs,
 //! which it answers itself (`crate::workspaces::GovernedServer`).
 
-use tilo_actions::remote::{ActionHost, Caller, Pending, RemoteActionMessage};
+use tilo_actions::remote::{ActionProvider, Caller, Pending, RemoteActionMessage};
 use tilo_server_protocol::WorkspaceId;
 
 /// Answers remote-action requests addressed to this host.
@@ -247,12 +247,12 @@ impl Hand {
     }
 }
 
-/// An [`AppActionServer`] backed by one [`ActionHost`] for every workspace.
-pub struct ActionHostServer<H> {
+/// An [`AppActionServer`] backed by one [`ActionProvider`] for every workspace.
+pub struct ActionProviderServer<H> {
     host: H,
 }
 
-impl<H> ActionHostServer<H> {
+impl<H> ActionProviderServer<H> {
     /// Serve every workspace from `host`.
     pub const fn new(host: H) -> Self {
         Self { host }
@@ -260,7 +260,9 @@ impl<H> ActionHostServer<H> {
 }
 
 /// `H` is cloned into an answer that waits for an invocation to move.
-impl<H: ActionHost + Clone + Send + Sync + 'static> AppActionServer for ActionHostServer<H> {
+impl<H: ActionProvider + Clone + Send + Sync + 'static> AppActionServer
+    for ActionProviderServer<H>
+{
     fn serve(
         &self,
         _workspace_id: WorkspaceId,

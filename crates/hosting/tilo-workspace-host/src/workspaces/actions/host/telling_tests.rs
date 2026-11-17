@@ -16,7 +16,7 @@
 use serde_json::{Value, json};
 use tilo_actions::remote::person_telling::{self, Decided, Importance, Reach};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
+    ActionCallError, ActionProvider, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
 };
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
@@ -79,7 +79,7 @@ impl Setup {
         caller: &Caller,
         action: &str,
         argument: Value,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let page = self.host.in_workspace_as(workspace, device);
         let receipt = settled(page.invoke(caller, asking(action, argument))).await?;
         match receipt.status {
@@ -93,7 +93,7 @@ impl Setup {
         &self,
         action: &str,
         argument: Value,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         self.ask((self.own, &self.ada), &caller(&self.ada), action, argument)
             .await
     }
@@ -104,7 +104,7 @@ impl Setup {
         workspace: WorkspaceId,
         action: &str,
         argument: Value,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         self.ask(
             (workspace, &self.ada),
             &agent_of(&self.ada),
@@ -148,23 +148,23 @@ fn asking(action: &str, argument: Value) -> InvokeRequest {
 }
 
 /// What an answer carries, read as a rule.
-fn rule(answer: Result<Value, ActionHostError>) -> Importance {
+fn rule(answer: Result<Value, ActionCallError>) -> Importance {
     serde_json::from_value(answer.expect("the host answers")).expect("the answer is a rule")
 }
 
 /// `answer` is the one answer for unknown and forbidden.
-pub(super) fn nobody(what: &str, answer: Result<Value, ActionHostError>) {
+pub(super) fn nobody(what: &str, answer: Result<Value, ActionCallError>) {
     let refused = answer.expect_err(what);
     assert!(
-        matches!(refused, ActionHostError::UnknownAction),
+        matches!(refused, ActionCallError::UnknownAction),
         "{what}: {refused:?}"
     );
 }
 
 /// Why `answer` was refused, in the words its asker reads.
-fn refused(what: &str, answer: Result<Value, ActionHostError>) -> String {
+fn refused(what: &str, answer: Result<Value, ActionCallError>) -> String {
     match answer.expect_err(what) {
-        ActionHostError::Refused { reason } => reason,
+        ActionCallError::Refused { reason } => reason,
         other => panic!("{what}: {other:?}"),
     }
 }

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
-    ActionHostError, Caller, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
+    ActionCallError, Caller, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
 };
 
 const PROVIDER: &str = "test.live";
@@ -137,7 +137,7 @@ fn invoked(
     state: &Arc<AppBrokerState>,
     caller: &Caller,
     request: &InvokeRequest,
-) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
     state
         .action_invoke(caller, None, None, request)
         .wait_timeout(tilo_test_env::hang_bound())

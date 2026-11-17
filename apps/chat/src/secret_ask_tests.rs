@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use tilo_actions::remote::{Caller, InvokeArgument, TestHost, person_vault};
+use tilo_actions::remote::{Caller, InvokeArgument, TestProvider, person_vault};
 use ui::RemoteActions;
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::{Acting, ActionInvoker};
@@ -164,10 +164,12 @@ fn only_the_person_asked_answers_and_the_answer_carries_the_reference() {
 /// the vault gave, their words say so, and the resource holds nothing typed.
 #[test]
 fn what_is_typed_goes_to_the_vault_and_the_question_is_answered_with_its_reference() {
-    let vault = Arc::new(TestHost::new().completing(|_| tilo_actions::ActionOutput {
-        value: Some(json!({"reference": REFERENCE})),
-        resources: Vec::new(),
-    }));
+    let vault = Arc::new(
+        TestProvider::new().completing(|_| tilo_actions::ActionOutput {
+            value: Some(json!({"reference": REFERENCE})),
+            resources: Vec::new(),
+        }),
+    );
     let _served = RemoteActions::enter(vault.clone(), Caller::local_person(ME));
     let mut app = TestApp::<ChatShell>::new().unwrap();
     let me = window_person(&mut app);

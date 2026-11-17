@@ -37,7 +37,7 @@ use tilo_actions::remote::person_events::{
     self, Change, EventView, Events, Named, Permission, SetUp, Sort,
 };
 use tilo_actions::remote::{
-    ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
+    ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
     CatalogueRow, InvocationReceipt, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
     RemoteActionMessage,
 };
@@ -88,14 +88,14 @@ pub fn not_served(message: RemoteActionMessage) -> Option<Pending<RemoteActionMe
         RemoteActionMessage::CatalogueRequest { correlation, .. } => {
             Some(Pending::ready(RemoteActionMessage::CatalogueResponse {
                 correlation,
-                result: Err(ActionHostError::UnknownAction),
+                result: Err(ActionCallError::UnknownAction),
             }))
         }
         RemoteActionMessage::Invoke(request) => Some(Pending::ready(RemoteActionMessage::Receipt(
             InvocationReceipt {
                 invocation: request.invocation,
                 status: ReceiptStatus::Rejected {
-                    error: ActionHostError::UnknownAction,
+                    error: ActionCallError::UnknownAction,
                 },
             },
         ))),
@@ -375,7 +375,7 @@ impl PersonEvents {
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
-    ) -> Result<([u8; 32], Asker), ActionHostError> {
+    ) -> Result<([u8; 32], Asker), ActionCallError> {
         let acting = caller.acting();
         let asker = if acting.app().is_some() {
             None
@@ -387,13 +387,13 @@ impl PersonEvents {
             None
         };
         let (Some(asker), Some(person)) = (asker, caller.user_public_key().copied()) else {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         };
         if caller
             .workspace()
             .is_some_and(|confined| WorkspaceId::parse(confined) != Some(workspace_id))
         {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         }
         let workspaces = &self.inner.workspaces;
         // Where a server keeps workspaces of people's own, a workspace is
@@ -405,7 +405,7 @@ impl PersonEvents {
             workspaces.governor().user_public_key == person
         };
         if !theirs {
-            return Err(ActionHostError::Refused {
+            return Err(ActionCallError::Refused {
                 reason: "events are set up in a workspace of your own".into(),
             });
         }
@@ -421,7 +421,7 @@ impl PersonEvents {
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let (person, asker) = self.asking(workspace_id, caller)?;
         let owner = (workspace_id.to_string(), hex::encode(person));
         let mut running = self.inner.running.lock_recover();
@@ -460,7 +460,7 @@ impl PersonEvents {
             }
             action @ (person_events::PERMIT | person_events::WITHDRAW) => {
                 if asker != Asker::Person {
-                    return Err(ActionHostError::Refused {
+                    return Err(ActionCallError::Refused {
                         reason: "only the person themselves lets an event act without asking"
                             .into(),
                     });
@@ -478,7 +478,7 @@ impl PersonEvents {
                 kept.map_err(step_error)?;
                 said(&view(event))
             }
-            _ => Err(ActionHostError::UnknownAction),
+            _ => Err(ActionCallError::UnknownAction),
         }
     }
 
@@ -487,7 +487,7 @@ impl PersonEvents {
         owner: &Owner,
         theirs: &mut BTreeMap<String, Running>,
         asked: SetUp,
-    ) -> Result<EventView, ActionHostError> {
+    ) -> Result<EventView, ActionCallError> {
         if theirs.len() >= MAX_EVENTS {
             return Err(refused(format!(
                 "a person keeps at most {MAX_EVENTS} events in a workspace"
@@ -530,7 +530,7 @@ impl PersonEvents {
         owner: &Owner,
         theirs: &mut BTreeMap<String, Running>,
         asked: Change,
-    ) -> Result<EventView, ActionHostError> {
+    ) -> Result<EventView, ActionCallError> {
         let current = theirs.get(&asked.event).ok_or_else(no_such_event)?;
         let mut definition = current.definition.clone();
         if let Some(name) = asked.name {
@@ -640,19 +640,19 @@ fn view(event: &Running) -> EventView {
     }
 }
 
-fn refused(reason: String) -> ActionHostError {
-    ActionHostError::Refused { reason }
+fn refused(reason: String) -> ActionCallError {
+    ActionCallError::Refused { reason }
 }
 
-fn unavailable(reason: String) -> ActionHostError {
-    ActionHostError::Unavailable { reason }
+fn unavailable(reason: String) -> ActionCallError {
+    ActionCallError::Unavailable { reason }
 }
 
-fn no_such_event() -> ActionHostError {
+fn no_such_event() -> ActionCallError {
     refused("you keep no such event here".to_owned())
 }
 
-fn step_error(error: HostStepError) -> ActionHostError {
+fn step_error(error: HostStepError) -> ActionCallError {
     match error {
         HostStepError::Refused(reason) => refused(reason),
         HostStepError::Unavailable(reason) => unavailable(reason),
@@ -664,8 +664,8 @@ fn step_error(error: HostStepError) -> ActionHostError {
 fn argument<T: serde::de::DeserializeOwned>(
     request: &InvokeRequest,
     what: &str,
-) -> Result<T, ActionHostError> {
-    let invalid = || ActionHostError::InvalidRequest {
+) -> Result<T, ActionCallError> {
+    let invalid = || ActionCallError::InvalidRequest {
         reason: what.to_owned(),
     };
     let InvokeArgument::Json(argument) = &request.argument else {
@@ -674,7 +674,7 @@ fn argument<T: serde::de::DeserializeOwned>(
     serde_json::from_value(Value::Object(argument.clone())).map_err(|_| invalid())
 }
 
-fn said<T: serde::Serialize>(answer: &T) -> Result<Value, ActionHostError> {
+fn said<T: serde::Serialize>(answer: &T) -> Result<Value, ActionCallError> {
     serde_json::to_value(answer).map_err(|error| refused(error.to_string()))
 }
 

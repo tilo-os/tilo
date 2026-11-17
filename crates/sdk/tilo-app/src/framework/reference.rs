@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::{ActionHostError, InvokeArgument};
+use tilo_actions::remote::{ActionCallError, InvokeArgument};
 use tilo_reference::ResourceRef;
 use ui_core::widget::ChipLead;
 use ui_core::{Arrival, InvocationCall, RemoteActions};
@@ -269,7 +269,7 @@ impl Opener {
         &self,
         target: tilo_actions::remote::RemoteActionTarget,
         argument: InvokeArgument,
-        then: impl FnMut(&Arrival<InvocationUpdate, ActionHostError>) + Send + 'static,
+        then: impl FnMut(&Arrival<InvocationUpdate, ActionCallError>) + Send + 'static,
     ) -> ui_core::Followed {
         self.0
             .borrow_mut()

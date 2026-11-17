@@ -33,7 +33,7 @@ use tilo_actions::remote::person_telling::{
     MAX_LINE_BYTES, MAX_LINES, Offered, Say, SetFact, Tell, Teller, Unsay,
 };
 use tilo_actions::remote::{
-    ActionHostError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
+    ActionCallError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
@@ -166,7 +166,7 @@ enum Change {
 
 impl Change {
     /// The change `request` asks for.
-    fn of(request: &InvokeRequest) -> Result<Self, ActionHostError> {
+    fn of(request: &InvokeRequest) -> Result<Self, ActionCallError> {
         Ok(match request.target.address.action.as_str() {
             person_telling::SAY => Self::Say(argument(request, "a line and its words")?),
             person_telling::UNSAY => Self::Unsay(argument(request, "a line by its id")?),
@@ -185,7 +185,7 @@ impl Change {
             person_telling::KEEP_ON_HOST => {
                 Self::KeepOnHost(argument(request, "a workspace and whether it is kept")?)
             }
-            _ => return Err(ActionHostError::UnknownAction),
+            _ => return Err(ActionCallError::UnknownAction),
         })
     }
 
@@ -396,7 +396,7 @@ fn told_in_a_turn(rule: &Importance) -> String {
 fn argument_or_default<T: serde::de::DeserializeOwned + Default>(
     request: &InvokeRequest,
     what: &str,
-) -> Result<T, ActionHostError> {
+) -> Result<T, ActionCallError> {
     if matches!(request.argument, InvokeArgument::None) {
         return Ok(T::default());
     }
@@ -412,7 +412,7 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         workspace_id: Option<collab_types::WorkspaceId>,
-    ) -> Result<Asking, ActionHostError> {
+    ) -> Result<Asking, ActionCallError> {
         match Self::asking_about_mail(caller, certificate, workspace_id)? {
             AskingAboutMail::Person(person) => Ok(Asking::Person(person)),
             AskingAboutMail::Assistant {
@@ -453,7 +453,7 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let asking = self.asking_about_telling(caller, certificate, workspace_id)?;
         match request.target.address.resource.as_str() {
             person_telling::IMPORTANCE => self.importance_invoke(&asking, request),
@@ -461,7 +461,7 @@ impl Workspaces {
                 self.told_invoke(&asking, (workspace_id, caller, certificate), request)
                     .await
             }
-            _ => Err(ActionHostError::UnknownAction),
+            _ => Err(ActionCallError::UnknownAction),
         }
     }
 
@@ -470,12 +470,12 @@ impl Workspaces {
         &self,
         asking: &Asking,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let action = request.target.address.action.as_str();
         // Unknown and forbidden are the same answer, given before the
         // request is read.
         if !asking.may(action) {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         }
         if action == person_telling::READ {
             return answer(&Ok::<_, String>(self.importance_of(asking.person())));
@@ -491,7 +491,7 @@ impl Workspaces {
         asking: &Asking,
         asked: Asked<'_>,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         match (request.target.address.action.as_str(), asking) {
             (
                 person_telling::TELL,
@@ -544,7 +544,7 @@ impl Workspaces {
                 let theirs = matches!(asking, Asking::Person(_));
                 answer(&self.insist_told(asking.person(), &insist.told, insist.insists, theirs))
             }
-            _ => Err(ActionHostError::UnknownAction),
+            _ => Err(ActionCallError::UnknownAction),
         }
     }
 

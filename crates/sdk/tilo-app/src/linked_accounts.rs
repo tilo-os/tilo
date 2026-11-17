@@ -508,10 +508,10 @@ pub fn record_invocation(
 /// it did not run.
 pub fn resource_answer(
     answer: Option<
-        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     >,
 ) -> ActionAnswer {
-    use tilo_actions::remote::{ActionHostError, InvocationReceipt, ReceiptStatus};
+    use tilo_actions::remote::{ActionCallError, InvocationReceipt, ReceiptStatus};
 
     let unanswered = || "the workspace's host did not answer".to_owned();
     match answer {
@@ -529,7 +529,7 @@ pub fn resource_answer(
                 ..
             })
             | Err(error),
-        ) => Err(ActionHostError::to_string(&error)),
+        ) => Err(ActionCallError::to_string(&error)),
         Some(Ok(InvocationReceipt {
             status: ReceiptStatus::Cancelled { message },
             ..
@@ -1245,7 +1245,7 @@ mod tests {
         // What the host answered is what the accounts read: the action's value,
         // or why it did not run.
         {
-            use tilo_actions::remote::{ActionHostError, InvocationReceipt, ReceiptStatus};
+            use tilo_actions::remote::{ActionCallError, InvocationReceipt, ReceiptStatus};
             use tilo_actions::{ActionFailure, ActionOutput};
             let receipt = |status| {
                 Some(Ok(InvocationReceipt {
@@ -1283,12 +1283,12 @@ mod tests {
             );
             assert_eq!(
                 resource_answer(receipt(ReceiptStatus::Rejected {
-                    error: ActionHostError::UnknownAction,
+                    error: ActionCallError::UnknownAction,
                 })),
                 Err("no such action is offered".to_owned())
             );
             assert_eq!(
-                resource_answer(Some(Err(ActionHostError::Unavailable {
+                resource_answer(Some(Err(ActionCallError::Unavailable {
                     reason: "the session is closed".into(),
                 }))),
                 Err("remote actions are unavailable: the session is closed".to_owned())

@@ -29,7 +29,7 @@
 //! else it is refused.
 
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller,
     InvocationReceipt, InvokeRequest, ReceiptStatus, RemoteActionMessage, application_provider,
     provider_workspace,
 };
@@ -86,7 +86,7 @@ impl AppBrokerState {
             return match self.continuing(peer_id, app_id, *parent) {
                 Some(Continuing::Invocation(continued)) => Some(Ok((continued.caller, None))),
                 Some(Continuing::OwnApi) => None,
-                None => tilo_actions::remote::refuse(message, ActionHostError::NotPermitted)
+                None => tilo_actions::remote::refuse(message, ActionCallError::NotPermitted)
                     .map(|refused| Err(Box::new(refused))),
             };
         }
@@ -97,7 +97,7 @@ impl AppBrokerState {
             Box::new(RemoteActionMessage::Receipt(InvocationReceipt {
                 invocation: invoke.invocation,
                 status: ReceiptStatus::Rejected {
-                    error: ActionHostError::NotPermitted,
+                    error: ActionCallError::NotPermitted,
                 },
             }))
         };

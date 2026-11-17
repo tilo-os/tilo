@@ -14,9 +14,9 @@ use tilo_actions::remote::{person_accounts, person_models, person_telling, perso
 use tilo_desktop_surface::session::DesktopSession;
 use tilo_session_client::remote::SessionActions;
 
-/// Carry the accounts and providers asks of the desktop `session` to the
-/// host `host` reaches.
-pub(crate) fn serve(session: &DesktopSession, host: &SessionActions) {
+/// Answer the person's accounts, models, vault and tellings asks of the
+/// desktop `session` through `actions`.
+pub(crate) fn serve(session: &DesktopSession, actions: &SessionActions) {
     for provider in [
         person_accounts::PROVIDER,
         person_models::PROVIDER,
@@ -25,6 +25,6 @@ pub(crate) fn serve(session: &DesktopSession, host: &SessionActions) {
         // host keeps both, because it tells while no page is open.
         person_telling::PROVIDER,
     ] {
-        session.serve_person_api(provider, Arc::new(host.clone()));
+        session.serve_person_api(provider, Arc::new(actions.clone()));
     }
 }

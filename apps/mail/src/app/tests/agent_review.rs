@@ -211,7 +211,7 @@ fn cvs_open_through_the_desktop(
     handed_over: &[(&str, Vec<u8>)],
 ) -> usize {
     use ui::shell::{OPEN, PROVIDER, RESOURCE};
-    let desktop = Arc::new(tilo_actions::remote::TestHost::new().completing(|_| {
+    let desktop = Arc::new(tilo_actions::remote::TestProvider::new().completing(|_| {
         tilo_actions::ActionOutput {
             value: Some(serde_json::json!({
                 "window": "11", "group": "4242", "strip": "7", "app": "so.tilo.pdf-viewer",
@@ -220,7 +220,7 @@ fn cvs_open_through_the_desktop(
         }
     }));
     let _desktop = ui::remote_actions::RemoteActions::enter(
-        Arc::clone(&desktop) as Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>,
+        Arc::clone(&desktop) as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
         tilo_actions::remote::Caller::local_agent("planner"),
     );
     let mut opened = 0;

@@ -20,11 +20,11 @@
 use std::sync::Arc;
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, Confirmation, ConfirmedInvocation, InvocationReceipt, InvokeArgument,
+    ActionCallError, Caller, Confirmation, ConfirmedInvocation, InvocationReceipt, InvokeArgument,
     InvokeRequest, ReceiptStatus, RemoteActionMessage, serve,
 };
 
-use super::action_host::{ConnectionActionHost, RowScope};
+use super::action_provider::{ConnectionActionProvider, RowScope};
 use super::execution_activity::ShownActor;
 use super::{AppBrokerState, BrokerActor, CrdtRoute};
 use crate::app_actions::{AppActionAnswer, AppActionConsentRequest};
@@ -59,12 +59,12 @@ fn store_disclosure(
     caller: &Caller,
     workspace: &str,
     request: &InvokeRequest,
-) -> Result<crate::app_actions::ModerationConsentPreview, ActionHostError> {
+) -> Result<crate::app_actions::ModerationConsentPreview, ActionCallError> {
     let signing_key = match caller.user_public_key() {
         Some(key) => *key,
         None => tilo_identity_host::broker::trusted_current_device(workspace)
             .map(|(_, certificate)| certificate.user_public_key)
-            .map_err(|error| ActionHostError::Unavailable {
+            .map_err(|error| ActionCallError::Unavailable {
                 reason: format!("no identity to sign the Store disclosure with: {error}"),
             })?,
     };
@@ -73,7 +73,7 @@ fn store_disclosure(
         &request.argument,
         &signing_key,
     )
-    .map_err(|reason| ActionHostError::InvalidRequest { reason })
+    .map_err(|reason| ActionCallError::InvalidRequest { reason })
 }
 
 /// The grant allowing the agent session `caller` works in every later step
@@ -123,12 +123,12 @@ pub(super) struct Question {
 /// itself is put to `person` first, and retried with their answer.
 pub(super) async fn serve_answering(
     state: Arc<AppBrokerState>,
-    host: ConnectionActionHost,
+    provider: ConnectionActionProvider,
     caller: Caller,
     person: String,
     message: RemoteActionMessage,
 ) -> Option<RemoteActionMessage> {
-    let first = serve(&host, &caller, message.clone())?.await?;
+    let first = serve(&provider, &caller, message.clone())?.await?;
     let RemoteActionMessage::Invoke(request) = message else {
         return Some(first);
     };
@@ -140,7 +140,7 @@ pub(super) async fn serve_answering(
         .await
     {
         Some(Ok(approved)) => approved,
-        Some(Err(ActionHostError::ConfirmationRequired { .. })) | None => return Some(first),
+        Some(Err(ActionCallError::ConfirmationRequired { .. })) | None => return Some(first),
         Some(Err(error)) => {
             return Some(RemoteActionMessage::Receipt(InvocationReceipt {
                 invocation: request.invocation,
@@ -152,7 +152,7 @@ pub(super) async fn serve_answering(
     // with the arguments as they changed them, which it is bound to.
     let mut retried = request;
     approved.apply(&mut retried);
-    serve(&host, &caller, RemoteActionMessage::Invoke(retried))?.await
+    serve(&provider, &caller, RemoteActionMessage::Invoke(retried))?.await
 }
 
 /// Whether `reply` refused an invocation for want of a confirmation.
@@ -161,7 +161,7 @@ fn needs_approval(reply: &RemoteActionMessage) -> bool {
         reply,
         RemoteActionMessage::Receipt(InvocationReceipt {
             status: ReceiptStatus::Rejected {
-                error: ActionHostError::ConfirmationRequired { .. }
+                error: ActionCallError::ConfirmationRequired { .. }
             },
             ..
         })
@@ -187,7 +187,7 @@ impl AppBrokerState {
             })
         } else {
             tilo_failure::ignored!(
-                "a provider that is not a peer number names a canonical, launchable or host one",
+                "a provider that is not a peer number names a canonical, launchable or provider one",
                 provider.parse::<u64>().ok()
             )
         };
@@ -265,7 +265,7 @@ impl AppBrokerState {
         caller: &Caller,
         person: Option<&str>,
         request: &InvokeRequest,
-    ) -> tilo_actions::remote::Pending<Result<ConfirmedInvocation, ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<ConfirmedInvocation, ActionCallError>> {
         use tilo_actions::remote::Pending;
         let Some(person) = (if let Some(id) = caller.acting().person_id() {
             // A direct caller cannot nominate another person to answer.
@@ -280,7 +280,7 @@ impl AppBrokerState {
                         .map(|root| super::person_id_for_root(*root))
                 })
         }) else {
-            return Pending::ready(Err(ActionHostError::confirmation_required()));
+            return Pending::ready(Err(ActionCallError::confirmation_required()));
         };
         // A foreign device is not the person's: they are asked on one of
         // their own devices, which draws the question and answers it.
@@ -299,9 +299,9 @@ impl AppBrokerState {
             Ok(Some(question)) => question,
             Ok(None) => {
                 return Pending::ready(Err(if BrokerActor::for_caller(caller).direct() {
-                    ActionHostError::confirmation_required()
+                    ActionCallError::confirmation_required()
                 } else {
-                    ActionHostError::UnknownAction
+                    ActionCallError::UnknownAction
                 }));
             }
             Err(refused) => return Pending::ready(Err(refused)),
@@ -310,10 +310,10 @@ impl AppBrokerState {
             && !requires_store_approval(&question.request.target_app, &question.request.action)
         {
             // Other direct actions keep confirming on the caller's screen.
-            return Pending::ready(Err(ActionHostError::confirmation_required()));
+            return Pending::ready(Err(ActionCallError::confirmation_required()));
         }
         let Some(answer) = self.ask_person(&question) else {
-            return Pending::ready(Err(ActionHostError::confirmation_required()));
+            return Pending::ready(Err(ActionCallError::confirmation_required()));
         };
         self.show_waiting(&question, request, true);
         let (completer, pending) = tilo_actions::remote::pending();
@@ -329,7 +329,7 @@ impl AppBrokerState {
                 // one answered rather than that the person declined.
                 let Ok(answer) = answer.blocking_recv() else {
                     state.show_waiting(&question, &request, false);
-                    completer.complete(Err(ActionHostError::Unavailable {
+                    completer.complete(Err(ActionCallError::Unavailable {
                         reason: "the confirmation sheet closed without the person's answer".into(),
                     }));
                     return;
@@ -338,13 +338,13 @@ impl AppBrokerState {
                     // Allowed, the invocation's own progress takes the
                     // waiting's place.
                     state.show_waiting(&question, &request, false);
-                    completer.complete(Err(ActionHostError::NotPermitted));
+                    completer.complete(Err(ActionCallError::NotPermitted));
                     return;
                 }
                 completer.complete(state.approval_answer(&question, &request, &answer.edits));
             });
         if spawned.is_err() {
-            return Pending::ready(Err(ActionHostError::Unavailable {
+            return Pending::ready(Err(ActionCallError::Unavailable {
                 reason: "the confirmation could not be asked".into(),
             }));
         }
@@ -363,12 +363,12 @@ impl AppBrokerState {
         question: &Question,
         request: &InvokeRequest,
         edits: &[tilo_actions::DraftEdit],
-    ) -> Result<ConfirmedInvocation, ActionHostError> {
+    ) -> Result<ConfirmedInvocation, ActionCallError> {
         let mut binding = question.binding.clone();
         let arguments = if edits.is_empty() {
             None
         } else {
-            let refused = |reason: String| ActionHostError::InvalidRequest { reason };
+            let refused = |reason: String| ActionCallError::InvalidRequest { reason };
             let (Some(draft), InvokeArgument::Json(asked)) =
                 (question.request.draft.as_ref(), &request.argument)
             else {
@@ -383,7 +383,7 @@ impl AppBrokerState {
         }
         let token = self
             .approval_confirmation(&binding)
-            .ok_or(ActionHostError::confirmation_required())?;
+            .ok_or(ActionCallError::confirmation_required())?;
         Ok(ConfirmedInvocation {
             confirmation: Confirmation::Approved(token),
             arguments,
@@ -419,7 +419,7 @@ impl AppBrokerState {
         caller: &Caller,
         person: &str,
         request: &InvokeRequest,
-    ) -> Result<Option<Question>, ActionHostError> {
+    ) -> Result<Option<Question>, ActionCallError> {
         let Some(workspace) = caller.workspace() else {
             return Ok(None);
         };

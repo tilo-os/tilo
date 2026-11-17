@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, Completer, InvocationReceipt, InvokeRequest,
+    ActionCallError, ActionProvider, Caller, Completer, InvocationReceipt, InvokeRequest,
     MAX_REMOTE_WAIT, Pending, RESOURCE_PROVIDER, ReceiptStatus, pending, settle_with,
 };
 
@@ -31,7 +31,7 @@ use crate::collab_broker::CrdtRoute;
 
 /// The host an invocation runs on, and the request it is sent as there.
 pub(super) struct Forward {
-    host: Arc<dyn ActionHost + Send + Sync>,
+    host: Arc<dyn ActionProvider + Send + Sync>,
     request: InvokeRequest,
     workspace: String,
     app_id: String,
@@ -125,7 +125,7 @@ impl AppBrokerState {
         &self,
         caller: &Caller,
         forward: Forward,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let Forward {
             host,
             request,
@@ -141,7 +141,7 @@ impl AppBrokerState {
             .then(move |receipt| match receipt {
                 Some(Ok(receipt)) => follow(host, caller, receipt, done),
                 Some(Err(error)) => done.complete(Err(error)),
-                None => done.complete(Err(ActionHostError::Unavailable {
+                None => done.complete(Err(ActionCallError::Unavailable {
                     reason: "the workspace's host did not answer".into(),
                 })),
             });
@@ -153,10 +153,10 @@ impl AppBrokerState {
 /// an accepted one is followed there, a while at a time, for as long as it
 /// runs. A host that stops telling leaves the admission as it stood.
 fn follow(
-    host: Arc<dyn ActionHost + Send + Sync>,
+    host: Arc<dyn ActionProvider + Send + Sync>,
     caller: Caller,
     receipt: InvocationReceipt,
-    done: Completer<Result<InvocationReceipt, ActionHostError>>,
+    done: Completer<Result<InvocationReceipt, ActionCallError>>,
 ) {
     if !matches!(receipt.status, ReceiptStatus::Accepted) || done.is_abandoned() {
         done.complete(Ok(receipt));

@@ -420,11 +420,11 @@ pub fn client_connected(stream: &std::os::unix::net::UnixStream) -> bool {
     }
 }
 
-/// Serve one MCP server connection, whose peer the host has already
+/// Serve one MCP server connection, whose peer the session has already
 /// checked: read its `initialize`, `ask` the person (with a probe that says
 /// whether the client is still there), and only once they admit it answer
-/// that `initialize` and every later request as the admitted agent, over
-/// `host`'s ordinary check. Before then the server reads nothing more, so no
+/// that `initialize` and every later request as the admitted agent, over the
+/// provider's ordinary check. Before then the server reads nothing more, so no
 /// request a client queued behind its `initialize` can run unadmitted. A
 /// refusal answers the `initialize` with a JSON-RPC error and closes.
 ///
@@ -478,33 +478,33 @@ pub fn is_control_request(line: &[u8]) -> bool {
 #[cfg(unix)]
 pub fn serve<H>(
     stream: std::os::unix::net::UnixStream,
-    host: H,
+    provider: H,
     ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
 ) -> io::Result<()>
 where
-    H: tilo_actions::remote::ActionHost + Send + Sync + 'static,
+    H: tilo_actions::remote::ActionProvider + Send + Sync + 'static,
 {
-    serve_after(stream, None, || Ok(host), None, ask)
+    serve_after(stream, None, || Ok(provider), None, ask)
 }
 
 /// [`serve`] a connection whose first line, `first`, was already read
-/// ([`read_first_line`]), through the host `host` makes once the person
+/// ([`read_first_line`]), through the provider `provider` makes once the person
 /// admitted it.
 #[cfg(unix)]
 pub fn serve_after<H>(
     stream: std::os::unix::net::UnixStream,
     first: Option<Vec<u8>>,
-    host: impl FnOnce() -> Result<H, String>,
+    provider: impl FnOnce() -> Result<H, String>,
     tasks: Option<std::sync::Arc<dyn crate::TaskHosts>>,
     ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
 ) -> io::Result<()>
 where
-    H: tilo_actions::remote::ActionHost + Send + Sync + 'static,
+    H: tilo_actions::remote::ActionProvider + Send + Sync + 'static,
 {
     serve_with(
         stream,
         first,
-        host,
+        provider,
         Beside {
             tasks,
             devices: None,
@@ -529,12 +529,12 @@ pub struct Beside {
 pub fn serve_with<H>(
     mut stream: std::os::unix::net::UnixStream,
     mut first: Option<Vec<u8>>,
-    host: impl FnOnce() -> Result<H, String>,
+    provider: impl FnOnce() -> Result<H, String>,
     beside: Beside,
     ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
 ) -> io::Result<()>
 where
-    H: tilo_actions::remote::ActionHost + Send + Sync + 'static,
+    H: tilo_actions::remote::ActionProvider + Send + Sync + 'static,
 {
     let Beside { tasks, devices } = beside;
     stream.set_nonblocking(false)?;
@@ -594,8 +594,8 @@ where
     };
     // What the admitted client acts through, made once it is admitted: the
     // run the person's admission started, on a desktop.
-    let host = match host() {
-        Ok(host) => host,
+    let provider = match provider() {
+        Ok(provider) => provider,
         Err(message) => {
             write_line(&mut stream, &error_reply(&id, &message));
             finish_refusal(&mut stream);
@@ -607,10 +607,10 @@ where
     // whoever the connection acts as: the agent, or the person typing at a REPL.
     let run = format!("server-{}", uuid::Uuid::new_v4().simple());
     let server = match agent {
-        Some((agent, name)) => crate::McpServer::for_agent(host, workspace, &agent, &person)
+        Some((agent, name)) => crate::McpServer::for_agent(provider, workspace, &agent, &person)
             .agent_named(&name)
             .with_agent_session(run, agent),
-        None => crate::McpServer::for_person(host, workspace, &person).with_work_group(
+        None => crate::McpServer::for_person(provider, workspace, &person).with_work_group(
             tilo_actions::WorkGroup {
                 id: run,
                 label: "REPL".into(),
@@ -932,13 +932,13 @@ mod tests {
     #[derive(Clone, Default)]
     struct Recording(std::sync::Arc<std::sync::Mutex<Vec<tilo_actions::remote::Caller>>>);
 
-    impl tilo_actions::remote::ActionHost for Recording {
+    impl tilo_actions::remote::ActionProvider for Recording {
         fn query(
             &self,
             caller: &tilo_actions::remote::Caller,
             query: tilo_actions::remote::CatalogueQuery,
         ) -> tilo_actions::remote::Pending<
-            Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
+            Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
         > {
             self.0.lock().unwrap().push(caller.clone());
             tilo_actions::remote::Pending::ready(Ok(
@@ -950,11 +950,11 @@ mod tests {
             caller: &tilo_actions::remote::Caller,
             _request: tilo_actions::remote::InvokeRequest,
         ) -> tilo_actions::remote::Pending<
-            Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+            Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
         > {
             self.0.lock().unwrap().push(caller.clone());
             tilo_actions::remote::Pending::ready(Err(
-                tilo_actions::remote::ActionHostError::NotPermitted,
+                tilo_actions::remote::ActionCallError::NotPermitted,
             ))
         }
         fn observe(
@@ -968,7 +968,7 @@ mod tests {
             &self,
             _caller: &tilo_actions::remote::Caller,
             _id: &tilo_actions::InvocationId,
-        ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>>
+        ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>>
         {
             tilo_actions::remote::Pending::ready(Ok(()))
         }
@@ -991,20 +991,20 @@ mod tests {
         use std::io::Write;
         let (mut near, far) = std::os::unix::net::UnixStream::pair().unwrap();
         near.write_all(client.as_bytes()).unwrap();
-        let host = Recording::default();
+        let provider = Recording::default();
         let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let served = {
-            let host = host.clone();
+            let provider = provider.clone();
             let asked = std::sync::Arc::clone(&asked);
             std::thread::spawn(move || {
-                serve(far, host, |hello, _connected| {
+                serve(far, provider, |hello, _connected| {
                     assert_eq!(hello.client_name, "Claude Code");
                     asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     consent
                 })
             })
         };
-        (near, served, host, asked)
+        (near, served, provider, asked)
     }
 
     fn lines(stream: std::os::unix::net::UnixStream) -> Vec<serde_json::Value> {
@@ -1020,7 +1020,7 @@ mod tests {
 
         phase a_refused_client_reads_a_json_rpc_error_and_nothing_it_queued_runs;
         {
-            let (near, served, host, asked) = server(
+            let (near, served, provider, asked) = server(
                 &format!("{INITIALIZE}\n{LIST_APPS}\n"),
                 Consent::Refuse("the person said no".into()),
             );
@@ -1031,14 +1031,14 @@ mod tests {
             assert_eq!(replies[0]["error"]["message"], "the person said no");
             assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
             assert!(
-                host.0.lock().unwrap().is_empty(),
+                provider.0.lock().unwrap().is_empty(),
                 "a refused client reached the host"
             );
         }
 
         phase a_tool_call_before_initialize_is_refused_without_asking_anyone;
         {
-            let (near, served, host, asked) = server(
+            let (near, served, provider, asked) = server(
                 &format!("{LIST_APPS}\n{INITIALIZE}\n"),
                 Consent::Admit {
                     workspace: "workspace".into(),
@@ -1053,7 +1053,7 @@ mod tests {
             assert_eq!(replies[0]["id"], 2);
             assert!(replies[0]["error"].is_object());
             assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
-            assert!(host.0.lock().unwrap().is_empty());
+            assert!(provider.0.lock().unwrap().is_empty());
         }
 
         phase a_discovery_probe_is_answered_unsupported_and_the_client_goes_on_to_initialize;
@@ -1063,7 +1063,7 @@ mod tests {
         // and closing on the probe left such a client unable to connect at all.
         {
             const DISCOVER_PROBE: &str = r#"{"jsonrpc":"2.0","id":"server-discover-probe-1","method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#;
-            let (near, served, host, asked) = server(
+            let (near, served, provider, asked) = server(
                 &format!("{DISCOVER_PROBE}\n{INITIALIZE}\n{LIST_APPS}\n"),
                 Consent::Admit {
                     workspace: "workspace".into(),
@@ -1086,7 +1086,7 @@ mod tests {
             assert_eq!(replies[2]["id"], 2);
             assert_eq!(replies[2]["result"]["isError"], false, "{}", replies[2]);
             assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
-            assert!(!host.0.lock().unwrap().is_empty());
+            assert!(!provider.0.lock().unwrap().is_empty());
         }
 
         phase probes_alone_never_admit_and_cannot_keep_the_server_reading;
@@ -1098,7 +1098,7 @@ mod tests {
             // fallback that never comes.
             let probes = 8;
             let flood = format!("{PROBE}\n").repeat(probes);
-            let (near, served, host, asked) = server(
+            let (near, served, provider, asked) = server(
                 &flood,
                 Consent::Admit {
                     workspace: "workspace".into(),
@@ -1128,12 +1128,12 @@ mod tests {
                 assert_eq!(reply["error"]["code"], -32601);
             }
             assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
-            assert!(host.0.lock().unwrap().is_empty());
+            assert!(provider.0.lock().unwrap().is_empty());
         }
 
         phase an_admitted_client_is_served_as_its_agent_in_its_workspace;
         {
-            let (near, served, host, asked) = server(
+            let (near, served, provider, asked) = server(
                 &format!("{INITIALIZE}\n{LIST_APPS}\n"),
                 Consent::Admit {
                     workspace: "workspace".into(),
@@ -1154,7 +1154,7 @@ mod tests {
             );
             assert_eq!(replies[1]["id"], 2);
             assert_eq!(replies[1]["result"]["isError"], false, "{}", replies[1]);
-            let callers = host.0.lock().unwrap();
+            let callers = provider.0.lock().unwrap();
             assert!(!callers.is_empty());
             for caller in callers.iter() {
                 assert_eq!(

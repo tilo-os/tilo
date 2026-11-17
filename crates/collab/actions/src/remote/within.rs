@@ -26,7 +26,7 @@ impl Within {
 impl Caller {
     /// The same caller, asking as part of an invocation admitted to reach
     /// `reach`: what goes further runs only once the person confirmed it.
-    /// It only narrows. Set only by the host that matched the request to
+    /// It only narrows. Set only by the provider that matched the request to
     /// the invocation it continues, never from a payload.
     #[must_use]
     pub fn within(mut self, reach: tilo_action_policy::Reach) -> Self {

@@ -5,7 +5,7 @@
 //! `tilo.host` actions, to the server's own person only, and a member's own
 //! business as `tilo.member` actions.
 use tilo_actions::remote::{
-    ActionHostError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
+    ActionCallError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER,
     workspace_governance_resource,
 };
@@ -190,7 +190,7 @@ pub(super) fn host_operation(action: &str, argument: serde_json::Value) -> Remot
     clippy::panic_in_result_fn,
     reason = "a test's helper: an answer that is no finished receipt fails the test"
 )]
-pub(super) fn outcome(answer: RemoteActionMessage) -> Result<serde_json::Value, ActionHostError> {
+pub(super) fn outcome(answer: RemoteActionMessage) -> Result<serde_json::Value, ActionCallError> {
     let RemoteActionMessage::Receipt(receipt) = answer else {
         panic!("an invocation is answered with a receipt");
     };
@@ -312,7 +312,7 @@ async fn the_owner_invites_through_the_workspaces_action_and_an_editor_cannot() 
     assert_eq!(
         receipt.status,
         ReceiptStatus::Rejected {
-            error: ActionHostError::UnknownAction
+            error: ActionCallError::UnknownAction
         }
     );
     server.shutdown().await;
@@ -399,7 +399,7 @@ async fn the_servers_person_shares_through_its_host_actions_and_a_member_cannot(
     ] {
         assert_eq!(
             outcome(ask_host_of(&member, host_operation(action, argument)).await),
-            Err(ActionHostError::UnknownAction),
+            Err(ActionCallError::UnknownAction),
             "{action}"
         );
     }

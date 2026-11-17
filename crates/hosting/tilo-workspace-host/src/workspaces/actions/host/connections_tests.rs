@@ -17,7 +17,7 @@ use tilo_actions::remote::person_connections::{
     self, ADD, BEGIN_SIGN_IN, CALL, FINISH_SIGN_IN, LIST, LOOK, REFRESH, REMOVE, USES,
 };
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError as Refused, Caller, CatalogueQuery, InvokeArgument,
+    ActionCallError as Refused, ActionProvider as _, Caller, CatalogueQuery, InvokeArgument,
     InvokeRequest, ReceiptStatus,
 };
 use tilo_user_identity::DeviceCert;

@@ -5,11 +5,11 @@ use super::hosted_agent_turns::{SCOUT, TASKS, file_issue, make_agent, tracker};
 use super::*;
 use serde_json::{Value, json};
 use tilo_mcp::McpServer;
-use tilo_server::workspace_agents::WorkspaceActionHost;
+use tilo_server::workspace_agents::WorkspaceActionProvider;
 
 /// Call `name` with `arguments` on `server`: its text, and whether it failed.
 async fn tool(
-    server: &McpServer<WorkspaceActionHost>,
+    server: &McpServer<WorkspaceActionProvider>,
     name: &str,
     arguments: Value,
 ) -> (String, bool) {
@@ -177,7 +177,7 @@ async fn works_on_its_issue(in_page: bool, public: bool) {
         tilo_action_policy::turn::Turn::new(path.clone(), "assigned".to_owned()),
         Vec::new(),
     );
-    let tools = WorkspaceActionHost::new(actions.clone(), id);
+    let tools = WorkspaceActionProvider::new(actions.clone(), id);
     let server = McpServer::for_turn(tools, caller).unwrap();
 
     let (listed, failed) = tool(&server, "tilo_ls", json!({"path": "tasks/Issues"})).await;

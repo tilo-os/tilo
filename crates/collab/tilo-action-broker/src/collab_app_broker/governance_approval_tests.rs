@@ -119,7 +119,7 @@ fn invoke(
     state: &Arc<AppBrokerState>,
     caller: &Caller,
     request: &InvokeRequest,
-) -> Result<(), ActionHostError> {
+) -> Result<(), ActionCallError> {
     state
         .action_invoke(caller, None, None, request)
         .wait_timeout(tilo_test_env::hang_bound())
@@ -172,7 +172,7 @@ tilo_test_env::scenario! {
             ));
             assert_eq!(
                 invoke(&state, &owner, &request),
-                Err(ActionHostError::confirmation_required()),
+                Err(ActionCallError::confirmation_required()),
                 "an approval for another {changed} never confirms this invocation",
             );
             assert!(service.calls.lock().unwrap().is_empty());
@@ -202,7 +202,7 @@ tilo_test_env::scenario! {
         let (state, service, owner, mut request) = broker(true);
         assert_eq!(
             invoke(&state, &owner, &request),
-            Err(ActionHostError::confirmation_required())
+            Err(ActionCallError::confirmation_required())
         );
         request.confirmation = Some(approval(&state, &tilo_actions::MemberId::person("owner"), &request));
         let mut changed = request.clone();
@@ -211,7 +211,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             invoke(&state, &owner, &changed),
-            Err(ActionHostError::confirmation_required())
+            Err(ActionCallError::confirmation_required())
         );
         invoke(&state, &owner, &request).unwrap();
         assert_eq!(
@@ -222,14 +222,14 @@ tilo_test_env::scenario! {
         assert_eq!(service.calls.lock().unwrap().len(), 1);
         assert_eq!(
             invoke(&state, &owner, &changed),
-            Err(ActionHostError::InvocationConflict),
+            Err(ActionCallError::InvocationConflict),
             "an admitted invocation cannot be retried with different arguments",
         );
         assert_eq!(service.calls.lock().unwrap().len(), 1);
         request.invocation = tilo_actions::InvocationId::new();
         assert_eq!(
             invoke(&state, &owner, &request),
-            Err(ActionHostError::confirmation_required())
+            Err(ActionCallError::confirmation_required())
         );
         request.confirmation = Some(Confirmation::Confirmed);
         invoke(&state, &owner, &request).unwrap();
@@ -242,27 +242,27 @@ tilo_test_env::scenario! {
         request.confirmation = Some(approval(&state, &tilo_actions::MemberId::person("someone-else"), &request));
         assert_eq!(
             invoke(&state, &owner, &request),
-            Err(ActionHostError::confirmation_required())
+            Err(ActionCallError::confirmation_required())
         );
         let mut other_address = request.clone();
         other_address.target.address.resource = "another-resource".into();
         request.confirmation = Some(approval(&state, &tilo_actions::MemberId::person("owner"), &other_address));
         assert_eq!(
             invoke(&state, &owner, &request),
-            Err(ActionHostError::confirmation_required())
+            Err(ActionCallError::confirmation_required())
         );
         other_address = request.clone();
         other_address.target.address.action = "different-action".into();
         request.confirmation = Some(approval(&state, &tilo_actions::MemberId::person("owner"), &other_address));
         assert_eq!(
             invoke(&state, &owner, &request),
-            Err(ActionHostError::confirmation_required())
+            Err(ActionCallError::confirmation_required())
         );
         let agent = Caller::local_agent("limited").in_workspace(owner.workspace().unwrap());
         request.confirmation = Some(approval(&state, &tilo_actions::MemberId::agent("limited"), &request));
         assert_eq!(
             invoke(&state, &agent, &request),
-            Err(ActionHostError::NotPermitted),
+            Err(ActionCallError::NotPermitted),
             "even a grant and exact approval cannot confer direct owner ownership"
         );
         let other = Caller::local_person("other").in_workspace(owner.workspace().unwrap());
@@ -272,7 +272,7 @@ tilo_test_env::scenario! {
         request.confirmation = Some(Confirmation::Confirmed);
         assert_eq!(
             invoke(&state, &owner, &request),
-            Err(ActionHostError::UnknownAction)
+            Err(ActionCallError::UnknownAction)
         );
         assert!(service.calls.lock().unwrap().is_empty());
     }
@@ -302,7 +302,7 @@ tilo_test_env::scenario! {
             // Canonical governance checks confirmation before current policy.
             assert_eq!(
                 invoke(&state, &person, &request),
-                Err(ActionHostError::confirmation_required())
+                Err(ActionCallError::confirmation_required())
             );
             assert!(service.calls.lock().unwrap().is_empty());
 
@@ -315,7 +315,7 @@ tilo_test_env::scenario! {
                 if answer == Answer::Deny {
                     assert_eq!(
                         invoke(&state, &person, &request),
-                        Err(ActionHostError::NotPermitted)
+                        Err(ActionCallError::NotPermitted)
                     );
                     assert!(service.calls.lock().unwrap().is_empty());
                 } else {
@@ -350,12 +350,12 @@ tilo_test_env::scenario! {
         request.confirmation = Some(confirmation);
         assert_eq!(
             invoke(&state, &owner, &request),
-            Err(ActionHostError::confirmation_required())
+            Err(ActionCallError::confirmation_required())
         );
         request.confirmation = Some(Confirmation::Approved("unregistered".into()));
         assert_eq!(
             invoke(&state, &owner, &request),
-            Err(ActionHostError::confirmation_required())
+            Err(ActionCallError::confirmation_required())
         );
         assert!(service.calls.lock().unwrap().is_empty());
     }

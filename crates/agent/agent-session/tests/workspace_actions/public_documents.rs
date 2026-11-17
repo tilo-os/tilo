@@ -56,7 +56,7 @@ fn address_of(replica: &Replica, action: &str) -> ActionAddress {
 /// The host's catalogue of `provider`, asked again while the service is still
 /// joining the workspace: a host that has not joined yet says so, and the
 /// caller asks again, as a page does.
-async fn catalogue(page: &mut Browser, provider: &str) -> Result<CataloguePage, ActionHostError> {
+async fn catalogue(page: &mut Browser, provider: &str) -> Result<CataloguePage, ActionCallError> {
     catalogue_under(page, provider, None).await
 }
 
@@ -66,7 +66,7 @@ async fn catalogue_under(
     page: &mut Browser,
     provider: &str,
     parent: Option<&str>,
-) -> Result<CataloguePage, ActionHostError> {
+) -> Result<CataloguePage, ActionCallError> {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let query = CatalogueQuery {
@@ -76,7 +76,7 @@ async fn catalogue_under(
             ..CatalogueQuery::default()
         };
         match page.catalogue(query).await {
-            Err(ActionHostError::Unavailable { reason }) => {
+            Err(ActionCallError::Unavailable { reason }) => {
                 assert!(
                     Instant::now() < deadline,
                     "the host never joined the workspace: {reason}"
@@ -236,7 +236,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     assert!(
         matches!(
             refused,
-            Err(ActionHostError::UnknownAction | ActionHostError::NotPermitted)
+            Err(ActionCallError::UnknownAction | ActionCallError::NotPermitted)
         ),
         "a record the workspace has none of is refused: {refused:?}"
     );

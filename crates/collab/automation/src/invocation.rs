@@ -1,4 +1,4 @@
-//! Running a shortcut through an [`ActionHost`].
+//! Running a shortcut through an [`ActionProvider`].
 //!
 //! The interpreter never acts in its own name. Every step is an invocation by
 //! the [`Caller`] who started the invocation, so the host applies that person's own
@@ -33,7 +33,7 @@ use tilo_actions::contract::{ConfirmationPolicy, ResultSpec};
 use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId as ActionInvocationId};
 use tilo_actions::params::{ActionArgs, ActionParam, ParamType, validate_json_schema};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CatalogueQuery, CatalogueRow, Confirmation,
+    ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, Confirmation,
     InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, RESOURCE_READS_UNAVAILABLE,
     ReceiptStatus, ResourceAddress, ResourceAsk, read_resources,
 };
@@ -264,7 +264,7 @@ pub trait InvocationHooks: Sync {
 
     /// Resolve when the running invocation `invocation` is worth observing
     /// again — after a poll interval. Only called for a host whose
-    /// [`ActionHost::next_change`]
+    /// [`ActionProvider::next_change`]
     /// cannot tell when the invocation changes. Abandoning the answer stops
     /// the invocation.
     fn settle(&self, invocation: ActionInvocationId) -> Pending<()>;
@@ -338,7 +338,7 @@ pub enum StepFailure {
     #[error("the host refused: {error}")]
     // Boxed: the host's and the action's errors carry JSON details, whose size
     // depends on the serde_json features the rest of the build enables.
-    Host { error: Box<ActionHostError> },
+    Host { error: Box<ActionCallError> },
     #[error("the action failed: {}", error.message)]
     Action { error: Box<ActionFailure> },
     #[error("the action was cancelled")]
@@ -380,7 +380,7 @@ impl StepFailure {
     pub fn transient(&self) -> bool {
         match self {
             Self::Unavailable { .. } | Self::TimedOut { .. } => true,
-            Self::Host { error } => matches!(**error, ActionHostError::Unavailable { .. }),
+            Self::Host { error } => matches!(**error, ActionCallError::Unavailable { .. }),
             Self::Action { error } => error.retryable,
             _ => false,
         }
@@ -693,7 +693,7 @@ impl InvocationReport {
 /// Run `request.shortcut` on `host`.
 ///
 /// Stops at the first step that fails; the report says which and why.
-pub async fn run<H: ActionHost + Sync, K: InvocationHooks>(
+pub async fn run<H: ActionProvider + Sync, K: InvocationHooks>(
     host: &H,
     hooks: &K,
     request: InvocationRequest<'_>,
@@ -1059,7 +1059,7 @@ impl Future for WaitUntil {
     }
 }
 
-impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
+impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
     fn block<'s>(&'s mut self, steps: &'a [Step], path: StepPath) -> Block<'s>
     where
         'a: 's,
@@ -1633,11 +1633,11 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
                 _ => {}
             }
         }
-        let host = |error: ActionHostError| StepFailure::Host {
+        let host = |error: ActionCallError| StepFailure::Host {
             error: Box::new(error),
         };
         let reads = self.host.resource_reads().ok_or_else(|| {
-            host(ActionHostError::Unavailable {
+            host(ActionCallError::Unavailable {
                 reason: RESOURCE_READS_UNAVAILABLE.into(),
             })
         })?;
@@ -2222,7 +2222,7 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
                     self.host
                         .observe(&self.caller, &id)
                         .ok_or_else(|| StepFailure::Host {
-                            error: Box::new(ActionHostError::UnknownInvocation),
+                            error: Box::new(ActionCallError::UnknownInvocation),
                         })?
                         .receipt()
                         .status

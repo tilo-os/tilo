@@ -67,7 +67,7 @@ impl HostAgents {
             document: String::new(),
         };
         match invoke_named(
-            &reply.host,
+            &reply.provider,
             &reply.caller,
             &route,
             chat::Chat::KIND,

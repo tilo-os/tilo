@@ -1,17 +1,17 @@
 //! What a watch of a workspace follows, and where it is woken: every write landing in the
 //! workspace's replica answers a waiting watch, and who is in the workspace moves with its
 //! governance, which is one of its records. A caller asks for such a wait across the wire
-//! ([`tilo_actions::remote::ActionHost::changed`]); the device that holds the workspace holds its
+//! ([`tilo_actions::remote::ActionProvider::changed`]); the device that holds the workspace holds its
 //! answer here until a change comes or the wait runs out.
 use super::{
-    ActionHostError, Arc, Caller, Completer, DocumentRoute, Event, Instant, MAX_REMOTE_WAIT, Needs,
+    ActionCallError, Arc, Caller, Completer, DocumentRoute, Event, Instant, MAX_REMOTE_WAIT, Needs,
     Worker, Workspace, WorkspaceDocuments, WorkspaceId,
 };
 
 /// One caller waiting for a change of what it follows in a workspace ([`Worker::watch`]).
 struct ChangeWait {
     until: Instant,
-    done: Completer<Result<(), ActionHostError>>,
+    done: Completer<Result<(), ActionCallError>>,
 }
 
 /// Who waits for a change of one workspace, and when each wait ends ([`MAX_REMOTE_WAIT`] after it
@@ -43,7 +43,7 @@ impl Watchers {
     }
 
     /// Hold `done` until a change lands or `until` passes.
-    fn wait(&mut self, until: Instant, done: Completer<Result<(), ActionHostError>>) {
+    fn wait(&mut self, until: Instant, done: Completer<Result<(), ActionCallError>>) {
         self.waiting.push(ChangeWait { until, done });
     }
 
@@ -161,10 +161,10 @@ impl Worker {
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
-        done: Completer<Result<(), ActionHostError>>,
+        done: Completer<Result<(), ActionCallError>>,
     ) {
         if !self.admits_member(workspace_id, caller) {
-            done.complete(Err(ActionHostError::NotPermitted));
+            done.complete(Err(ActionCallError::NotPermitted));
             return;
         }
         // Everything that landed so far is in what the caller reads next: taken in before the

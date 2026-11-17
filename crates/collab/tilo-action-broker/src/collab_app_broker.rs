@@ -824,7 +824,7 @@ pub(crate) struct VerifiedActionCaller {
     /// across every re-verification of the person's admission.
     delegated: Option<String>,
     /// A keyless native projection verified against protected device identity.
-    /// Only `certified_native_action_host` sets this; signed/network evidence
+    /// Only `certified_native_action_provider` sets this; signed/network evidence
     /// alone never establishes physical intent.
     native_projection_verified: bool,
 }
@@ -953,7 +953,7 @@ impl AppBrokerState {
                 tilo_actions::remote::InvocationReceipt {
                     invocation: invoke.invocation,
                     status: tilo_actions::remote::ReceiptStatus::Rejected {
-                        error: tilo_actions::remote::ActionHostError::NotPermitted,
+                        error: tilo_actions::remote::ActionCallError::NotPermitted,
                     },
                 },
             ))
@@ -1169,8 +1169,8 @@ impl PendingInvocation {
     }
 }
 
-// Remote-action host: the broker as a `tilo_actions::remote::ActionHost`.
-pub(super) mod action_host;
+// Remote-action provider: the broker as a `tilo_actions::remote::ActionProvider`.
+pub(super) mod action_provider;
 mod admission_memo;
 mod agent_connection;
 #[cfg(test)]
@@ -1184,7 +1184,7 @@ mod host_steps;
 mod invocation_update;
 mod launchable;
 mod live_views;
-mod local_action_host;
+mod local_action_provider;
 mod remaining_workspace_actions;
 mod turns;
 pub use agent_connection::AgentConnection;
@@ -1193,7 +1193,7 @@ mod window_provider;
 mod windowless_instances;
 use approval::requires_store_approval;
 mod workspace_open;
-pub use local_action_host::{CertifiedActionLifecycle, CertifiedPersonContext};
+pub use local_action_provider::{CertifiedActionLifecycle, CertifiedPersonContext};
 
 /// The host the person's other devices reach this device's actions through:
 /// a request is admitted for the caller its own device's signature named,
@@ -1201,8 +1201,8 @@ pub use local_action_host::{CertifiedActionLifecycle, CertifiedPersonContext};
 /// decided by that caller alone.
 pub(crate) fn device_host(
     state: Arc<AppBrokerState>,
-) -> Arc<dyn tilo_actions::remote::ActionHost + Send + Sync> {
-    Arc::new(action_host::BrokerApi::new(state))
+) -> Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> {
+    Arc::new(action_provider::BrokerApi::new(state))
 }
 
 pub use launchable::launchable_provider;
@@ -1988,7 +1988,7 @@ struct EagerActionInvokeRequest {
     origin: InvocationCaller,
     request: tilo_actions::remote::InvokeRequest,
     reply: tilo_actions::remote::Completer<
-        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     >,
 }
 
@@ -3935,7 +3935,7 @@ impl AppBrokerState {
         if reply.is_abandoned() {
             return;
         }
-        action_host::answer_with(
+        action_provider::answer_with(
             self.invoke_eager(&caller, own_peer, launch.as_ref(), Some(&origin), &request),
             reply,
         );
@@ -5793,8 +5793,8 @@ impl AppBrokerState {
         actor: &BrokerActor,
         evidence: Option<&tilo_actions::remote::Confirmation>,
         binding: &ApprovalBinding,
-    ) -> Result<Option<String>, tilo_actions::remote::ActionHostError> {
-        use tilo_actions::remote::{ActionHostError, Confirmation};
+    ) -> Result<Option<String>, tilo_actions::remote::ActionCallError> {
+        use tilo_actions::remote::{ActionCallError, Confirmation};
         // Only a person acting themselves confirms by their own word; anyone
         // acting for them carries the answer the person gave on their device.
         let approved = match evidence {
@@ -5810,7 +5810,7 @@ impl AppBrokerState {
         // Store disclosures must be answered on a trusted host sheet, even
         // when the publisher's connection is admitted as the person themself.
         if requires_store_approval(app, &offered.action) && !approved {
-            return Err(ActionHostError::confirmation_required());
+            return Err(ActionCallError::confirmation_required());
         }
         let own = actor.direct().then_some(evidence).flatten();
         // Decided from the arguments, without the app's code: a field edit
@@ -5823,7 +5823,7 @@ impl AppBrokerState {
                 return Ok(None);
             }
         } else if !approved && !confirmation_satisfied(&policy, own) {
-            return Err(ActionHostError::confirmation_required());
+            return Err(ActionCallError::confirmation_required());
         }
         self.mint_confirmation_grant(peer_id, offered, argument, actor)
             .and_then(|token| {
@@ -5838,7 +5838,7 @@ impl AppBrokerState {
                 Ok(token)
             })
             .map(Some)
-            .map_err(|reason| ActionHostError::Unavailable { reason })
+            .map_err(|reason| ActionCallError::Unavailable { reason })
     }
 
     /// Trusted internal callers only: admission must already have checked
@@ -6955,7 +6955,7 @@ impl AppBrokerState {
     }
 
     /// The next time what a watch of `caller`'s workspace follows may have changed, as this
-    /// broker can tell it ([`tilo_actions::remote::ActionHost::changed`]): the roster it reads
+    /// broker can tell it ([`tilo_actions::remote::ActionProvider::changed`]): the roster it reads
     /// from its membership and its agents' grants, and nothing for the records, which its apps
     /// keep and whose writes it is not told of.
     pub fn changed(

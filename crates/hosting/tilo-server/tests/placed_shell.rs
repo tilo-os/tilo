@@ -22,7 +22,7 @@ use legacy_vm::hosted::size::VmSize;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRequest};
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest,
+    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest,
 };
 use tilo_agent_session::workspace_actions::{ShellRan, Watching};
 use tilo_peer_state::actions::{ActionService, NoActions};
@@ -284,7 +284,7 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
         Err(error) => error,
     };
     assert!(
-        matches!(refused, ActionHostError::NotPermitted),
+        matches!(refused, ActionCallError::NotPermitted),
         "the member refuses a device of another person: {refused:?}"
     );
     assert!(

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use tilo_actions::remote::workspace_activity as wire;
-use tilo_actions::remote::{ActionHostError, Caller};
+use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_actions::{InvocationUpdate, InvocationUpdate::Item};
 use tilo_desktop_model::WorkspaceId;
 use ui::automerge::AutoCommit;
@@ -180,7 +180,7 @@ impl Served {
 
     /// The windows' action API of the session, as `caller` .
     fn api(&self, caller: Caller) -> RemoteActions {
-        RemoteActions::with_host(self.session.clone(), caller.in_workspace(WORKSPACE))
+        RemoteActions::with_provider(self.session.clone(), caller.in_workspace(WORKSPACE))
     }
 
     /// One pass of the desktop: what the windows asked is answered.
@@ -226,7 +226,7 @@ fn latest<T: serde::de::DeserializeOwned>(followed: &ui::Followed) -> Option<(u6
 /// Why `call` was refused, once it was.
 fn refusal(call: &ui::InvocationCall) -> Option<String> {
     call.with(|arrival| match arrival {
-        Arrival::Failed(ActionHostError::Refused { reason }) => Some(reason.clone()),
+        Arrival::Failed(ActionCallError::Refused { reason }) => Some(reason.clone()),
         Arrival::Ready(InvocationUpdate::Failed { error, .. }) => Some(error.message.clone()),
         _ => None,
     })
@@ -371,7 +371,7 @@ fn what_is_seen_is_the_persons_own_and_the_history_is_read_only() {
     );
 
     // Someone outside the workspace reads nothing of it.
-    let outside = RemoteActions::with_host(shell.session.clone(), Caller::local_person("eve"));
+    let outside = RemoteActions::with_provider(shell.session.clone(), Caller::local_person("eve"));
     let feed = outside.follow(
         wire::target(wire::FEED),
         wire::argument(&wire::FeedQuery::default()),
@@ -379,7 +379,7 @@ fn what_is_seen_is_the_persons_own_and_the_history_is_read_only() {
     shell.frame();
     assert!(
         feed.call()
-            .with(|arrival| matches!(arrival, Arrival::Failed(ActionHostError::UnknownAction)))
+            .with(|arrival| matches!(arrival, Arrival::Failed(ActionCallError::UnknownAction)))
     );
 }
 

@@ -145,7 +145,7 @@ mod eager_bridge_tests {
         assert!(matches!(
             refused.poll_ready(),
             PendingPoll::Ready(Err(
-                tilo_actions::remote::ActionHostError::Unavailable { .. }
+                tilo_actions::remote::ActionCallError::Unavailable { .. }
             ))
         ));
         assert!(fixture.take_invocation_identity().is_none());

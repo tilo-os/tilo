@@ -18,7 +18,7 @@ use ui::prelude::*;
 use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending, RemoteActionMessage, RemoteActionTarget,
     ResourceViewLocator,
 };
@@ -141,12 +141,12 @@ struct Host {
     asked: Mutex<Vec<CatalogueQuery>>,
 }
 
-impl ActionHost for Host {
+impl ActionProvider for Host {
     fn query(
         &self,
         _caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         let provider = query.provider.clone().unwrap_or_default();
         self.asked.lock().unwrap().push(query);
         Pending::ready(Ok(CataloguePage {
@@ -166,15 +166,15 @@ impl ActionHost for Host {
         &self,
         _caller: &Caller,
         _request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        Pending::ready(Err(ActionHostError::NotPermitted))
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::NotPermitted))
     }
 
     fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
         None
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Ok(()))
     }
 }

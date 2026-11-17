@@ -30,7 +30,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::Agent;
 
-use super::{CHAT, HostAgents, WorkspaceActionHost, invoke_named};
+use super::{CHAT, HostAgents, WorkspaceActionProvider, invoke_named};
 
 /// The kind of the cause a wake carries: its person answered a question the
 /// agent asked them.
@@ -242,7 +242,7 @@ impl HostAgents {
             document: String::new(),
         };
         invoke_named(
-            &WorkspaceActionHost::new(self.actions.clone(), workspace_id),
+            &WorkspaceActionProvider::new(self.actions.clone(), workspace_id),
             &waker,
             &route,
             &ui::resource::chain_resource_id(&chat::parts::chain()),

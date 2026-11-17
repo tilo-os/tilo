@@ -1,10 +1,10 @@
 //! The server an agent a host runs itself works through on one person's turn.
 
-use tilo_actions::remote::{ActionHost, Caller};
+use tilo_actions::remote::{ActionProvider, Caller};
 
 use crate::{McpServer, Surface};
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// One turn of an agent the host runs itself, for the person whose ask it answers: `caller` is
     /// that person's device handing the session to the agent on the turn
     /// ([`Caller::delegated_to`], [`Caller::on_turn`]), as the host that admitted the ask built

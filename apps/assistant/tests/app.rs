@@ -11,7 +11,7 @@ use std::sync::Arc;
 use assistant::App;
 use serde_json::json;
 use ui::prelude::*;
-use ui::tilo_actions::remote::{Caller, InvokeArgument, TestHost};
+use ui::tilo_actions::remote::{Caller, InvokeArgument, TestProvider};
 use ui::tilo_reference::ResourceRef;
 use ui::tilo_workspace_agent::{self as workspace_agent, WorkspaceAgents};
 
@@ -38,8 +38,8 @@ fn says(app: &mut TestApp<App>, text: &str) -> bool {
 
 /// Chat as the session's API reaches it: it takes each message it is sent and answers
 /// nothing, as `send` does for a caller that opens no window.
-fn chat_api() -> TestHost {
-    TestHost::new().completing(|_| ui::tilo_actions::ActionOutput {
+fn chat_api() -> TestProvider {
+    TestProvider::new().completing(|_| ui::tilo_actions::ActionOutput {
         value: None,
         resources: Vec::new(),
     })

@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use tilo_action_policy::{ActionKind, Answer, KindSet, Level, Rule, TreePath};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::ActionHostError::{
+use tilo_actions::remote::ActionCallError::{
     self, InvalidRequest, NotPermitted, Refused, UnknownAction,
 };
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
@@ -133,7 +133,7 @@ async fn remembered(
 }
 
 /// The ask a use answered with, when it asked.
-fn asked(taken: Result<TurnUse, ActionHostError>) -> OpenAsk {
+fn asked(taken: Result<TurnUse, ActionCallError>) -> OpenAsk {
     match taken {
         Ok(TurnUse::Asks(open)) => *open,
         other => panic!("the person is asked first: {other:?}"),

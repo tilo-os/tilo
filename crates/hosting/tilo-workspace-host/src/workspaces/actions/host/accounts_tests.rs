@@ -15,7 +15,9 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::person_accounts::{self, MailAccounts, MailArrivals};
-use tilo_actions::remote::{ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
+use tilo_actions::remote::{
+    ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
+};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::super::HostWorkspaceActions;
@@ -75,7 +77,7 @@ fn keep(root: &std::path::Path, address: &str) {
 
 /// The listing the follow `id` reads now, as the window is sent it.
 fn listed(
-    host: &impl tilo_actions::remote::ActionHost,
+    host: &impl tilo_actions::remote::ActionProvider,
     caller: &Caller,
     id: InvocationId,
 ) -> MailAccounts {
@@ -248,7 +250,7 @@ async fn a_person_asks_what_arrived_and_the_host_watches_from_then_on() {
     assert!(
         matches!(
             refused,
-            Err(tilo_actions::remote::ActionHostError::UnknownAction)
+            Err(tilo_actions::remote::ActionCallError::UnknownAction)
         ),
         "{refused:?}"
     );

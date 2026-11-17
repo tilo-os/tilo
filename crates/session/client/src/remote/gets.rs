@@ -4,7 +4,7 @@
 //! read split into pieces a frame carries.
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, ContentGets, ContentPiece, MAX_CONTENT_FRAME_BYTES,
+    ActionCallError, Caller, ContentGets, ContentPiece, MAX_CONTENT_FRAME_BYTES,
 };
 
 use super::SessionActions;
@@ -22,7 +22,7 @@ impl ContentGets for SessionGets {
         content: &str,
         offset: u64,
         length: u64,
-    ) -> Result<ContentPiece, ActionHostError> {
+    ) -> Result<ContentPiece, ActionCallError> {
         let mut bytes = Vec::new();
         let mut at = offset;
         // The whole content's size, once a piece says it.
@@ -34,19 +34,19 @@ impl ContentGets for SessionGets {
             let wanted = size.map_or(cap, |size: u64| cap.min(size.saturating_sub(at)));
             let asked = self.0.get_piece(content, at, wanted)?;
             if asked.offset != at {
-                return Err(ActionHostError::Unavailable {
+                return Err(ActionCallError::Unavailable {
                     reason: format!(
                         "the device answered the piece at {} asked at {at}",
                         asked.offset
                     ),
                 });
             }
-            let piece = asked.bytes().ok_or_else(|| ActionHostError::Unavailable {
+            let piece = asked.bytes().ok_or_else(|| ActionCallError::Unavailable {
                 reason: format!("the device answered {content} with bytes that are not hex"),
             })?;
             size = Some(asked.size);
             if piece.is_empty() && at < asked.size {
-                return Err(ActionHostError::Unavailable {
+                return Err(ActionCallError::Unavailable {
                     reason: format!(
                         "the device answered no bytes of {content} at {at} of {}",
                         asked.size

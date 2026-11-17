@@ -17,7 +17,7 @@ use super::keys::{Keys, invoke_keys};
 use super::{DocumentRoute, Needs, Outcome, Worker, Workspace};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
-    ActionHostError, InvokeRequest, application_provider, application_provider_resource,
+    ActionCallError, InvokeRequest, application_provider, application_provider_resource,
     provider_workspace,
 };
 use tilo_server_protocol::WorkspaceId;
@@ -308,13 +308,13 @@ impl Worker {
         route: &DocumentRoute,
     ) -> Result<bool, Outcome> {
         let workspace = self.workspaces.get_mut(&workspace_id).ok_or_else(|| {
-            Outcome::Rejected(ActionHostError::Unavailable {
+            Outcome::Rejected(ActionCallError::Unavailable {
                 reason: "the workspace was not joined".into(),
             })
         })?;
         // Another person's own: the host never sends it here, so nothing waits for it.
         if workspace.not_yours.contains(route) {
-            return Err(Outcome::Rejected(ActionHostError::NotPermitted));
+            return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
         // Held, or sent by the host under the route of what it names.
         if workspace.holds(route)
@@ -329,7 +329,7 @@ impl Worker {
         // Asked for now: the same call goes through once it arrived, which the caller waits for
         // as the workspace's state rather than a reason to read.
         if workspace.ask(workspace_id, needs) {
-            return Err(Outcome::Rejected(ActionHostError::NotReady));
+            return Err(Outcome::Rejected(ActionCallError::NotReady));
         }
         Ok(false)
     }
@@ -378,7 +378,7 @@ impl Worker {
         match held.document(route) {
             Ok(saved) => Ok(Some(saved)),
             Err(_) if !self.held_or_owed(workspace_id, route)? => Ok(None),
-            Err(why) => Err(Outcome::Rejected(ActionHostError::Unavailable {
+            Err(why) => Err(Outcome::Rejected(ActionCallError::Unavailable {
                 reason: why,
             })),
         }

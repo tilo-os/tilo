@@ -12,7 +12,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
+    ActionCallError, ActionProvider as _, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
     RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
@@ -78,7 +78,7 @@ async fn invoke(
     host: &HostWorkspaceActions,
     device: &DeviceCert,
     request: InvokeRequest,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     let receipt = settled(host.as_host(device).invoke(&caller(device), request)).await?;
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
@@ -291,7 +291,7 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     ] {
         assert_eq!(
             invoke(&host, &stranger, host_request(action, argument)).await,
-            Err(ActionHostError::UnknownAction),
+            Err(ActionCallError::UnknownAction),
             "{action}"
         );
     }
@@ -305,7 +305,7 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
             .invoke(&agent, host_request(LIST_WORKSPACES, json!({}))),
     )
     .await;
-    assert_eq!(refused.unwrap_err(), ActionHostError::UnknownAction);
+    assert_eq!(refused.unwrap_err(), ActionCallError::UnknownAction);
 
     // A certificate that is not the caller's speaks for nobody.
     let refused = settled(
@@ -313,7 +313,7 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
             .invoke(&caller(&stranger), host_request(LIST_WORKSPACES, json!({}))),
     )
     .await;
-    assert_eq!(refused.unwrap_err(), ActionHostError::UnknownAction);
+    assert_eq!(refused.unwrap_err(), ActionCallError::UnknownAction);
 
     // Without the certificate the transport verified, the host's operations
     // are not there at all.
@@ -322,7 +322,7 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
             .invoke(&caller(&laptop), host_request(LIST_WORKSPACES, json!({}))),
     )
     .await;
-    assert_eq!(unverified.unwrap_err(), ActionHostError::UnknownAction);
+    assert_eq!(unverified.unwrap_err(), ActionCallError::UnknownAction);
 
     // The app action server hands the certificate on: through it, the laptop lists.
     let governed = GovernedServer {

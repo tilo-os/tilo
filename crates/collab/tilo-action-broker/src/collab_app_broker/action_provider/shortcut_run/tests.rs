@@ -233,7 +233,7 @@ impl Fixture {
         clippy::future_not_send,
         reason = "the fixture's broker state is thread confined to the test's current-thread runtime"
     )]
-    async fn invoke(&self) -> Result<InvocationReceipt, ActionHostError> {
+    async fn invoke(&self) -> Result<InvocationReceipt, ActionCallError> {
         self.state
             .action_invoke_with_origin(&self.caller, None, None, Some(&self.origin), &self.request)
             .await
@@ -261,7 +261,7 @@ impl Fixture {
 fn start_direct(
     fixture: &Fixture,
     trigger: Option<&tilo_automation::TriggerSpec>,
-) -> Result<u64, ActionHostError> {
+) -> Result<u64, ActionCallError> {
     let workspace = fixture.caller.workspace().unwrap();
     if let Some(trigger) = trigger {
         fixture.state.start_triggered_shortcut_run(
@@ -764,10 +764,14 @@ async fn an_unscoped_broker_api_does_not_invent_native_ownership() {
     let fixture = Fixture::new();
     let api = BrokerApi::new(fixture.state.clone());
     assert!(
-        tilo_actions::remote::ActionHost::invoke(&api, &fixture.caller, fixture.request.clone())
-            .await
-            .unwrap()
-            .is_err(),
+        tilo_actions::remote::ActionProvider::invoke(
+            &api,
+            &fixture.caller,
+            fixture.request.clone()
+        )
+        .await
+        .unwrap()
+        .is_err(),
         "an identity-bearing host requires original ownership"
     );
     assert!(!fixture.state.has_finished_shortcut_runs());
@@ -938,7 +942,7 @@ async fn continuing_a_run_the_broker_did_not_record_is_refused_and_starts_nothin
         }),
     );
     assert!(
-        matches!(refused, Err(ActionHostError::Refused { .. })),
+        matches!(refused, Err(ActionCallError::Refused { .. })),
         "a run the broker has no record of is refused: {refused:?}"
     );
     assert!(
@@ -963,7 +967,7 @@ async fn continuing_a_run_from_the_run_itself_is_refused() {
         }),
     );
     assert!(
-        matches!(refused, Err(ActionHostError::InvalidRequest { .. })),
+        matches!(refused, Err(ActionCallError::InvalidRequest { .. })),
         "a continuation names the step it goes on from: {refused:?}"
     );
 }

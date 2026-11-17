@@ -13,7 +13,7 @@ use tilo_actions::contract::{ActionContract, ConfirmationPolicy, ResultSpec, Ris
 use tilo_actions::outcome::{ActionOutput, InvocationId as ActionInvocationId, InvocationUpdate};
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
     CatalogueRow, Completer, Confirmation, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, ResourceAddress, ResourceCopy, ResourceReads,
     ResourceWake, pending,
@@ -313,12 +313,12 @@ impl FakeHost {
     }
 }
 
-impl ActionHost for FakeHost {
+impl ActionProvider for FakeHost {
     fn query(
         &self,
         _caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(CataloguePage::from_rows(
             "1".into(),
             self.rows.clone(),
@@ -330,17 +330,17 @@ impl ActionHost for FakeHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let offered = self.rows.iter().any(|row| {
             row.provider == request.target.provider
                 && row.action.as_ref().map(|a| &a.address) == Some(&request.target.address)
         });
         if !offered {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let action = request.target.address.action.clone();
         if self.refusing(&action) {
-            return Pending::ready(Err(ActionHostError::Unavailable {
+            return Pending::ready(Err(ActionCallError::Unavailable {
                 reason: "the app is starting".into(),
             }));
         }
@@ -375,8 +375,8 @@ impl ActionHost for FakeHost {
         &self,
         _caller: &Caller,
         _id: &ActionInvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(Err(ActionHostError::NotCancellable {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionCallError::NotCancellable {
             reason: "finished".into(),
         }))
     }
@@ -1435,9 +1435,9 @@ impl ResourceReads for NoteReads {
         tilo_actions::remote::answer_read(self, caller, correlation, read)
     }
 
-    fn read(&self, _: &Caller, address: &ResourceAddress) -> Result<ResourceCopy, ActionHostError> {
+    fn read(&self, _: &Caller, address: &ResourceAddress) -> Result<ResourceCopy, ActionCallError> {
         if address.record == "private" {
-            return Err(ActionHostError::Refused {
+            return Err(ActionCallError::Refused {
                 reason: "not yours".into(),
             });
         }
@@ -1449,7 +1449,7 @@ impl ResourceReads for NoteReads {
         _: &Caller,
         _: &ResourceAddress,
         _: &ResourceWake,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         Ok(())
     }
 }
@@ -1555,7 +1555,7 @@ tilo_test_env::scenario! {
         check(&run, &host.catalog(), &NoShortcuts).unwrap();
         let refused = unattended(&host, &run);
         assert!(
-            matches!(read_failure(&refused), Some(StepFailure::Host { error }) if matches!(**error, ActionHostError::Refused { .. })),
+            matches!(read_failure(&refused), Some(StepFailure::Host { error }) if matches!(**error, ActionCallError::Refused { .. })),
             "{refused:?}"
         );
     }
@@ -2444,7 +2444,7 @@ struct RunningJob {
     /// For a host that cannot push: how many more observations still find
     /// the job running.
     running_for: usize,
-    /// The waiter [`ActionHost::next_change`] handed out.
+    /// The waiter [`ActionProvider::next_change`] handed out.
     change: Option<Completer<()>>,
 }
 
@@ -2477,12 +2477,12 @@ impl RunningHost {
     }
 }
 
-impl ActionHost for RunningHost {
+impl ActionProvider for RunningHost {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.offers.query(caller, query)
     }
 
@@ -2490,7 +2490,7 @@ impl ActionHost for RunningHost {
         &self,
         _caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let id = request.invocation;
         self.job.lock().unwrap().invocation = Some(id);
         Pending::ready(Ok(InvocationState::new(
@@ -2539,8 +2539,8 @@ impl ActionHost for RunningHost {
         &self,
         _caller: &Caller,
         _id: &ActionInvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(Err(ActionHostError::NotCancellable {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionCallError::NotCancellable {
             reason: "not in these tests".into(),
         }))
     }

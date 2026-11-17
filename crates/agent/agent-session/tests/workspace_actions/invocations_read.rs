@@ -36,7 +36,7 @@ struct Reading {
     /// Apps whose records the policy admits them to, while a grant of their
     /// own denies them Read there.
     bound: Mutex<HashSet<String>>,
-    asked: Mutex<Vec<Completer<Result<ConfirmationReply, ActionHostError>>>>,
+    asked: Mutex<Vec<Completer<Result<ConfirmationReply, ActionCallError>>>>,
 }
 
 impl Reading {
@@ -121,7 +121,7 @@ impl WorkspaceDocumentsLink for Reading {
         _workspace: WorkspaceId,
         _caller: &Caller,
         _question: ConfirmationQuestion,
-    ) -> Option<Pending<Result<ConfirmationReply, ActionHostError>>> {
+    ) -> Option<Pending<Result<ConfirmationReply, ActionCallError>>> {
         let (asked, answer) = pending();
         self.asked.lock().unwrap().push(asked);
         Some(answer)
@@ -160,7 +160,7 @@ fn receipt(
         let again = matches!(
             &receipt.status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::Unavailable { .. }
+                error: ActionCallError::Unavailable { .. }
             }
         ) || matches!(&receipt.status, ReceiptStatus::Failed { error } if error.retryable);
         if again && Instant::now() < deadline {

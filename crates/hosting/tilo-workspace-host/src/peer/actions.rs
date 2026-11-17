@@ -146,7 +146,7 @@ fn answered_by_server(
 ) -> Option<Envelope> {
     let abandoned = tilo_actions::remote::refuse(
         &request.message,
-        tilo_actions::remote::ActionHostError::Unavailable {
+        tilo_actions::remote::ActionCallError::Unavailable {
             reason: "the host dropped the request".into(),
         },
     );
@@ -317,7 +317,7 @@ pub(super) fn handle_host_action(
     session: &SessionCtx<'_>,
     frame: &[u8],
 ) -> Option<Envelope> {
-    use tilo_actions::remote::{ActionHostError, RemoteActionFrame, refuse};
+    use tilo_actions::remote::{ActionCallError, RemoteActionFrame, refuse};
     if frame.len() > tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES {
         tracing::warn!(
             device = %hex::encode(peer.device_public_key),
@@ -337,7 +337,7 @@ pub(super) fn handle_host_action(
             return None;
         }
     };
-    let refused = |error: ActionHostError| host_action_envelope(refuse(&request.message, error)?);
+    let refused = |error: ActionCallError| host_action_envelope(refuse(&request.message, error)?);
     // A host whose work setting takes other people's workspaces is handed
     // one by its governing host, whose person nothing here trusts yet: that
     // one operation is asked of it, and the setting decides
@@ -345,10 +345,10 @@ pub(super) fn handle_host_action(
     match session.trust().cert(peer, tilo_clock::unix_now_ns()) {
         Ok(()) => {}
         Err(crate::workspace_access::DenyReason::NotTrusted) if asks_to_hold(&request.message) => {}
-        Err(_) => return refused(ActionHostError::NotPermitted),
+        Err(_) => return refused(ActionCallError::NotPermitted),
     }
     let Some(server) = session.app_serving else {
-        return refused(ActionHostError::Unavailable {
+        return refused(ActionCallError::Unavailable {
             reason: "this host serves no host operations".into(),
         });
     };
@@ -373,7 +373,7 @@ pub(super) fn handle_host_action(
             },
         )
     {
-        return refused(ActionHostError::Busy {
+        return refused(ActionCallError::Busy {
             retry_after_ms: u64::try_from(retry_after.as_millis())
                 .unwrap_or(u64::MAX)
                 .max(1),
@@ -382,20 +382,20 @@ pub(super) fn handle_host_action(
     let caller = match session_caller(peer, session) {
         Ok(caller) => caller,
         Err(refusal) => {
-            return refused(ActionHostError::Refused {
+            return refused(ActionCallError::Refused {
                 reason: refusal.to_string(),
             });
         }
     };
     let unanswered = refuse(
         &request.message,
-        ActionHostError::Unavailable {
+        ActionCallError::Unavailable {
             reason: "this host answers no such operation".into(),
         },
     );
     let abandoned = refuse(
         &request.message,
-        ActionHostError::Unavailable {
+        ActionCallError::Unavailable {
             reason: "the host dropped the request".into(),
         },
     );
@@ -501,7 +501,7 @@ fn serve_locally(
     }
     let abandoned = tilo_actions::remote::refuse(
         &request.message,
-        tilo_actions::remote::ActionHostError::Unavailable {
+        tilo_actions::remote::ActionCallError::Unavailable {
             reason: "the host dropped the request".into(),
         },
     );

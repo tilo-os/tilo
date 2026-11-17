@@ -776,7 +776,7 @@ async fn answer_of(job: &super::InvocationJob) -> InvocationCompletion {
     }
 }
 
-use tilo_actions::remote::{ActionHostError, Caller, InvocationReceipt, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, Caller, InvocationReceipt, InvokeRequest};
 
 /// A host's own step that is a turn's (`for_turns`): the session's layout, out here.
 #[derive(Default)]
@@ -901,7 +901,7 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
                 .in_new_execution();
             let refused = stray_invoke(&f.state, &ended, 93);
             assert!(
-                matches!(refused, Err(ActionHostError::Refused { .. })),
+                matches!(refused, Err(ActionCallError::Refused { .. })),
                 "an agent whose turn is over takes no step: {refused:?}"
             );
             assert_eq!(steps.taken.lock().unwrap().len(), 1, "nothing ran for it");
@@ -912,7 +912,7 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
             assert!(
                 matches!(
                     refused,
-                    Err(ActionHostError::Refused { .. } | ActionHostError::NotPermitted)
+                    Err(ActionCallError::Refused { .. } | ActionCallError::NotPermitted)
                 ),
                 "the grants refuse the step: {refused:?}"
             );
@@ -956,7 +956,7 @@ fn stray_invoke(
     state: &Arc<AppBrokerState>,
     caller: &Caller,
     invocation: u128,
-) -> Result<InvocationReceipt, ActionHostError> {
+) -> Result<InvocationReceipt, ActionCallError> {
     state
         .action_invoke(
             caller,

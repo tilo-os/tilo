@@ -29,7 +29,7 @@ use ui::search::index_publication::IndexEntry;
 
 use super::bounded::Bounded;
 use super::{
-    ActionHostError, ActionKind, Answer, Caller, CatalogueQuery, DocumentRoute, Needs, TreePath,
+    ActionCallError, ActionKind, Answer, Caller, CatalogueQuery, DocumentRoute, Needs, TreePath,
     Worker, WorkspaceId, record_provider,
 };
 use crate::workspace_documents::Reading;
@@ -95,9 +95,9 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         needle: &str,
-    ) -> Result<Vec<Found>, ActionHostError> {
+    ) -> Result<Vec<Found>, ActionCallError> {
         if !self.admits_member(workspace_id, caller) {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let state = self.refresh(workspace_id, Needs::Workspace)?;
         let Some(cluster_id) = state.workspace.clone() else {
@@ -344,9 +344,9 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         after: Option<&str>,
-    ) -> Result<ChangePage, ActionHostError> {
+    ) -> Result<ChangePage, ActionCallError> {
         if !self.admits_member(workspace_id, caller) {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let state = self.refresh(workspace_id, Needs::Workspace)?;
         // Nothing written in the workspace yet: no records, and its first ones are news.

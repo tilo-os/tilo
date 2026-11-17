@@ -193,7 +193,7 @@ pub enum Refusal {
 
 impl Refusal {
     /// The refusal as an action's refusal reason
-    /// ([`tilo_actions::remote::ActionHostError::Refused`]): its JSON, which
+    /// ([`tilo_actions::remote::ActionCallError::Refused`]): its JSON, which
     /// [`Self::from_reason`] reads back typed and which a caller that does
     /// not read it still shows as plain data.
     #[must_use]

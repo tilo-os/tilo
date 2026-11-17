@@ -2,7 +2,7 @@
 //! to one that would: an answer names a resource whole
 //! (`tasks.tracker/issues/7`), and that is a path the next call takes.
 
-use super::{ActionHost, Level, Levels, McpServer, Node, ROOT_PEEK, Resolved};
+use super::{ActionProvider, Level, Levels, McpServer, Node, ROOT_PEEK, Resolved};
 
 /// The close matches an action no resource offers is told with.
 pub(super) const CLOSE_MATCHES: usize = 5;
@@ -64,7 +64,7 @@ impl Node {
     }
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// The resource the app lists under exactly `address`, with its actions
     /// and what it holds: an answer's own naming of what it made or changed.
     pub(super) async fn by_address(

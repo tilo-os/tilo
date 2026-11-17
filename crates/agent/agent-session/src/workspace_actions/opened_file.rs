@@ -16,7 +16,7 @@
 use serde_json::{Map, Value, json};
 use tilo_actions::ActionOutput;
 use tilo_actions::remote::{
-    ActionHostError, ActorPlace, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    ActionCallError, ActorPlace, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
 use tilo_content_types::{Landing, Takes};
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -69,7 +69,7 @@ impl OpenedFile {
 }
 
 fn refused(reason: String) -> Outcome {
-    Outcome::Rejected(ActionHostError::Refused { reason })
+    Outcome::Rejected(ActionCallError::Refused { reason })
 }
 
 impl Worker {

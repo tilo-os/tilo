@@ -18,7 +18,7 @@
 //! (they wait for it), and nothing here needs a second call to learn
 //! whether the first one worked.
 use super::{
-    ActionHost, Addressed, CatalogueLimits, CatalogueQuery, CatalogueRow, DEFAULT_WAIT_MS,
+    ActionProvider, Addressed, CatalogueLimits, CatalogueQuery, CatalogueRow, DEFAULT_WAIT_MS,
     Deserialize, Failure, MAX_CALLS, McpServer, OneCall, RemoteActionTarget, Value,
     batch_invocation, invocation_id, json, page, parse,
 };
@@ -981,7 +981,7 @@ impl Resolved {
     }
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// One directory level: the resources under `parent` and their actions,
     /// over as many pages as a bounded read takes.
     async fn level(
@@ -1761,7 +1761,7 @@ fn app_names(ids: &[String]) -> Vec<String> {
     names
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Answer one agent tool call.
     /// `structured` when the caller asked for typed answers
     /// (`_meta["so.tilo.mcp"].structured`): a read answers its

@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use tilo_actions::remote::{ActionHost, ActionHostError, Caller, Pending, RemoteActionMessage};
+use tilo_actions::remote::{ActionCallError, ActionProvider, Caller, Pending, RemoteActionMessage};
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_host::app_serving::AppActionServer;
@@ -31,7 +31,7 @@ const MAX_SESSIONS: usize = 256;
 
 /// An action host every call of one run goes through, as the caller it
 /// admitted.
-pub type SessionHost = Arc<dyn ActionHost + Send + Sync>;
+pub type SessionHost = Arc<dyn ActionProvider + Send + Sync>;
 
 /// A device's action broker as a key's sessions reach it.
 pub trait Sessions: Send + Sync {
@@ -92,19 +92,19 @@ impl KeySessions {
         &self,
         workspace_id: WorkspaceId,
         key: &DeviceCert,
-    ) -> Result<(SessionHost, Caller), ActionHostError> {
+    ) -> Result<(SessionHost, Caller), ActionCallError> {
         let Serving { devices, sessions } =
             self.serving
                 .get()
-                .ok_or_else(|| ActionHostError::Unavailable {
+                .ok_or_else(|| ActionCallError::Unavailable {
                     reason: "this device's actions are not running yet".into(),
                 })?;
         let workspace = sessions
             .workspace(workspace_id)
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         if let Err(refusal) = devices.admit(key.device_public_key, key) {
             self.end(workspace_id, &key.device_public_key);
-            return Err(ActionHostError::Refused {
+            return Err(ActionCallError::Refused {
                 reason: refusal.reason(),
             });
         }
@@ -113,7 +113,7 @@ impl KeySessions {
             .agent
             .is_some_and(|scope| !scope.reaches(&workspace))
         {
-            return Err(ActionHostError::Refused {
+            return Err(ActionCallError::Refused {
                 reason: tilo_mcp::devices::Refusal::OutOfScope.reason(),
             });
         }
@@ -130,13 +130,13 @@ impl KeySessions {
             run.host.retire_execution(&run.caller);
         }
         if open.len() >= MAX_SESSIONS {
-            return Err(ActionHostError::Unavailable {
+            return Err(ActionCallError::Unavailable {
                 reason: "this device sessions as many of its person's keys as it takes".into(),
             });
         }
         let (host, caller) = sessions
             .open(&workspace, key)
-            .map_err(|reason| ActionHostError::Refused { reason })?;
+            .map_err(|reason| ActionCallError::Refused { reason })?;
         open.insert(
             (workspace_id, key.device_public_key),
             Session {
@@ -167,7 +167,7 @@ impl AppActionServer for KeySessions {
         _caller: &Caller,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
-        tilo_actions::remote::refuse(&message, ActionHostError::NotPermitted).map(Pending::ready)
+        tilo_actions::remote::refuse(&message, ActionCallError::NotPermitted).map(Pending::ready)
     }
 
     fn serve_certified(

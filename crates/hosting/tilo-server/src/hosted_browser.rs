@@ -87,7 +87,7 @@ use iroh::EndpointAddr;
 use tilo_actions::remote::host_account::{NextStep, NextStepKind, Reason, Refusal};
 use tilo_actions::remote::linux_apps::{self, AppLaunch};
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, Completer,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller, Completer,
     Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
     ReceiptStatus, RemoteActionMessage, RemoteActionTarget, argument_digest, pending,
     provider_workspace,
@@ -765,7 +765,7 @@ impl HostedBrowsers {
             Some(_) => false,
         };
         if !permitted {
-            return answered_with(message, ActionHostError::NotPermitted);
+            return answered_with(message, ActionCallError::NotPermitted);
         }
         // A page action the person is already being asked about waits for
         // their answer: a caller that asks again is told so, not handed over
@@ -820,7 +820,7 @@ impl HostedBrowsers {
             }
             Err(refusal) => answered_with(
                 message,
-                ActionHostError::Refused {
+                ActionCallError::Refused {
                     reason: refusal.to_reason(),
                 },
             ),
@@ -858,7 +858,7 @@ impl HostedBrowsers {
         {
             return None;
         }
-        let refused = |error: ActionHostError| {
+        let refused = |error: ActionCallError| {
             Some(crate::app_serving::Routing::Answer(Pending::ready(
                 RemoteActionMessage::ConfirmResponse {
                     correlation,
@@ -867,24 +867,24 @@ impl HostedBrowsers {
             )))
         };
         if request.confirmation.is_some() {
-            return refused(ActionHostError::NotPermitted);
+            return refused(ActionCallError::NotPermitted);
         }
         let Some(held) = held_of(&request.argument) else {
-            return refused(ActionHostError::InvalidRequest {
+            return refused(ActionCallError::InvalidRequest {
                 reason: "a held request is named by the id it was published with".to_owned(),
             });
         };
         let (Some(&person), Some(device)) = (caller.user_public_key(), caller.device_public_key())
         else {
-            return refused(ActionHostError::NotPermitted);
+            return refused(ActionCallError::NotPermitted);
         };
         let (Some((certification, key)), Some(_)) = (self.certifying(), self.hand()) else {
-            return refused(ActionHostError::Unavailable {
+            return refused(ActionCallError::Unavailable {
                 reason: "this host asks nobody about a page".into(),
             });
         };
         if !self.asking.lock_recover().insert((workspace_id, held)) {
-            return refused(ActionHostError::Unavailable {
+            return refused(ActionCallError::Unavailable {
                 reason: "the person is already being asked about that request".into(),
             });
         }
@@ -955,7 +955,7 @@ impl HostedBrowsers {
                 allowed.then(|| state_message(receipt.invocation, update))
             }
             ReceiptStatus::Rejected {
-                error: ActionHostError::ConfirmationRequired { departure },
+                error: ActionCallError::ConfirmationRequired { departure },
             } if !matches!(entry.stage, Stage::Over(_)) => {
                 entry.stage = Stage::Asking;
                 let caller = entry.caller.clone();
@@ -1142,7 +1142,7 @@ impl HostedBrowsers {
                 return Some(crate::app_serving::Routing::Device(entry.window));
             }
             Stage::Asking => Ok(()),
-            Stage::Over(_) => Err(ActionHostError::NotCancellable {
+            Stage::Over(_) => Err(ActionCallError::NotCancellable {
                 reason: "it is over".to_owned(),
             }),
         };
@@ -1785,7 +1785,7 @@ impl Asked {
         &self,
         answer: &Result<ConfirmationAnswer, String>,
         key: &SigningKey,
-    ) -> Result<ConfirmedInvocation, ActionHostError> {
+    ) -> Result<ConfirmedInvocation, ActionCallError> {
         match answer {
             // The question shows no draft, so nothing in it is changed.
             Ok(ConfirmationAnswer::AllowOnce) => {
@@ -1811,12 +1811,12 @@ impl Asked {
                     .map(|()| {
                         ConfirmedInvocation::unchanged(Confirmation::Approved(approval.encode()))
                     })
-                    .map_err(|error| ActionHostError::Unavailable {
+                    .map_err(|error| ActionCallError::Unavailable {
                         reason: format!("the host could not answer for the person: {error}"),
                     })
             }
-            Ok(ConfirmationAnswer::Deny) => Err(ActionHostError::NotPermitted),
-            Err(_) => Err(ActionHostError::Unavailable {
+            Ok(ConfirmationAnswer::Deny) => Err(ActionCallError::NotPermitted),
+            Err(_) => Err(ActionCallError::Unavailable {
                 reason: UNANSWERED.to_owned(),
             }),
         }
@@ -1859,7 +1859,7 @@ fn state_routing(
 /// `message` — a request of a window's — answered at once with `error`.
 fn answered_with(
     message: &RemoteActionMessage,
-    error: ActionHostError,
+    error: ActionCallError,
 ) -> Option<crate::app_serving::Routing> {
     Some(crate::app_serving::Routing::Answer(Pending::ready(
         tilo_actions::remote::refuse(message, error)?,
@@ -1906,7 +1906,7 @@ fn update_of(invocation: tilo_actions::InvocationId, status: &ReceiptStatus) -> 
 /// `error` as the failure a caller reads: its typed code and what it says.
 fn update_of_error(
     invocation: tilo_actions::InvocationId,
-    error: &ActionHostError,
+    error: &ActionCallError,
 ) -> InvocationUpdate {
     InvocationUpdate::Failed {
         invocation,
@@ -2251,7 +2251,7 @@ pub fn refused(invocation: tilo_actions::InvocationId, reason: String) -> Remote
     RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
         invocation,
         status: tilo_actions::remote::ReceiptStatus::Rejected {
-            error: ActionHostError::Refused { reason },
+            error: ActionCallError::Refused { reason },
         },
     })
 }
@@ -2372,7 +2372,7 @@ pub fn refused_by_plan(
     RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
         invocation,
         status: tilo_actions::remote::ReceiptStatus::Rejected {
-            error: ActionHostError::Refused {
+            error: ActionCallError::Refused {
                 reason: refusal.to_reason(),
             },
         },
@@ -2509,7 +2509,7 @@ mod tests {
                 panic!("a refusal is a receipt");
             };
             let tilo_actions::remote::ReceiptStatus::Rejected {
-                error: ActionHostError::Refused { reason },
+                error: ActionCallError::Refused { reason },
             } = receipt.status
             else {
                 panic!("refused");

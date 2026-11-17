@@ -41,7 +41,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tilo_action_broker::collab_app_broker::{AgentConnection, AppBrokerState};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
     ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_compositor::ReadableWatch;
@@ -1400,7 +1400,7 @@ enum ApiAsk {
         /// The run the step is one of, as its invocation names it.
         run: Option<tilo_actions::WorkGroup>,
         done: tilo_actions::remote::Completer<
-            Result<Option<tilo_actions::ActionOutput>, ActionHostError>,
+            Result<Option<tilo_actions::ActionOutput>, ActionCallError>,
         >,
     },
     /// The record of the package the session runs itself, by its app (`so.tilo.shell`): its
@@ -1429,7 +1429,7 @@ enum ApiAsk {
     Change {
         actor: tilo_action_policy::Acting,
         change: tilo_actions::remote::ResourceChange,
-        done: tilo_actions::remote::Completer<Option<Result<serde_json::Value, ActionHostError>>>,
+        done: tilo_actions::remote::Completer<Option<Result<serde_json::Value, ActionCallError>>>,
     },
 }
 
@@ -1473,8 +1473,8 @@ const WAIT: Duration = Duration::from_secs(30);
 
 /// A session that did not answer within [`WAIT`]: it is frozen, and nothing is done elsewhere in
 /// its place.
-fn unanswered() -> ActionHostError {
-    ActionHostError::Unavailable {
+fn unanswered() -> ActionCallError {
+    ActionCallError::Unavailable {
         reason: "the session did not answer".to_owned(),
     }
 }
@@ -1498,7 +1498,7 @@ impl crate::platform::steps::SessionSteps for SessionServices {
         beside: String,
         run: Option<tilo_actions::WorkGroup>,
         done: tilo_actions::remote::Completer<
-            Result<Option<tilo_actions::ActionOutput>, ActionHostError>,
+            Result<Option<tilo_actions::ActionOutput>, ActionCallError>,
         >,
     ) {
         self.ask(ApiAsk::Step {
@@ -1656,7 +1656,7 @@ impl SessionServices {
         &self,
         app: &str,
         resource: &str,
-    ) -> Result<Option<Published>, ActionHostError> {
+    ) -> Result<Option<Published>, ActionCallError> {
         let (done, answered) = tilo_actions::remote::pending();
         self.ask(ApiAsk::Reading {
             app: app.to_owned(),
@@ -2065,20 +2065,20 @@ impl Host {
     }
 
     /// An invocation the person at this device made through this device's own control sockets: the
-    /// same as [`ActionHost::invoke`], except that the broker keeps the device's certificate ownership for it
+    /// same as [`ActionProvider::invoke`], except that the broker keeps the device's certificate ownership for it
     /// ([`AppBrokerState::action_invoke_local_person`]), as it does for the palette's actions, so
     /// what the person may do here is what the person may do anywhere.
     /// Only this device's own control sockets call it — the owner's socket, whose peer is the account
     /// whose desktop this is ([`crate::test_control::owner_decision`]), and the development
     /// test-control socket, which drives it as the person at this device. An agent, or a person over
-    /// a network, MCP or app connection, invokes as itself through [`ActionHost::invoke`], and the
+    /// a network, MCP or app connection, invokes as itself through [`ActionProvider::invoke`], and the
     /// broker's per-action and per-role permissions decide; the broker refuses ownership to anything
     /// but the person at this device.
     pub(crate) fn invoke_as_local_person(
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.invoke_within(caller, request, true)
     }
 
@@ -2089,12 +2089,12 @@ impl Host {
         caller: &Caller,
         request: InvokeRequest,
         as_local_person: bool,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // An app of a workspace this device is not admitted to yet takes part in nothing there:
         // asked of it, an action would wait for an app that never answers. It is refused now, with
         // the reason, for the person and an agent alike.
         if let Some(reason) = self.session.awaited_reason(&request.target.provider) {
-            return Pending::ready(Err(ActionHostError::Unavailable { reason }));
+            return Pending::ready(Err(ActionCallError::Unavailable { reason }));
         }
         // This device's own sockets, and a desktop with no broker at all, reach the session's own
         // actions on the loop: the broker is the check for a caller on another's word, and the
@@ -2109,14 +2109,14 @@ impl Host {
                 .session
                 .window_elsewhere(request.target.address.resource.as_str(), workspace)
         {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         // Nor may it branch another workspace: what it would copy is not its to read.
         if !person
             && let Some(workspace) = caller.workspace()
             && self.session.branches_elsewhere(&request, workspace)
         {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         // What the session offers people alone (ending an agent's session) is no agent's step: it
         // is refused at once, saying why, never put to the person on a sheet that stands over the
@@ -2127,7 +2127,7 @@ impl Host {
                 .placed(&request)
                 .is_some_and(|placed| !placed.action.contract.reaches_agents())
         {
-            return Pending::ready(Err(ActionHostError::Refused {
+            return Pending::ready(Err(ActionCallError::Refused {
                 reason: "this action is for people only; ask the person to run it".to_owned(),
             }));
         }
@@ -2150,7 +2150,7 @@ impl Host {
         match &self.state {
             Some(state) if as_local_person => state.action_invoke_local_person(caller, &request),
             Some(state) => state.action_invoke(caller, None, None, &request),
-            None => Pending::ready(Err(ActionHostError::Unavailable {
+            None => Pending::ready(Err(ActionCallError::Unavailable {
                 reason: "this desktop's apps are not running here".to_owned(),
             })),
         }
@@ -2178,9 +2178,9 @@ impl Host {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let Some(agent) = caller.acting().agent_id() else {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         };
         let actor = tilo_actions::MemberId::agent(agent).into();
         self.invoke_step_at(actor, request, caller.turn())
@@ -2210,9 +2210,9 @@ impl Host {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let Some(person) = caller.acting().person_id() else {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         };
         let actor = tilo_actions::MemberId::person(person).into();
         self.invoke_step_at(actor, request, caller.turn())
@@ -2225,7 +2225,7 @@ impl Host {
         actor: tilo_actions::Actor,
         request: InvokeRequest,
         turn: Option<&tilo_action_policy::turn::Turn>,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let slot = request.argument.to_slot();
         let invocation = request.invocation;
         // The place the ask is in: the turn's conversation, when the step is an agent's; else the
@@ -2258,12 +2258,12 @@ impl Host {
     }
 }
 
-impl ActionHost for Host {
+impl ActionProvider for Host {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         // An agent works in one workspace: the shell's windows of another (each listed by the title
         // of what it shows) are not its to read or act on. The person's own catalogue is theirs.
         let confined = if caller.acting().is_person() {
@@ -2314,7 +2314,7 @@ impl ActionHost for Host {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // A person typing at a REPL is the person at this device: their own step is carried out on the loop's
         // pass, where the layout and the windows are, as their own input is — never
         // through the broker, which decides for an actor on another's word but has no
@@ -2358,13 +2358,13 @@ impl ActionHost for Host {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionHostError>> {
+    ) -> Pending<Result<(), ActionCallError>> {
         if let Some(agent) = &self.agent {
             return agent.cancel(caller, id);
         }
         match &self.state {
             Some(state) => state.action_cancel(caller, id),
-            None => Pending::ready(Err(ActionHostError::UnknownInvocation)),
+            None => Pending::ready(Err(ActionCallError::UnknownInvocation)),
         }
     }
 
@@ -2372,7 +2372,7 @@ impl ActionHost for Host {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
         // An admitted agent's step is its session's to ask about: its person answers on this
         // shell's sheet ([`crate::step_questions`]).
         if let Some(agent) = &self.agent
@@ -2382,7 +2382,7 @@ impl ActionHost for Host {
         }
         match &self.state {
             Some(state) => state.request_approval(caller, None, request),
-            None => Pending::ready(Err(ActionHostError::confirmation_required())),
+            None => Pending::ready(Err(ActionCallError::confirmation_required())),
         }
     }
 
@@ -2474,7 +2474,7 @@ impl tilo_actions::remote::Readings for SessionReadings {
         caller: &Caller,
         app: &str,
         resource: &str,
-    ) -> Result<Option<serde_json::Value>, ActionHostError> {
+    ) -> Result<Option<serde_json::Value>, ActionCallError> {
         if !published_root(app, resource) {
             return Ok(None);
         }
@@ -2510,18 +2510,18 @@ const SESSION_APP: &str = tilolang_tilo::platform_apps::SESSION_APP;
 ///
 /// # Errors
 ///
-/// [`ActionHostError::Refused`] or [`ActionHostError::NotPermitted`]: the read is not the caller's.
+/// [`ActionCallError::Refused`] or [`ActionCallError::NotPermitted`]: the read is not the caller's.
 fn may_read_published(
     state: Option<&AppBrokerState>,
     caller: &Caller,
     target: (&str, &str, &str),
-) -> Result<(), ActionHostError> {
+) -> Result<(), ActionCallError> {
     if caller.acting().is_person() {
         return Ok(());
     }
     match (state, caller.workspace()) {
         (Some(state), Some(workspace)) => state.may_read_resource(caller, workspace, target),
-        _ => Err(ActionHostError::NotPermitted),
+        _ => Err(ActionCallError::NotPermitted),
     }
 }
 

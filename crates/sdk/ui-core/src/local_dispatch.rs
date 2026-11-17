@@ -176,7 +176,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn local_dispatch_applies_actions_under_the_action_host_contract;
+        fn local_dispatch_applies_actions_under_the_action_provider_contract;
 
         phase dispatch_applies_actions_as_one_undo_boundary_with_the_clicking_actor;
         {
@@ -271,7 +271,7 @@ mod tests {
             }
         }
 
-        phase dispatch_context_and_optimism_keep_the_action_host_contract;
+        phase dispatch_context_and_optimism_keep_the_action_provider_contract;
         {
             {
                 let mut doc = AutoCommit::new();

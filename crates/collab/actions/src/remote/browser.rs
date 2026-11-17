@@ -14,7 +14,7 @@
 //!   attached to the one already serving the workspace, and the provider
 //!   token of the window it holds (what a page action names). A host with no
 //!   room answers
-//!   [`Unavailable`](super::ActionHostError::Unavailable) with the words to
+//!   [`Unavailable`](super::ActionCallError::Unavailable) with the words to
 //!   wait on.
 //! - [`STOP`] ends the session; the VM then sleeps like any idle VM.
 //!

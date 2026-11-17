@@ -32,7 +32,7 @@ mod host;
 use tilo_actions::ApiError;
 use tilo_actions::remote::downloaded_apps as downloaded_wire;
 use tilo_actions::remote::{
-    ActionHostError, Caller, Found, RemoteActionTarget, ResourceSearch, application_open_target,
+    ActionCallError, Caller, Found, RemoteActionTarget, ResourceSearch, application_open_target,
 };
 use tilo_desktop_search::preferences;
 use tilo_desktop_search::providers::PublishedActions;
@@ -234,12 +234,12 @@ struct DownloadedRows {
     published: Vec<tilo_actions::ActionDescriptor>,
 }
 
-/// Why a row the person chose did not happen, in words they read: the session's own missing app host
-/// says what it means, rather than naming its code on the row.
+/// Why a row the person chose did not happen, in words they read: the session's own missing action
+/// provider says what it means, rather than naming its code on the row.
 #[must_use]
 pub fn why_in_words(error: &ApiError) -> String {
     match error {
-        ApiError::Unavailable { code, .. } if code == "action_host_unavailable" => {
+        ApiError::Unavailable { code, .. } if code == "action_provider_unavailable" => {
             tilo_desktop_surface::i18n::t("answer-why-cannot-start")
         }
         other => other.to_string(),
@@ -1339,7 +1339,7 @@ impl SessionSearch {
         match &self.apps {
             Some(apps) => run(&**apps),
             None => Err(ApiError::Unavailable {
-                code: "action_host_unavailable".into(),
+                code: "action_provider_unavailable".into(),
                 reason: "The session runs without an action host".into(),
             }),
         }
@@ -1501,7 +1501,7 @@ impl ResourceSearch for SearchThrough {
         &self,
         caller: &Caller,
         needle: &str,
-    ) -> tilo_actions::remote::Pending<Result<Vec<Found>, ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<Vec<Found>, ActionCallError>> {
         // An agent finds what the workspace it works in holds: the search is the person's, over
         // every workspace they see, and an agent is in one.
         let workspace = if caller.acting().is_person() {
@@ -1511,7 +1511,7 @@ impl ResourceSearch for SearchThrough {
                 Some(workspace) => Some(workspace.to_owned()),
                 None => {
                     return tilo_actions::remote::Pending::ready(Err(
-                        ActionHostError::Unavailable {
+                        ActionCallError::Unavailable {
                             reason:
                                 "an agent searches the workspace it works in, and works in none"
                                     .to_owned(),

@@ -41,7 +41,7 @@
 //!
 //! [`remote`] carries the action API across machines: a versioned, transport-neutral
 //! vocabulary for listing, invoking, observing and cancelling another peer's
-//! actions, and the [`remote::ActionHost`] trait a peer implements to answer
+//! actions, and the [`remote::ActionProvider`] trait a peer implements to answer
 //! it. The caller is always the actor the transport authenticated, and
 //! invocations are idempotent per [`InvocationId`].
 //!

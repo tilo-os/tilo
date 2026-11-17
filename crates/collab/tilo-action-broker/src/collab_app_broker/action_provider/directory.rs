@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use tilo_actions::remote::{
-    ActionHostError, CONFIRMED_ACTION_NEEDS_REVISION, Caller, CataloguePage, CatalogueProvider,
+    ActionCallError, CONFIRMED_ACTION_NEEDS_REVISION, Caller, CataloguePage, CatalogueProvider,
     CatalogueQuery, CatalogueResource, CatalogueRow, InvocationReceipt, InvokeRequest, Pending,
     Reservation, pending,
 };
@@ -36,11 +36,11 @@ impl AppBrokerState {
         &self,
         caller: &Caller,
         query: &CatalogueQuery,
-    ) -> Result<CataloguePage, ActionHostError> {
+    ) -> Result<CataloguePage, ActionCallError> {
         let route = query
             .canonical_route
             .as_ref()
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         if query.max_results != 0
             || query.provider.is_some()
             || query.app_id.is_some()
@@ -52,7 +52,7 @@ impl AppBrokerState {
             || !query.cursor.is_empty()
             || query.limits.is_some()
         {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: "a canonical route lookup must request only its provider".into(),
             });
         }
@@ -60,7 +60,7 @@ impl AppBrokerState {
             .decide_for(caller, &route.workspace, |_, _, _| ())
             .is_none()
         {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let mut page = CataloguePage {
             exhausted: true,
@@ -84,7 +84,7 @@ impl AppBrokerState {
         caller: &Caller,
         root: &ActionDirectoryRoot,
         query: &CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         // A directory root publishes one application's rows, so a query for
         // another application is answered empty without asking it: nothing
         // it holds could match. The caller's workspace was checked before here.
@@ -106,7 +106,7 @@ impl AppBrokerState {
                 .clone()
                 .filter(|revision| !revision.is_empty())
             else {
-                return Pending::ready(Err(ActionHostError::InvalidRequest {
+                return Pending::ready(Err(ActionCallError::InvalidRequest {
                     reason: "resolving a target needs the revision it was chosen at".into(),
                 }));
             };
@@ -177,7 +177,7 @@ impl AppBrokerState {
         root: ActionDirectoryRoot,
         origin: Option<&super::super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // A request naming no revision acts on the directory as it is now:
         // its owner resolves it so, in the same turn this broker admits it,
         // instead of the caller first reading the revision across the same
@@ -185,7 +185,7 @@ impl AppBrokerState {
         let revision = match request.revision.as_deref() {
             None => String::new(),
             Some("") => {
-                return Pending::ready(Err(ActionHostError::InvalidRequest {
+                return Pending::ready(Err(ActionCallError::InvalidRequest {
                     reason:
                         "an empty revision names none; omit it to act on the directory as it is now"
                             .into(),
@@ -196,7 +196,7 @@ impl AppBrokerState {
         let argument = request.argument.to_slot();
         let address = &request.target.address;
         if let Some(reason) = argument.as_deref().and_then(oversized_argument) {
-            return Pending::ready(Err(ActionHostError::InvalidRequest { reason }));
+            return Pending::ready(Err(ActionCallError::InvalidRequest { reason }));
         }
         if validate_directory_target_input(
             &root.cluster_id,
@@ -208,7 +208,7 @@ impl AppBrokerState {
         )
         .is_err()
         {
-            return Pending::ready(Err(ActionHostError::InvalidRequest {
+            return Pending::ready(Err(ActionCallError::InvalidRequest {
                 reason: "the directory target or argument is malformed".into(),
             }));
         }
@@ -259,7 +259,7 @@ impl AppBrokerState {
             // A caller that stopped waiting (its admission deadline passed)
             // has already been told the action did not start; keep it so.
             let staged = if completer.is_abandoned() {
-                Err(ActionHostError::Unavailable {
+                Err(ActionCallError::Unavailable {
                     reason: "the caller stopped waiting for admission".into(),
                 })
             } else {
@@ -277,7 +277,7 @@ impl AppBrokerState {
                 .finish_started(request.invocation, staged.map(Started::Staged))
                 .then(move |receipt| {
                     completer.complete(receipt.unwrap_or_else(|| {
-                        Err(ActionHostError::Unavailable {
+                        Err(ActionCallError::Unavailable {
                             reason: "the admission was dropped".into(),
                         })
                     }));
@@ -294,8 +294,8 @@ impl AppBrokerState {
         origin: Option<&super::super::published_invocation::InvocationCaller>,
         argument: Option<&str>,
         reply: Option<ActionDirectoryBridgeReply>,
-    ) -> Result<super::super::StagedJob, ActionHostError> {
-        let stale = || ActionHostError::StaleRevision;
+    ) -> Result<super::super::StagedJob, ActionCallError> {
+        let stale = || ActionCallError::StaleRevision;
         let (row, resolved) = match reply {
             Some(Ok(ActionDirectoryBridgeResponse::Resolution(
                 runtime_collab::ActionDirectoryResolution::Found { row, revision },
@@ -303,10 +303,10 @@ impl AppBrokerState {
             Some(Ok(ActionDirectoryBridgeResponse::Resolution(
                 runtime_collab::ActionDirectoryResolution::StaleRevision,
             ))) => return Err(stale()),
-            Some(Ok(_)) => return Err(ActionHostError::UnknownAction),
+            Some(Ok(_)) => return Err(ActionCallError::UnknownAction),
             Some(Err(error)) => return Err(bridge_error(error)),
             None => {
-                return Err(ActionHostError::Unavailable {
+                return Err(ActionCallError::Unavailable {
                     reason: "the action directory went away".into(),
                 });
             }
@@ -318,7 +318,7 @@ impl AppBrokerState {
         // the host could check against later.
         let revision = request.revision.clone().or(resolved).ok_or_else(stale)?;
         let offered =
-            published_directory_action(&row).map_err(|_| ActionHostError::UnknownAction)?;
+            published_directory_action(&row).map_err(|_| ActionCallError::UnknownAction)?;
         // A person's confirmation covers the action as they were shown it.
         // Without the revision it was shown at, the broker cannot tell that
         // from the action as it is now, so only reads and plain edits act on
@@ -327,7 +327,7 @@ impl AppBrokerState {
             && offered.contract.confirmation_for_argument(argument)
                 != tilo_actions::ConfirmationPolicy::None
         {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: CONFIRMED_ACTION_NEEDS_REVISION.into(),
             });
         }
@@ -355,7 +355,7 @@ impl AppBrokerState {
         let _admission = self
             .admission_lock
             .lock()
-            .map_err(|_| ActionHostError::Unavailable {
+            .map_err(|_| ActionCallError::Unavailable {
                 reason: "invocation admission unavailable".into(),
             })?;
         if request
@@ -364,7 +364,7 @@ impl AppBrokerState {
             .starts_with(super::super::canonical_route::PROVIDER_PREFIX)
             && self.canonical_token_directory(&request.target.provider)? != *root
         {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         }
         self.dispatch_invocation_from_offered_owned(
             root.peer_id,
@@ -396,13 +396,13 @@ impl AppBrokerState {
 fn directory_row(
     root: &ActionDirectoryRoot,
     row: &runtime_collab::ActionDirectoryRow,
-) -> Result<CatalogueRow, ActionHostError> {
+) -> Result<CatalogueRow, ActionCallError> {
     let action = row
         .action
         .as_ref()
         .map(|_| published_directory_action(row).map(|action| descriptor(&action)))
         .transpose()
-        .map_err(|error| ActionHostError::Unavailable {
+        .map_err(|error| ActionCallError::Unavailable {
             reason: format!(
                 "{} published an unusable directory row: {error}",
                 root.app_id
@@ -428,7 +428,7 @@ fn directory_row(
 fn directory_page(
     root: &ActionDirectoryRoot,
     reply: ActionDirectoryBridgeReply,
-) -> Result<CataloguePage, ActionHostError> {
+) -> Result<CataloguePage, ActionCallError> {
     match reply.map_err(bridge_error)? {
         ActionDirectoryBridgeResponse::Page(page) => Ok(CataloguePage {
             locator: None,
@@ -464,23 +464,23 @@ fn directory_page(
         // Only a start request answers with a started action; a query or
         // resolution never does.
         ActionDirectoryBridgeResponse::StartedDirectoryAction(_) => {
-            Err(ActionHostError::Unavailable {
+            Err(ActionCallError::Unavailable {
                 reason: "the action directory answered a different request".into(),
             })
         }
     }
 }
 
-pub(super) fn bridge_error(error: ActionDirectoryBridgeError) -> ActionHostError {
+pub(super) fn bridge_error(error: ActionDirectoryBridgeError) -> ActionCallError {
     match error {
-        ActionDirectoryBridgeError::InvalidRequest => ActionHostError::InvalidRequest {
+        ActionDirectoryBridgeError::InvalidRequest => ActionCallError::InvalidRequest {
             reason: "the directory request is malformed".into(),
         },
-        ActionDirectoryBridgeError::TimedOut => ActionHostError::Unavailable {
+        ActionDirectoryBridgeError::TimedOut => ActionCallError::Unavailable {
             reason: "the app has not answered its action directory for a long time: it is hung"
                 .into(),
         },
-        other => ActionHostError::Unavailable {
+        other => ActionCallError::Unavailable {
             reason: format!("the action directory is {other:?}"),
         },
     }

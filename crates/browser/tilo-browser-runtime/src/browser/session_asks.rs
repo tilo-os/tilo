@@ -228,7 +228,7 @@ impl Opening {
             return true;
         }
         if let Some(answer) = &self.reveal.answer {
-            answer.refused(tilo_actions::remote::ActionHostError::Unavailable {
+            answer.refused(tilo_actions::remote::ActionCallError::Unavailable {
                 reason: "The app did not take that in time".into(),
             });
         }
@@ -247,26 +247,26 @@ fn coming(error: &tilo_actions::ApiError) -> bool {
 }
 
 /// The window's refusal `error`, as the window that asked hears it from its session.
-fn refusal(error: tilo_actions::ApiError) -> tilo_actions::remote::ActionHostError {
+fn refusal(error: tilo_actions::ApiError) -> tilo_actions::remote::ActionCallError {
     use tilo_actions::ApiError;
-    use tilo_actions::remote::ActionHostError;
+    use tilo_actions::remote::ActionCallError;
     let said = error.to_string();
     match error {
-        ApiError::ConfirmationRequired => ActionHostError::confirmation_required(),
-        ApiError::Unknown(_) => ActionHostError::UnknownAction,
+        ApiError::ConfirmationRequired => ActionCallError::confirmation_required(),
+        ApiError::Unknown(_) => ActionCallError::UnknownAction,
         ApiError::Unavailable { code, .. }
             if code == "permission_denied" || code == "not_permitted" =>
         {
-            ActionHostError::NotPermitted
+            ActionCallError::NotPermitted
         }
-        ApiError::Unavailable { reason, .. } => ActionHostError::Unavailable { reason },
-        ApiError::Refused { reason, .. } => ActionHostError::Refused { reason },
+        ApiError::Unavailable { reason, .. } => ActionCallError::Unavailable { reason },
+        ApiError::Refused { reason, .. } => ActionCallError::Refused { reason },
         ApiError::MissingArgument(_)
         | ApiError::UnexpectedArgument(_)
         | ApiError::InvalidArguments(_)
-        | ApiError::ArgumentOutOfRange { .. } => ActionHostError::InvalidRequest { reason: said },
+        | ApiError::ArgumentOutOfRange { .. } => ActionCallError::InvalidRequest { reason: said },
         ApiError::UnregisteredType(_) | ApiError::Failed(_) => {
-            ActionHostError::Refused { reason: said }
+            ActionCallError::Refused { reason: said }
         }
     }
 }

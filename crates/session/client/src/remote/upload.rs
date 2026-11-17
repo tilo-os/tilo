@@ -18,7 +18,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHost, ActionHostError, Caller,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, ActionProvider, Caller,
     ContentPutAnswer, ContentPutStep, InvokeArgument, InvokeRequest, MAX_CONTENT_FRAME_BYTES,
     MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionTarget, settle_with, workspace_provider,
 };
@@ -42,11 +42,11 @@ const LANDING_WAITS: u32 = 30;
 /// Whoever answers an upload's steps: the workspace's host, over this device's session.
 pub trait PutSteps {
     /// Ask for `step`: the answer, once it comes.
-    fn put_step(&self, step: ContentPutStep) -> Pending<Result<ContentPutAnswer, ActionHostError>>;
+    fn put_step(&self, step: ContentPutStep) -> Pending<Result<ContentPutAnswer, ActionCallError>>;
 }
 
 impl PutSteps for SessionActions {
-    fn put_step(&self, step: ContentPutStep) -> Pending<Result<ContentPutAnswer, ActionHostError>> {
+    fn put_step(&self, step: ContentPutStep) -> Pending<Result<ContentPutAnswer, ActionCallError>> {
         Self::put_step(self, step)
     }
 }
@@ -91,7 +91,7 @@ pub enum UploadError {
     /// Its bytes could not be read where they are.
     Read(String),
     /// The workspace refused it, or never answered.
-    Refused(ActionHostError),
+    Refused(ActionCallError),
 }
 
 impl std::fmt::Display for UploadError {
@@ -105,9 +105,9 @@ impl std::fmt::Display for UploadError {
 }
 
 /// What an answer that never came reads as.
-fn answered<T>(answer: Option<Result<T, ActionHostError>>) -> Result<T, ActionHostError> {
+fn answered<T>(answer: Option<Result<T, ActionCallError>>) -> Result<T, ActionCallError> {
     answer.unwrap_or_else(|| {
-        Err(ActionHostError::Unavailable {
+        Err(ActionCallError::Unavailable {
             reason: "the workspace's answer was lost".into(),
         })
     })
@@ -115,7 +115,7 @@ fn answered<T>(answer: Option<Result<T, ActionHostError>>) -> Result<T, ActionHo
 
 /// What the host answered where it should have answered something else.
 fn unexpected(answer: &ContentPutAnswer) -> UploadError {
-    UploadError::Refused(ActionHostError::Unavailable {
+    UploadError::Refused(ActionCallError::Unavailable {
         reason: format!("the workspace answered an upload step with {answer:?}"),
     })
 }
@@ -148,7 +148,7 @@ pub async fn put(
     let piece = MAX_CONTENT_FRAME_BYTES as u64;
     let mut sent = 0_u64;
     let mut resumed = 0_usize;
-    let mut flight: VecDeque<(u64, Pending<Result<ContentPutAnswer, ActionHostError>>)> =
+    let mut flight: VecDeque<(u64, Pending<Result<ContentPutAnswer, ActionCallError>>)> =
         VecDeque::new();
     loop {
         if stopped() {
@@ -280,7 +280,7 @@ impl Landed {
 ///
 /// The host refused it, it failed or was stopped there, or it did not settle in the minutes a
 /// landing may take.
-pub async fn settled<H: ActionHost + Clone + Send + Sync + 'static>(
+pub async fn settled<H: ActionProvider + Clone + Send + Sync + 'static>(
     host: &H,
     caller: &Caller,
     request: InvokeRequest,

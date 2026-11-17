@@ -12,7 +12,7 @@
 //! grant reaches every workspace of the person or exactly one, and each MCP
 //! session through it is one agent session, named for the person ("Claude
 //! Code #2") as History names it. Whoever serves the server serves
-//! [`PROVIDER`]; a host without one leaves the reads unanswered, and a view
+//! [`PROVIDER`]; a provider without one leaves the reads unanswered, and a view
 //! that follows them says so. Revoking a grant ([`REVOKE`]) ends every session
 //! it carries and lets none in again; stopping a session ([`STOP`]) ends that
 //! one connection and keeps the grant, so the agent can come back.

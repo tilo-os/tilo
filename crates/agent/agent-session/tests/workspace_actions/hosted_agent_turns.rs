@@ -164,7 +164,7 @@ pub(super) async fn file_issue(
         .await
         .unwrap();
     let id = WorkspaceId::parse(workspace).unwrap();
-    let service = tilo_server::workspace_agents::WorkspaceActionHost::new(actions.clone(), id);
+    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(actions.clone(), id);
     let person = tilo_actions::remote::Caller::authenticated(
         root.verifying_key().to_bytes(),
         browser.cert.device_public_key,
@@ -630,7 +630,7 @@ pub(super) async fn write_to_agent(
 ) -> Id {
     let person = hex::encode(root.verifying_key().to_bytes());
     let id = WorkspaceId::parse(workspace).unwrap();
-    let service = tilo_server::workspace_agents::WorkspaceActionHost::new(actions.clone(), id);
+    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(actions.clone(), id);
     let caller = tilo_actions::remote::Caller::authenticated(
         root.verifying_key().to_bytes(),
         browser.cert.device_public_key,

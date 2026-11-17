@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, NODE_PERMITS_ACTION,
+    ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, NODE_PERMITS_ACTION,
     NODE_RESOURCE_PREFIX, Pending, ReceiptStatus, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, pending,
     provider_workspace,
 };
@@ -31,7 +31,7 @@ pub(super) fn node_ask(request: &InvokeRequest) -> Option<(&str, &str)> {
 }
 
 /// The ask `request` makes, from its action and arguments.
-fn ask_of(request: &InvokeRequest) -> Result<WorkspaceNodeAsk, ActionHostError> {
+fn ask_of(request: &InvokeRequest) -> Result<WorkspaceNodeAsk, ActionCallError> {
     let text = |name: &str| {
         match &request.argument {
             InvokeArgument::Json(arguments) => arguments
@@ -40,7 +40,7 @@ fn ask_of(request: &InvokeRequest) -> Result<WorkspaceNodeAsk, ActionHostError> 
                 .map(str::to_owned),
             _ => None,
         }
-        .ok_or_else(|| ActionHostError::Refused {
+        .ok_or_else(|| ActionCallError::Refused {
             reason: format!("`{name}` is missing"),
         })
     };
@@ -53,7 +53,7 @@ fn ask_of(request: &InvokeRequest) -> Result<WorkspaceNodeAsk, ActionHostError> 
             share: text("share")?,
         },
         NODE_PERMITS_ACTION => WorkspaceNodeAsk::Permits,
-        _ => return Err(ActionHostError::UnknownAction),
+        _ => return Err(ActionCallError::UnknownAction),
     })
 }
 
@@ -66,25 +66,25 @@ impl AppBrokerState {
         caller: &Caller,
         origin: Option<&super::super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let started = (|| {
-            let (workspace, node) = node_ask(request).ok_or(ActionHostError::UnknownAction)?;
+            let (workspace, node) = node_ask(request).ok_or(ActionCallError::UnknownAction)?;
             let ask = ask_of(request)?;
             if !super::own_device::is_person_here(caller, origin)
                 || caller.workspace() != Some(workspace)
             {
-                return Err(ActionHostError::NotPermitted);
+                return Err(ActionCallError::NotPermitted);
             }
             self.decide_for(caller, workspace, |_, _, _| ())
-                .ok_or(ActionHostError::NotPermitted)?;
+                .ok_or(ActionCallError::NotPermitted)?;
             let service = self.services.workspace_nodes.as_ref().ok_or_else(|| {
-                ActionHostError::Unavailable {
+                ActionCallError::Unavailable {
                     reason: "This device can't ask the workspace about what it shares".into(),
                 }
             })?;
             service
                 .ask(workspace, node, ask)
-                .map_err(|reason| ActionHostError::Unavailable { reason })
+                .map_err(|reason| ActionCallError::Unavailable { reason })
         })();
         let answered = match started {
             Ok(answered) => answered,
@@ -101,10 +101,10 @@ impl AppBrokerState {
                     },
                 },
                 Some(Err(reason)) => ReceiptStatus::Rejected {
-                    error: ActionHostError::Refused { reason },
+                    error: ActionCallError::Refused { reason },
                 },
                 None => ReceiptStatus::Rejected {
-                    error: ActionHostError::Unavailable {
+                    error: ActionCallError::Unavailable {
                         reason: "The workspace did not answer".into(),
                     },
                 },
@@ -163,11 +163,11 @@ mod tests {
                 SHARE_NODE_ACTION,
                 serde_json::json!({ "share": "m1" })
             )),
-            Err(ActionHostError::Refused { .. })
+            Err(ActionCallError::Refused { .. })
         ));
         assert!(matches!(
             ask_of(&request("delete", serde_json::Value::Null)),
-            Err(ActionHostError::UnknownAction)
+            Err(ActionCallError::UnknownAction)
         ));
         let mut other = share;
         other.target.address.resource = "app.so.tilo.notes".into();

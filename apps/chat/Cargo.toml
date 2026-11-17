@@ -66,7 +66,7 @@ chrono.workspace = true
 # The Tilo action model: the serializable, replayable unit of CRDT mutation
 # behind Ctrl+K and cross-peer collaboration. Chat's messages/channels/reactions
 # are exported as `ChatAction`s (see `src/actions.rs`) dispatched through the
-# framework's `ui::ActionHost`.
+# framework's `ui::ActionProvider`.
 tilo-actions = { path = "../../crates/collab/actions" }
 # The address a message carries when it was authored by selecting something —
 # `Message::reference` — and the vocabulary an agent's own progress on a

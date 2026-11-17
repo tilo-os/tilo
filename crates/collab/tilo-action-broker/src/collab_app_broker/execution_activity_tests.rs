@@ -2,7 +2,7 @@
 use super::*;
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, PendingPoll, RemoteActionTarget,
 };
 
@@ -249,7 +249,7 @@ tilo_test_env::scenario! {
             matches!(
                 &asked,
                 PendingPoll::Ready(Err(
-                    tilo_actions::remote::ActionHostError::ConfirmationRequired { .. }
+                    tilo_actions::remote::ActionCallError::ConfirmationRequired { .. }
                 ))
             ),
             "the agent waits for the person: {asked:?}"
@@ -273,7 +273,7 @@ tilo_test_env::scenario! {
             assert!(
                 matches!(
                     answered,
-                    PendingPoll::Ready(Err(ActionHostError::UnknownAction))
+                    PendingPoll::Ready(Err(ActionCallError::UnknownAction))
                 ),
                 "{answered:?}"
             );
@@ -290,7 +290,7 @@ tilo_test_env::scenario! {
             assert!(
                 matches!(
                     answered,
-                    PendingPoll::Ready(Err(ActionHostError::ConfirmationRequired { .. }))
+                    PendingPoll::Ready(Err(ActionCallError::ConfirmationRequired { .. }))
                 ),
                 "{answered:?}"
             );
@@ -345,7 +345,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 answered,
-                PendingPoll::Ready(Err(ActionHostError::UnknownAction))
+                PendingPoll::Ready(Err(ActionCallError::UnknownAction))
             ),
             "an observer member is not offered a change: {answered:?}"
         );
@@ -362,7 +362,7 @@ tilo_test_env::scenario! {
         assert!(
             !matches!(
                 answered,
-                PendingPoll::Ready(Err(ActionHostError::UnknownAction))
+                PendingPoll::Ready(Err(ActionCallError::UnknownAction))
             ),
             "the device-handed session carries the device's delegation: {answered:?}"
         );
@@ -603,7 +603,7 @@ async fn an_edit_the_draft_does_not_offer_confirms_nothing() {
         .unwrap();
     assert!(matches!(
         approval.await,
-        Some(Err(ActionHostError::InvalidRequest { .. }))
+        Some(Err(ActionCallError::InvalidRequest { .. }))
     ));
     assert!(app.try_recv().is_err(), "nothing runs");
 }
@@ -857,7 +857,7 @@ async fn eighty_synthetic_runs_keep_exact_record_and_invocation_identity() {
 #[test]
 fn the_catalogue_lists_connections_in_the_order_they_came() {
     let (state, caller, _app) = fixture();
-    let published = state.live_surfaces(action_host::RowScope::All);
+    let published = state.live_surfaces(action_provider::RowScope::All);
     let surface = published.first().expect("the fixture's surface").clone();
     let peers: Vec<u64> = (0..24).map(|i| (i * 7) % 24 + 10).collect();
     state.replace_published_surfaces_for_test(
@@ -871,7 +871,7 @@ fn the_catalogue_lists_connections_in_the_order_they_came() {
     );
     let listed = || -> Vec<String> {
         state
-            .eager_catalogue(&caller, action_host::RowScope::All)
+            .eager_catalogue(&caller, action_provider::RowScope::All)
             .0
             .into_iter()
             .filter(|row| row.action.is_some())
@@ -1160,7 +1160,7 @@ async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
     assert!(
         matches!(
             refused,
-            PendingPoll::Ready(Err(tilo_actions::remote::ActionHostError::UnknownAction))
+            PendingPoll::Ready(Err(tilo_actions::remote::ActionCallError::UnknownAction))
         ),
         "the denied edit was refused"
     );
@@ -1372,16 +1372,16 @@ tilo_test_env::scenario! {
 
 /// The broker's api, counting how often a shortcut run observes through it.
 struct CountedApi {
-    api: action_host::BrokerApi,
+    api: action_provider::BrokerApi,
     observes: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl ActionHost for CountedApi {
+impl ActionProvider for CountedApi {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.api.query(caller, query)
     }
 
@@ -1389,7 +1389,7 @@ impl ActionHost for CountedApi {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.api.invoke(caller, request)
     }
 
@@ -1406,7 +1406,7 @@ impl ActionHost for CountedApi {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         self.api.cancel(caller, id)
     }
 }
@@ -1487,7 +1487,7 @@ async fn shortcut_step_observes_once_per_change() {
         let observes = Arc::clone(&observes);
         async move {
             let api = CountedApi {
-                api: action_host::BrokerApi::new(state),
+                api: action_provider::BrokerApi::new(state),
                 observes,
             };
             tilo_automation::run(
@@ -1618,7 +1618,7 @@ fn agent_answered(
     answer: tilo_action_policy::Answer,
     api: impl FnOnce(&str) -> Caller,
 ) -> (
-    PendingPoll<Result<InvocationReceipt, ActionHostError>>,
+    PendingPoll<Result<InvocationReceipt, ActionCallError>>,
     bool,
 ) {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
@@ -1697,7 +1697,7 @@ fn a_store_disclosure_with_a_malformed_operation_is_refused_with_the_reason() {
             .unwrap(),
     );
     let refused = state.request_approval(&caller, None, &invoke).poll_ready();
-    let PendingPoll::Ready(Err(ActionHostError::InvalidRequest { reason })) = &refused else {
+    let PendingPoll::Ready(Err(ActionCallError::InvalidRequest { reason })) = &refused else {
         panic!("refused for its operation: {refused:?}");
     };
     assert!(
@@ -1717,7 +1717,7 @@ async fn a_sheet_closed_unanswered_answers_the_agent_unavailable_not_declined() 
     let (_question, answer) = asked.recv().await.expect("the person is asked");
     drop(answer);
     let answered = approval.await.expect("answered");
-    let Err(ActionHostError::Unavailable { reason }) = &answered else {
+    let Err(ActionCallError::Unavailable { reason }) = &answered else {
         panic!("unanswered, not declined: {answered:?}");
     };
     assert!(reason.contains("without the person's answer"), "{reason}");

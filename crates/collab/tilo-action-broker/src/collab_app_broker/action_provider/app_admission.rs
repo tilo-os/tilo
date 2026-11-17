@@ -146,7 +146,7 @@ mod invitation_request_tests {
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::session_actions;
-    use tilo_actions::remote::{ActionHostError, Caller, Pending, RemoteActionMessage, pending};
+    use tilo_actions::remote::{ActionCallError, Caller, Pending, RemoteActionMessage, pending};
 
     struct Shell {
         started: Mutex<Vec<String>>,
@@ -332,7 +332,7 @@ mod invitation_request_tests {
             let reading = Caller::local_person(viewer).in_workspace(workspace_id.clone());
             assert_eq!(
                 invoke(&api(&reading)),
-                Err(ActionHostError::NotPermitted),
+                Err(ActionCallError::NotPermitted),
                 "a viewer makes no invitation"
             );
             assert!(shell.started.lock().unwrap().is_empty());

@@ -83,7 +83,7 @@ impl Cursor {
     }
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// How invocation `id` stands, as `tilo_status` answers it.
     pub(crate) async fn status(&self, id: tilo_actions::InvocationId) -> Result<Value, String> {
         self.observed(id)
@@ -460,7 +460,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Some(Ok(page)) => Ok(Some(page)),
             // A host that keeps no feed says so; a watch still reports
             // invocations and presence.
-            Some(Err(tilo_actions::remote::ActionHostError::Unavailable { reason }))
+            Some(Err(tilo_actions::remote::ActionCallError::Unavailable { reason }))
                 if reason == tilo_actions::remote::CHANGE_FEED_UNAVAILABLE =>
             {
                 Ok(None)

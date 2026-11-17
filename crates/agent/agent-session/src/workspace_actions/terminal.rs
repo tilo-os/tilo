@@ -217,7 +217,7 @@ impl Worker {
             Some(InvocationReceipt {
                 invocation,
                 status: tilo_actions::remote::ReceiptStatus::Rejected {
-                    error: tilo_actions::remote::ActionHostError::Refused { reason },
+                    error: tilo_actions::remote::ActionCallError::Refused { reason },
                 },
             })
         };
@@ -325,7 +325,7 @@ impl Worker {
         route: &DocumentRoute,
         state: &super::WorkspaceState,
     ) -> Result<(), InvocationReceipt> {
-        use tilo_actions::remote::{ActionHostError, Confirmation, ReceiptStatus};
+        use tilo_actions::remote::{ActionCallError, Confirmation, ReceiptStatus};
         if self.acts_for_owner(caller) {
             return Ok(());
         }
@@ -336,7 +336,7 @@ impl Worker {
         };
         let who = self
             .bounded(caller)
-            .ok_or_else(|| refused(ActionHostError::NotPermitted))?;
+            .ok_or_else(|| refused(ActionCallError::NotPermitted))?;
         let policy = self
             .policy_for(
                 workspace_id,
@@ -350,11 +350,11 @@ impl Worker {
             .reaching_person();
         let mounted = self
             .mount(route, state)
-            .map_err(|_| refused(ActionHostError::UnknownAction))?;
+            .map_err(|_| refused(ActionCallError::UnknownAction))?;
         let descriptor = super::live_actions(&mounted.app)
             .into_iter()
             .find(|descriptor| descriptor.address == request.target.address)
-            .ok_or_else(|| refused(ActionHostError::UnknownAction))?;
+            .ok_or_else(|| refused(ActionCallError::UnknownAction))?;
         let need = descriptor.contract.need();
         let node = tilo_actions::action_node(
             &ui::permissions::policy::TreePath::root(),
@@ -373,7 +373,7 @@ impl Worker {
             permissions.asker(),
         );
         match admitted {
-            Err(_) => Err(refused(ActionHostError::NotPermitted)),
+            Err(_) => Err(refused(ActionCallError::NotPermitted)),
             Ok(ui::permissions::policy::Admission::Runs) => Ok(()),
             Ok(ui::permissions::policy::Admission::AsksFirst) => {
                 let approval = self
@@ -405,7 +405,7 @@ impl Worker {
                 );
                 Err(self
                     .ask_person(workspace_id, caller, request, &about)
-                    .unwrap_or_else(|| refused(ActionHostError::confirmation_required())))
+                    .unwrap_or_else(|| refused(ActionCallError::confirmation_required())))
             }
         }
     }
@@ -509,7 +509,7 @@ impl Worker {
                 Err(error) => return refused(error),
             };
             let Some(workspace) = state.workspace.clone() else {
-                return refused(tilo_actions::remote::ActionHostError::UnknownAction);
+                return refused(tilo_actions::remote::ActionCallError::UnknownAction);
             };
             let route = DocumentRoute {
                 cluster_id: workspace,

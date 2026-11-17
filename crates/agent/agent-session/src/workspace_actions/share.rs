@@ -2,7 +2,7 @@
 //! the resource's views as the caller may read them, under the web entry
 //! the host announces.
 
-use tilo_actions::remote::{ActionHostError, Caller, CatalogueQuery};
+use tilo_actions::remote::{ActionCallError, Caller, CatalogueQuery};
 use tilo_actions::{ActionFailure, ActionOutput};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
@@ -131,12 +131,12 @@ impl Worker {
         caller: &Caller,
         route: &DocumentRoute,
         wanted: &tilo_actions::remote::ViewResourceQuery,
-    ) -> Option<Result<FoundViews, ActionHostError>> {
+    ) -> Option<Result<FoundViews, ActionCallError>> {
         if self.holder_of(route) != *route {
             return None;
         }
         let mounted = self.mounted.get(route)?;
-        let refuse = || ActionHostError::UnknownAction;
+        let refuse = || ActionCallError::UnknownAction;
         let link = self.shared.link.get()?;
         let Some(policy) = link.view_read_policy(workspace, caller, &route.app_id, &route.document)
         else {
@@ -145,7 +145,7 @@ impl Worker {
         let views = match mounted.app.resource_views(wanted, &policy) {
             Ok(views) => views,
             Err(error) => {
-                return Some(Err(ActionHostError::Unavailable {
+                return Some(Err(ActionCallError::Unavailable {
                     reason: error.to_string(),
                 }));
             }
@@ -179,7 +179,7 @@ impl Worker {
         if offered.is_some_and(|descriptor| descriptor.address == target.address) {
             Ok(who.person_caller)
         } else {
-            Err(Outcome::Rejected(ActionHostError::UnknownAction))
+            Err(Outcome::Rejected(ActionCallError::UnknownAction))
         }
     }
 
@@ -205,7 +205,7 @@ impl Worker {
                 retryable: false,
             })
         };
-        let refused = || Outcome::Rejected(ActionHostError::UnknownAction);
+        let refused = || Outcome::Rejected(ActionCallError::UnknownAction);
         let link = self.shared.link.get().ok_or_else(refused)?;
         let policy = link
             .view_read_policy(workspace_id, caller, &route.app_id, &route.document)

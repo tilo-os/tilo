@@ -93,7 +93,7 @@ fn admit_as_child() -> Result<()> {
                 "the owner has no workspace"
             );
             ensure!(
-                session.action_host().is_ok(),
+                session.action_provider().is_ok(),
                 "the actual semantic broker must be available"
             );
             ensure!(

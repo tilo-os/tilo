@@ -369,7 +369,7 @@ impl Refusal {
     }
 
     /// The refusal as an action's refusal reason
-    /// ([`super::ActionHostError::Refused`]): its JSON, which
+    /// ([`super::ActionCallError::Refused`]): its JSON, which
     /// [`Self::from_reason`] reads back typed, and which a caller that does
     /// not read it still shows as plain data.
     #[must_use]

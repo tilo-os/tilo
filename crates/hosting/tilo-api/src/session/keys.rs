@@ -18,7 +18,7 @@ use crate::server::Connection;
 use collab_types::workspace_grant::WorkspaceGrant;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
+    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
 };
 
@@ -132,21 +132,21 @@ fn settled(outcome: &Outcome) -> bool {
 }
 
 /// What the workspace's refusal, `error`, tells the caller.
-fn refused(error: &ActionHostError) -> Outcome {
+fn refused(error: &ActionCallError) -> Outcome {
     match error {
         // The workspace records its keys' revocations: one it refuses as
         // revoked asks its person for another.
-        ActionHostError::Refused { reason } if reason.contains("key_revoked") => failed(
+        ActionCallError::Refused { reason } if reason.contains("key_revoked") => failed(
             "key_revoked",
             "this key was revoked",
             "ask the person for a new key",
         ),
-        ActionHostError::UnknownAction => failed(
+        ActionCallError::UnknownAction => failed(
             "not_found",
             "the workspace holds no such key, or it is not this key's to revoke",
             "GET /v1/keys lists the keys this one holds and the keys it minted",
         ),
-        ActionHostError::NotPermitted => failed(
+        ActionCallError::NotPermitted => failed(
             "not_permitted",
             "the workspace does not let this key revoke that one",
             "only the key itself and the key that minted it revoke it",

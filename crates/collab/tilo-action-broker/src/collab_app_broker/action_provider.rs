@@ -3,10 +3,8 @@
 //! Every caller that is not the application itself — a peer on the shell
 //! network, an app or agent on this machine, the MCP bridge, the palette —
 //! reaches published actions through these methods, wrapped as an
-//! [`ActionHost`](tilo_actions::remote::ActionHost) by
-//! the host's `BrokerActionHost`.
-//! Authority is decided from the transport-supplied [`Caller`] alone, with
-//! the same capability checks the admission path has always applied.
+//! [`ActionProvider`](tilo_actions::remote::ActionProvider) by `BrokerApi`.
+//! Authority is decided from the transport-supplied [`Caller`] alone.
 
 use std::sync::Arc;
 
@@ -14,7 +12,7 @@ use tilo_desktop_model::Workspace;
 
 use tilo_actions::remote::{
     APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND,
-    APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CataloguePage, CatalogueProvider,
+    APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller, CataloguePage, CatalogueProvider,
     CatalogueQuery, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
     InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, application_provider,
     application_provider_resource, pending, provider_workspace, workspace_provider,
@@ -70,9 +68,9 @@ fn oversized_argument(argument: &str) -> Option<String> {
 
 /// A retired transport run cannot use a retained caller clone. Legacy callers
 /// without an execution retain their existing behavior.
-pub(super) fn check_execution(caller: &Caller) -> Result<(), ActionHostError> {
+pub(super) fn check_execution(caller: &Caller) -> Result<(), ActionCallError> {
     if caller.execution_id().is_some() && !caller.execution_is_live() {
-        return Err(ActionHostError::Unavailable {
+        return Err(ActionCallError::Unavailable {
             reason: "execution session ended".into(),
         });
     }
@@ -88,11 +86,11 @@ pub(super) struct LaunchDestination {
     pub(super) resource: Option<String>,
 }
 
-/// The broker as the [`ActionHost`](tilo_actions::remote::ActionHost) an
+/// The broker as the [`ActionProvider`](tilo_actions::remote::ActionProvider) an
 /// admitted application or agent connection reaches over its channel's
 /// `remoteAction` api. [`OWN_PROVIDER`] names that connection itself.
 #[derive(Clone)]
-pub(super) struct ConnectionActionHost {
+pub(super) struct ConnectionActionProvider {
     pub(super) state: Arc<AppBrokerState>,
     pub(super) own_peer: u64,
     /// The connection's revalidated admission: an application's own effect,
@@ -100,7 +98,7 @@ pub(super) struct ConnectionActionHost {
     pub(super) origin: super::published_invocation::InvocationCaller,
 }
 
-impl tilo_actions::remote::ActionHost for ConnectionActionHost {
+impl tilo_actions::remote::ActionProvider for ConnectionActionProvider {
     fn resource_reads(&self) -> Option<std::sync::Arc<dyn tilo_actions::remote::ResourceReads>> {
         self.state.resource_reads()
     }
@@ -109,7 +107,7 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.state.action_query(caller, &query)
     }
 
@@ -117,7 +115,7 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // A channel connection carries no launcher-authenticated scope, so a
         // content launch by hash is refused rather than widened.
         self.state.action_invoke_with_origin(
@@ -152,7 +150,7 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         // What the connection's own person or agent invoked is owned under
         // its certificate, not its actor name: cancel it as that owner.
         if let super::published_invocation::InvocationCaller::Local { admitted, .. } = &self.origin
@@ -168,7 +166,7 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
                 return answered_when_durable(
                     self.state
                         .request_cancellation_for_owner(job, &owner)
-                        .map_err(|reason| ActionHostError::NotCancellable { reason }),
+                        .map_err(|reason| ActionCallError::NotCancellable { reason }),
                 );
             }
         }
@@ -179,12 +177,12 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionCallError>> {
         self.state.request_approval(caller, None, request)
     }
 }
 
-/// The broker's own api, as the [`ActionHost`](tilo_actions::remote::ActionHost)
+/// The broker's own api, as the [`ActionProvider`](tilo_actions::remote::ActionProvider)
 /// a shortcut run invokes its steps through. It stands for no connection:
 /// every step is admitted for the run's caller under its retained original
 /// ownership, with the run's grants and confirmations still checked per step.
@@ -233,12 +231,12 @@ impl BrokerApi {
     }
 }
 
-impl tilo_actions::remote::ActionHost for BrokerApi {
+impl tilo_actions::remote::ActionProvider for BrokerApi {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.state.action_query(caller, &query)
     }
 
@@ -246,7 +244,7 @@ impl tilo_actions::remote::ActionHost for BrokerApi {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let origin = self.step_origin(request.invocation);
         self.state
             .action_invoke_with_origin(caller, None, None, origin.as_ref(), &request)
@@ -270,7 +268,7 @@ impl tilo_actions::remote::ActionHost for BrokerApi {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         self.state.action_cancel(caller, id)
     }
 
@@ -278,12 +276,12 @@ impl tilo_actions::remote::ActionHost for BrokerApi {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionCallError>> {
         self.state.request_approval(caller, None, request)
     }
 }
 
-/// The host runs the action wherever its app lives; a published surface
+/// The provider runs the action wherever its app lives; a published surface
 /// carries no locus of its own.
 fn descriptor(action: &PublishedAction) -> ActionDescriptor {
     action.descriptor(ExecutionLocus::default())
@@ -595,7 +593,7 @@ pub(super) enum Started {
 
 impl Started {
     /// The job, once delivered: never before its admission is durable.
-    async fn job(self, state: &AppBrokerState) -> Result<u64, ActionHostError> {
+    async fn job(self, state: &AppBrokerState) -> Result<u64, ActionCallError> {
         match self {
             Self::Now(job) => Ok(job),
             Self::Staged(staged) => staged.start(state).await.map(|job| job.id).map_err(refusal),
@@ -605,31 +603,31 @@ impl Started {
 
 /// Complete `reply` with `answer` once it is known.
 pub(super) fn answer_with<T: Send + 'static>(
-    answer: Pending<Result<T, ActionHostError>>,
-    reply: Completer<Result<T, ActionHostError>>,
+    answer: Pending<Result<T, ActionCallError>>,
+    reply: Completer<Result<T, ActionCallError>>,
 ) {
     answer.then(move |answer| {
         reply.complete(answer.unwrap_or_else(|| {
-            Err(ActionHostError::Unavailable {
+            Err(ActionCallError::Unavailable {
                 reason: "the admission was dropped".into(),
             })
         }));
     });
 }
 
-pub(super) fn refusal(reason: String) -> ActionHostError {
+pub(super) fn refusal(reason: String) -> ActionCallError {
     if reason.starts_with("action_confirmation_required")
         || reason.contains("confirmation is required")
     {
-        ActionHostError::confirmation_required()
+        ActionCallError::confirmation_required()
     } else if reason.contains("not allowed") {
-        ActionHostError::NotPermitted
+        ActionCallError::NotPermitted
     } else if reason.contains("no longer publishes")
         || reason.contains("unknown application action")
     {
-        ActionHostError::UnknownAction
+        ActionCallError::UnknownAction
     } else {
-        ActionHostError::Refused { reason }
+        ActionCallError::Refused { reason }
     }
 }
 
@@ -763,10 +761,10 @@ impl AppBrokerState {
             | RemoteActionMessage::CatalogueChanged { .. } => Some(person.clone()),
         };
         permitted.ok_or_else(|| {
-            Box::new(refuse(message, ActionHostError::NotPermitted).unwrap_or(
+            Box::new(refuse(message, ActionCallError::NotPermitted).unwrap_or(
                 RemoteActionMessage::CatalogueResponse {
                     correlation: 0,
-                    result: Err(ActionHostError::NotPermitted),
+                    result: Err(ActionCallError::NotPermitted),
                 },
             ))
         })
@@ -1614,7 +1612,7 @@ impl AppBrokerState {
         self: &Arc<Self>,
         caller: &Caller,
         query: &CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.action_query_with_origin(caller, None, query)
     }
 
@@ -1623,7 +1621,7 @@ impl AppBrokerState {
         caller: &Caller,
         origin: Option<&super::InvocationCaller>,
         query: &CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
         }
@@ -1641,7 +1639,7 @@ impl AppBrokerState {
                 {
                     root
                 }
-                Ok(_) => return Pending::ready(Err(ActionHostError::NotPermitted)),
+                Ok(_) => return Pending::ready(Err(ActionCallError::NotPermitted)),
                 Err(error) => return Pending::ready(Err(error)),
             };
             let state = self.clone();
@@ -1651,7 +1649,7 @@ impl AppBrokerState {
                 .map(move |result| {
                     let mut page = result?;
                     if state.canonical_token_directory(&token)? != root {
-                        return Err(ActionHostError::UnknownAction);
+                        return Err(ActionCallError::UnknownAction);
                     }
                     for row in &mut page.rows {
                         row.provider.clone_from(&token);
@@ -1694,7 +1692,7 @@ impl AppBrokerState {
             && providers.is_empty()
             && let Some(reason) = self.agent_workspace_unreachable(caller)
         {
-            return Pending::ready(Err(ActionHostError::Unavailable { reason }));
+            return Pending::ready(Err(ActionCallError::Unavailable { reason }));
         }
         let revision = format!(
             "{}.{}",
@@ -1720,7 +1718,7 @@ impl AppBrokerState {
         own_peer: Option<u64>,
         launch: Option<&LaunchScope>,
         request: &InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.action_invoke_with_origin(caller, own_peer, launch, None, request)
     }
 
@@ -1735,7 +1733,7 @@ impl AppBrokerState {
         launch: Option<&LaunchScope>,
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Err(refused) = tilo_actions::appearance::refuse_here(request) {
             return Pending::ready(Err(refused));
         }
@@ -1768,7 +1766,7 @@ impl AppBrokerState {
                 {
                     root
                 }
-                Ok(_) => return Pending::ready(Err(ActionHostError::NotPermitted)),
+                Ok(_) => return Pending::ready(Err(ActionCallError::NotPermitted)),
                 Err(error) => return Pending::ready(Err(error)),
             };
             return self.invoke_directory(caller, root, origin, request);
@@ -1838,7 +1836,7 @@ impl AppBrokerState {
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let reservation = self.reserve_invocation(caller, request);
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
@@ -1862,7 +1860,7 @@ impl AppBrokerState {
                 if let Ok(mut log) = self.remote_invocations.lock() {
                     log.abandon(&request.invocation);
                 }
-                return Pending::ready(Err(ActionHostError::Unavailable {
+                return Pending::ready(Err(ActionCallError::Unavailable {
                     reason: format!("the launch could not start: {error}"),
                 }));
             }
@@ -1891,7 +1889,7 @@ impl AppBrokerState {
                         Err(error)
                     }
                 },
-                Err(_) => Err(ActionHostError::Unavailable {
+                Err(_) => Err(ActionCallError::Unavailable {
                     reason: "the invocation log is unavailable".into(),
                 }),
             };
@@ -1911,7 +1909,7 @@ impl AppBrokerState {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<LaunchDestination, ActionHostError> {
+    ) -> Result<LaunchDestination, ActionCallError> {
         // A target written under an id its app had before (a reference kept in a note) opens the
         // app that took its place, on the resource as that app publishes it; the request stays
         // as written.
@@ -1930,14 +1928,14 @@ impl AppBrokerState {
                 let retained = self
                     .launchable
                     .surface_for(&request.target.provider)
-                    .ok_or(ActionHostError::UnknownAction)?;
+                    .ok_or(ActionCallError::UnknownAction)?;
                 let offered = retained
                     .actions
                     .into_iter()
                     .find(|action| {
                         action.resource == address.resource && action.action == address.action
                     })
-                    .ok_or(ActionHostError::UnknownAction)?;
+                    .ok_or(ActionCallError::UnknownAction)?;
                 (
                     retained.route.cluster_id,
                     retained.app_id,
@@ -1947,7 +1945,7 @@ impl AppBrokerState {
             };
         // Only a caller on this machine launches apps on this desktop.
         if caller.workspace().is_none() {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         }
         // The launcher keeps the workspace past the read: only this
         // workspace's authority is copied, once every check on the same sample passed.
@@ -1981,7 +1979,7 @@ impl AppBrokerState {
                         (&action.resource_kind, &action.resource, &action.action),
                         &action.contract,
                     ) {
-                        return Err(ActionHostError::UnknownAction);
+                        return Err(ActionCallError::UnknownAction);
                     }
                     let argument = request.argument.to_slot();
                     if !confirmation_satisfied(
@@ -1990,12 +1988,12 @@ impl AppBrokerState {
                             .confirmation_for_argument(argument.as_deref()),
                         request.confirmation.as_ref(),
                     ) {
-                        return Err(ActionHostError::confirmation_required());
+                        return Err(ActionCallError::confirmation_required());
                     }
                 }
                 Ok(workspace.clone())
             })
-            .ok_or(ActionHostError::UnknownAction)??;
+            .ok_or(ActionCallError::UnknownAction)??;
         Ok(LaunchDestination {
             workspace,
             app_id,
@@ -2064,7 +2062,7 @@ impl AppBrokerState {
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
         (request, address): (&InvokeRequest, &tilo_actions::ActionAddress),
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<u64, ActionCallError> {
         let mut delivered = request.clone();
         delivered.target.provider = peer_id.to_string();
         delivered.target.address = address.clone();
@@ -2103,7 +2101,7 @@ impl AppBrokerState {
         request: &InvokeRequest,
         (workspace, app_id): (&str, &str),
         peer_id: u64,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<u64, ActionCallError> {
         let state = Arc::clone(self);
         let (caller, origin, request) = (caller.clone(), origin.cloned(), request.clone());
         let reason = format!("{app_id} start worker stopped");
@@ -2118,7 +2116,7 @@ impl AppBrokerState {
             )
         })
         .await
-        .map_err(|error| ActionHostError::Unavailable {
+        .map_err(|error| ActionCallError::Unavailable {
             reason: format!("{reason}: {error}"),
         })?
     }
@@ -2137,8 +2135,8 @@ impl AppBrokerState {
         destination: &LaunchDestination,
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
-    ) -> Result<u64, ActionHostError> {
-        let stopped_waiting = || ActionHostError::Unavailable {
+    ) -> Result<u64, ActionCallError> {
+        let stopped_waiting = || ActionCallError::Unavailable {
             reason: "the caller stopped waiting for admission".into(),
         };
         let workspace_id = destination.workspace.id().to_string();
@@ -2196,12 +2194,12 @@ impl AppBrokerState {
                     () = &mut deadline => return Err(expired()),
                     seen = changes.changed() => {
                         if seen.is_err() {
-                            return Err(ActionHostError::Unavailable { reason: "the broker stopped".into() });
+                            return Err(ActionCallError::Unavailable { reason: "the broker stopped".into() });
                         }
                         continue;
                     }
                     permit = super::launchable::launch_permits().acquire_owned() => {
-                        permit.map_err(|_| ActionHostError::Unavailable { reason: "the launch queue stopped".into() })?
+                        permit.map_err(|_| ActionCallError::Unavailable { reason: "the launch queue stopped".into() })?
                     }
                 });
                 let current = self.readmit_launch(caller, origin, request, destination)?;
@@ -2210,7 +2208,7 @@ impl AppBrokerState {
                     caller,
                     (origin, request),
                     current,
-                    permit.take().ok_or(ActionHostError::NotPermitted)?,
+                    permit.take().ok_or(ActionCallError::NotPermitted)?,
                     (deadline.deadline(), &address.action),
                 );
                 drop(permit);
@@ -2220,7 +2218,7 @@ impl AppBrokerState {
             }
             tokio::select! {
                 seen = changes.changed() => if seen.is_err() {
-                    return Err(ActionHostError::Unavailable {
+                    return Err(ActionCallError::Unavailable {
                         reason: "the broker stopped".into(),
                     });
                 },
@@ -2242,8 +2240,8 @@ impl AppBrokerState {
         workspace: &str,
         address: &tilo_actions::ActionAddress,
         timeout: std::time::Duration,
-    ) -> ActionHostError {
-        ActionHostError::Unavailable {
+    ) -> ActionCallError {
+        ActionCallError::Unavailable {
             reason: format!(
                 "{app_id} was launched but did not offer \"{}\" within {:.1} s ({})",
                 address.action,
@@ -2261,14 +2259,14 @@ impl AppBrokerState {
         current: LaunchDestination,
         permit: tokio::sync::OwnedSemaphorePermit,
         deadline: (tokio::time::Instant, &str),
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         let app_id = current.app_id.clone();
         let workspace_id = current.workspace.id().to_string();
         let timeout = self.launchable.delivery_timeout();
-        let stopped_waiting = || ActionHostError::Unavailable {
+        let stopped_waiting = || ActionCallError::Unavailable {
             reason: "the caller stopped waiting for admission".into(),
         };
-        let expired = || ActionHostError::Unavailable {
+        let expired = || ActionCallError::Unavailable {
             reason: format!(
                 "{app_id} was launched but did not offer \"{}\" within {:.1} s",
                 deadline.1,
@@ -2299,7 +2297,7 @@ impl AppBrokerState {
             }
             result = &mut launch => result,
         };
-        launched_result.map_err(|error| ActionHostError::Unavailable {
+        launched_result.map_err(|error| ActionCallError::Unavailable {
             reason: format!("{app_id} launch worker stopped: {error}"),
         })??;
         Ok(())
@@ -2312,10 +2310,10 @@ impl AppBrokerState {
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
         workspace: &str,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         check_execution(caller)?;
         if !self.is_accepting() {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let admitted = match origin {
             Some(super::published_invocation::InvocationCaller::Certified {
@@ -2323,7 +2321,7 @@ impl AppBrokerState {
                 ..
             }) => {
                 if original.workspace != workspace {
-                    return Err(ActionHostError::NotPermitted);
+                    return Err(ActionCallError::NotPermitted);
                 }
                 // A durable barrier can outlive the synchronous admission
                 // memo too. Verify original ownership without borrowing that
@@ -2338,10 +2336,10 @@ impl AppBrokerState {
                 // name its owner instead of dropping the delegation.
                 original
                     .reverified(&current)
-                    .map_err(|_| ActionHostError::NotPermitted)?;
+                    .map_err(|_| ActionCallError::NotPermitted)?;
                 original
                     .owner()
-                    .map_err(|_| ActionHostError::NotPermitted)?;
+                    .map_err(|_| ActionCallError::NotPermitted)?;
                 if caller.device_public_key().is_none() {
                     self.current_native_person(
                         workspace,
@@ -2349,7 +2347,7 @@ impl AppBrokerState {
                             .admitted
                             .certificate
                             .as_ref()
-                            .ok_or(ActionHostError::NotPermitted)?,
+                            .ok_or(ActionCallError::NotPermitted)?,
                     )
                     .map_err(refusal)?;
                 }
@@ -2362,7 +2360,7 @@ impl AppBrokerState {
             }) => {
                 self.checked_policy_time(time.as_ref()).map_err(refusal)?;
                 if route.cluster_id != workspace {
-                    return Err(ActionHostError::NotPermitted);
+                    return Err(ActionCallError::NotPermitted);
                 }
                 // Revalidation checks current certificate and workspace policy, but
                 // carries the registration forward without checking its liveness.
@@ -2376,7 +2374,7 @@ impl AppBrokerState {
                         .values()
                         .any(|worker| worker.worker_registration.as_ref() == Some(registration))
                     {
-                        return Err(ActionHostError::NotPermitted);
+                        return Err(ActionCallError::NotPermitted);
                     }
                 }
                 let current = self
@@ -2396,7 +2394,7 @@ impl AppBrokerState {
                     || caller.acting().person_id()
                         != Some(super::person_id_for_root(certificate.user_public_key).as_str())
                 {
-                    return Err(ActionHostError::NotPermitted);
+                    return Err(ActionCallError::NotPermitted);
                 }
                 self.current_native_person(workspace, certificate)
                     .map_err(refusal)?;
@@ -2417,7 +2415,7 @@ impl AppBrokerState {
                 _ => false,
             };
             if !own_app && expected.member() != actual.member() {
-                return Err(ActionHostError::NotPermitted);
+                return Err(ActionCallError::NotPermitted);
             }
         }
         Ok(())
@@ -2430,7 +2428,7 @@ impl AppBrokerState {
         ownership: (&Caller, Option<&super::InvocationCaller>, &str),
         admitted: &super::host_action_admission::AdmittedHostAction,
         app_id: &str,
-    ) -> Result<Workspace, ActionHostError> {
+    ) -> Result<Workspace, ActionCallError> {
         self.reauthorize_launch_effect_as(
             ownership,
             admitted,
@@ -2445,7 +2443,7 @@ impl AppBrokerState {
         ownership: (&Caller, Option<&super::InvocationCaller>, &str),
         admitted: &super::host_action_admission::AdmittedHostAction,
         (app_id, kind): (&str, tilo_action_policy::ActionKind),
-    ) -> Result<Workspace, ActionHostError> {
+    ) -> Result<Workspace, ActionCallError> {
         let (caller, origin, workspace) = ownership;
         let result = self
             .current_framework_authority(caller, origin, workspace)
@@ -2459,7 +2457,7 @@ impl AppBrokerState {
                     owner = workspace.owner().map_or("none", |owner| owner.as_str()),
                     "an app's launch was refused: the workspace does not let the caller open it"
                 );
-                Err(ActionHostError::NotPermitted)
+                Err(ActionCallError::NotPermitted)
             });
         if result.is_err() {
             self.complete_host_action(
@@ -2698,7 +2696,7 @@ impl AppBrokerState {
         launch: Option<&LaunchScope>,
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Some(forward) = self.eager_forward(caller, origin, request) {
             return self.send_to_host(caller, forward);
         }
@@ -2724,7 +2722,7 @@ impl AppBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         delivered: &InvokeRequest,
         request: &InvokeRequest,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<u64, ActionCallError> {
         self.start_for(caller, None, None, origin, delivered, request)?
             .job(self)
             .await
@@ -2735,8 +2733,8 @@ impl AppBrokerState {
     fn finish_started(
         self: &Arc<Self>,
         invocation: tilo_actions::InvocationId,
-        started: Result<Started, ActionHostError>,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        started: Result<Started, ActionCallError>,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         match started {
             Err(error) => Pending::ready(self.finish_directory_admission(invocation, Err(error))),
             Ok(Started::Now(job)) => {
@@ -2766,9 +2764,9 @@ impl AppBrokerState {
         self: &Arc<Self>,
         caller: &Caller,
         invocation: tilo_actions::InvocationId,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let Some(job) = self.remote_job(caller, &invocation) else {
-            return Pending::ready(Err(ActionHostError::UnknownInvocation));
+            return Pending::ready(Err(ActionCallError::UnknownInvocation));
         };
         let (receipt, answered) = pending();
         self.when_durable(
@@ -2777,7 +2775,7 @@ impl AppBrokerState {
                 receipt.complete(
                     outcome
                         .map(|()| state.receipt_for(invocation, job))
-                        .map_err(|reason| ActionHostError::Unavailable { reason }),
+                        .map_err(|reason| ActionCallError::Unavailable { reason }),
                 );
             },
         );
@@ -2801,12 +2799,12 @@ impl AppBrokerState {
     fn finish_directory_admission(
         &self,
         invocation: tilo_actions::InvocationId,
-        started: Result<u64, ActionHostError>,
-    ) -> Result<InvocationReceipt, ActionHostError> {
+        started: Result<u64, ActionCallError>,
+    ) -> Result<InvocationReceipt, ActionCallError> {
         let mut log = self
             .remote_invocations
             .lock()
-            .map_err(|_| ActionHostError::Unavailable {
+            .map_err(|_| ActionCallError::Unavailable {
                 reason: "the invocation log is unavailable".into(),
             })?;
         match started {
@@ -2831,7 +2829,7 @@ impl AppBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
         original_request: &InvokeRequest,
-    ) -> Result<Started, ActionHostError> {
+    ) -> Result<Started, ActionCallError> {
         let address = &request.target.address;
         let argument = request.argument.to_slot();
         let provider = request.target.provider.as_str();
@@ -2857,11 +2855,11 @@ impl AppBrokerState {
                 .map(Started::Now);
         }
         let peer_id = if provider == OWN_PROVIDER {
-            own_peer.ok_or(ActionHostError::UnknownAction)?
+            own_peer.ok_or(ActionCallError::UnknownAction)?
         } else {
             provider
                 .parse::<u64>()
-                .map_err(|_| ActionHostError::UnknownAction)?
+                .map_err(|_| ActionCallError::UnknownAction)?
         };
         // Only the one action this peer offers is copied out, not every
         // app's published surface.
@@ -2880,7 +2878,7 @@ impl AppBrokerState {
                     action.clone(),
                 ))
             })
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         // Offered when the caller may take it or would be asked first;
         // admission requires the confirmation an ask needs.
         let (offered, workspace) = self
@@ -2895,7 +2893,7 @@ impl AppBrokerState {
                 )
             })
             .and_then(|allowed| allowed.then_some((action, workspace)))
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         let actor = self.caller_actor(caller, &workspace);
         let token = self.confirmation_token(
             peer_id,
@@ -2938,7 +2936,7 @@ impl AppBrokerState {
         origin: Option<&super::InvocationCaller>,
         request: &InvokeRequest,
         argument: Option<&str>,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<u64, ActionCallError> {
         let address = &request.target.address;
         // Workspace actions hand the workspace to host services (launcher,
         // shortcut library), which cannot run under the borrow: copy only
@@ -2948,7 +2946,7 @@ impl AppBrokerState {
                 (workspace.clone(), policy.clone(), now)
             })
         else {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         };
         if let Some(result) = self.start_remaining_workspace_action(
             caller,
@@ -2974,7 +2972,7 @@ impl AppBrokerState {
             && address.action == APPLICATION_CLOSE_ACTION
         {
             if caller.workspace().is_none() {
-                return Err(ActionHostError::UnknownAction);
+                return Err(ActionCallError::UnknownAction);
             }
             if !policy.may_in(
                 &workspace,
@@ -2982,7 +2980,7 @@ impl AppBrokerState {
                 tilo_action_policy::ActionKind::Undoable,
                 now,
             ) {
-                return Err(ActionHostError::NotPermitted);
+                return Err(ActionCallError::NotPermitted);
             }
             if !self
                 .services
@@ -3006,7 +3004,7 @@ impl AppBrokerState {
             )?;
             return self.close_application((caller, origin, workspace_id), admitted, app_id);
         }
-        Err(ActionHostError::UnknownAction)
+        Err(ActionCallError::UnknownAction)
     }
 
     /// Admit `descriptor`, published by `app`, for `policy` in `workspace`
@@ -3021,7 +3019,7 @@ impl AppBrokerState {
         descriptor: &ActionDescriptor,
         (_argument, confirmation): (Option<&str>, Option<&Confirmation>),
         approved: bool,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         let (answer, spent) = policy.action_verdict_in(
             workspace,
             app,
@@ -3043,7 +3041,7 @@ impl AppBrokerState {
                     action = %descriptor.address.action,
                     "an action was refused: the workspace does not grant it to the caller"
                 );
-                return Err(ActionHostError::NotPermitted);
+                return Err(ActionCallError::NotPermitted);
             }
             tilo_action_policy::Answer::Ask => match confirmation {
                 Some(Confirmation::Approved(_)) => approved,
@@ -3052,7 +3050,7 @@ impl AppBrokerState {
             },
         };
         if !confirmed {
-            return Err(ActionHostError::confirmation_required());
+            return Err(ActionCallError::confirmation_required());
         }
         self.spend_once_grants(&workspace.id().to_string(), &spent);
         Ok(())
@@ -3085,7 +3083,7 @@ impl AppBrokerState {
         app_id: &str,
         content: crate::services::LaunchContent<'_>,
         place: &LaunchPlace,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<u64, ActionCallError> {
         // Content is only ever read through the asking application's own
         // scope; a caller without one cannot open it by hash.
         if !content.hash.is_empty() && content.caller.is_none() {
@@ -3134,7 +3132,7 @@ impl AppBrokerState {
         ownership: (&Caller, Option<&super::InvocationCaller>, &str),
         admitted: super::host_action_admission::AdmittedHostAction,
         app_id: &str,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<u64, ActionCallError> {
         let launcher = self
             .services
             .launcher
@@ -3181,10 +3179,10 @@ impl AppBrokerState {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<Reservation, ActionHostError> {
+    ) -> Result<Reservation, ActionCallError> {
         self.remote_invocations
             .lock()
-            .map_err(|_| ActionHostError::Unavailable {
+            .map_err(|_| ActionCallError::Unavailable {
                 reason: "the invocation log is unavailable".into(),
             })?
             .reserve(caller, &Self::invocation_identity(request))
@@ -3212,8 +3210,8 @@ impl AppBrokerState {
 
     /// Resolves once an invocation changes after what `seen` has seen, or
     /// after [`CHANGE_SAFETY_INTERVAL`] without one — the
-    /// [`ActionHost::next_change`](tilo_actions::remote::ActionHost::next_change)
-    /// of the broker's hosts. `None` for an invocation `caller` did not
+    /// [`ActionProvider::next_change`](tilo_actions::remote::ActionProvider::next_change)
+    /// of the broker's providers. `None` for an invocation `caller` did not
     /// admit.
     pub(super) fn action_next_change(
         &self,
@@ -3244,7 +3242,7 @@ impl AppBrokerState {
     }
 
     /// `Self::action_next_change` counting only changes after this call:
-    /// the `next_change` of a host whose waiter asks before it observes, so a
+    /// the `next_change` of a provider whose waiter asks before it observes, so a
     /// change between the two still wakes it. Authorized exactly
     /// as [`Self::action_observe`]: `None` for an invocation `caller` did not
     /// admit.
@@ -3258,7 +3256,7 @@ impl AppBrokerState {
 
     /// Resolves on the next announcement of what an authorization decision reads, or after
     /// [`CHANGE_SAFETY_INTERVAL`] without one: what a waiter re-reads the workspace's roster on
-    /// ([`tilo_actions::remote::ActionHost::changed`]). The announcement is process-wide, so a
+    /// ([`tilo_actions::remote::ActionProvider::changed`]). The announcement is process-wide, so a
     /// change another device's session made, or a tool that rewrote the identity store, wakes it
     /// as well; a wake that finds the roster as it was costs one read.
     pub fn policy_changed(&self) -> Pending<()> {
@@ -3301,18 +3299,18 @@ impl AppBrokerState {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionHostError>> {
+    ) -> Pending<Result<(), ActionCallError>> {
         let Some(job) = self.remote_job(caller, id) else {
-            return Pending::ready(Err(ActionHostError::UnknownInvocation));
+            return Pending::ready(Err(ActionCallError::UnknownInvocation));
         };
         if let Some(cancelled) = self.live_views.cancel(job, None) {
             return Pending::ready(
-                cancelled.map_err(|reason| ActionHostError::NotCancellable { reason }),
+                cancelled.map_err(|reason| ActionCallError::NotCancellable { reason }),
             );
         }
         answered_when_durable(
             self.request_cancellation(job, BrokerActor::for_caller(caller).member())
-                .map_err(|reason| ActionHostError::NotCancellable { reason }),
+                .map_err(|reason| ActionCallError::NotCancellable { reason }),
         )
     }
 }
@@ -3320,20 +3318,20 @@ impl AppBrokerState {
 /// The answer to a request `staged` in the journal: given once its write
 /// resolves, and never sooner.
 pub(super) fn answered_when_durable(
-    staged: Result<super::invocation_journal::Durable, ActionHostError>,
-) -> Pending<Result<(), ActionHostError>> {
+    staged: Result<super::invocation_journal::Durable, ActionCallError>,
+) -> Pending<Result<(), ActionCallError>> {
     let durable = match staged {
         Ok(durable) => durable,
         Err(error) => return Pending::ready(Err(error)),
     };
     let (answer, answered) = tilo_actions::remote::pending();
     durable.then(move |outcome| {
-        answer.complete(outcome.map_err(|reason| ActionHostError::Unavailable { reason }));
+        answer.complete(outcome.map_err(|reason| ActionCallError::Unavailable { reason }));
     });
     answered
 }
 #[cfg(test)]
-#[path = "action_host/launch_content_tests.rs"]
+#[path = "action_provider/launch_content_tests.rs"]
 mod launch_content_tests;
 
 #[cfg(test)]
@@ -3546,7 +3544,7 @@ mod app_close_tests {
         state: &Arc<AppBrokerState>,
         caller: &Caller,
         request: &tilo_actions::remote::InvokeRequest,
-    ) -> Result<u64, tilo_actions::remote::ActionHostError> {
+    ) -> Result<u64, tilo_actions::remote::ActionCallError> {
         state
             .action_invoke(caller, None, None, request)
             .wait_timeout(tilo_test_env::hang_bound())
@@ -3757,7 +3755,7 @@ mod app_close_tests {
 }
 
 #[cfg(test)]
-#[path = "action_host/app_scope_tests.rs"]
+#[path = "action_provider/app_scope_tests.rs"]
 mod app_scope_tests;
 
 #[cfg(test)]
@@ -3870,7 +3868,7 @@ mod device_pairing_tests {
         state: &Arc<AppBrokerState>,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>
+    ) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>
     {
         state
             .action_invoke(caller, None, None, request)
@@ -3923,7 +3921,7 @@ mod device_pairing_tests {
         let unconfirmed = fixture.invoke(&request(device_pairing::APPROVE, None));
         assert_eq!(
             unconfirmed,
-            Err(tilo_actions::remote::ActionHostError::confirmation_required()),
+            Err(tilo_actions::remote::ActionCallError::confirmation_required()),
             "approval needs the person's confirmation"
         );
         assert!(host.started.lock().unwrap().is_empty(), "nothing started");

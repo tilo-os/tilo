@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use launcher::capture::CaptureCancellation;
 use neighbour_wire::offer::{MAX_WORK_INPUTS, Work};
-use tilo_actions::remote::{ActionHostError, InvokeRequest, Pending, pending};
+use tilo_actions::remote::{ActionCallError, InvokeRequest, Pending, pending};
 use tilo_actions::{ActionOutput, InvocationId, Offload};
 use tilo_clock::unix_now_ms;
 use tilo_workspace_host::workspaces::HostJobs;
@@ -218,9 +218,9 @@ impl HostJobs for ComputeJobs {
         work: &Work,
         requester: [u8; 32],
         request: InvokeRequest,
-    ) -> Pending<Result<ActionOutput, ActionHostError>> {
+    ) -> Pending<Result<ActionOutput, ActionCallError>> {
         let Some(job) = self.taken(workspace, work) else {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         };
         let package = self
             .shared
@@ -235,7 +235,7 @@ impl HostJobs for ComputeJobs {
                     .map(|()| digest)
             });
         let Some(package_digest) = package else {
-            return Pending::ready(Err(ActionHostError::Unavailable {
+            return Pending::ready(Err(ActionCallError::Unavailable {
                 reason: "the transform's package is not installed here".into(),
             }));
         };
@@ -247,7 +247,7 @@ impl HostJobs for ComputeJobs {
             &job.inputs,
         ) {
             Ok(spec) => spec,
-            Err(reason) => return Pending::ready(Err(ActionHostError::Refused { reason })),
+            Err(reason) => return Pending::ready(Err(ActionCallError::Refused { reason })),
         };
         let (workspace_id, app) = (job.workspace_id, job.offload.app);
         let invocation = request.invocation;
@@ -259,7 +259,7 @@ impl HostJobs for ComputeJobs {
             let mut running = self.shared.running.lock_recover();
             let in_flight = u32::try_from(running.len()).unwrap_or(u32::MAX);
             if in_flight >= self.shared.capacity.load(Ordering::Relaxed) {
-                return Pending::ready(Err(ActionHostError::Unavailable {
+                return Pending::ready(Err(ActionCallError::Unavailable {
                     reason: "this host is running as many jobs as it takes on".into(),
                 }));
             }
@@ -294,8 +294,8 @@ impl ComputeJobs {
         spec: ComputeJobSpec,
         requester: [u8; 32],
         cancellation: CaptureCancellation,
-    ) -> Result<ActionOutput, ActionHostError> {
-        let failed = |reason: String| ActionHostError::Refused { reason };
+    ) -> Result<ActionOutput, ActionCallError> {
+        let failed = |reason: String| ActionCallError::Refused { reason };
         let shared = Arc::clone(&self.shared);
         let advertisement = self.advertisement(workspace_id, app);
         let executed = tokio::task::spawn_blocking(move || {

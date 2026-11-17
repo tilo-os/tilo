@@ -435,7 +435,7 @@ impl JoinedChannel {
             .document_content
             .clone()
             .ok_or_else(|| {
-                BrokerError::unimplemented("this host keeps no record content".into())
+                BrokerError::unimplemented("this provider keeps no record content".into())
             })?;
         Ok((route, content))
     }
@@ -718,7 +718,9 @@ impl JoinedChannel {
                     ));
                 }
                 let keys = services.group_keys.clone().ok_or_else(|| {
-                    BrokerError::unimplemented("this host has no channel service to follow".into())
+                    BrokerError::unimplemented(
+                        "this provider has no channel service to follow".into(),
+                    )
                 })?;
                 let workspace = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)
                     .ok_or_else(|| BrokerError::failed("the route names no workspace".into()))?;
@@ -853,7 +855,7 @@ impl JoinedChannel {
             ));
         }
         let speakers = self.state.services.speakers.as_ref().ok_or_else(|| {
-            BrokerError::failed("speaker groups are unsupported by this host".into())
+            BrokerError::failed("speaker groups are unsupported by this provider".into())
         })?;
         let reply = serde_json::to_vec(&speakers.command(command))
             .map_err(|error| BrokerError::failed(error.to_string()))?;
@@ -973,7 +975,7 @@ impl JoinedChannel {
                 })?;
             return Ok(Box::pin(async move {
                 answer.await.ok_or_else(|| {
-                    BrokerError::failed("the action host dropped the request".into())
+                    BrokerError::failed("the action provider dropped the request".into())
                 })
             }));
         } else {
@@ -993,7 +995,7 @@ impl JoinedChannel {
         };
         if tilo_actions::remote::refuse(
             &request.message,
-            tilo_actions::remote::ActionHostError::UnknownAction,
+            tilo_actions::remote::ActionCallError::UnknownAction,
         )
         .is_none()
         {
@@ -1016,7 +1018,7 @@ impl JoinedChannel {
             _ => None,
         };
         let admitting_person = current.actor_key.clone();
-        let host = action_host::ConnectionActionHost {
+        let provider = action_provider::ConnectionActionProvider {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
             origin: continued_origin.unwrap_or_else(|| InvocationCaller::Local {
@@ -1029,7 +1031,7 @@ impl JoinedChannel {
             return Ok(super::app_consent::serve_after_consent(
                 Arc::clone(&self.state),
                 consent,
-                host,
+                provider,
                 caller,
                 request.message,
             ));
@@ -1038,7 +1040,7 @@ impl JoinedChannel {
         // person who admitted the connection, on their own device.
         let answer = super::approval::serve_answering(
             Arc::clone(&self.state),
-            host,
+            provider,
             caller,
             admitting_person,
             request.message,
@@ -1046,9 +1048,9 @@ impl JoinedChannel {
         // Awaited on this local set, which is also where an application's
         // directory answers; the connection's other calls keep flowing.
         Ok(Box::pin(async move {
-            answer
-                .await
-                .ok_or_else(|| BrokerError::failed("the action host dropped the request".into()))
+            answer.await.ok_or_else(|| {
+                BrokerError::failed("the action provider dropped the request".into())
+            })
         }))
     }
 
@@ -1513,7 +1515,7 @@ impl JoinedChannel {
     pub(super) fn realtime_feed(&self) -> Result<Feed<Vec<u8>>, BrokerError> {
         let context = self.realtime_context()?;
         let service = self.state.services.realtime.as_ref().ok_or_else(|| {
-            BrokerError::failed("realtime continuity is unsupported by this host".into())
+            BrokerError::failed("realtime continuity is unsupported by this provider".into())
         })?;
         let rx = service.subscribe(&context).map_err(BrokerError::failed)?;
         Ok(Feed::new(rx))
@@ -1725,7 +1727,7 @@ impl WireConnection {
             .services
             .published
             .clone()
-            .ok_or_else(|| "this host publishes no resources".to_owned())?;
+            .ok_or_else(|| "this provider publishes no resources".to_owned())?;
         let launch = service.lease.local_media.as_ref().ok_or_else(unlaunched)?;
         Ok(Publishing {
             published,
@@ -1958,7 +1960,7 @@ impl WireConnection {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one arm per request the host answers at once"
+        reason = "one arm per request the provider answers at once"
     )]
     #[allow(
         clippy::significant_drop_tightening,
@@ -2414,7 +2416,7 @@ fn ready<T: 'static>(answer: T) -> Answer<T> {
 fn refusal(
     message: &tilo_actions::remote::RemoteActionMessage,
 ) -> Result<Answer<tilo_actions::remote::RemoteActionMessage>, BrokerError> {
-    tilo_actions::remote::refuse(message, tilo_actions::remote::ActionHostError::NotPermitted)
+    tilo_actions::remote::refuse(message, tilo_actions::remote::ActionCallError::NotPermitted)
         .map(ready)
         .ok_or_else(|| BrokerError::failed("only remote-action requests are answered".into()))
 }

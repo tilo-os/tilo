@@ -3,7 +3,7 @@
 use super::super::InvocationCaller;
 use super::super::host_action_admission::{AdmittedHostAction, HostActionAdmission};
 use super::{
-    ActionHostError, AppBrokerState, Arc, BrokerActor, BrokerApi, Caller, InvocationReceipt,
+    ActionCallError, AppBrokerState, Arc, BrokerActor, BrokerApi, Caller, InvocationReceipt,
     InvokeRequest, Reservation, RowScope, SHORTCUTS_APP_ID, automation, workspace_provider,
 };
 
@@ -29,8 +29,8 @@ impl AppBrokerState {
         workspace: &str,
         shortcut_id: &str,
         request: &InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionHostError> {
-        let abandon = |error: ActionHostError| {
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        let abandon = |error: ActionCallError| {
             if let Ok(mut log) = self.remote_invocations.lock() {
                 log.abandon(&request.invocation);
             }
@@ -41,7 +41,7 @@ impl AppBrokerState {
             return self
                 .remote_job(caller, &request.invocation)
                 .map(|job| self.receipt_for(request.invocation, job))
-                .ok_or(ActionHostError::UnknownInvocation);
+                .ok_or(ActionCallError::UnknownInvocation);
         }
         let shortcut = match self.saved_shortcut(caller, workspace, shortcut_id) {
             Ok(shortcut) => shortcut,
@@ -51,7 +51,7 @@ impl AppBrokerState {
             tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
             tilo_actions::remote::InvokeArgument::Json(inputs) => inputs.clone(),
             tilo_actions::remote::InvokeArgument::Text(_) => {
-                return Err(abandon(ActionHostError::InvalidRequest {
+                return Err(abandon(ActionCallError::InvalidRequest {
                     reason: "a shortcut takes its inputs as JSON arguments".into(),
                 }));
             }
@@ -107,7 +107,7 @@ impl AppBrokerState {
         workspace: &str,
         shortcut_id: &str,
         inputs: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<u64, ActionCallError> {
         self.start_interactive_shortcut_run_continuing(caller, workspace, shortcut_id, inputs, None)
     }
 
@@ -127,7 +127,7 @@ impl AppBrokerState {
         shortcut_id: &str,
         inputs: serde_json::Map<String, serde_json::Value>,
         from: Option<tilo_automation::Continuation>,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<u64, ActionCallError> {
         let shortcut = self.saved_shortcut(caller, workspace, shortcut_id)?;
         let origin = match &from {
             Some(continuation) => Some(self.earlier_run(continuation, shortcut_id)?),
@@ -167,16 +167,16 @@ impl AppBrokerState {
         &self,
         continuation: &tilo_automation::Continuation,
         shortcut_id: &str,
-    ) -> Result<tilo_automation::InvocationReport, ActionHostError> {
+    ) -> Result<tilo_automation::InvocationReport, ActionCallError> {
         if continuation.from.as_str().is_empty() {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: "a continued run says which step it goes on from".into(),
             });
         }
         self.ended_invocations
             .finished
             .report(continuation.invocation, shortcut_id)
-            .ok_or_else(|| ActionHostError::Refused {
+            .ok_or_else(|| ActionCallError::Refused {
                 reason: "that run is not recorded for this shortcut".into(),
             })
     }
@@ -205,7 +205,7 @@ impl AppBrokerState {
         trigger: &tilo_automation::TriggerSpec,
         invocation: tilo_automation::AutomationInvocationId,
         inputs: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<u64, ActionCallError> {
         let shortcut = self.saved_shortcut(caller, workspace, shortcut_id)?;
         // The one rule arming holds too: started for its saver only, the
         // person a device of theirs proved saved it in this workspace.
@@ -214,7 +214,7 @@ impl AppBrokerState {
             .membership
             .as_ref()
             .and_then(|membership| membership.workspace_revocations(workspace))
-            .ok_or(ActionHostError::NotPermitted)?;
+            .ok_or(ActionCallError::NotPermitted)?;
         if tilo_peer_state::workspace::proven_saver(
             workspace,
             &shortcut,
@@ -223,10 +223,10 @@ impl AppBrokerState {
         )
         .is_none_or(|saver| actor.member().person_id() != Some(saver.as_str()))
         {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         if !shortcut.triggers.contains(trigger) {
-            return Err(ActionHostError::Refused {
+            return Err(ActionCallError::Refused {
                 reason: "the shortcut no longer has that trigger".into(),
             });
         }
@@ -239,7 +239,7 @@ impl AppBrokerState {
             .unwrap_or_default();
         let resolver = |id: &str| others.iter().find(|other| other.id == id).cloned();
         tilo_automation::check(&shortcut, &catalog, &resolver).map_err(|errors| {
-            ActionHostError::Refused {
+            ActionCallError::Refused {
                 reason: errors
                     .iter()
                     .map(ToString::to_string)
@@ -297,15 +297,15 @@ impl AppBrokerState {
     /// that workspace.
     ///
     /// # Errors
-    /// [`ActionHostError::UnknownAction`] for a shortcut not saved there (or
-    /// a workspace not offered); [`ActionHostError::Unavailable`] with the
+    /// [`ActionCallError::UnknownAction`] for a shortcut not saved there (or
+    /// a workspace not offered); [`ActionCallError::Unavailable`] with the
     /// reason for a saved shortcut whose record does not decode.
     fn saved_shortcut(
         &self,
         caller: &Caller,
         workspace_id: &str,
         shortcut_id: &str,
-    ) -> Result<tilo_automation::Shortcut, ActionHostError> {
+    ) -> Result<tilo_automation::Shortcut, ActionCallError> {
         self.decide_for(caller, workspace_id, |workspace, _, _| {
             workspace
                 .shortcuts
@@ -314,14 +314,14 @@ impl AppBrokerState {
                 .map(|shortcut| {
                     shortcut.decode().map_err(|error| {
                         tracing::warn!(workspace_id, shortcut = shortcut_id, %error, "saved shortcut does not decode");
-                        ActionHostError::Unavailable {
+                        ActionCallError::Unavailable {
                             reason: format!("the saved shortcut cannot be read: {error}"),
                         }
                     })
                 })
         })
         .flatten()
-        .unwrap_or(Err(ActionHostError::UnknownAction))
+        .unwrap_or(Err(ActionCallError::UnknownAction))
     }
 
     /// Run `shortcut` as `caller` through this broker, reporting on a new
@@ -336,7 +336,7 @@ impl AppBrokerState {
         hooks: impl FnOnce(tokio::runtime::Handle, tilo_automation::AutomationInvocationId) -> K,
         admission: Option<ShortcutAdmission<'_>>,
         carried: Option<automation::Continued>,
-    ) -> Result<u64, ActionHostError>
+    ) -> Result<u64, ActionCallError>
     where
         K: tilo_automation::InvocationHooks + Send + 'static,
     {
@@ -344,15 +344,15 @@ impl AppBrokerState {
             .services
             .shortcut_library
             .as_ref()
-            .ok_or(ActionHostError::UnknownAction)?
+            .ok_or(ActionCallError::UnknownAction)?
             .runtime()
-            .map_err(|reason| ActionHostError::Unavailable { reason })?;
+            .map_err(|reason| ActionCallError::Unavailable { reason })?;
         let hooks = hooks(runtime.clone(), start.invocation);
         let actor = BrokerActor::for_caller(caller).member().clone();
         let _lifecycle = self
             .lifecycle
             .read()
-            .map_err(|_| ActionHostError::Unavailable {
+            .map_err(|_| ActionCallError::Unavailable {
                 reason: "broker lifecycle unavailable".into(),
             })?;
         let (admitted, origin) =
@@ -435,7 +435,7 @@ impl AppBrokerState {
         shortcut: &tilo_automation::Shortcut,
         start: &automation::InvocationStart,
         admission: Option<ShortcutAdmission<'_>>,
-    ) -> Result<(AdmittedHostAction, Option<InvocationCaller>), ActionHostError> {
+    ) -> Result<(AdmittedHostAction, Option<InvocationCaller>), ActionCallError> {
         // Palette and trigger entry points do not carry a wire request. Resolve
         // their ownership from the installed native device, never from actor text.
         // Keep the run's trigger unchanged: a scheduled run is still unattended
@@ -446,7 +446,7 @@ impl AppBrokerState {
             admission
         } else {
             if caller.workspace() != Some(workspace) {
-                return Err(ActionHostError::NotPermitted);
+                return Err(ActionCallError::NotPermitted);
             }
             request = InvokeRequest {
                 invocation: tilo_actions::InvocationId(start.invocation.0),
@@ -464,12 +464,12 @@ impl AppBrokerState {
             };
             origin = self
                 .native_local_person_certificate(caller)
-                .map_err(|reason| ActionHostError::Unavailable { reason })?
-                .map(|certificate| -> Result<_, ActionHostError> {
+                .map_err(|reason| ActionCallError::Unavailable { reason })?
+                .map(|certificate| -> Result<_, ActionCallError> {
                     let time = self
                         .registered_policy_time()
-                        .map_err(|reason| ActionHostError::Unavailable { reason })?
-                        .ok_or(ActionHostError::NotPermitted)?;
+                        .map_err(|reason| ActionCallError::Unavailable { reason })?
+                        .ok_or(ActionCallError::NotPermitted)?;
                     Ok(InvocationCaller::NativePerson {
                         invocation: request.invocation,
                         workspace: workspace.into(),
@@ -487,7 +487,7 @@ impl AppBrokerState {
         let trigger = match &start.trigger {
             tilo_automation::InvocationTrigger::Manual => serde_json::json!({"trigger": "manual"}),
             tilo_automation::InvocationTrigger::Fired(trigger) => serde_json::to_value(trigger)
-                .map_err(|error| ActionHostError::Unavailable {
+                .map_err(|error| ActionCallError::Unavailable {
                     reason: error.to_string(),
                 })?,
         };

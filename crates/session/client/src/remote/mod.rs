@@ -1,6 +1,6 @@
 //! Another device's actions, asked through this device's session with the workspace's host: an
 //! invocation frame addressed to a device's key is carried there, and its answer comes back on the
-//! same session. [`SessionActions`] is that, as an [`ActionHost`], so whatever drives a local action
+//! same session. [`SessionActions`] is that, as an [`ActionProvider`], so whatever drives a local action
 //! host drives another device's instead. The answering device authenticates the session's device
 //! and decides every request from that.
 //!
@@ -16,7 +16,7 @@ use tilo_server_protocol::refusal::Refusal;
 
 use collab_types::WorkspaceId;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ChangePage, Completer,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ChangePage, Completer,
     ConfirmedInvocation, ContentGetAnswer, ContentLink, ContentLinkAsk, ContentPutAnswer, Found,
     InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, UpdateMark, WatchScope, pending, serve,
@@ -179,7 +179,7 @@ impl<T> Asked<T> {
     }
 }
 
-type Answered<T> = Result<T, ActionHostError>;
+type Answered<T> = Result<T, ActionCallError>;
 
 #[derive(Default)]
 struct Waiting {
@@ -228,8 +228,8 @@ fn giving<P: Send + 'static>(asked: Asked<P>, answer: P) -> Give {
     Box::new(move || asked.answer.complete(answer))
 }
 
-fn unavailable(reason: impl Into<String>) -> ActionHostError {
-    ActionHostError::Unavailable {
+fn unavailable(reason: impl Into<String>) -> ActionCallError {
+    ActionCallError::Unavailable {
         reason: reason.into(),
     }
 }
@@ -237,14 +237,14 @@ fn unavailable(reason: impl Into<String>) -> ActionHostError {
 /// What a caller is answered for a request the host would not carry: typed
 /// where the caller can act on it (wait, or ask again once the workspace is
 /// ready), the host's words otherwise.
-fn refused(refusal: &Refusal) -> ActionHostError {
+fn refused(refusal: &Refusal) -> ActionCallError {
     match refusal {
-        Refusal::TooFast { wait_ms } => ActionHostError::Busy {
+        Refusal::TooFast { wait_ms } => ActionCallError::Busy {
             retry_after_ms: *wait_ms,
         },
-        Refusal::NotReady | Refusal::Superseded => ActionHostError::NotReady,
+        Refusal::NotReady | Refusal::Superseded => ActionCallError::NotReady,
         Refusal::NotAMember(_) | Refusal::NotAdmitted | Refusal::NotGranted(_) => {
-            ActionHostError::NotPermitted
+            ActionCallError::NotPermitted
         }
         other => unavailable(other.to_string()),
     }
@@ -252,7 +252,7 @@ fn refused(refusal: &Refusal) -> ActionHostError {
 
 impl Waiting {
     /// Every waiting request, answered with `error`.
-    fn fail_all(&mut self, error: &ActionHostError, give: &mut Vec<Give>) {
+    fn fail_all(&mut self, error: &ActionCallError, give: &mut Vec<Give>) {
         for (_, asked) in self.catalogues.drain() {
             give.push(giving(asked, Err(error.clone())));
         }
@@ -290,7 +290,7 @@ impl Waiting {
 
     /// The requests past their deadline, answered as unanswered.
     fn expire(&mut self, now: Instant, give: &mut Vec<Give>) {
-        let late = || ActionHostError::Unanswered;
+        let late = || ActionCallError::Unanswered;
         for asked in expired(&mut self.catalogues, now) {
             give.push(giving(asked, Err(late())));
         }
@@ -573,14 +573,14 @@ fn split<T>(all: &mut HashMap<InvocationId, Vec<Asked<T>>>, now: Instant) -> Vec
 /// # Errors
 /// A text that is not a request, a host that abandoned the answer, or an answer that will not
 /// encode.
-pub async fn ask<H: ActionHost + Clone + Send + Sync + 'static>(
-    host: &H,
+pub async fn ask<H: ActionProvider + Clone + Send + Sync + 'static>(
+    provider: &H,
     caller: &Caller,
     message: &str,
 ) -> Result<String, String> {
     let message: RemoteActionMessage =
         serde_json::from_str(message).map_err(|error| error.to_string())?;
-    let answer = serve(host, caller, message)
+    let answer = serve(provider, caller, message)
         .ok_or_else(|| "that is not a request".to_owned())?
         .await
         .ok_or_else(|| "the answer was abandoned".to_owned())?;
@@ -589,7 +589,7 @@ pub async fn ask<H: ActionHost + Clone + Send + Sync + 'static>(
 
 impl SessionActions {
     /// Wait on the device for the next change of what a watch of its workspace follows
-    /// ([`ActionHost::changed`]), asked as a held request: the device answers when a write
+    /// ([`ActionProvider::changed`]), asked as a held request: the device answers when a write
     /// lands in the workspace's records, or when who is in it moves.
     ///
     /// A device that cannot tell answers a refusal, and a session that cannot carry the
@@ -675,7 +675,7 @@ impl SessionActions {
         &self,
         step: tilo_actions::remote::ContentPutStep,
     ) -> Answered<ContentPutAnswer> {
-        in_time(self.put_step(step)).unwrap_or(Err(ActionHostError::Unanswered))
+        in_time(self.put_step(step)).unwrap_or(Err(ActionCallError::Unanswered))
     }
 
     /// Ask the device for a piece of `content`, waiting for its answer.
@@ -699,7 +699,7 @@ impl SessionActions {
         if let Some(error) = failed {
             return Err(error);
         }
-        in_time(answered).unwrap_or(Err(ActionHostError::Unanswered))
+        in_time(answered).unwrap_or(Err(ActionCallError::Unanswered))
     }
 
     /// The actions of the device `device` in `workspace_id`, asked through `session`.
@@ -936,9 +936,9 @@ impl Inner {
     }
 
     /// Send `message` to the device; `Err` when the session cannot carry it.
-    fn send(&self, message: RemoteActionMessage) -> Result<(), ActionHostError> {
+    fn send(&self, message: RemoteActionMessage) -> Result<(), ActionCallError> {
         let frame = RemoteActionFrame::new(message).encode().map_err(|error| {
-            ActionHostError::InvalidRequest {
+            ActionCallError::InvalidRequest {
                 reason: error.to_string(),
             }
         })?;
@@ -950,10 +950,10 @@ impl Inner {
     /// Ask the device `message`, `asked` waiting for its answer. A session that
     /// cannot carry it now asks it again once a connection that carries does
     /// (`refused`); any other failure is `fail`ed at once.
-    fn ask(&self, message: RemoteActionMessage, fail: impl FnOnce(ActionHostError)) {
+    fn ask(&self, message: RemoteActionMessage, fail: impl FnOnce(ActionCallError)) {
         match self.send(message) {
             Ok(()) => {}
-            Err(error @ ActionHostError::Unavailable { .. }) => {
+            Err(error @ ActionCallError::Unavailable { .. }) => {
                 // Asked again as often as it may be: the refusal is the answer.
                 if !self.refused() {
                     fail(error);
@@ -964,7 +964,7 @@ impl Inner {
     }
 }
 
-impl ActionHost for SessionActions {
+impl ActionProvider for SessionActions {
     /// Where the workspace these actions are asked in stands on the session.
     fn session_state(&self, _caller: &Caller) -> Option<tilo_actions::remote::SessionState> {
         self.0.session.session_state(self.0.workspace_id)
@@ -1205,21 +1205,21 @@ impl ActionHost for SessionActions {
 mod tests {
     use std::sync::Arc;
 
-    use tilo_actions::remote::TestHost;
+    use tilo_actions::remote::TestProvider;
 
     use super::*;
 
     /// A host shared with the continuation [`serve`] answers through: a test holds one handle to
     /// see what was asked, the entry holds another.
     #[derive(Clone)]
-    struct Shared(Arc<TestHost>);
+    struct Shared(Arc<TestProvider>);
 
-    impl ActionHost for Shared {
+    impl ActionProvider for Shared {
         fn query(
             &self,
             caller: &Caller,
             query: CatalogueQuery,
-        ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
             self.0.query(caller, query)
         }
 
@@ -1227,7 +1227,7 @@ mod tests {
             &self,
             caller: &Caller,
             request: InvokeRequest,
-        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
             self.0.invoke(caller, request)
         }
 
@@ -1239,7 +1239,7 @@ mod tests {
             &self,
             caller: &Caller,
             id: &InvocationId,
-        ) -> Pending<Result<(), ActionHostError>> {
+        ) -> Pending<Result<(), ActionCallError>> {
             self.0.cancel(caller, id)
         }
     }
@@ -1252,8 +1252,8 @@ mod tests {
     /// answer as JSON: the entry speaks the remote-action vocabulary, not one of its own.
     #[tokio::test]
     async fn a_request_is_asked_and_answered_as_the_frames_json() {
-        let host = Arc::new(TestHost::new());
-        let entry = Shared(Arc::clone(&host));
+        let provider = Arc::new(TestProvider::new());
+        let entry = Shared(Arc::clone(&provider));
         let answered = ask(
             &entry,
             &caller(),
@@ -1286,14 +1286,18 @@ mod tests {
             receipt["Receipt"]["status"]["Completed"].is_object(),
             "the host completed it: {receipt}"
         );
-        assert_eq!(host.asked().len(), 1, "the host ran the invocation once");
+        assert_eq!(
+            provider.asked().len(),
+            1,
+            "the provider ran the invocation once"
+        );
     }
 
     /// A text that is not a request is refused instead of asked, and so is an answer to a
     /// request nobody made here.
     #[tokio::test]
     async fn only_a_request_is_asked() {
-        let entry = Shared(Arc::new(TestHost::new()));
+        let entry = Shared(Arc::new(TestProvider::new()));
         assert!(
             ask(&entry, &caller(), "not a message").await.is_err(),
             "a text that is no message is refused"

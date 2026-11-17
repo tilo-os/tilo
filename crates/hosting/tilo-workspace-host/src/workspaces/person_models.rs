@@ -30,7 +30,7 @@ use tilo_actions::remote::person_models::{
     self, AddModel, AddPreset, ListedModels, ListingProblem, ModelProviders, ProviderView,
     SetAssignment, SetAssignments, SetDefault, SetKey,
 };
-use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_net::proxy::host::{
     Destinations, Lookup, check_destination, guarded_client, system_lookup,
 };
@@ -79,7 +79,7 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let person = Self::asking_person(caller, certificate, workspace_id)?;
         let root = self.person_settings_root(&person);
         let reach = self.model_reach();
@@ -125,7 +125,7 @@ impl Workspaces {
                 let choosing: SetAssignments = argument(request, "a model choice")?;
                 answer(&set_assignments(&root, choosing))
             }
-            _ => return Err(ActionHostError::UnknownAction),
+            _ => return Err(ActionCallError::UnknownAction),
         };
         if changed.is_ok() {
             self.person_settings_changed();

@@ -19,7 +19,7 @@ use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRan
 use tilo_actions::remote::environment_machines::{self, BranchMachine, MachineBranched};
 use tilo_actions::remote::linux_apps::{self, OpenApp};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLog,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationLog,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, Reservation,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
@@ -85,20 +85,20 @@ impl EnvironmentCommands {
     }
 }
 
-fn not_served() -> ActionHostError {
-    ActionHostError::Unavailable {
+fn not_served() -> ActionCallError {
+    ActionCallError::Unavailable {
         reason: "this member runs its workspaces' shell commands and Browser".into(),
     }
 }
 
-fn argument(request: &InvokeRequest) -> Result<CommandRequest, ActionHostError> {
+fn argument(request: &InvokeRequest) -> Result<CommandRequest, ActionCallError> {
     let InvokeArgument::Json(map) = &request.argument else {
-        return Err(ActionHostError::InvalidRequest {
+        return Err(ActionCallError::InvalidRequest {
             reason: "a run takes its command as JSON".into(),
         });
     };
     serde_json::from_value(serde_json::Value::Object(map.clone())).map_err(|error| {
-        ActionHostError::InvalidRequest {
+        ActionCallError::InvalidRequest {
             reason: format!("not a command to run: {error}"),
         }
     })
@@ -400,12 +400,12 @@ fn ran_of(ran: ShellRun) -> CommandRan {
     }
 }
 
-impl ActionHost for EnvironmentCommands {
+impl ActionProvider for EnvironmentCommands {
     fn query(
         &self,
         _caller: &Caller,
         _query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Err(not_served()))
     }
 
@@ -413,7 +413,7 @@ impl ActionHost for EnvironmentCommands {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         Pending::ready(self.admit(caller, &request))
     }
 
@@ -433,7 +433,7 @@ impl ActionHost for EnvironmentCommands {
         Some(change)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         let run = self
             .0
             .log
@@ -442,10 +442,10 @@ impl ActionHost for EnvironmentCommands {
             .get(caller, id)
             .cloned();
         let Some(run) = run else {
-            return Pending::ready(Err(ActionHostError::UnknownInvocation));
+            return Pending::ready(Err(ActionCallError::UnknownInvocation));
         };
         if run.state().update.is_terminal() {
-            return Pending::ready(Err(ActionHostError::NotCancellable {
+            return Pending::ready(Err(ActionCallError::NotCancellable {
                 reason: "the run has ended".into(),
             }));
         }
@@ -461,7 +461,7 @@ impl EnvironmentCommands {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionHostError> {
+    ) -> Result<InvocationReceipt, ActionCallError> {
         let target = &request.target;
         if target.provider != environment_commands::PROVIDER
             || target.address.resource != environment_commands::RESOURCE
@@ -480,18 +480,18 @@ impl EnvironmentCommands {
         .contains(&action);
         let browsers = self.0.browsers.as_ref().filter(|_| in_vm);
         if in_vm && browsers.is_none() {
-            return Err(ActionHostError::Unavailable {
+            return Err(ActionCallError::Unavailable {
                 reason: "this member runs no workspace VMs, so no Browser".into(),
             });
         }
         // Only the workspace's host asks: a device of this member's own
         // operator. Anyone else could name an account that is not theirs.
         if caller.user_public_key() != Some(&self.0.operator) {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let workspace = caller
             .workspace()
-            .ok_or(ActionHostError::NotPermitted)?
+            .ok_or(ActionCallError::NotPermitted)?
             .to_owned();
         let asked = match action {
             environment_commands::RUN => Asked::Command(argument(request)?),
@@ -509,7 +509,7 @@ impl EnvironmentCommands {
             Reservation::Admitted => log
                 .get(caller, &invocation)
                 .map(|run| run.state().receipt())
-                .ok_or(ActionHostError::UnknownInvocation),
+                .ok_or(ActionCallError::UnknownInvocation),
             Reservation::Reserved => {
                 let run = Run {
                     state: Arc::new(Mutex::new(InvocationState::new(
@@ -547,14 +547,14 @@ enum Asked {
     Machine(Option<BranchMachine>),
 }
 
-fn branch_argument(request: &InvokeRequest) -> Result<BranchMachine, ActionHostError> {
+fn branch_argument(request: &InvokeRequest) -> Result<BranchMachine, ActionCallError> {
     let InvokeArgument::Json(map) = &request.argument else {
-        return Err(ActionHostError::InvalidRequest {
+        return Err(ActionCallError::InvalidRequest {
             reason: "a machine's branch names its source as JSON".into(),
         });
     };
     serde_json::from_value(serde_json::Value::Object(map.clone())).map_err(|error| {
-        ActionHostError::InvalidRequest {
+        ActionCallError::InvalidRequest {
             reason: format!("not a machine to branch: {error}"),
         }
     })
@@ -563,14 +563,14 @@ fn branch_argument(request: &InvokeRequest) -> Result<BranchMachine, ActionHostE
 fn open_argument<T: serde::de::DeserializeOwned>(
     request: &InvokeRequest,
     what: &str,
-) -> Result<T, ActionHostError> {
+) -> Result<T, ActionCallError> {
     let InvokeArgument::Json(map) = &request.argument else {
-        return Err(ActionHostError::InvalidRequest {
+        return Err(ActionCallError::InvalidRequest {
             reason: format!("opening {what} takes its workspace as JSON"),
         });
     };
     serde_json::from_value(serde_json::Value::Object(map.clone())).map_err(|error| {
-        ActionHostError::InvalidRequest {
+        ActionCallError::InvalidRequest {
             reason: format!("not {what} to open: {error}"),
         }
     })

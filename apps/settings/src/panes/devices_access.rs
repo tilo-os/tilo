@@ -492,7 +492,7 @@ impl Listed {
     /// why there is none.
     fn take(&mut self) -> Option<Result<Option<serde_json::Value>, String>> {
         use ui::tilo_actions::InvocationUpdate;
-        use ui::tilo_actions::remote::ActionHostError;
+        use ui::tilo_actions::remote::ActionCallError;
         let call = self.read.as_ref()?.call();
         let revision = call.revision();
         if revision == self.seen {
@@ -514,7 +514,7 @@ impl Listed {
                 Err("the host stopped before it answered".to_owned()),
             ),
             ui::Arrival::Failed(
-                error @ (ActionHostError::UnknownAction | ActionHostError::Unavailable { .. }),
+                error @ (ActionCallError::UnknownAction | ActionCallError::Unavailable { .. }),
             ) => (Kept::Nowhere, Err(error.to_string())),
             ui::Arrival::Failed(error) => (Kept::Once, Err(error.to_string())),
             ui::Arrival::Ready(

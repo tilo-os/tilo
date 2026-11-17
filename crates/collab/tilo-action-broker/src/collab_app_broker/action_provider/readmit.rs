@@ -2,7 +2,7 @@
 //! policy read afresh, and the launch they admit now, which must be the one
 //! asked for.
 
-use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 
 use super::super::AppBrokerState;
 use super::LaunchDestination;
@@ -16,14 +16,14 @@ impl AppBrokerState {
         origin: Option<&super::super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
         destination: &LaunchDestination,
-    ) -> Result<LaunchDestination, ActionHostError> {
+    ) -> Result<LaunchDestination, ActionCallError> {
         self.check_launch_origin(caller, origin, &destination.workspace.id().to_string())?;
         let current = self.admit_launchable(caller, request)?;
         if current.workspace.id() != destination.workspace.id()
             || current.app_id != destination.app_id
             || current.record != destination.record
         {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         Ok(current)
     }

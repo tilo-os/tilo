@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tilo_actions::remote::{
-    ActionHost, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, InvokeArgument,
+    ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, InvokeArgument,
     InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RemoteActionTarget, settle_with,
 };
 use tilo_desktop_surface::activity::TaskRunDocument;

@@ -15,7 +15,7 @@ pub struct ProgramRequest<'a> {
     /// The workspace the session works in.
     pub workspace: &'a str,
     /// The session's own API: it admits every call the program makes.
-    pub host: std::sync::Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>,
+    pub provider: std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
     /// The agent whose program it is, by its id without the `agent:` prefix.
     pub agent: &'a str,
     /// The person the agent acts for, when one delegated it: `me` in the program.

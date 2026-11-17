@@ -36,7 +36,7 @@
 //! owner removes and bans by asking from a device of their own: their
 //! request is that confirmation. For anyone else this holder cannot ask yet:
 //! the action is left out of their catalogue, and a caller the workspace would
-//! let take one is refused with [`ActionHostError::ConfirmationRequired`]; a
+//! let take one is refused with [`ActionCallError::ConfirmationRequired`]; a
 //! caller's own `confirm` is never taken for the person's. Ending a call
 //! waits for everyone.
 //!
@@ -55,7 +55,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{Map, Value, json};
 use tilo_action_policy::roles::{self, governance};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_GOVERNANCE_KIND,
     WORKSPACE_GOVERNANCE_PROVIDER, host_account, mcp_server, person_accounts, person_asking,
@@ -721,8 +721,8 @@ impl Workspaces {
         _workspaces: &Self,
         _asked: Asked<'_>,
         _request: &InvokeRequest,
-    ) -> std::future::Ready<Result<Value, ActionHostError>> {
-        std::future::ready(Err(ActionHostError::UnknownAction))
+    ) -> std::future::Ready<Result<Value, ActionCallError>> {
+        std::future::ready(Err(ActionCallError::UnknownAction))
     }
 }
 
@@ -824,14 +824,14 @@ fn unconfirmed(action: &str, args: &Args, owner: bool) -> bool {
         || (action == governance::CALL && args.text("operation").ok().flatten() == Some(END_CALL))
 }
 
-fn invalid(reason: impl Into<String>) -> ActionHostError {
-    ActionHostError::InvalidRequest {
+fn invalid(reason: impl Into<String>) -> ActionCallError {
+    ActionCallError::InvalidRequest {
         reason: reason.into(),
     }
 }
 
-fn refused(error: &impl ToString) -> ActionHostError {
-    ActionHostError::Refused {
+fn refused(error: &impl ToString) -> ActionCallError {
+    ActionCallError::Refused {
         reason: error.to_string(),
     }
 }
@@ -840,7 +840,7 @@ fn refused(error: &impl ToString) -> ActionHostError {
 /// for that connector, where its worker asks for it. Only the secrets a
 /// connector is known to take are kept; the caller already holds the
 /// workspace's right to install bots (the verb's check).
-fn connector_secret(args: &Args) -> Result<Value, ActionHostError> {
+fn connector_secret(args: &Args) -> Result<Value, ActionCallError> {
     let app = args.required_text("app")?;
     let purpose = args.required_text("purpose")?;
     let secret = args.required_text("secret")?.trim();
@@ -872,7 +872,7 @@ fn connector_secret(args: &Args) -> Result<Value, ActionHostError> {
 struct Args(Map<String, Value>);
 
 impl Args {
-    fn of(argument: &InvokeArgument) -> Result<Self, ActionHostError> {
+    fn of(argument: &InvokeArgument) -> Result<Self, ActionCallError> {
         match argument {
             InvokeArgument::None => Ok(Self(Map::new())),
             InvokeArgument::Json(object) => Ok(Self(object.clone())),
@@ -880,7 +880,7 @@ impl Args {
         }
     }
 
-    fn text(&self, name: &str) -> Result<Option<&str>, ActionHostError> {
+    fn text(&self, name: &str) -> Result<Option<&str>, ActionCallError> {
         match self.0.get(name) {
             None | Some(Value::Null) => Ok(None),
             Some(Value::String(text)) => Ok(Some(text)),
@@ -892,7 +892,7 @@ impl Args {
     fn text_map(
         &self,
         name: &str,
-    ) -> Result<std::collections::BTreeMap<String, String>, ActionHostError> {
+    ) -> Result<std::collections::BTreeMap<String, String>, ActionCallError> {
         match self.0.get(name) {
             None | Some(Value::Null) => Ok(std::collections::BTreeMap::new()),
             Some(Value::Object(object)) => object
@@ -910,7 +910,7 @@ impl Args {
     fn object<T: serde::de::DeserializeOwned>(
         &self,
         name: &str,
-    ) -> Result<Option<T>, ActionHostError> {
+    ) -> Result<Option<T>, ActionCallError> {
         match self.0.get(name) {
             None | Some(Value::Null) => Ok(None),
             Some(value) => serde_json::from_value(value.clone())
@@ -919,12 +919,12 @@ impl Args {
         }
     }
 
-    fn required_text(&self, name: &str) -> Result<&str, ActionHostError> {
+    fn required_text(&self, name: &str) -> Result<&str, ActionCallError> {
         self.text(name)?
             .ok_or_else(|| invalid(format!("`{name}` is required")))
     }
 
-    fn key(&self, name: &str) -> Result<Option<[u8; 32]>, ActionHostError> {
+    fn key(&self, name: &str) -> Result<Option<[u8; 32]>, ActionCallError> {
         self.text(name)?
             .map(|text| {
                 let mut key = [0; 32];
@@ -935,12 +935,12 @@ impl Args {
             .transpose()
     }
 
-    fn required_key(&self, name: &str) -> Result<[u8; 32], ActionHostError> {
+    fn required_key(&self, name: &str) -> Result<[u8; 32], ActionCallError> {
         self.key(name)?
             .ok_or_else(|| invalid(format!("`{name}` is required")))
     }
 
-    fn integer(&self, name: &str) -> Result<Option<u64>, ActionHostError> {
+    fn integer(&self, name: &str) -> Result<Option<u64>, ActionCallError> {
         match self.0.get(name) {
             None | Some(Value::Null) => Ok(None),
             Some(value) => value
@@ -950,7 +950,7 @@ impl Args {
         }
     }
 
-    fn flag(&self, name: &str) -> Result<bool, ActionHostError> {
+    fn flag(&self, name: &str) -> Result<bool, ActionCallError> {
         match self.0.get(name) {
             None | Some(Value::Null) => Ok(false),
             Some(Value::Bool(flag)) => Ok(*flag),
@@ -960,14 +960,14 @@ impl Args {
 
     /// Where the argument `name` puts a person: a role, an administrator's
     /// place or an owner's.
-    fn place_at(&self, name: &str) -> Result<super::MemberPlace, ActionHostError> {
+    fn place_at(&self, name: &str) -> Result<super::MemberPlace, ActionCallError> {
         let text = self.required_text(name)?;
         super::MemberPlace::parse(text).ok_or_else(|| invalid(format!("no role `{text}`")))
     }
 
     /// The part an invitation the argument `name` names hands out, and
     /// whether it also makes its holder an administrator.
-    fn invitation_role_at(&self, name: &str) -> Result<(Role, bool), ActionHostError> {
+    fn invitation_role_at(&self, name: &str) -> Result<(Role, bool), ActionCallError> {
         let text = self.required_text(name)?;
         if text == ADMINISTRATOR_ROLE {
             // An administrator joins as an Editor and is made one by the
@@ -978,21 +978,21 @@ impl Args {
     }
 
     /// The role the argument `name` names.
-    fn role_at(&self, name: &str) -> Result<Role, ActionHostError> {
+    fn role_at(&self, name: &str) -> Result<Role, ActionCallError> {
         let text = self.required_text(name)?;
         Role::parse(text)
             .filter(|role| role.assignable())
             .ok_or_else(|| invalid(format!("no role `{text}`")))
     }
 
-    fn directions(&self) -> Result<Directions, ActionHostError> {
+    fn directions(&self) -> Result<Directions, ActionCallError> {
         Ok(Directions {
             publish: self.flag("publish")?,
             subscribe: self.flag("subscribe")?,
         })
     }
 
-    fn call(&self) -> Result<CallOperation, ActionHostError> {
+    fn call(&self) -> Result<CallOperation, ActionCallError> {
         let call = || self.required_key("call");
         let epoch = || {
             self.integer("epoch")?
@@ -1039,7 +1039,7 @@ fn pending_json(invitation: &super::PendingInvitation) -> Value {
 
 /// How long an invitation issued now stays redeemable, as its arguments
 /// say it: seconds when given, else hours, else the default.
-fn invitation_lifetime(args: &Args) -> Result<u64, ActionHostError> {
+fn invitation_lifetime(args: &Args) -> Result<u64, ActionCallError> {
     Ok(match args.integer("expires_in_seconds")? {
         Some(seconds) => seconds.saturating_mul(SECOND_NS),
         None => args
@@ -1297,7 +1297,7 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         match (request.target.provider.as_str(), workspace_id) {
             (WORKSPACE_GOVERNANCE_PROVIDER, Some(workspace_id))
                 if request.target.address.action
@@ -1316,15 +1316,15 @@ impl Workspaces {
                         caller.device_public_key() == Some(&certificate.device_public_key)
                             && caller.user_public_key() == Some(&certificate.user_public_key)
                     })
-                    .ok_or(ActionHostError::UnknownAction)?;
+                    .ok_or(ActionCallError::UnknownAction)?;
                 let asking =
-                    asks_host(caller, certificate).ok_or(ActionHostError::UnknownAction)?;
+                    asks_host(caller, certificate).ok_or(ActionCallError::UnknownAction)?;
                 self.host_invoke(certificate, asking, request).await
             }
             (mcp_server::PROVIDER, _) => {
                 self.mcp_keeper(caller, certificate)?;
                 if request.target != mcp_server::target(mcp_server::STOP) {
-                    return Err(ActionHostError::UnknownAction);
+                    return Err(ActionCallError::UnknownAction);
                 }
                 let InvokeArgument::Json(argument) = &request.argument else {
                     return Err(invalid("a stop names its grant and session"));
@@ -1335,7 +1335,7 @@ impl Workspaces {
                 if self.inner.mcp_server.stop(&stop.grant, &stop.session) {
                     Ok(Value::Null)
                 } else {
-                    Err(ActionHostError::Refused {
+                    Err(ActionCallError::Refused {
                         reason: "That agent session has ended already".into(),
                     })
                 }
@@ -1400,11 +1400,11 @@ impl Workspaces {
                                 reaches_every_workspace(caller, certificate)
                             })
                     })
-                    .ok_or(ActionHostError::UnknownAction)?;
+                    .ok_or(ActionCallError::UnknownAction)?;
                 let account = self
                     .own_account(person)
-                    .ok_or(ActionHostError::UnknownAction)?;
-                serde_json::to_value(account).map_err(|error| ActionHostError::Refused {
+                    .ok_or(ActionCallError::UnknownAction)?;
+                serde_json::to_value(account).map_err(|error| ActionCallError::Refused {
                     reason: error.to_string(),
                 })
             }
@@ -1419,7 +1419,7 @@ impl Workspaces {
         &self,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         let host = &self.inner.host.cert;
         certificate
             .filter(|certificate| {
@@ -1433,7 +1433,7 @@ impl Workspaces {
                         .is_agent(&certificate.device_public_key)
             })
             .map(|_| ())
-            .ok_or(ActionHostError::UnknownAction)
+            .ok_or(ActionCallError::UnknownAction)
     }
 
     /// Run `request` from `caller` against the workspace `workspace_id` carries,
@@ -1443,9 +1443,9 @@ impl Workspaces {
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let address = &request.target.address;
-        let check = check_of(&address.action).ok_or(ActionHostError::UnknownAction)?;
+        let check = check_of(&address.action).ok_or(ActionCallError::UnknownAction)?;
         // A key's own record is read by the key itself, whatever its grant may
         // govern: the workspace lists the grants of its person's, and only the
         // key or the key that minted it revokes one.
@@ -1455,8 +1455,8 @@ impl Workspaces {
             None if listed_key => self
                 .grant_device(workspace_id, caller)
                 .await
-                .ok_or(ActionHostError::UnknownAction)?,
-            None => return Err(ActionHostError::UnknownAction),
+                .ok_or(ActionCallError::UnknownAction)?,
+            None => return Err(ActionCallError::UnknownAction),
         };
         let workspace = {
             let workspace = governed.lock().await;
@@ -1471,7 +1471,7 @@ impl Workspaces {
                 .find(|grant| grant.device == hex::encode(device.device_public_key))
                 .and_then(|grant| grant.revoked_ms);
             if let Some(revoked_ms) = revoked_ms {
-                return Err(ActionHostError::Refused {
+                return Err(ActionCallError::Refused {
                     reason: format!("key_revoked: this key was revoked at {revoked_ms}"),
                 });
             }
@@ -1491,14 +1491,14 @@ impl Workspaces {
             if address.resource != workspace_governance_resource(workspace.workspace())
                 || !permitted
             {
-                return Err(ActionHostError::UnknownAction);
+                return Err(ActionCallError::UnknownAction);
             }
             workspace.workspace().to_owned()
         };
         let args = Args::of(&request.argument)?;
         let owner = device.user_public_key == self.inner.host.cert.user_public_key;
         if unconfirmed(&address.action, &args, owner) {
-            return Err(ActionHostError::confirmation_required());
+            return Err(ActionCallError::confirmation_required());
         }
         let call = GovernanceCall {
             workspace: &workspace,
@@ -1513,7 +1513,7 @@ impl Workspaces {
         &self,
         action: &str,
         call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         match action {
             governance::INVITE | INVITATIONS | CANCEL_INVITATION | MEMBERS | NAME => {
                 self.governance_invitations(action, call).await
@@ -1534,7 +1534,7 @@ impl Workspaces {
 
     /// The grants this workspace records of the calling person's: each key it
     /// admitted, with the grant that minted it when one did.
-    async fn governance_keys(&self, call: GovernanceCall<'_>) -> Result<Value, ActionHostError> {
+    async fn governance_keys(&self, call: GovernanceCall<'_>) -> Result<Value, ActionCallError> {
         let grants = self
             .grants_of(call.workspace, &call.device.user_public_key)
             .await
@@ -1548,7 +1548,7 @@ impl Workspaces {
     async fn governance_revoke_key(
         &self,
         call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let id = call.args.required_text("grant")?.to_owned();
         let mine =
             collab_types::workspace_grant::WorkspaceGrant::id_of(&call.device.device_public_key);
@@ -1561,7 +1561,7 @@ impl Workspaces {
                 .iter()
                 .any(|grant| grant.id == id && grant.parent.as_deref() == Some(mine.as_str()));
         if !own {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         }
         let now_ms = tilo_clock::unix_now_ns() / 1_000_000;
         let changed = self
@@ -1569,7 +1569,7 @@ impl Workspaces {
             .await
             .map_err(|error| refused(&error))?;
         if !changed {
-            return Err(ActionHostError::Refused {
+            return Err(ActionCallError::Refused {
                 reason: "that key is revoked already, or this workspace never admitted it".into(),
             });
         }
@@ -1582,7 +1582,7 @@ impl Workspaces {
         &self,
         action: &str,
         call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let GovernanceCall {
             workspace,
             device,
@@ -1631,7 +1631,7 @@ impl Workspaces {
         &self,
         action: &str,
         call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         use tilo_peer_state::workspace_membership::{BotRequest, WorkspaceMembershipCommand};
         let GovernanceCall {
             workspace,
@@ -1664,7 +1664,7 @@ impl Workspaces {
         &self,
         action: &str,
         call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         use tilo_peer_state::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
         let GovernanceCall {
             workspace,
@@ -1712,7 +1712,7 @@ impl Workspaces {
     /// A piece of an app version's package file, for this holder to keep and
     /// answer members with. Answers how many bytes are in, or that the
     /// whole file is.
-    fn upload_app_piece(&self, workspace: &str, args: &Args) -> Result<Value, ActionHostError> {
+    fn upload_app_piece(&self, workspace: &str, args: &Args) -> Result<Value, ActionCallError> {
         let file = args.required_text("file")?;
         let offset = args
             .integer("offset")?
@@ -1783,7 +1783,7 @@ impl Workspaces {
         &self,
         action: &str,
         call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let GovernanceCall {
             workspace,
             device,
@@ -1871,7 +1871,7 @@ impl Workspaces {
                 .map_err(|error| refused(&error))?;
                 Ok(json!({}))
             }
-            _ => Err(ActionHostError::UnknownAction),
+            _ => Err(ActionCallError::UnknownAction),
         }
     }
 
@@ -1880,7 +1880,7 @@ impl Workspaces {
     async fn governance_add_member(
         &self,
         call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let GovernanceCall {
             workspace,
             device,
@@ -1913,7 +1913,7 @@ impl Workspaces {
         &self,
         action: &str,
         call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let GovernanceCall {
             workspace,
             device,
@@ -1953,7 +1953,7 @@ impl Workspaces {
         &self,
         action: &str,
         call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let GovernanceCall {
             workspace,
             device,
@@ -2001,7 +2001,7 @@ impl Workspaces {
         &self,
         action: &str,
         call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let GovernanceCall {
             workspace,
             device,
@@ -2042,7 +2042,7 @@ impl Workspaces {
                     "subscribe": state.allowed.subscribe,
                 }))
             }
-            _ => Err(ActionHostError::UnknownAction),
+            _ => Err(ActionCallError::UnknownAction),
         }
     }
 }
@@ -2103,7 +2103,7 @@ impl HostWorkspaceActions {
     pub(crate) fn in_workspace(
         &self,
         workspace_id: WorkspaceId,
-    ) -> impl ActionHost + Clone + Send + 'static {
+    ) -> impl ActionProvider + Clone + Send + 'static {
         InWorkspace {
             host: self.clone(),
             workspace_id: Some(workspace_id),
@@ -2119,7 +2119,7 @@ impl HostWorkspaceActions {
         &self,
         workspace_id: WorkspaceId,
         certificate: &DeviceCert,
-    ) -> impl ActionHost + Clone + Send + 'static {
+    ) -> impl ActionProvider + Clone + Send + 'static {
         InWorkspace {
             host: self.clone(),
             workspace_id: Some(workspace_id),
@@ -2133,7 +2133,7 @@ impl HostWorkspaceActions {
     pub(crate) fn as_host(
         &self,
         certificate: &DeviceCert,
-    ) -> impl ActionHost + Clone + Send + 'static {
+    ) -> impl ActionProvider + Clone + Send + 'static {
         InWorkspace {
             host: self.clone(),
             workspace_id: None,
@@ -2164,7 +2164,7 @@ impl HostWorkspaceActions {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionHostError> {
+    ) -> Result<InvocationReceipt, ActionCallError> {
         workspaces.mcp_keeper(caller, certificate)?;
         let invocation = request.invocation;
         let mut log = self.log();
@@ -2172,7 +2172,7 @@ impl HostWorkspaceActions {
             return log
                 .get(caller, &invocation)
                 .map(InvocationState::receipt)
-                .ok_or(ActionHostError::UnknownInvocation);
+                .ok_or(ActionCallError::UnknownInvocation);
         }
         let state = InvocationState::new(
             invocation,
@@ -2236,7 +2236,7 @@ impl HostWorkspaceActions {
         certificate: Option<&DeviceCert>,
         workspace_id: Option<WorkspaceId>,
         request: &InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionHostError> {
+    ) -> Result<InvocationReceipt, ActionCallError> {
         let person = Workspaces::asking_person(caller, certificate, workspace_id)?;
         let invocation = request.invocation;
         let mut log = self.log();
@@ -2244,7 +2244,7 @@ impl HostWorkspaceActions {
             return log
                 .get(caller, &invocation)
                 .map(InvocationState::receipt)
-                .ok_or(ActionHostError::UnknownInvocation);
+                .ok_or(ActionCallError::UnknownInvocation);
         }
         let state = InvocationState::new(
             invocation,
@@ -2335,7 +2335,7 @@ fn succeeded(invocation: InvocationId, value: serde_json::Value) -> InvocationSt
 fn still_running(
     host: &HostWorkspaceActions,
     invocation: InvocationId,
-    work: tokio::task::JoinHandle<Result<serde_json::Value, ActionHostError>>,
+    work: tokio::task::JoinHandle<Result<serde_json::Value, ActionCallError>>,
 ) -> InvocationReceipt {
     let accepted = InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
     let receipt = accepted.receipt();
@@ -2381,7 +2381,7 @@ struct InWorkspace {
     certificate: Option<DeviceCert>,
 }
 
-impl ActionHost for InWorkspace {
+impl ActionProvider for InWorkspace {
     /// The surface the workspace's package `app` publishes, from the
     /// workspace's own content: the version its governance keeps names the
     /// hash, and a member that has the bytes answers for them. No app has to
@@ -2424,7 +2424,7 @@ impl ActionHost for InWorkspace {
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         let Some(workspaces) = self.host.shared.workspaces.get().cloned() else {
             return Pending::ready(Ok(CataloguePage::from_rows("0".into(), Vec::new(), &query)));
         };
@@ -2441,12 +2441,12 @@ impl ActionHost for InWorkspace {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
         }
         let Some(workspaces) = self.host.shared.workspaces.get().cloned() else {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         };
         if request.target == mcp_server::target(mcp_server::SERVER) {
             return Pending::ready(self.host.follow_mcp(
@@ -2477,7 +2477,7 @@ impl ActionHost for InWorkspace {
                         .log()
                         .get(caller, &invocation)
                         .map(InvocationState::receipt)
-                        .ok_or(ActionHostError::UnknownInvocation),
+                        .ok_or(ActionCallError::UnknownInvocation),
                 );
             }
             Ok(tilo_actions::remote::Reservation::Reserved) => {}
@@ -2529,7 +2529,7 @@ impl ActionHost for InWorkspace {
                 }
                 Err(stopped) => {
                     host.log().abandon(&invocation);
-                    Err(ActionHostError::Unavailable {
+                    Err(ActionCallError::Unavailable {
                         reason: format!("the host's operation stopped: {stopped}"),
                     })
                 }
@@ -2587,7 +2587,7 @@ impl ActionHost for InWorkspace {
         &self,
         caller: &Caller,
         id: &InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         if self.host.follows_mcp(caller, id) {
             self.host.shared.mcp_follows.lock_recover().remove(id);
             self.host.log().complete(
@@ -2617,11 +2617,11 @@ impl ActionHost for InWorkspace {
             return Pending::ready(Ok(()));
         }
         tilo_actions::remote::Pending::ready(if self.host.admitted(caller, id) {
-            Err(ActionHostError::NotCancellable {
+            Err(ActionCallError::NotCancellable {
                 reason: "workspace governance completes at once".into(),
             })
         } else {
-            Err(ActionHostError::UnknownInvocation)
+            Err(ActionCallError::UnknownInvocation)
         })
     }
 }

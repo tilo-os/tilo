@@ -5,7 +5,7 @@ use super::render::skip_answered;
 use super::*;
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
-    ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueResource,
+    ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueResource,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
 };
 use tilo_actions::{ActionParam, InvocationUpdate, ParamType, ResourceSemanticIdentity};
@@ -64,7 +64,7 @@ pub(super) struct Notes {
     /// What the workspace says of its installed apps.
     workspace: Arc<Mutex<Installed>>,
     /// Why the session cannot say which apps run, when it cannot.
-    unreachable: Arc<Mutex<Option<ActionHostError>>>,
+    unreachable: Arc<Mutex<Option<ActionCallError>>>,
     /// Notes the notebook holds beyond Todo and Groceries, each with its
     /// body beside it: a notebook grown as an agent's work grows it.
     more: Arc<Mutex<usize>>,
@@ -125,7 +125,7 @@ enum Installed {
 }
 
 /// A directory answer that is never given.
-type Unanswered = tilo_actions::remote::Completer<Result<CataloguePage, ActionHostError>>;
+type Unanswered = tilo_actions::remote::Completer<Result<CataloguePage, ActionCallError>>;
 
 impl Notes {
     pub(super) fn new(running: bool) -> Self {
@@ -684,14 +684,14 @@ impl Notes {
 impl Notes {
     /// Why the session does not answer `query`, when it does not: it cannot
     /// say which apps run, or the workspace's installed apps cannot be read.
-    fn refused(&self, query: &CatalogueQuery) -> Option<ActionHostError> {
+    fn refused(&self, query: &CatalogueQuery) -> Option<ActionCallError> {
         let unreachable = self.unreachable.lock().unwrap().clone();
         if let Some(error) = unreachable {
             return Some(error);
         }
         let installed = *self.workspace.lock().unwrap();
         (query.provider.as_deref() == Some(WORKSPACE) && installed == Installed::Unreadable).then(
-            || ActionHostError::Unavailable {
+            || ActionCallError::Unavailable {
                 reason: "this session's workspaces cannot be read".into(),
             },
         )
@@ -717,7 +717,7 @@ impl Notes {
         clippy::too_many_lines,
         reason = "the fixture's whole directory, one kind of query per arm, reads as data"
     )]
-    fn answer(&self, query: &CatalogueQuery) -> Pending<Result<CataloguePage, ActionHostError>> {
+    fn answer(&self, query: &CatalogueQuery) -> Pending<Result<CataloguePage, ActionCallError>> {
         let running = *self.running.lock().unwrap();
         if query.target.is_none() && query.needle.is_empty() {
             self.asked
@@ -766,7 +766,7 @@ impl Notes {
             return answer;
         }
         if provider != WORKSPACE && !running {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let cannot_list = *self.cannot_list.lock().unwrap();
         if provider != WORKSPACE && query.target.is_none() && cannot_list > 0 {
@@ -910,7 +910,7 @@ impl tilo_actions::remote::ResourceSearch for Notes {
         &self,
         _caller: &Caller,
         needle: &str,
-    ) -> Pending<Result<Vec<tilo_actions::remote::Found>, ActionHostError>> {
+    ) -> Pending<Result<Vec<tilo_actions::remote::Found>, ActionCallError>> {
         let unreachable = self.unreachable.lock().unwrap().clone();
         if let Some(error) = unreachable {
             return Pending::ready(Err(error));
@@ -974,12 +974,12 @@ impl tilo_actions::remote::ResourceSearch for Notes {
     }
 }
 
-impl ActionHost for Notes {
+impl ActionProvider for Notes {
     fn query(
         &self,
         _caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         match self.refused(&query) {
             Some(refused) => Pending::ready(Err(refused)),
             None => self.answer(&query),
@@ -998,7 +998,7 @@ impl ActionHost for Notes {
         &self,
         _caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         let known = self
             .rows(&request.target.provider)
@@ -1007,12 +1007,12 @@ impl ActionHost for Notes {
             // An app takes its steps back on its own package resource.
             || request.target.address.resource == format!("tl:{APP}");
         if !known || (request.target.provider != WORKSPACE && !*self.running.lock().unwrap()) {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         // What the workspace's grants put to the person first: nothing runs
         // until they allow it.
         if *self.asks.lock().unwrap() && request.target.address.action == "delete" {
-            return Pending::ready(Err(ActionHostError::confirmation_required()));
+            return Pending::ready(Err(ActionCallError::confirmation_required()));
         }
         if request.target.provider == WORKSPACE {
             *self.running.lock().unwrap() = true;
@@ -1120,7 +1120,7 @@ impl ActionHost for Notes {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
@@ -1171,7 +1171,7 @@ pub(super) fn run<F: std::future::Future>(future: F) -> F::Output {
 
 /// What a tool call answered, as the agent reads it: the text, and whether
 /// the call is an error.
-async fn tool<H: ActionHost + Send + Sync + 'static>(
+async fn tool<H: ActionProvider + Send + Sync + 'static>(
     server: &McpServer<H>,
     name: &str,
     arguments: Value,
@@ -1198,7 +1198,7 @@ async fn tool<H: ActionHost + Send + Sync + 'static>(
 
 pub(super) fn agent<H>(host: &H) -> McpServer<H>
 where
-    H: ActionHost + Clone + Send + Sync + 'static,
+    H: ActionProvider + Clone + Send + Sync + 'static,
 {
     McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada")
         .with_agent_session("mcp:test", "MCP agent")
@@ -1289,7 +1289,7 @@ tilo_test_env::scenario! {
             // The session's actions do not answer for this agent: it is told
             // why, not handed an empty list.
             let unreachable = Notes::new(true);
-            *unreachable.unreachable.lock().unwrap() = Some(ActionHostError::Unavailable {
+            *unreachable.unreachable.lock().unwrap() = Some(ActionCallError::Unavailable {
                 reason: "no longer a member of workspace Home".into(),
             });
             let (text, failed) = tool(&agent(&unreachable), "tilo_ls", json!({})).await;
@@ -1490,15 +1490,15 @@ tilo_test_env::scenario! {
         run(async {
             let busy = Notes::new(true);
             *busy.unreachable.lock().unwrap() =
-                Some(ActionHostError::Busy { retry_after_ms: 480 });
+                Some(ActionCallError::Busy { retry_after_ms: 480 });
             let (typed, failed) = answer(&agent(&busy), "tilo_find", json!({"query": "notes"})).await;
             assert!(failed, "{typed}");
             assert_eq!(typed["error"]["code"], "rate_limited", "{typed}");
             assert_eq!(typed["error"]["retry_after_ms"], 480, "{typed}");
-            let left = ActionHostError::Unavailable { reason: "left".into() };
+            let left = ActionCallError::Unavailable { reason: "left".into() };
             for (error, code) in [
-                (ActionHostError::NotReady, "not_ready"),
-                (ActionHostError::Unanswered, "unanswered"),
+                (ActionCallError::NotReady, "not_ready"),
+                (ActionCallError::Unanswered, "unanswered"),
                 (left, "remote_actions_unavailable"),
             ] {
                 *busy.unreachable.lock().unwrap() = Some(error);
@@ -2693,12 +2693,12 @@ impl NoSearch {
     }
 }
 
-impl ActionHost for NoSearch {
+impl ActionProvider for NoSearch {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.0.query(caller, query)
     }
 
@@ -2706,7 +2706,7 @@ impl ActionHost for NoSearch {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.0.invoke(caller, request)
     }
 
@@ -2718,7 +2718,7 @@ impl ActionHost for NoSearch {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionHostError>> {
+    ) -> Pending<Result<(), ActionCallError>> {
         self.0.cancel(caller, id)
     }
 }
@@ -2820,7 +2820,7 @@ fn tilolang_kind(host: &Notes) -> Notes {
 
 /// A tool call that asks for typed answers, with `meta` merged into
 /// `so.tilo.mcp`: its `structuredContent`, and whether it is an error.
-async fn typed<H: ActionHost + Send + Sync + 'static>(
+async fn typed<H: ActionProvider + Send + Sync + 'static>(
     server: &McpServer<H>,
     name: &str,
     arguments: Value,
@@ -2847,7 +2847,7 @@ async fn typed<H: ActionHost + Send + Sync + 'static>(
 }
 
 /// The same, for a call that names no run.
-pub(super) async fn answer<H: ActionHost + Send + Sync + 'static>(
+pub(super) async fn answer<H: ActionProvider + Send + Sync + 'static>(
     server: &McpServer<H>,
     name: &str,
     arguments: Value,

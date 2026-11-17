@@ -43,7 +43,7 @@ use tilo_actions::remote::person_models::{
     Assignment, ModelProviders, OfferedModel, ProviderView, SetAssignment, SetKey,
 };
 use tilo_actions::remote::{
-    ActionHostError, Caller, InvokeArgument, InvokeRequest, person_accounts, person_models,
+    ActionCallError, Caller, InvokeArgument, InvokeRequest, person_accounts, person_models,
 };
 use tilo_mail_session::{Attachment, Leaving};
 use tilo_net::proxy::host::Destinations;
@@ -69,7 +69,7 @@ impl Workspaces {
     /// The mail accounts the person's vault keeps, as [`person_accounts::LIST`]
     /// answers them: what a window following [`person_accounts::WATCH`] is
     /// sent again whenever they change.
-    pub(super) fn accounts_listing(&self, person: &[u8; 32]) -> Result<Value, ActionHostError> {
+    pub(super) fn accounts_listing(&self, person: &[u8; 32]) -> Result<Value, ActionCallError> {
         answer(&mail_accounts(&self.person_settings_root(person)))
     }
 
@@ -160,17 +160,17 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         workspace_id: Option<collab_types::WorkspaceId>,
-    ) -> Result<[u8; 32], ActionHostError> {
-        workspace_id.ok_or(ActionHostError::UnknownAction)?;
+    ) -> Result<[u8; 32], ActionCallError> {
+        workspace_id.ok_or(ActionCallError::UnknownAction)?;
         if !caller.acting().is_person() || caller.acting().app().is_some() {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         }
         let certificate = certificate
             .filter(|certificate| {
                 caller.device_public_key() == Some(&certificate.device_public_key)
                     && caller.user_public_key() == Some(&certificate.user_public_key)
             })
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         Ok(certificate.user_public_key)
     }
 
@@ -186,26 +186,26 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         workspace_id: Option<collab_types::WorkspaceId>,
-    ) -> Result<AskingAboutMail, ActionHostError> {
+    ) -> Result<AskingAboutMail, ActionCallError> {
         if let Ok(person) = Self::asking_person(caller, certificate, workspace_id) {
             return Ok(AskingAboutMail::Person(person));
         }
-        let workspace = workspace_id.ok_or(ActionHostError::UnknownAction)?;
+        let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
         let acting = caller.acting();
         let (Some(agent), Some(person)) = (acting.agent_id(), acting.acted_for_person()) else {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         };
         let person: [u8; 32] = hex::decode(person)
             .ok()
             .and_then(|key| key.try_into().ok())
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         let certified = certificate.is_some_and(|certificate| {
             certificate.user_public_key == person
                 && caller.device_public_key() == Some(&certificate.device_public_key)
                 && caller.user_public_key() == Some(&certificate.user_public_key)
         });
         if !certified {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         }
         Ok(AskingAboutMail::Assistant {
             person,
@@ -257,18 +257,18 @@ impl Workspaces {
         agent: NamedAgent<'_>,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         let root = self.person_settings_root(&person);
         let named = accounts_of_assistant(&root, agent);
         let may = |account: &str| {
             if named.contains(account) {
                 Ok(())
             } else {
-                Err(ActionHostError::UnknownAction)
+                Err(ActionCallError::UnknownAction)
             }
         };
         if named.is_empty() {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         }
         match request.target.address.action.as_str() {
             person_accounts::LIST => answer(&mail_accounts(&root).map(|mut listed| {
@@ -336,7 +336,7 @@ impl Workspaces {
                 };
                 answer(&sent)
             }
-            _ => Err(ActionHostError::UnknownAction),
+            _ => Err(ActionCallError::UnknownAction),
         }
     }
 
@@ -350,20 +350,20 @@ impl Workspaces {
         agent: &str,
         caller: &Caller,
         shown: &sending::Shown,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         let asker = self
             .inner
             .asks_people
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
-            .ok_or_else(ActionHostError::confirmation_required)?;
+            .ok_or_else(ActionCallError::confirmation_required)?;
         match asker.ask(person, shown.question(agent, caller)).await {
             Ok(ConfirmationAnswer::AllowOnce) => Ok(()),
-            Ok(ConfirmationAnswer::Deny) => Err(ActionHostError::Refused {
+            Ok(ConfirmationAnswer::Deny) => Err(ActionCallError::Refused {
                 reason: "the person did not allow it".into(),
             }),
-            Err(_) => Err(ActionHostError::confirmation_required()),
+            Err(_) => Err(ActionCallError::confirmation_required()),
         }
     }
 
@@ -374,7 +374,7 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
+    ) -> Result<Value, ActionCallError> {
         // The person's calendars are another resource of the same provider.
         #[cfg(feature = "agents")]
         if request.target.address.resource == calendars::RESOURCE {
@@ -462,7 +462,7 @@ impl Workspaces {
                 let piece: SendPiece = argument(request, "a piece of a message's file")?;
                 answer(&send_piece(&root, &piece))
             }
-            _ => Err(ActionHostError::UnknownAction),
+            _ => Err(ActionCallError::UnknownAction),
         }
     }
 }
@@ -471,19 +471,19 @@ impl Workspaces {
 /// refused.
 pub(super) fn answer<T: serde::Serialize>(
     outcome: &Result<T, String>,
-) -> Result<Value, ActionHostError> {
+) -> Result<Value, ActionCallError> {
     match outcome {
-        Ok(value) => serde_json::to_value(value).map_err(|error| ActionHostError::Refused {
+        Ok(value) => serde_json::to_value(value).map_err(|error| ActionCallError::Refused {
             reason: error.to_string(),
         }),
-        Err(reason) => Err(ActionHostError::Refused {
+        Err(reason) => Err(ActionCallError::Refused {
             reason: reason.clone(),
         }),
     }
 }
 
-fn invalid(reason: &str) -> ActionHostError {
-    ActionHostError::InvalidRequest {
+fn invalid(reason: &str) -> ActionCallError {
+    ActionCallError::InvalidRequest {
         reason: reason.to_owned(),
     }
 }
@@ -492,7 +492,7 @@ fn invalid(reason: &str) -> ActionHostError {
 pub(super) fn argument<T: serde::de::DeserializeOwned>(
     request: &InvokeRequest,
     what: &str,
-) -> Result<T, ActionHostError> {
+) -> Result<T, ActionCallError> {
     let InvokeArgument::Json(argument) = &request.argument else {
         return Err(invalid(&format!("a request names {what}")));
     };
@@ -501,7 +501,7 @@ pub(super) fn argument<T: serde::de::DeserializeOwned>(
 }
 
 /// The `account` a request about one account names.
-fn account_argument(request: &InvokeRequest) -> Result<String, ActionHostError> {
+fn account_argument(request: &InvokeRequest) -> Result<String, ActionCallError> {
     let value: Map<String, Value> = argument(request, "the account")?;
     value
         .get("account")
@@ -513,7 +513,7 @@ fn account_argument(request: &InvokeRequest) -> Result<String, ActionHostError> 
 
 /// The place in the arrival log a [`person_accounts::ARRIVED`] reads on
 /// from: its start, when the request names none.
-fn arrived_argument(request: &InvokeRequest) -> Result<ArrivedAfter, ActionHostError> {
+fn arrived_argument(request: &InvokeRequest) -> Result<ArrivedAfter, ActionCallError> {
     match &request.argument {
         InvokeArgument::Json(_) => argument(request, "a place in the arrival log"),
         _ => Ok(ArrivedAfter::default()),
@@ -522,8 +522,8 @@ fn arrived_argument(request: &InvokeRequest) -> Result<ArrivedAfter, ActionHostE
 
 /// The message begun under `send` and where its files wait, for a request
 /// that goes on with it.
-fn begun_for(root: &Path, send: &str) -> Result<(PathBuf, BeginSend), ActionHostError> {
-    begun_send(root, send).map_err(|reason| ActionHostError::Refused { reason })
+fn begun_for(root: &Path, send: &str) -> Result<(PathBuf, BeginSend), ActionCallError> {
+    begun_send(root, send).map_err(|reason| ActionCallError::Refused { reason })
 }
 
 /// Who asks about a person's mail.
@@ -550,7 +550,7 @@ struct NamedAgent<'a> {
 }
 
 /// The `provider` a removing action names.
-pub(super) fn provider_argument(request: &InvokeRequest) -> Result<String, ActionHostError> {
+pub(super) fn provider_argument(request: &InvokeRequest) -> Result<String, ActionCallError> {
     let value: Map<String, Value> = argument(request, "the provider")?;
     value
         .get("provider")

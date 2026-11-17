@@ -4,7 +4,7 @@
 //! frame carries.
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts,
+    ActionCallError, Caller, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts,
     MAX_CONTENT_FRAME_BYTES,
 };
 
@@ -14,14 +14,14 @@ use super::SessionActions;
 pub(super) struct SessionPuts(pub(super) SessionActions);
 
 /// What the device answered where it should have answered something else.
-fn unexpected(answer: &ContentPutAnswer) -> ActionHostError {
-    ActionHostError::Unavailable {
+fn unexpected(answer: &ContentPutAnswer) -> ActionCallError {
+    ActionCallError::Unavailable {
         reason: format!("the device answered an upload step with {answer:?}"),
     }
 }
 
 impl ContentPuts for SessionPuts {
-    fn begin(&self, _caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionHostError> {
+    fn begin(&self, _caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionCallError> {
         match self.0.put_step_waited(ContentPutStep::Begin { size })? {
             ContentPutAnswer::Begun { upload } => Ok(Box::new(SessionPut {
                 actions: self.0.clone(),
@@ -51,9 +51,9 @@ impl ContentPut for SessionPut {
         self.written
     }
 
-    fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionHostError> {
+    fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionCallError> {
         if offset != self.written {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: format!(
                     "the upload has {} bytes: append at offset {}",
                     self.written, self.written
@@ -70,7 +70,7 @@ impl ContentPut for SessionPut {
         Ok(self.written)
     }
 
-    fn finish(self: Box<Self>) -> Result<String, ActionHostError> {
+    fn finish(self: Box<Self>) -> Result<String, ActionCallError> {
         match self.actions.put_step_waited(ContentPutStep::Finish {
             upload: self.upload,
         })? {

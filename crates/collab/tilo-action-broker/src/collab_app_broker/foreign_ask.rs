@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, Confirmation, ConfirmationQuestion, InvokeRequest, Pending,
+    ActionCallError, Caller, Confirmation, ConfirmationQuestion, InvokeRequest, Pending,
 };
 
 use super::{AppBrokerState, ApprovalBinding};
@@ -39,7 +39,7 @@ impl AppBrokerState {
         caller: &Caller,
         binding: &ApprovalBinding,
         request: &InvokeRequest,
-    ) -> Pending<Result<Confirmation, ActionHostError>> {
+    ) -> Pending<Result<Confirmation, ActionCallError>> {
         self.own_device_approval_within(caller, binding, request, ANSWER_WAIT)
     }
 
@@ -52,10 +52,10 @@ impl AppBrokerState {
         binding: &ApprovalBinding,
         request: &InvokeRequest,
         within: Duration,
-    ) -> Pending<Result<Confirmation, ActionHostError>> {
+    ) -> Pending<Result<Confirmation, ActionCallError>> {
         let Some(service) = self.services.own_device.as_ref() else {
             // Nobody to ask is nobody's confirmation.
-            return Pending::ready(Err(ActionHostError::confirmation_required()));
+            return Pending::ready(Err(ActionCallError::confirmation_required()));
         };
         let question = asked_there(self, caller, &binding.workspace, request);
         let asked = match service.ask_person(caller, &question) {
@@ -74,16 +74,16 @@ impl AppBrokerState {
                     Ok(Some(Ok(Confirmation::Approved(_)))) => state
                         .approval_confirmation(&binding)
                         .map(Confirmation::Approved)
-                        .ok_or(ActionHostError::confirmation_required()),
+                        .ok_or(ActionCallError::confirmation_required()),
                     // Denied, timed out, or no approval to name: nothing runs.
                     Ok(Some(Ok(_) | Err(_)) | None) | Err(_) => {
-                        Err(ActionHostError::confirmation_required())
+                        Err(ActionCallError::confirmation_required())
                     }
                 };
                 completer.complete(approval);
             });
         if let Err(error) = spawned {
-            return Pending::ready(Err(ActionHostError::Unavailable {
+            return Pending::ready(Err(ActionCallError::Unavailable {
                 reason: format!("the answer could not be awaited: {error}"),
             }));
         }
@@ -115,7 +115,7 @@ impl AppBrokerState {
                     .map(|descriptor| described(&descriptor))
             })
             .or_else(|| {
-                self.live_surfaces(super::action_host::RowScope::Provider(&target.provider))
+                self.live_surfaces(super::action_provider::RowScope::Provider(&target.provider))
                     .into_iter()
                     .find_map(|surface| {
                         surface

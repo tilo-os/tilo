@@ -24,7 +24,7 @@ use std::time::Instant;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::{
-    ActionHostError, CataloguePage, CatalogueQuery, CatalogueRow, InvocationReceipt,
+    ActionCallError, CataloguePage, CatalogueQuery, CatalogueRow, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
     RemoteActionMessage, RemoteActionTarget,
 };
@@ -1121,7 +1121,7 @@ fn answer(
                 }
             } else {
                 ReceiptStatus::Rejected {
-                    error: ActionHostError::UnknownAction,
+                    error: ActionCallError::UnknownAction,
                 }
             };
             if let Some(update) = outcome(invocation, &status) {
@@ -1147,7 +1147,7 @@ fn answer(
         }),
         RemoteActionMessage::Cancel { invocation } => Some(RemoteActionMessage::CancelResponse {
             invocation,
-            result: Err(ActionHostError::UnknownInvocation),
+            result: Err(ActionCallError::UnknownInvocation),
         }),
         _ => None,
     }
@@ -1187,7 +1187,7 @@ pub(crate) fn outcome(
                 // from one that ran and was refused: what a person reads is
                 // that their answer is missing, not that it failed.
                 code: match error {
-                    ActionHostError::ConfirmationRequired { .. } => {
+                    ActionCallError::ConfirmationRequired { .. } => {
                         tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned()
                     }
                     _ => String::from("refused"),
@@ -1207,19 +1207,19 @@ pub(crate) fn outcome(
 /// A refusal as the action protocol says it: the API's own code, so a caller tells "no
 /// such action" apart from "not now" and "not shaped like that" without reading prose. An API that
 /// refused for a reason of its own says it in words, its code leading them.
-pub(crate) fn refusal(error: &tilo_actions::ApiError) -> ActionHostError {
+pub(crate) fn refusal(error: &tilo_actions::ApiError) -> ActionCallError {
     use tilo_actions::ApiError;
     match error {
-        ApiError::Unknown(_) | ApiError::UnregisteredType(_) => ActionHostError::UnknownAction,
+        ApiError::Unknown(_) | ApiError::UnregisteredType(_) => ActionCallError::UnknownAction,
         ApiError::MissingArgument(_)
         | ApiError::UnexpectedArgument(_)
         | ApiError::InvalidArguments(_)
-        | ApiError::ArgumentOutOfRange { .. } => ActionHostError::InvalidRequest {
+        | ApiError::ArgumentOutOfRange { .. } => ActionCallError::InvalidRequest {
             reason: error.to_string(),
         },
-        ApiError::ConfirmationRequired => ActionHostError::confirmation_required(),
+        ApiError::ConfirmationRequired => ActionCallError::confirmation_required(),
         ApiError::Unavailable { .. } | ApiError::Refused { .. } | ApiError::Failed(_) => {
-            ActionHostError::Refused {
+            ActionCallError::Refused {
                 reason: error.to_string(),
             }
         }

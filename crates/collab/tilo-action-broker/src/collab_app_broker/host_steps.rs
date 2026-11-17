@@ -13,7 +13,7 @@ use std::sync::Arc;
 use super::AppBrokerState;
 use crate::services::{HostServices, HostStepOutcome, HostStepRequest, HostStepServices};
 use tilo_actions::remote::{
-    ActionHostError, Caller, InvocationReceipt, InvokeRequest, Pending, Reservation,
+    ActionCallError, Caller, InvocationReceipt, InvokeRequest, Pending, Reservation,
 };
 
 /// The installed host-step service that answers under `provider`, if any.
@@ -111,8 +111,8 @@ impl AppBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         steps: &dyn HostStepServices,
         request: &InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionHostError> {
-        let abandon = |error: ActionHostError| {
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        let abandon = |error: ActionCallError| {
             if let Ok(mut log) = self.remote_invocations.lock() {
                 log.abandon(&request.invocation);
             }
@@ -123,18 +123,18 @@ impl AppBrokerState {
             return self
                 .remote_job(caller, &request.invocation)
                 .map(|job| self.receipt_for(request.invocation, job))
-                .ok_or(ActionHostError::UnknownInvocation);
+                .ok_or(ActionCallError::UnknownInvocation);
         }
         if !is_local_host_caller(caller, origin) {
-            return Err(abandon(ActionHostError::UnknownAction));
+            return Err(abandon(ActionCallError::UnknownAction));
         }
         let Some(workspace_id) = caller.workspace() else {
-            return Err(abandon(ActionHostError::NotPermitted));
+            return Err(abandon(ActionCallError::NotPermitted));
         };
         let address = &request.target.address;
         let argument = request.argument.to_slot();
         let Some(descriptor) = steps.invocation(address, argument.as_deref()) else {
-            return Err(abandon(ActionHostError::UnknownAction));
+            return Err(abandon(ActionCallError::UnknownAction));
         };
         let (workspace, policy, now) = self
             .current_framework_authority(caller, origin, workspace_id)
@@ -149,13 +149,13 @@ impl AppBrokerState {
         // agent's outside one.
         let session = self.agent_session_of(Some(caller), origin, workspace_id);
         if let Some(Err(reason)) = &session {
-            return Err(abandon(ActionHostError::Refused {
+            return Err(abandon(ActionCallError::Refused {
                 reason: reason.clone(),
             }));
         }
         let session_step = steps.for_turns() || steps.for_agent_sessions();
         if session_step && policy.is_agent() && session.is_none() {
-            return Err(abandon(ActionHostError::Refused {
+            return Err(abandon(ActionCallError::Refused {
                 reason: "a session step is an agent session's: this agent works in none".into(),
             }));
         }
@@ -174,7 +174,7 @@ impl AppBrokerState {
             request.confirmation.as_ref(),
             approved,
         ) {
-            return Err(abandon(ActionHostError::confirmation_required()));
+            return Err(abandon(ActionCallError::confirmation_required()));
         }
         let admitted = self
             .admit_host_action(
@@ -204,7 +204,7 @@ impl AppBrokerState {
                 request.confirmation.as_ref(),
                 approved,
             ) {
-                return Err(ActionHostError::confirmation_required());
+                return Err(ActionCallError::confirmation_required());
             }
             self.admit_answer(
                 (&workspace, &policy, now),
@@ -219,7 +219,7 @@ impl AppBrokerState {
         let api = match (&session, origin) {
             (Some(Ok(_)), Some(origin)) => {
                 self.agent_session_api(caller, origin.clone()).map(|api| {
-                    Arc::new(api) as Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>
+                    Arc::new(api) as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>
                 })
             }
             _ => None,
@@ -229,7 +229,7 @@ impl AppBrokerState {
             actor: &policy,
             address,
             argument: argument.as_deref(),
-            host: api,
+            provider: api,
             group: request
                 .context
                 .as_ref()
@@ -243,7 +243,7 @@ impl AppBrokerState {
                         &admitted,
                         host_step_failure(request.invocation, "host_step_refused", &reason),
                     )?;
-                    return Err(ActionHostError::Refused { reason });
+                    return Err(ActionCallError::Refused { reason });
                 }
             };
             let following = super::live_views::Following {
@@ -255,7 +255,7 @@ impl AppBrokerState {
                 approved,
             };
             self.follow_live_view(admitted, following, view)
-                .map_err(|reason| ActionHostError::Refused { reason })?;
+                .map_err(|reason| ActionCallError::Refused { reason })?;
             return Ok(self.receipt_for(request.invocation, id));
         }
         let started = steps.start(&step);
@@ -266,7 +266,7 @@ impl AppBrokerState {
                     &admitted,
                     host_step_failure(request.invocation, "host_step_refused", &reason),
                 )?;
-                return Err(ActionHostError::Refused { reason });
+                return Err(ActionCallError::Refused { reason });
             }
         }
         Ok(self.receipt_for(request.invocation, id))
@@ -337,7 +337,7 @@ pub(crate) mod signed_test_support {
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     };
-    use tilo_actions::remote::{ActionHostError, Caller, InvocationReceipt, InvokeRequest};
+    use tilo_actions::remote::{ActionCallError, Caller, InvocationReceipt, InvokeRequest};
 
     struct NativeOwnerReceipts {
         owner: Arc<tilo_peer_state::owner::NativeWorkspaceOwner>,
@@ -406,7 +406,7 @@ pub(crate) mod signed_test_support {
         pub authority: Arc<Authority>,
         pub workspace: String,
         pub tree: crate::test_support::WorkspaceTreeHandle,
-        certified_host: Option<Arc<dyn tilo_actions::remote::ActionHost>>,
+        certified_host: Option<Arc<dyn tilo_actions::remote::ActionProvider>>,
         _fanout: Arc<FanoutState>,
         _environment: tilo_test_env::ScopedEnv,
         directory: tempfile::TempDir,
@@ -553,7 +553,7 @@ pub(crate) mod signed_test_support {
             fixture.certified_host = Some(
                 fixture
                     .state
-                    .certified_local_action_host(&fixture.caller, &presentation)
+                    .certified_local_action_provider(&fixture.caller, &presentation)
                     .unwrap(),
             );
             fixture.origin = InvocationCaller::Certified {
@@ -586,7 +586,7 @@ pub(crate) mod signed_test_support {
         pub fn invoke(
             &self,
             request: &InvokeRequest,
-        ) -> Result<InvocationReceipt, ActionHostError> {
+        ) -> Result<InvocationReceipt, ActionCallError> {
             let pending = match &self.certified_host {
                 Some(host) => host.invoke(&self.caller, request.clone()),
                 None => self.state.action_invoke_with_origin(
@@ -718,12 +718,12 @@ pub(crate) mod signed_test_support {
 #[cfg(test)]
 mod identity_admin_tests {
     use super::super::AppBrokerState;
-    use super::super::action_host::RowScope;
+    use super::super::action_provider::RowScope;
     use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use crate::test_support::{Grants as _, Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::{
-        ActionHostError, Caller, Completer, Confirmation, InvokeArgument, InvokeRequest, Pending,
+        ActionCallError, Caller, Completer, Confirmation, InvokeArgument, InvokeRequest, Pending,
         RemoteActionMessage, identity_admin, pending,
     };
 
@@ -952,7 +952,7 @@ mod identity_admin_tests {
                         f.state
                             .eager_catalogue(
                                 &f.caller,
-                                super::super::action_host::RowScope::Provider(&asked.target.provider),
+                                super::super::action_provider::RowScope::Provider(&asked.target.provider),
                             )
                             .0
                             .is_empty(),
@@ -1131,7 +1131,7 @@ mod identity_admin_tests {
         state: &Arc<AppBrokerState>,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
         state
             .action_invoke(caller, None, None, request)
             .wait_timeout(tilo_test_env::hang_bound())
@@ -1360,7 +1360,7 @@ mod identity_admin_tests {
             ] {
                 assert_eq!(
                     invoked(&state, &person, &request(step, None)),
-                    Err(ActionHostError::confirmation_required()),
+                    Err(ActionCallError::confirmation_required()),
                     "{step} needs the person's confirmation"
                 );
             }
@@ -1468,7 +1468,7 @@ mod settings_documents_tests {
     use std::sync::{Arc, Mutex};
     use tilo_action_policy::edits::{FIELD_EDIT_TAG, Weaker, weakening_tag};
     use tilo_actions::remote::{
-        ActionHostError, Caller, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
+        ActionCallError, Caller, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
         settings_resources,
     };
 
@@ -1592,7 +1592,7 @@ mod settings_documents_tests {
         state: &Arc<AppBrokerState>,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
         state
             .action_invoke(caller, None, None, request)
             .wait_timeout(tilo_test_env::hang_bound())
@@ -1637,7 +1637,7 @@ mod settings_documents_tests {
         assert_eq!(minutes(), 1);
         assert_eq!(
             invoked(&state, &person, &lock_after(0, None)),
-            Err(ActionHostError::confirmation_required()),
+            Err(ActionCallError::confirmation_required()),
             "never locking asks first"
         );
         assert_eq!(minutes(), 1);

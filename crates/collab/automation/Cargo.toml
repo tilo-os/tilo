@@ -13,7 +13,7 @@ name = "tilo_automation"
 path = "src/lib.rs"
 
 # Shortcuts: typed pipelines of actions, checked against the descriptors the
-# action API publishes and run through `tilo_actions::remote::ActionHost`.
+# action API publishes and run through `tilo_actions::remote::ActionProvider`.
 # Pure data and logic with no I/O, no runtime and no UI dependency.
 
 [dependencies]

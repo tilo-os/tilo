@@ -39,7 +39,7 @@ use tilo_actions::remote::environment_machines::{
     self, BranchMachine, DeleteMachine, MachineBranched,
 };
 use tilo_actions::remote::{
-    ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_peer_state::actions::RemoteDevice;

@@ -17,7 +17,7 @@ use tilo_actions::remote::browser::{self, OpenBrowser, OpenedBrowser};
 use tilo_actions::remote::host_account::Refusal;
 use tilo_actions::remote::linux_apps::{self, AppLaunch, OpenApp};
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
+    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_peer_state::actions::{ActionService, RemoteDevice};
@@ -321,8 +321,8 @@ fn follow(
     let receipt = loop {
         let asked = placed_shells::settled(device.invoke(&caller, request.clone()));
         let again = match &asked {
-            Err(_) | Ok(Err(ActionHostError::Unanswered)) => Some(Duration::ZERO),
-            Ok(Err(ActionHostError::Busy { retry_after_ms })) => {
+            Err(_) | Ok(Err(ActionCallError::Unanswered)) => Some(Duration::ZERO),
+            Ok(Err(ActionCallError::Busy { retry_after_ms })) => {
                 Some(Duration::from_millis(*retry_after_ms))
             }
             Ok(_) => None,

@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::remote::ActionHostError;
+use tilo_actions::remote::ActionCallError;
 
 use super::{Firing, MAX_QUEUED_FIRINGS};
 use crate::invocation::{InvocationOutcome, InvocationReport, StepFailure, StepStatus};
@@ -54,7 +54,7 @@ pub enum FailureClass {
 pub fn classify(failure: &StepFailure) -> FailureClass {
     match failure {
         StepFailure::Unavailable { .. } | StepFailure::Abandoned => FailureClass::Transient,
-        StepFailure::Host { error } if matches!(**error, ActionHostError::Unavailable { .. }) => {
+        StepFailure::Host { error } if matches!(**error, ActionCallError::Unavailable { .. }) => {
             FailureClass::Transient
         }
         StepFailure::Action { error } if error.retryable => FailureClass::Transient,
@@ -340,7 +340,7 @@ mod tests {
             queue.push(firing(1), 0);
             queue.push(firing(2), 0);
             let unavailable = failed(StepFailure::Host {
-                error: Box::new(ActionHostError::Unavailable {
+                error: Box::new(ActionCallError::Unavailable {
                     reason: "down".into(),
                 }),
             });
@@ -413,7 +413,7 @@ mod tests {
                 error: Box::new(error),
             };
             assert_eq!(
-                classify(&host(ActionHostError::Unavailable {
+                classify(&host(ActionCallError::Unavailable {
                     reason: String::new()
                 })),
                 FailureClass::Transient
@@ -447,7 +447,7 @@ mod tests {
                 FailureClass::Refusal
             );
             assert_eq!(
-                classify(&host(ActionHostError::NotPermitted)),
+                classify(&host(ActionCallError::NotPermitted)),
                 FailureClass::Refusal
             );
         }

@@ -184,7 +184,7 @@ use tilo_actions::remote::{CatalogueQuery, InvokeArgument, InvokeRequest, Remote
 #[cfg(test)]
 use tilo_actions::{
     ConfirmationPolicy,
-    remote::{ActionHostError, Confirmation, ReceiptStatus, RemoteActionMessage},
+    remote::{ActionCallError, Confirmation, ReceiptStatus, RemoteActionMessage},
 };
 use tilo_agent_session::{ModelChoice, Replica, ReplicaActor, Seed, record_provider};
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -513,7 +513,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
             panic!("expected catalogue response")
         };
         if revoke_on_read {
-            assert_eq!(result, Err(ActionHostError::UnknownAction));
+            assert_eq!(result, Err(ActionCallError::UnknownAction));
             assert_eq!(
                 link.locator_reads.load(std::sync::atomic::Ordering::SeqCst),
                 0,
@@ -871,7 +871,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         assert_ne!(
             receipt.status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::UnknownAction
+                error: ActionCallError::UnknownAction
             },
             "{:?} is listed but unknown",
             action.address
@@ -981,7 +981,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     assert_eq!(
         conflict.status,
         ReceiptStatus::Rejected {
-            error: ActionHostError::InvocationConflict
+            error: ActionCallError::InvocationConflict
         }
     );
     let names = after_a_marker(&mut browser, &sheets, &new_sheet, "After the retry").await;
@@ -1034,7 +1034,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     assert_eq!(
         refused.status,
         ReceiptStatus::Rejected {
-            error: ActionHostError::confirmation_required()
+            error: ActionCallError::confirmation_required()
         }
     );
     let confirmed = InvokeRequest {
@@ -1047,7 +1047,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         !matches!(
             ran.status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::ConfirmationRequired { .. }
+                error: ActionCallError::ConfirmationRequired { .. }
             }
         ),
         "a refused invocation is forgotten, so the confirmed retry under its id is admitted: {ran:?}"
@@ -1072,7 +1072,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         .await;
     assert!(matches!(
         finished,
-        Err(ActionHostError::NotCancellable { .. })
+        Err(ActionCallError::NotCancellable { .. })
     ));
 
     // 6. The workspace's "open an app" action creates a record through the host.
@@ -1146,7 +1146,7 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
         matches!(
             receipt.status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::Refused { .. }
+                error: ActionCallError::Refused { .. }
             }
         ),
         "{receipt:?}"

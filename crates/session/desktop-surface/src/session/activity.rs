@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde_json::{Map, Value};
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::remote::{
-    ActionHostError, Caller, Completer, InvocationReceipt, InvocationState, InvokeArgument,
+    ActionCallError, Caller, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, Pending, ReceiptStatus, pending,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
@@ -116,8 +116,8 @@ fn is_person(caller: &Caller) -> bool {
     caller.acting().is_person() && caller.acting().app().is_none()
 }
 
-fn refused(reason: String) -> ActionHostError {
-    ActionHostError::Refused { reason }
+fn refused(reason: String) -> ActionCallError {
+    ActionCallError::Refused { reason }
 }
 
 impl Api {
@@ -144,17 +144,17 @@ impl Api {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         let action = request.target.address.action;
         if request.target.address.resource != wire::RESOURCE {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let arguments = match request.argument {
             InvokeArgument::None => Map::new(),
             InvokeArgument::Json(arguments) => arguments,
             InvokeArgument::Text(_) => {
-                return Pending::ready(Err(ActionHostError::InvalidRequest {
+                return Pending::ready(Err(ActionCallError::InvalidRequest {
                     reason: "workspace activity takes typed arguments".into(),
                 }));
             }
@@ -168,7 +168,7 @@ impl Api {
             return Pending::ready(self.follow(caller, invocation, action, arguments));
         }
         if !is_personal(&action) && !is_document_write(&action) && action != wire::OPEN {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let (answer, ran) = pending();
         self.ask(ActivityAsk::Act {
@@ -203,14 +203,14 @@ impl Api {
         invocation: InvocationId,
         action: String,
         arguments: Map<String, Value>,
-    ) -> Result<InvocationReceipt, ActionHostError> {
+    ) -> Result<InvocationReceipt, ActionCallError> {
         let mut state = self.state.lock_recover();
         if let Some(open) = state.follows.get(&invocation) {
             return if open.caller == *caller && open.action == action && open.arguments == arguments
             {
                 Ok(InvocationState::new(invocation, open.update.clone()).receipt())
             } else {
-                Err(ActionHostError::InvocationConflict)
+                Err(ActionCallError::InvocationConflict)
             };
         }
         // Only the person reading what is new makes it seen; an agent that reads the summary
@@ -263,13 +263,13 @@ impl Api {
         Some(changed)
     }
 
-    pub(super) fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
+    pub(super) fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionCallError> {
         let mut state = self.state.lock_recover();
         let open = state
             .follows
             .get_mut(id)
             .filter(|open| open.caller == *caller)
-            .ok_or(ActionHostError::UnknownInvocation)?;
+            .ok_or(ActionCallError::UnknownInvocation)?;
         if open.finished() {
             return Ok(());
         }
@@ -326,7 +326,7 @@ impl ActivityRequests {
         invocation: InvocationId,
         action: &str,
         arguments: Map<String, Value>,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         self.api
             .follow(caller, invocation, action.to_owned(), arguments)
             .map(|_| ())
@@ -438,7 +438,7 @@ impl ActivityRequests {
         &self,
         caller: &Caller,
         invocation: &InvocationId,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         self.api.cancel(caller, invocation)
     }
 }

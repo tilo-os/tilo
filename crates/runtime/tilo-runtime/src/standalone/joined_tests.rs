@@ -505,14 +505,14 @@ fn assert_changed_ownership_refused(joined: &Joined, workspace: WorkspaceId, act
 }
 
 fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: WorkspaceId, actor: &str) {
-    use crate::standalone::RuntimeActionHost;
+    use crate::standalone::RuntimeActionProvider;
     use tilo_action_broker::{
         collab_app_broker::{AppBrokerState, PublishedAction, PublishedInput, PublishedSurface},
         collab_broker::CrdtRoute,
         test_support::{Workspace, WorkspaceId, WorkspaceTree},
     };
     use tilo_actions::remote::{
-        ActionHost, ActionHostError, Caller, CatalogueQuery, InvokeRequest,
+        ActionCallError, ActionProvider, Caller, CatalogueQuery, InvokeRequest,
     };
     use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 
@@ -541,7 +541,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: WorkspaceId
         services,
     );
     let qualified = broker
-        .certified_local_action_host(admission.caller(), admission.presentation())
+        .certified_local_action_provider(admission.caller(), admission.presentation())
         .unwrap();
     broker.replace_published_surfaces_for_test(vec![PublishedSurface {
         peer_id: 7,
@@ -575,12 +575,12 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: WorkspaceId
     let owner = Caller::local_person(actor).in_workspace(workspace_id.clone());
     let session = Arc::new(crate::standalone::AdmittedRuntimeSession {
         policy_time: origin.capture().unwrap(),
-        host: qualified,
+        provider: qualified,
         admission,
         agent: None,
         projection: Some(owner.clone()),
     });
-    let host = RuntimeActionHost {
+    let host = RuntimeActionProvider {
         broker,
         workspace: "private-profile-workspace".into(),
         joined: Arc::clone(joined),
@@ -628,15 +628,15 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: WorkspaceId
             .ok()
             .flatten()
             .expect("the host answers"),
-        Err(ActionHostError::NotPermitted)
+        Err(ActionCallError::NotPermitted)
     );
     assert!(matches!(
         host.invoke(&owner, request).poll_ready(),
-        PendingPoll::Ready(Err(ActionHostError::NotPermitted))
+        PendingPoll::Ready(Err(ActionCallError::NotPermitted))
     ));
     assert!(matches!(
         host.query(&owner, CatalogueQuery::default()).poll_ready(),
-        PendingPoll::Ready(Err(ActionHostError::NotPermitted))
+        PendingPoll::Ready(Err(ActionCallError::NotPermitted))
     ));
     assert!(
         invocations.try_recv().is_err(),

@@ -5,7 +5,7 @@ use crate::member::actions::{open_row, open_row_needing};
 use tilo_actions::remote::{CatalogueProvider, workspace_provider};
 
 use super::{
-    ActionHostError, ActionKind, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
+    ActionCallError, ActionKind, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
     DEFAULT_DOCUMENTS, DocumentRoute, Worker, WorkspaceState, catalogue_keys, is_part,
     provider_workspace, record_provider, resource_of,
 };
@@ -17,7 +17,7 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         query: &CatalogueQuery,
-    ) -> Result<CataloguePage, ActionHostError> {
+    ) -> Result<CataloguePage, ActionCallError> {
         // A stranger is told nothing: the workspace's own records are for the
         // people it admits, and for the person whose device runs this service.
         // A view lookup is not a listing and carries its own governed check.
@@ -66,7 +66,7 @@ impl Worker {
             Some(provider) => {
                 let route = resource_of(provider, &cluster_id)
                     .filter(|route| routes.contains(route))
-                    .ok_or(ActionHostError::UnknownAction)?;
+                    .ok_or(ActionCallError::UnknownAction)?;
                 vec![route]
             }
             None => routes.iter().take(DEFAULT_DOCUMENTS).cloned().collect(),

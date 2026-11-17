@@ -450,7 +450,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     assert_eq!(
         triage.status,
         ReceiptStatus::Rejected {
-            error: ActionHostError::NotPermitted
+            error: ActionCallError::NotPermitted
         },
         "triage is the record's, but needs more than a commenter holds: {triage:?}"
     );
@@ -470,7 +470,7 @@ async fn filed_once(browser: &mut Browser, request: InvokeRequest) -> ReceiptSta
         let receipt = browser.invoke(attempt).await;
         match receipt.status {
             ReceiptStatus::Rejected {
-                error: ActionHostError::Unavailable { .. },
+                error: ActionCallError::Unavailable { .. },
             } if Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -670,7 +670,7 @@ async fn owner_feedback(
     browser: &mut Browser,
     submission: &Submission,
     include_report: bool,
-) -> Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionHostError> {
+) -> Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionCallError> {
     owner_answer(browser, submission, include_report, None).await
 }
 
@@ -679,7 +679,7 @@ async fn owner_answer(
     submission: &Submission,
     include_report: bool,
     review: Option<String>,
-) -> Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionHostError> {
+) -> Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionCallError> {
     use tilo_actions::remote::feedback::{FeedbackDestination, FeedbackQuery};
     browser.correlation = browser.correlation.checked_add(1).unwrap();
     let correlation = browser.correlation;

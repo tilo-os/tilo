@@ -10,13 +10,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLog,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationLog,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION;
-use tilo_server::{ActionHostServer, Envelope, ServerClient, WorkspaceId};
+use tilo_server::{ActionProviderServer, Envelope, ServerClient, WorkspaceId};
 use tilo_server_protocol::delegation::{DelegateScope, Delegation};
 use tilo_server_protocol::refusal::Refusal;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -235,7 +235,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
             host,
             &[WS],
             &[a.device_pubkey()],
-            Arc::new(ActionHostServer::new(SharedHost(Arc::clone(&actions)))),
+            Arc::new(ActionProviderServer::new(SharedHost(Arc::clone(&actions)))),
         ))
         .await;
         assert!(server.server.handle().advertised_services().app_serving);
@@ -300,7 +300,7 @@ async fn removed_member_session_ends_without_serving_an_action() {
         host,
         &[WS],
         &[a.device_pubkey(), b.device_pubkey()],
-        Arc::new(ActionHostServer::new(SharedHost(Arc::clone(&actions)))),
+        Arc::new(ActionProviderServer::new(SharedHost(Arc::clone(&actions)))),
     ))
     .await;
     let addr = server.server.node_addr();
@@ -395,7 +395,7 @@ async fn expired_agent_delegation_cannot_invoke_host() {
         host,
         &[ws],
         &[agent.device_pubkey()],
-        Arc::new(ActionHostServer::new(SharedHost(Arc::clone(&actions)))),
+        Arc::new(ActionProviderServer::new(SharedHost(Arc::clone(&actions)))),
     ))
     .await;
     let to_host = |frame| Envelope::RemoteAction {
@@ -512,12 +512,12 @@ struct RecordingHost {
 #[derive(Clone)]
 struct SharedHost(Arc<RecordingHost>);
 
-impl ActionHost for SharedHost {
+impl ActionProvider for SharedHost {
     fn query(
         &self,
         _caller: &Caller,
         _query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(CataloguePage::default()))
     }
 
@@ -525,7 +525,7 @@ impl ActionHost for SharedHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.0.callers.lock().unwrap().push(caller.clone());
         let admitted = self
             .0
@@ -558,8 +558,8 @@ impl ActionHost for SharedHost {
         &self,
         _caller: &Caller,
         _id: &InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(Err(ActionHostError::NotCancellable {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionCallError::NotCancellable {
             reason: "finished".into(),
         }))
     }

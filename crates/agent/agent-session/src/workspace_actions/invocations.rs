@@ -39,7 +39,7 @@ use tilo_actions::remote::workspace_invocations::{
     Invocation, InvocationBy, InvocationChange, InvocationStatus, Invocations, InvocationsQuery,
 };
 use tilo_actions::remote::{
-    ActionHostError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
+    ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
     ReceiptStatus, RemoteActionMessage, pending,
 };
 use tilo_actions::{ActionOutput, EffectReceiptStatus, InvocationId, InvocationUpdate};
@@ -636,7 +636,7 @@ impl WorkspaceActions {
             Ok(query) => query,
             Err(error) => {
                 return Pending::ready(receipt(ReceiptStatus::Rejected {
-                    error: ActionHostError::InvalidRequest {
+                    error: ActionCallError::InvalidRequest {
                         reason: format!("a listing of runs takes {{limit, cursor}}: {error}"),
                     },
                 }));
@@ -650,7 +650,7 @@ impl WorkspaceActions {
             done,
         };
         if let Err(Job::Invocations { done, .. }) = self.submit(job) {
-            done.complete(Err(ActionHostError::Unavailable {
+            done.complete(Err(ActionCallError::Unavailable {
                 reason: "the host's workspace actions are not running".into(),
             }));
         }
@@ -698,9 +698,9 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         query: &InvocationsQuery,
-    ) -> Result<Invocations, ActionHostError> {
+    ) -> Result<Invocations, ActionCallError> {
         if !self.admits_member(workspace_id, caller) {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let state = self.refresh(workspace_id, Needs::Workspace)?;
         let routes: Vec<DocumentRoute> = match state.workspace.clone() {

@@ -4,7 +4,7 @@
 //! A request is one signed [`SignedDeviceAction`] on a connection of its
 //! own, ALPN [`ACTIONS_ALPN`], and its answer is the [`RemoteActionMessage`]
 //! the device's one dispatcher
-//! ([`ActionHost`](tilo_actions::remote::ActionHost): the broker, or a
+//! ([`ActionProvider`](tilo_actions::remote::ActionProvider): the broker, or a
 //! runtime's action host) gives, on the same bi-stream. The stream is the
 //! correlation: a request in, one answer out, then the stream finishes, so
 //! nothing has to be matched up afterwards and a lost answer is a lost
@@ -29,7 +29,7 @@
 //! get, and the dispatcher's own policy
 //! ([`tilo_action_policy`](tilo_actions::remote)) is the only policy check.
 //! Nothing is queued: a device that cannot be reached answers
-//! [`ActionHostError::Unavailable`] at once, and the caller decides what to do
+//! [`ActionCallError::Unavailable`] at once, and the caller decides what to do
 //! about it. Nothing is remembered here either: the dispatcher's durable
 //! journal is the one log, keyed by invocation, so a retried request
 //! reports the original invocation.
@@ -51,7 +51,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tilo_action_policy::{Actor, MemberId};
 use tilo_actions::remote::{
-    ActionHost, Caller, InvocationReceipt, InvocationState, ReceiptStatus, RemoteActionFrame,
+    ActionProvider, Caller, InvocationReceipt, InvocationState, ReceiptStatus, RemoteActionFrame,
     RemoteActionMessage, UpdateMark,
 };
 use tilo_lock::MutexRecover as _;
@@ -190,19 +190,19 @@ impl Workspaces for crate::owner::NativeWorkspaceOwner {
 pub struct NoActions;
 
 /// What [`NoActions`] answers every request with.
-fn not_served() -> tilo_actions::remote::ActionHostError {
-    tilo_actions::remote::ActionHostError::Unavailable {
+fn not_served() -> tilo_actions::remote::ActionCallError {
+    tilo_actions::remote::ActionCallError::Unavailable {
         reason: "this device answers no app actions on the devices' action service".into(),
     }
 }
 
-impl ActionHost for NoActions {
+impl ActionProvider for NoActions {
     fn query(
         &self,
         _caller: &Caller,
         _query: tilo_actions::remote::CatalogueQuery,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
     > {
         tilo_actions::remote::Pending::ready(Err(not_served()))
     }
@@ -212,7 +212,7 @@ impl ActionHost for NoActions {
         _caller: &Caller,
         _request: tilo_actions::remote::InvokeRequest,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
         tilo_actions::remote::Pending::ready(Err(not_served()))
     }
@@ -229,7 +229,7 @@ impl ActionHost for NoActions {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
         tilo_actions::remote::Pending::ready(Err(not_served()))
     }
 }
@@ -269,7 +269,7 @@ struct Inner {
     /// here ([`Workspaces`]).
     workspaces: Option<Arc<dyn Workspaces>>,
     /// The one place a request is handed to, wherever it came from.
-    dispatcher: Arc<dyn ActionHost + Send + Sync>,
+    dispatcher: Arc<dyn ActionProvider + Send + Sync>,
     /// What this device says of itself when another device offers it work.
     offering: Mutex<Option<Arc<dyn Offering>>>,
     replay: Mutex<ActionReplayWindow>,
@@ -304,7 +304,7 @@ impl ActionService {
     #[must_use]
     pub fn new(
         device: impl DeviceSigner + 'static,
-        dispatcher: Arc<dyn ActionHost + Send + Sync>,
+        dispatcher: Arc<dyn ActionProvider + Send + Sync>,
     ) -> Self {
         Self::with_bounds(device, dispatcher, Bounds::default())
     }
@@ -313,7 +313,7 @@ impl ActionService {
     #[must_use]
     pub fn with_bounds(
         device: impl DeviceSigner + 'static,
-        dispatcher: Arc<dyn ActionHost + Send + Sync>,
+        dispatcher: Arc<dyn ActionProvider + Send + Sync>,
         bounds: Bounds,
     ) -> Self {
         Self(Arc::new(Inner {
@@ -339,7 +339,7 @@ impl ActionService {
     #[must_use]
     pub fn over(
         device: impl DeviceSigner + 'static,
-        dispatcher: Arc<dyn ActionHost + Send + Sync>,
+        dispatcher: Arc<dyn ActionProvider + Send + Sync>,
         workspaces: Arc<dyn Workspaces>,
     ) -> Self {
         Self(Arc::new(Inner {
@@ -435,7 +435,7 @@ impl ActionService {
     }
 
     /// A host for another device's actions in `workspace`, asked as this
-    /// device: every callers' [`ActionHost`] methods work through it as
+    /// device: every callers' [`ActionProvider`] methods work through it as
     /// through a local host.
     #[must_use]
     pub fn remote(
@@ -608,20 +608,20 @@ impl ActionService {
         &self,
         remote: [u8; 32],
         signed: &SignedDeviceAction,
-    ) -> Result<(Caller, String), tilo_actions::remote::ActionHostError> {
-        use tilo_actions::remote::ActionHostError;
+    ) -> Result<(Caller, String), tilo_actions::remote::ActionCallError> {
+        use tilo_actions::remote::ActionCallError;
         let action = signed.action();
         let source = action.source;
         // A device asks as itself and nobody else: the connection already
         // says which device is there.
         if remote != source {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         if signed.verify(&source).is_err() {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         if action.target != self.device() {
-            return Err(ActionHostError::Refused {
+            return Err(ActionCallError::Refused {
                 reason: "the request names another device".into(),
             });
         }
@@ -629,7 +629,7 @@ impl ActionService {
             .replay
             .lock_recover()
             .admit(signed, now_ns())
-            .map_err(|error| ActionHostError::Refused {
+            .map_err(|error| ActionCallError::Refused {
                 reason: error.to_string(),
             })?;
         let now = tilo_clock::wall();
@@ -643,11 +643,11 @@ impl ActionService {
                 (authority, certificate)
             })
             .await
-            .ok_or_else(|| ActionHostError::Refused {
+            .ok_or_else(|| ActionCallError::Refused {
                 reason: "this device does not hold that workspace".into(),
             })?;
         let authority = authority.map_err(|error| refusal_of(&error))?;
-        let certificate = certificate.ok_or(ActionHostError::NotPermitted)?;
+        let certificate = certificate.ok_or(ActionCallError::NotPermitted)?;
         // The device is its own actor when its person delegated it: an
         // agent is the agent, a bot the bot, never the person.
         let caller = match &authority.acting.by {
@@ -673,7 +673,7 @@ impl ActionService {
         caller: &Caller,
         request: &RemoteActionMessage,
     ) -> Option<RemoteActionMessage> {
-        use tilo_actions::remote::ActionHostError;
+        use tilo_actions::remote::ActionCallError;
         let dispatcher = &self.0.dispatcher;
         match request {
             RemoteActionMessage::CatalogueRequest { correlation, query } => {
@@ -720,7 +720,7 @@ impl ActionService {
             // for the caller to wait on.
             other if other.is_request() => tilo_actions::remote::refuse(
                 other,
-                ActionHostError::Unavailable {
+                ActionCallError::Unavailable {
                     reason: "this device does not answer that request".into(),
                 },
             ),
@@ -775,7 +775,7 @@ impl ActionService {
     }
 
     /// Spend one of `caller`'s changes, or say the caller has none left.
-    fn spend(&self, caller: &Caller) -> Result<(), tilo_actions::remote::ActionHostError> {
+    fn spend(&self, caller: &Caller) -> Result<(), tilo_actions::remote::ActionCallError> {
         let Some(person) = caller.user_public_key().copied() else {
             return Ok(());
         };
@@ -794,7 +794,7 @@ impl ActionService {
         if spent {
             Ok(())
         } else {
-            Err(tilo_actions::remote::ActionHostError::Refused {
+            Err(tilo_actions::remote::ActionCallError::Refused {
                 reason: "too many changes; slow down".into(),
             })
         }
@@ -907,23 +907,23 @@ impl Bucket {
 
 /// Why the workspace's roster leaves a device without authority, as the
 /// refusal its caller reads.
-fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionHostError {
+fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionCallError {
     use crate::MembershipError;
-    use tilo_actions::remote::ActionHostError;
+    use tilo_actions::remote::ActionCallError;
     match error {
-        MembershipError::Revoked => ActionHostError::Refused {
+        MembershipError::Revoked => ActionCallError::Refused {
             reason: "the device is revoked".into(),
         },
-        MembershipError::NoMembership => ActionHostError::Refused {
+        MembershipError::NoMembership => ActionCallError::Refused {
             reason: "the person is not a member of this workspace".into(),
         },
-        MembershipError::UnreadableAccess => ActionHostError::Refused {
+        MembershipError::UnreadableAccess => ActionCallError::Refused {
             reason: "your access to this workspace could not be read".into(),
         },
-        MembershipError::Delegate(_) => ActionHostError::Refused {
+        MembershipError::Delegate(_) => ActionCallError::Refused {
             reason: "the device's delegation is expired or withdrawn".into(),
         },
-        MembershipError::Certificate(_) => ActionHostError::Refused {
+        MembershipError::Certificate(_) => ActionCallError::Refused {
             reason: "the device's certificate has run out".into(),
         },
         MembershipError::UnknownDevice
@@ -932,19 +932,19 @@ fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionHos
         | MembershipError::CertificateMismatch
         | MembershipError::GovernanceMissing
         | MembershipError::RevocationRoot
-        | MembershipError::Revocation(_) => ActionHostError::NotPermitted,
+        | MembershipError::Revocation(_) => ActionCallError::NotPermitted,
     }
 }
 
 /// The answer a dispatcher's pending gives, or the refusal of one it
 /// abandoned.
 async fn await_answer<T: Send + 'static>(
-    answer: tilo_actions::remote::Pending<Result<T, tilo_actions::remote::ActionHostError>>,
-) -> Result<T, tilo_actions::remote::ActionHostError> {
+    answer: tilo_actions::remote::Pending<Result<T, tilo_actions::remote::ActionCallError>>,
+) -> Result<T, tilo_actions::remote::ActionCallError> {
     match answer.await {
         Some(result) => result,
-        None => Err(tilo_actions::remote::ActionHostError::Unavailable {
-            reason: "the device's action host abandoned the request".into(),
+        None => Err(tilo_actions::remote::ActionCallError::Unavailable {
+            reason: "the device's action provider abandoned the request".into(),
         }),
     }
 }
@@ -954,7 +954,7 @@ fn away() -> Answer {
     Answer::away()
 }
 
-/// One other device, as an [`ActionHost`]: its actions through the same
+/// One other device, as an [`ActionProvider`]: its actions through the same
 /// trait a local host's are used through.
 #[derive(Clone)]
 pub struct RemoteDevice(Arc<Device>);
@@ -992,10 +992,10 @@ impl RemoteDevice {
     fn ask<T: Send + 'static>(
         &self,
         message: RemoteActionMessage,
-        answer: impl FnOnce(RemoteActionMessage) -> Result<T, tilo_actions::remote::ActionHostError>
+        answer: impl FnOnce(RemoteActionMessage) -> Result<T, tilo_actions::remote::ActionCallError>
         + Send
         + 'static,
-    ) -> tilo_actions::remote::Pending<Result<T, tilo_actions::remote::ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<T, tilo_actions::remote::ActionCallError>> {
         let (completer, result) = tilo_actions::remote::pending();
         let device = Arc::clone(&self.0);
         self.0.runtime.spawn(async move {
@@ -1014,7 +1014,7 @@ impl RemoteDevice {
         mut request: tilo_actions::remote::InvokeRequest,
         follow_for: Duration,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionCallError>,
     > {
         let now = tilo_clock::now();
         let budget = FollowBudget {
@@ -1024,7 +1024,7 @@ impl RemoteDevice {
         let invocation = request.invocation;
         request.wait_ms = Some(CHANGE_WAIT_MS);
         let (done, answer) = tilo_actions::remote::pending();
-        let host = Arc::clone(&self);
+        let provider = Arc::clone(&self);
         self.ask(
             RemoteActionMessage::Invoke(request),
             |answer| match answer {
@@ -1035,7 +1035,13 @@ impl RemoteDevice {
         .then(move |receipt| match receipt {
             Some(Ok(receipt)) => match settled_receipt(invocation, receipt.status) {
                 Ok(Some(update)) => done.complete(Ok(update)),
-                Ok(None) => follow(&host, invocation, Some(UpdateMark::Accepted), budget, done),
+                Ok(None) => follow(
+                    &provider,
+                    invocation,
+                    Some(UpdateMark::Accepted),
+                    budget,
+                    done,
+                ),
                 Err(error) => done.complete(Err(error)),
             },
             Some(Err(error)) => done.complete(Err(error)),
@@ -1047,7 +1053,7 @@ impl RemoteDevice {
 
 impl Device {
     /// The connection to this device, opened once and kept while it lasts.
-    async fn connection(&self) -> Result<Connection, tilo_actions::remote::ActionHostError> {
+    async fn connection(&self) -> Result<Connection, tilo_actions::remote::ActionCallError> {
         if let Some(open) = self
             .connection
             .lock_recover()
@@ -1071,7 +1077,7 @@ impl Device {
     async fn request(
         &self,
         message: RemoteActionMessage,
-    ) -> Result<RemoteActionMessage, tilo_actions::remote::ActionHostError> {
+    ) -> Result<RemoteActionMessage, tilo_actions::remote::ActionCallError> {
         let signed = SignedDeviceAction::sign(
             &DeviceAction {
                 workspace: self.workspace.clone(),
@@ -1131,7 +1137,7 @@ impl Device {
     async fn exchange(
         &self,
         bytes: &[u8],
-    ) -> Result<Vec<u8>, tilo_actions::remote::ActionHostError> {
+    ) -> Result<Vec<u8>, tilo_actions::remote::ActionCallError> {
         let connection = self.connection().await?;
         let (mut send, mut recv) = connection
             .open_bi()
@@ -1150,25 +1156,25 @@ impl Device {
 }
 
 /// What a peer did not answer, as the caller reads it.
-fn unavailable(reason: &str) -> tilo_actions::remote::ActionHostError {
-    tilo_actions::remote::ActionHostError::Unavailable {
+fn unavailable(reason: &str) -> tilo_actions::remote::ActionCallError {
+    tilo_actions::remote::ActionCallError::Unavailable {
         reason: reason.to_owned(),
     }
 }
 
-fn unexpected() -> tilo_actions::remote::ActionHostError {
+fn unexpected() -> tilo_actions::remote::ActionCallError {
     unavailable("the device answered with an unexpected message")
 }
 
-const fn unanswered() -> tilo_actions::remote::ActionHostError {
-    tilo_actions::remote::ActionHostError::Unanswered
+const fn unanswered() -> tilo_actions::remote::ActionCallError {
+    tilo_actions::remote::ActionCallError::Unanswered
 }
 
 /// The terminal update a receipt amounts to; `None` while it runs.
 fn settled_receipt(
     invocation: tilo_actions::InvocationId,
     status: ReceiptStatus,
-) -> Result<Option<tilo_actions::InvocationUpdate>, tilo_actions::remote::ActionHostError> {
+) -> Result<Option<tilo_actions::InvocationUpdate>, tilo_actions::remote::ActionCallError> {
     use tilo_actions::InvocationUpdate;
     match status {
         ReceiptStatus::Accepted => Ok(None),
@@ -1199,12 +1205,12 @@ const MAX_FOLLOW_ROUNDS: u32 = 64;
 /// Ask the device for `invocation`'s next move past `seen`, and keep asking
 /// until it settles or `budget` runs out.
 fn follow(
-    host: &Arc<RemoteDevice>,
+    provider: &Arc<RemoteDevice>,
     invocation: tilo_actions::InvocationId,
     seen: Option<UpdateMark>,
     budget: FollowBudget,
     done: tilo_actions::remote::Completer<
-        Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionCallError>,
     >,
 ) {
     if budget.rounds == 0 || tilo_clock::now() >= budget.until {
@@ -1217,30 +1223,31 @@ fn follow(
         rounds: budget.rounds.saturating_sub(1),
         ..budget
     };
-    let again = Arc::clone(host);
-    host.ask(
-        RemoteActionMessage::Observe {
-            invocation,
-            wait_ms: Some(CHANGE_WAIT_MS),
-            seen,
-        },
-        |answer| match answer {
-            RemoteActionMessage::Update { state, .. } => Ok(state),
-            _ => Err(unexpected()),
-        },
-    )
-    .then(move |answer| match answer {
-        Some(Ok(Some(state))) if state.is_terminal() => done.complete(Ok(state.update)),
-        Some(Ok(Some(state))) => {
-            let seen = Some(UpdateMark::of(&state.update));
-            follow(&again, invocation, seen, next, done);
-        }
-        Some(Ok(None)) => done.complete(Err(
-            tilo_actions::remote::ActionHostError::UnknownInvocation,
-        )),
-        Some(Err(error)) => done.complete(Err(error)),
-        None => done.complete(Err(unanswered())),
-    });
+    let again = Arc::clone(provider);
+    provider
+        .ask(
+            RemoteActionMessage::Observe {
+                invocation,
+                wait_ms: Some(CHANGE_WAIT_MS),
+                seen,
+            },
+            |answer| match answer {
+                RemoteActionMessage::Update { state, .. } => Ok(state),
+                _ => Err(unexpected()),
+            },
+        )
+        .then(move |answer| match answer {
+            Some(Ok(Some(state))) if state.is_terminal() => done.complete(Ok(state.update)),
+            Some(Ok(Some(state))) => {
+                let seen = Some(UpdateMark::of(&state.update));
+                follow(&again, invocation, seen, next, done);
+            }
+            Some(Ok(None)) => done.complete(Err(
+                tilo_actions::remote::ActionCallError::UnknownInvocation,
+            )),
+            Some(Err(error)) => done.complete(Err(error)),
+            None => done.complete(Err(unanswered())),
+        });
 }
 
 /// What following an invocation on another device knows of it.
@@ -1295,13 +1302,13 @@ impl Following {
     }
 }
 
-impl ActionHost for RemoteDevice {
+impl ActionProvider for RemoteDevice {
     fn query(
         &self,
         _caller: &Caller,
         query: tilo_actions::remote::CatalogueQuery,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
     > {
         let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
         self.ask(
@@ -1318,7 +1325,7 @@ impl ActionHost for RemoteDevice {
         _caller: &Caller,
         request: tilo_actions::remote::InvokeRequest,
     ) -> tilo_actions::remote::Pending<
-        Result<InvocationReceipt, tilo_actions::remote::ActionHostError>,
+        Result<InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
         self.ask(
             RemoteActionMessage::Invoke(request),
@@ -1410,7 +1417,7 @@ impl ActionHost for RemoteDevice {
         &self,
         _caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
         self.ask(
             RemoteActionMessage::Cancel { invocation: *id },
             |answer| match answer {
@@ -1444,7 +1451,7 @@ async fn read_frame(recv: &mut RecvStream) -> Result<Option<Vec<u8>>, String> {
 mod refusal_tests {
     use super::refusal_of;
     use crate::MembershipError;
-    use tilo_actions::remote::ActionHostError;
+    use tilo_actions::remote::ActionCallError;
 
     /// A person whose access rows do not read back reads that on the action
     /// they took, instead of being told they are no member.
@@ -1452,7 +1459,7 @@ mod refusal_tests {
     fn an_unreadable_access_row_is_refused_with_that_reason() {
         assert_eq!(
             refusal_of(&MembershipError::UnreadableAccess),
-            ActionHostError::Refused {
+            ActionCallError::Refused {
                 reason: "your access to this workspace could not be read".into(),
             }
         );

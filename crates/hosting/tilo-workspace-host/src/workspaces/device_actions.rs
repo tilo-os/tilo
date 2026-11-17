@@ -25,7 +25,7 @@ use std::sync::Arc;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::offer::{Answer, Power, Query, Route, Work};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLog,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationLog,
     InvocationReceipt, InvocationState, InvokeRequest, Pending, Reservation,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
@@ -72,7 +72,7 @@ pub trait HostJobs: Send + Sync {
         work: &Work,
         requester: [u8; 32],
         request: InvokeRequest,
-    ) -> Pending<Result<ActionOutput, ActionHostError>>;
+    ) -> Pending<Result<ActionOutput, ActionCallError>>;
 
     /// Stop the job running here for `invocation`, when it still runs: what
     /// the device that asked for it gets when it stops following it.
@@ -300,18 +300,18 @@ impl Offering for HostOffering {
 /// caller learns at once instead of waiting.
 struct HostActions(Arc<HostWork>);
 
-fn not_served() -> ActionHostError {
-    ActionHostError::Unavailable {
+fn not_served() -> ActionCallError {
+    ActionCallError::Unavailable {
         reason: "this host runs only the work it was offered on the device action service".into(),
     }
 }
 
-impl ActionHost for HostActions {
+impl ActionProvider for HostActions {
     fn query(
         &self,
         _caller: &Caller,
         _query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Err(not_served()))
     }
 
@@ -319,14 +319,14 @@ impl ActionHost for HostActions {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let Some(requester) = caller.device_public_key().copied() else {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         };
         let Some((workspace, app)) =
             tilo_actions::remote::application_provider(&request.target.provider)
         else {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         };
         let route = Route::new(
             app,
@@ -340,7 +340,7 @@ impl ActionHost for HostActions {
             .0
             .offered_work(requester, request.invocation, workspace, &route)
         else {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         };
         let Some(jobs) = self.0.jobs.read_recover().clone() else {
             return Pending::ready(Err(not_served()));
@@ -357,7 +357,7 @@ impl ActionHost for HostActions {
             // action decides who may run it here, whatever kind of
             // member their device belongs to.
             if !shared.permits(requester, &workspace, &route).await {
-                completer.complete(Err(ActionHostError::NotPermitted));
+                completer.complete(Err(ActionCallError::NotPermitted));
                 return;
             }
             let invocation = request.invocation;
@@ -373,7 +373,7 @@ impl ActionHost for HostActions {
                     Ok(Reservation::Admitted) => Some(
                         log.get(&caller, &invocation)
                             .map(InvocationState::receipt)
-                            .ok_or(ActionHostError::UnknownInvocation),
+                            .ok_or(ActionCallError::UnknownInvocation),
                     ),
                     Ok(Reservation::Reserved) => None,
                 }
@@ -385,7 +385,7 @@ impl ActionHost for HostActions {
             let output = jobs
                 .run(&workspace, &work, requester, request)
                 .await
-                .unwrap_or(Err(ActionHostError::Unavailable {
+                .unwrap_or(Err(ActionCallError::Unavailable {
                     reason: "this host stopped following the job".into(),
                 }));
             let update = match output {
@@ -412,13 +412,13 @@ impl ActionHost for HostActions {
         self.0.log.lock_recover().get(caller, id).cloned()
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         let Some(jobs) = self.0.jobs.read_recover().clone() else {
             return Pending::ready(Err(not_served()));
         };
         match self.0.log.lock_recover().get(caller, id) {
             Some(state) if state.is_terminal() => {
-                Pending::ready(Err(ActionHostError::NotCancellable {
+                Pending::ready(Err(ActionCallError::NotCancellable {
                     reason: "the job already finished here".into(),
                 }))
             }
@@ -426,7 +426,7 @@ impl ActionHost for HostActions {
                 jobs.cancel(*id);
                 Pending::ready(Ok(()))
             }
-            None => Pending::ready(Err(ActionHostError::UnknownInvocation)),
+            None => Pending::ready(Err(ActionCallError::UnknownInvocation)),
         }
     }
 }

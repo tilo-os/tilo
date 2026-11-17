@@ -5,7 +5,7 @@
 //! conversation, and the pause and stop switches its member obeys
 //! before every step. [`AgentSupervisor`] holds every approved delegation
 //! (Cloud's grant offers) and every running agent, and answers the
-//! vocabulary in `tilo_server_protocol::agents` through [`ActionHost`], so a
+//! vocabulary in `tilo_server_protocol::agents` through [`ActionProvider`], so a
 //! browser steers agents over the same remote-action frames it uses for
 //! apps. Only devices of the delegating user may steer; an agent may not.
 
@@ -17,7 +17,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
     CatalogueRow, InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest,
     Pending,
 };
@@ -184,11 +184,11 @@ pub struct AgentControl {
 }
 
 /// The person's host an agent asks before an action that asks first
-/// ([`tilo_actions::remote::ActionHost::confirm`]): it puts the question to
+/// ([`tilo_actions::remote::ActionProvider::confirm`]): it puts the question to
 /// the person on their own device and answers with their
 /// [`Confirmation::Approved`](tilo_actions::remote::Confirmation::Approved),
 /// or refuses.
-pub type Approver = Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>;
+pub type Approver = Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>;
 
 impl AgentControl {
     #[must_use]
@@ -1313,7 +1313,7 @@ impl AgentSupervisor {
         caller.acting().is_person() && caller.user_public_key() == Some(&self.user_public_key)
     }
 
-    fn run(&self, request: &InvokeRequest) -> Result<ActionOutput, ActionHostError> {
+    fn run(&self, request: &InvokeRequest) -> Result<ActionOutput, ActionCallError> {
         let address = &request.target.address;
         let value = if address.resource == SUPERVISOR_RESOURCE {
             match address.action.as_str() {
@@ -1353,13 +1353,13 @@ impl AgentSupervisor {
                         .map_err(refused)?;
                     serde_json::json!({"grant": id, "pairingCode": pairing_code})
                 }
-                _ => return Err(ActionHostError::UnknownAction),
+                _ => return Err(ActionCallError::UnknownAction),
             }
         } else {
             let id = address
                 .resource
                 .strip_prefix(tilo_server_protocol::agents::AGENT_RESOURCE_PREFIX)
-                .ok_or(ActionHostError::UnknownAction)?;
+                .ok_or(ActionCallError::UnknownAction)?;
             if address.action == REVOKE_ACTION {
                 self.revoke(id)
                     .map_err(|error| refused(error.to_string()))?;
@@ -1368,7 +1368,7 @@ impl AgentSupervisor {
                     resources: Vec::new(),
                 });
             }
-            let control = self.control(id).ok_or(ActionHostError::UnknownAction)?;
+            let control = self.control(id).ok_or(ActionCallError::UnknownAction)?;
             match address.action.as_str() {
                 MESSAGE_ACTION => {
                     let InvokeArgument::Text(text) = &request.argument else {
@@ -1404,7 +1404,7 @@ impl AgentSupervisor {
                         .map_err(|error| refused(error.to_string()))?;
                     serde_json::json!({})
                 }
-                _ => return Err(ActionHostError::UnknownAction),
+                _ => return Err(ActionCallError::UnknownAction),
             }
         };
         Ok(ActionOutput {
@@ -1546,27 +1546,27 @@ fn row(
     }
 }
 
-fn invalid(reason: &str) -> ActionHostError {
-    ActionHostError::InvalidRequest {
+fn invalid(reason: &str) -> ActionCallError {
+    ActionCallError::InvalidRequest {
         reason: reason.into(),
     }
 }
 
-fn refused(reason: String) -> ActionHostError {
-    ActionHostError::Refused { reason }
+fn refused(reason: String) -> ActionCallError {
+    ActionCallError::Refused { reason }
 }
 
-/// [`ActionHost`] over a shared [`AgentSupervisor`]; wrap it in
-/// `tilo_server::ActionHostServer` to answer browsers through the host.
+/// [`ActionProvider`] over a shared [`AgentSupervisor`]; wrap it in
+/// `tilo_server::ActionProviderServer` to answer browsers through the host.
 #[derive(Clone)]
 pub struct SupervisorHost(pub Arc<AgentSupervisor>);
 
-impl ActionHost for SupervisorHost {
+impl ActionProvider for SupervisorHost {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         if !self.0.authorized(caller) {
             return Pending::ready(Ok(CataloguePage::from_rows("0".into(), Vec::new(), &query)));
         }
@@ -1581,12 +1581,12 @@ impl ActionHost for SupervisorHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
         }
         if !self.0.authorized(caller) {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let invocation = request.invocation;
         let supervisor = &self.0;
@@ -1611,11 +1611,11 @@ impl ActionHost for SupervisorHost {
         &self,
         caller: &Caller,
         id: &InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         tilo_actions::remote::Pending::ready(if self.0.log().get(caller, id).is_none() {
-            Err(ActionHostError::UnknownInvocation)
+            Err(ActionCallError::UnknownInvocation)
         } else {
-            Err(ActionHostError::NotCancellable {
+            Err(ActionCallError::NotCancellable {
                 reason: "agent control completes at once".into(),
             })
         })
@@ -1714,7 +1714,7 @@ pub(crate) mod tests {
         host: &SupervisorHost,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Result<serde_json::Value, ActionHostError> {
+    ) -> Result<serde_json::Value, ActionCallError> {
         let receipt = match host.invoke(caller, request).poll_ready() {
             PendingPoll::Ready(receipt) => Some(receipt),
             _ => None,
@@ -1838,7 +1838,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             invoke(&host, &caller, message("something else")),
-            Err(ActionHostError::InvocationConflict),
+            Err(ActionCallError::InvocationConflict),
             "an id names one request"
         );
         let other = Caller::authenticated(
@@ -1847,7 +1847,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             invoke(&host, &other, message("sum the sheet")),
-            Err(ActionHostError::InvocationConflict),
+            Err(ActionCallError::InvocationConflict),
             "and one caller"
         );
         let control = host.0.control("writer").unwrap();
@@ -1877,7 +1877,7 @@ pub(crate) mod tests {
             ),
         );
         assert!(
-            matches!(refused, Err(ActionHostError::Refused { ref reason }) if reason == "the agent has no such task"),
+            matches!(refused, Err(ActionCallError::Refused { ref reason }) if reason == "the agent has no such task"),
             "{refused:?}"
         );
     }

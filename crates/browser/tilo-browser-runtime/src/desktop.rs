@@ -16,7 +16,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::ActionHost as _;
+use tilo_actions::remote::ActionProvider as _;
 use tilo_app::linked_accounts::ActionAnswer;
 use tilo_desktop_model::{IdMinter, Layout, Tab, TabId, TileContent, Workspace};
 use tilo_desktop_surface::navigation::Application;
@@ -90,15 +90,15 @@ pub(crate) fn may_open(
     permissions: &ui::permissions::PermissionContext,
     app: &str,
     existing: bool,
-) -> Result<(), tilo_actions::remote::ActionHostError> {
-    known_application(app).ok_or(tilo_actions::remote::ActionHostError::UnknownAction)?;
+) -> Result<(), tilo_actions::remote::ActionCallError> {
+    known_application(app).ok_or(tilo_actions::remote::ActionCallError::UnknownAction)?;
     let kind = if existing {
         ui::permissions::ActionKind::Read
     } else {
         ui::permissions::ActionKind::Undoable
     };
     if !permissions.check(&ui::permissions::PermissionScope::app(app, kind)) {
-        return Err(tilo_actions::remote::ActionHostError::NotPermitted);
+        return Err(tilo_actions::remote::ActionCallError::NotPermitted);
     }
     Ok(())
 }

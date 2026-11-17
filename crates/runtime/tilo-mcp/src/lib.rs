@@ -43,7 +43,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use step::{DeclaredInvocation, STEP, STEP_INVOCATION, SURFACE_STRUCTURED};
 use tilo_actions::remote::{
-    ActionHost, Caller, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow,
+    ActionProvider, Caller, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow,
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_lock::MutexRecover as _;
@@ -252,7 +252,7 @@ pub(crate) use failure::Failure;
 /// answer is made of it ([`From<BridgeError> for String`]).
 #[derive(Debug)]
 enum BridgeError {
-    Host(tilo_actions::remote::ActionHostError),
+    Host(tilo_actions::remote::ActionCallError),
     Bridge(String),
 }
 
@@ -580,7 +580,7 @@ pub fn agent_label(agent: &str) -> String {
     }
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// An MCP client of `actor`'s on this device, in `workspace`. The client is
     /// an agent acting for the person ([`agent_id`]): what it does is the
     /// agent's, for them, within what both the person and the delegation a
@@ -1806,7 +1806,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         };
         let detail = args.detail.unwrap_or_else(|| self.detail());
         let mut page = match self.ask(query.clone()).await {
-            Err(BridgeError::Host(tilo_actions::remote::ActionHostError::StaleRevision))
+            Err(BridgeError::Host(tilo_actions::remote::ActionCallError::StaleRevision))
                 if !query.revision.as_deref().unwrap_or_default().is_empty() =>
             {
                 // A directory moves on every change the app publishes, and
@@ -2208,7 +2208,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Err(error) => {
                 let moved = matches!(
                     error.host,
-                    Some(tilo_actions::remote::ActionHostError::StaleRevision)
+                    Some(tilo_actions::remote::ActionCallError::StaleRevision)
                 );
                 match self
                     .maybe_retry_stale(&mut a, named.as_deref(), moved)
@@ -2303,7 +2303,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         {
             // Nothing ran: the instance may have gone since this session
             // saw it, or the resource be named by its kind or label.
-            Err(BridgeError::Host(tilo_actions::remote::ActionHostError::UnknownAction)) => {
+            Err(BridgeError::Host(tilo_actions::remote::ActionCallError::UnknownAction)) => {
                 if let Ok(peer) = target.provider.parse::<u64>() {
                     self.addressed(Some(peer), None, false).await?;
                 }
@@ -2323,7 +2323,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     .await
                 {
                     Err(BridgeError::Host(
-                        tilo_actions::remote::ActionHostError::UnknownAction,
+                        tilo_actions::remote::ActionCallError::UnknownAction,
                     )) => {
                         return Err(self.not_offered(&target).await?.into());
                     }
@@ -2564,7 +2564,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             && matches!(
                 &started,
                 Err(BridgeError::Host(error))
-                    if *error == tilo_actions::remote::ActionHostError::StaleRevision
+                    if *error == tilo_actions::remote::ActionCallError::StaleRevision
                         || error.needs_revision()
             )
         {

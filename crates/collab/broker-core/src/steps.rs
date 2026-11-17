@@ -4,13 +4,13 @@
 //! A host serves two kinds of action: the ones its apps publish, and the ones the host itself
 //! runs for the person ([`HostStepServices`]) — pairing a device, administering identities, the
 //! session's own layout. Both are decided by the same admission, and a caller reads both
-//! through one [`ActionHost`](tilo_actions::remote::ActionHost): what differs between a Linux
+//! through one [`ActionProvider`](tilo_actions::remote::ActionProvider): what differs between a Linux
 //! desktop and the page is only where the steps are carried out, which is the host's own
 //! business, not the role's.
 
 use std::sync::Arc;
 
-use tilo_actions::remote::{ActionHost, Pending};
+use tilo_actions::remote::{ActionProvider, Pending};
 use tilo_actions::{ActionAddress, ActionDescriptor};
 use tilo_actions::{ActionFailure, ActionOutput};
 
@@ -21,9 +21,9 @@ pub struct HostStepRequest<'a> {
     pub actor: &'a crate::actor::BrokerActor,
     pub address: &'a ActionAddress,
     pub argument: Option<&'a str>,
-    /// The agent session's own host, when the step is one of an agent session's (a program it
+    /// The agent session's own provider, when the step is one of an agent session's (a program it
     /// writes): what the step does in turn goes through it, so the session admits that too.
-    pub host: Option<Arc<dyn ActionHost + Send + Sync>>,
+    pub provider: Option<Arc<dyn ActionProvider + Send + Sync>>,
     /// The work the invocation names itself a part of (its context's group, as an agent session
     /// stamps every call): what a step that changes a record makes is that work's, which History
     /// groups and an undo of it takes back, as an app's action is.
