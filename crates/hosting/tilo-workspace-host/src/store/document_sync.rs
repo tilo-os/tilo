@@ -149,6 +149,15 @@ impl Classes {
         );
     }
 
+    /// Whether a replay leaves out the lineages of this document: it is
+    /// on-demand, or a part behind its chain's head.
+    pub(super) fn leaves_out(&self, document: &[u8; 32]) -> bool {
+        matches!(
+            self.reach(document),
+            Some(Reach::Opened(_) | Reach::ChainHead { .. })
+        )
+    }
+
     fn reach(&self, channel: &[u8; 32]) -> Option<Reach> {
         Some(match self.channels.get(channel)? {
             Class::Eager if self.when_opened && *channel != desktop_channel() => {
@@ -368,27 +377,13 @@ impl WorkspaceStore {
     /// Read every retained lineage not read yet for its record, as a capture
     /// does once before it lists them: nothing changes the lineages while a
     /// capture lists them, since it lists in one owner operation, so its
-    /// answers ([`Self::leaves_out_on_demand`], [`Self::carries_document`]) need
+    /// answers ([`Classes::leaves_out`], [`Self::carries_document`]) need
     /// no other read. Read again for every lineage it listed, a crowd's
     /// captures each scanned the whole retained directory hundreds of times
     /// while one lineage was still being retained, and newcomers queued
     /// behind the owner for seconds.
     pub(super) fn classify_lineages(&self) -> Result<(), StoreError> {
         self.read_lineage_records()
-    }
-
-    /// Whether a replay leaves the retained lineage `name` out: its record
-    /// is on-demand, or a part behind its chain's head. Answered from the
-    /// lineages read so far ([`Self::classify_lineages`]), so a chain's head
-    /// is known whichever part a capture lists first. A lineage whose channel
-    /// is still unknown then (it holds no frame yet) is replayed.
-    pub(super) fn leaves_out_on_demand(&self, name: &OsStr) -> bool {
-        lineage_channel(name).is_some_and(|channel| {
-            matches!(
-                self.classes().reach(&channel),
-                Some(Reach::Opened(_) | Reach::ChainHead { .. })
-            )
-        })
     }
 
     /// Whether the retained lineage `name` carries a record's frames, of the
@@ -464,6 +459,8 @@ impl WorkspaceStore {
             if self.classes().lineages.contains(&name) {
                 continue;
             }
+            // Read for the first time: the replay order lists it.
+            self.forget_listed(Some(std::slice::from_ref(&name)));
             let channel = lineage_channel(&name);
             let read = match channel {
                 Some(channel) if !self.classes().channels.contains_key(&channel) => {

@@ -156,9 +156,9 @@ pub struct WorkspaceStore {
     root: PathBuf,
     workspace_id: WorkspaceId,
     pinned: bool,
-    /// Shared by every handle on `root`: the captures whose retained frames
-    /// are listed but not yet pinned, and the collections that wait for
-    /// them ([`replay::CaptureLeases`]).
+    /// Shared by every handle on `root`: the replay order, the captures
+    /// whose retained frames are not read yet, and the collections that
+    /// wait for them ([`replay::CaptureLeases`]).
     capture_leases: Arc<replay::CaptureLeases>,
     /// Classifies retained co-edit bodies for checkpoint replacement.
     payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,

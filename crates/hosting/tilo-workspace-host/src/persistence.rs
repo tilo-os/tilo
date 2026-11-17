@@ -31,9 +31,10 @@
 //! provided the lineage has not moved since
 //! (`WorkspaceStore::stage_fresh_checkpoint`).
 //!
-//! A replay capture lists the retained frames in its turn and pins them when
-//! it is prepared, off the owner; retention collects nothing a listed frame
-//! is in until then (`store::replay::CaptureLeases`).
+//! A replay capture takes the retained lineages in its turn, in the order
+//! the store keeps as frames commit, and its replay reads their frames off
+//! the owner; retention collects nothing a taken frame is in until the
+//! replay has read it (`store::replay::CaptureLeases`).
 //!
 //! Host order (`seq`, `Committed::seq`) increases strictly across restarts,
 //! even when the clock steps back over one, and resumes at most

@@ -1,6 +1,20 @@
-//! Bounded storage cursors. These confer no transport/session cleanup authority:
-//! the ordered owner in persistence must supply that authority in Task 2c2.
-//! No Drop implementation recursively deletes files or touches pending sources.
+//! Replays: what a device is sent of its workspace when it joins, and of
+//! its own queue when it comes back.
+//!
+//! A replay sends the workspace's retained frames in one order: the
+//! certificates' lineages, the governance's, the device's own queue, the
+//! shared desktop's lineages, then every other document's
+//! ([`lineage_rank`]); within a lineage its checkpoint, then its frames by
+//! name. The store keeps that order as frames commit ([`ReplayOrder`]):
+//! each write names the lineage it changed, and the next capture lists that
+//! lineage again, and only it. A newcomer's capture takes the order as it
+//! stands, in its owner's turn, and its first batch goes out after reading
+//! the frames it carries: a join costs what it sends, not what the
+//! workspace retained.
+//!
+//! These cursors confer no transport/session cleanup authority: the ordered
+//! owner in persistence supplies it. No Drop implementation recursively
+//! deletes files or touches pending sources.
 use super::bounded::{
     self, DirectoryCursor, Meta, Sorter, WorkStats, increment, invalid, read_meta, write_meta,
 };
@@ -9,10 +23,10 @@ use super::{StoreError, WorkspaceStore, retained};
 use crate::store::bounded::Invariant;
 use crate::transport::{self, Envelope};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     ffi::{OsStr, OsString},
     fs::{self, File},
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -31,33 +45,31 @@ pub(crate) const DEFAULT_REPLAY_TICKETS: usize = 32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReplayId(pub [u8; 16]);
 
-// Captures that listed a lineage from what an earlier one learned, on this
-// thread: what a test reads to see the listing remembered.
+// Lineages a capture listed from their generation rather than took from the
+// kept order, on this thread: what a test reads to see the order kept.
 #[cfg(test)]
 thread_local! {
-    pub(crate) static LISTING_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static LINEAGES_LISTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// A capture lists the retained frames it replays in its owner turn and
-/// pins them (one hard link each) when it is prepared, off the owner: the
-/// pins were the bulk of a newcomer's turn, and the frames to pin grow with
-/// the workspace. In between, the listed frames must stay where they were
-/// listed. Only collection removes a retained frame, so collection waits
-/// while any capture of the store is leased: a lineage collected then is
-/// remembered, and collected once no capture is leased
-/// ([`WorkspaceStore::deferred_collections`]).
+/// A replay reads the retained frames its capture took straight from their
+/// generations, while it is sent. Only collection removes a retained frame,
+/// so collection waits while any capture of the store is leased: a lineage
+/// collected then is remembered, and collected once no capture is leased
+/// ([`WorkspaceStore::deferred_collections`]). A replay gives its lease up
+/// once it has read its last retained frame.
 ///
 /// Leases are taken in the owner's turn, and collection is decided there,
 /// so no collection that a lease should stop can have begun before it.
 #[derive(Default)]
 pub(crate) struct CaptureLeases {
     held: AtomicUsize,
-    deferred: std::sync::Mutex<std::collections::BTreeSet<PathBuf>>,
+    deferred: std::sync::Mutex<BTreeSet<PathBuf>>,
     /// The store's owner, woken when the last lease ends so what waited is
     /// collected without waiting for its next job.
     wake: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
-    /// What each lineage's current generation held when last listed.
-    listed: std::sync::Mutex<ListedLineages>,
+    /// The order a replay sends the retained lineages in.
+    order: std::sync::Mutex<ReplayOrder>,
     /// How each retained channel's record syncs
     /// ([`super::document_sync`]).
     pub(super) records: super::document_sync::DocumentClasses,
@@ -67,7 +79,6 @@ pub(crate) struct CaptureLeases {
 impl CaptureLeases {
     /// The leases of the store at `root`, shared by every handle on it.
     pub(crate) fn for_root(root: &Path) -> Arc<Self> {
-        use std::collections::HashMap;
         use std::sync::{Mutex, OnceLock, Weak};
         static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<CaptureLeases>>>> = OnceLock::new();
         let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
@@ -80,12 +91,12 @@ impl CaptureLeases {
         registry.insert(root, Arc::downgrade(&leases));
         leases
     }
-    fn deferred(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeSet<PathBuf>> {
+    fn deferred(&self) -> std::sync::MutexGuard<'_, BTreeSet<PathBuf>> {
         self.deferred.lock_recover()
     }
 }
-/// One capture's hold on its store's collection, until its frames are
-/// pinned or it is given up.
+/// One capture's hold on its store's collection, until its replay has read
+/// its retained frames or is given up.
 pub(crate) struct CaptureLease(Arc<CaptureLeases>);
 impl Drop for CaptureLease {
     fn drop(&mut self) {
@@ -98,125 +109,320 @@ impl Drop for CaptureLease {
     }
 }
 
+/// One retained lineage as a replay sends it: the generation `CURRENT`
+/// selected when it was last listed, and the frames that generation held
+/// then, in replay order. Frames are named by ordinal
+/// (`{ordinal:016x}.delta`) as retention writes them, so they are kept as
+/// spans of ordinals: a lineage costs a few words however long it is.
+pub(crate) struct LineageFrames {
+    rank: &'static str,
+    /// The document its frames carry, as the lineage's name says.
+    document: Option<[u8; 32]>,
+    generation: PathBuf,
+    checkpoint: bool,
+    /// Ordinals held, as sorted inclusive spans.
+    spans: Vec<(u64, u64)>,
+    /// Frames not named by an ordinal, sorted.
+    others: Vec<OsString>,
+}
+
+/// The ordinal of a frame retention named `{ordinal:016x}.delta`.
+fn ordinal(name: &str) -> Option<u64> {
+    let hex = name.strip_suffix(".delta")?;
+    if hex.len() != 16 || !hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return None;
+    }
+    u64::from_str_radix(hex, 16).ok()
+}
+
+impl LineageFrames {
+    /// What `generation`, lineage `name`'s current one, holds, and whether
+    /// that is settled: no frame of it waits for its owner's group to put
+    /// it in place ([`super::retained::group`]).
+    fn list(
+        rank: &'static str,
+        name: &OsStr,
+        generation: PathBuf,
+    ) -> Result<(Self, bool), StoreError> {
+        #[cfg(test)]
+        LINEAGES_LISTED.with(|listed| listed.set(listed.get().saturating_add(1)));
+        let mut checkpoint = false;
+        let mut settled = true;
+        let mut ordinals = Vec::new();
+        let mut others = Vec::new();
+        for entry in fs::read_dir(&generation)? {
+            let entry = entry?;
+            let file = entry.file_name();
+            let lossy = file.to_string_lossy();
+            if lossy.ends_with(".group") {
+                settled = false;
+            }
+            if !lossy.ends_with(".delta") || lossy.starts_with('.') || !entry.file_type()?.is_file()
+            {
+                continue;
+            }
+            if file == "checkpoint.delta" {
+                checkpoint = true;
+            } else if let Some(ordinal) = file.to_str().and_then(ordinal) {
+                ordinals.push(ordinal);
+            } else {
+                others.push(file);
+            }
+        }
+        ordinals.sort_unstable();
+        others.sort();
+        let mut spans: Vec<(u64, u64)> = Vec::new();
+        for ordinal in ordinals {
+            match spans.last_mut() {
+                Some((_, last)) if last.checked_add(1) == Some(ordinal) => *last = ordinal,
+                _ => spans.push((ordinal, ordinal)),
+            }
+        }
+        let frames = Self {
+            rank,
+            document: super::document_sync::lineage_channel(name),
+            generation,
+            checkpoint,
+            spans,
+            others,
+        };
+        Ok((frames, settled))
+    }
+
+    /// The next frame after `cursor`, by name.
+    fn next(&self, cursor: &mut FrameCursor) -> Option<OsString> {
+        if !std::mem::replace(&mut cursor.checkpoint_taken, true) && self.checkpoint {
+            return Some("checkpoint.delta".into());
+        }
+        let numbered = self.spans.get(cursor.span).map(|(first, last)| {
+            let ordinal = first.saturating_add(cursor.taken);
+            (
+                OsString::from(format!("{ordinal:016x}.delta")),
+                ordinal == *last,
+            )
+        });
+        let other = self.others.get(cursor.other);
+        match (numbered, other) {
+            (Some((numbered, _)), Some(other)) if *other < numbered => {
+                cursor.other = cursor.other.saturating_add(1);
+                Some(other.clone())
+            }
+            (Some((numbered, span_done)), _) => {
+                if span_done {
+                    cursor.span = cursor.span.saturating_add(1);
+                    cursor.taken = 0;
+                } else {
+                    cursor.taken = cursor.taken.saturating_add(1);
+                }
+                Some(numbered)
+            }
+            (None, Some(other)) => {
+                cursor.other = cursor.other.saturating_add(1);
+                Some(other.clone())
+            }
+            (None, None) => None,
+        }
+    }
+}
+
+/// Where a replay is in one lineage's frames.
+#[derive(Default)]
+struct FrameCursor {
+    checkpoint_taken: bool,
+    span: usize,
+    taken: u64,
+    other: usize,
+}
+
+/// The order a replay sends the retained lineages in, kept as frames
+/// commit rather than worked out for each newcomer: a workspace's captures
+/// listed, pinned, sorted and compared every frame it retained, in every
+/// join.
+///
+/// It is exact, not a cache to validate. Retention marks a lineage stale
+/// before it writes it ([`WorkspaceStore::forget_lineage_listing`]),
+/// whoever drives it, a replacement of a document's history marks its
+/// lineages,
+/// and a lineage that appears is marked when the store first reads it
+/// ([`super::document_sync`]). The next capture lists what is stale again.
+/// After every owner job but one that says it changed retained history
+/// only through retention, the owner marks every lineage
+/// ([`WorkspaceStore::forget_listed`]): the next capture lists them all.
+/// What changes off the owner (a stage, a collection, a discard) is never
+/// a lineage's current generation.
+///
+/// It lives in this process: the retained lineages are what lasts, and
+/// the first capture after the store opens lists them once.
+#[derive(Default)]
+pub(crate) struct ReplayOrder {
+    lineages: BTreeMap<(&'static str, OsString), Arc<LineageFrames>>,
+    /// Each lineage's rank in `lineages`, by name.
+    ranks: HashMap<OsString, &'static str>,
+    /// Lineages to list again before the order is read.
+    stale: BTreeSet<OsString>,
+    /// Whether `lineages` holds every lineage but the stale ones.
+    complete: bool,
+}
+
 impl WorkspaceStore {
     /// Wake `owner` when the last capture lease ends with collections
     /// waiting for it.
     pub(crate) fn wake_on_capture_release(&self, owner: Arc<tokio::sync::Notify>) {
         *self.capture_leases.wake.lock_recover() = Some(owner);
     }
-    /// The next entry of the directory a capture lists, past the retained
-    /// lineages it leaves out: a workspace keeps far more lineages than a
-    /// newcomer is replayed (each author's part of every record, on-demand
-    /// ones included), and stepping over one is not a step of work.
-    fn next_listed(
-        &self,
-        outer: &mut Option<fs::ReadDir>,
-        phase: u8,
-        every_document: bool,
-        channels: Option<&std::collections::BTreeSet<[u8; 32]>>,
-    ) -> Result<Option<fs::DirEntry>, StoreError> {
-        loop {
-            let Some(entry) = outer.as_mut().invariant("outer missing")?.next() else {
-                return Ok(None);
-            };
-            let entry = entry?;
-            if phase == 2 && entry.file_type()?.is_dir() {
-                let name = entry.file_name();
-                if !every_document && self.leaves_out_on_demand(&name) {
-                    continue;
-                }
-                // A confined device is replayed the lineages of its own
-                // record's channel; another record's is none of its.
-                if channels.is_some_and(|channels| {
-                    super::document_sync::lineage_channel(&name)
-                        .is_some_and(|channel| !channels.contains(&channel))
-                }) {
-                    continue;
-                }
-            }
-            return Ok(Some(entry));
-        }
+
+    fn replay_order(&self) -> std::sync::MutexGuard<'_, ReplayOrder> {
+        self.capture_leases.order.lock_recover()
     }
 
-    fn listed_lineages(&self) -> std::sync::MutexGuard<'_, ListedLineages> {
-        self.capture_leases.listed.lock_recover()
-    }
-
-    /// Forget what captures listed of the lineage directories `touched`, or
-    /// of every lineage when `None` ([`ListedLineages`]).
+    /// Mark the lineage directories `touched` stale in the replay order, or
+    /// every lineage when `None` ([`ReplayOrder`]).
     pub(crate) fn forget_listed(&self, touched: Option<&[OsString]>) {
-        let mut listed = self.listed_lineages();
+        let mut order = self.replay_order();
         match touched {
-            None => *listed = ListedLineages::default(),
+            None => order.complete = false,
             Some(touched) => {
-                for name in touched {
-                    if let Some(gone) = listed.lineages.remove(name) {
-                        // Counted: remembered listings a write ended.
-                        crate::timing::window("capture.lineage_forgotten", crate::timing::start());
-                        listed.frames = listed.frames.saturating_sub(gone.frames.len());
-                    }
-                }
+                // Counted: lineages a write marked.
+                crate::timing::window("capture.lineage_forgotten", crate::timing::start());
+                order.stale.extend(touched.iter().cloned());
             }
         }
     }
 
-    /// Forget what captures listed of every lineage on `channel`, of any
-    /// author, and whether its record is sealed: its history is rewritten.
+    /// Mark every lineage on `channel` stale, of any author, and forget
+    /// whether its document is sealed: its history is rewritten.
     pub(crate) fn forget_channel_listing(&self, channel: &[u8; 32]) {
         self.capture_leases.sealed.forget(channel);
         let suffix = format!("-{}", hex::encode(channel));
-        let mut listed = self.listed_lineages();
-        let mut gone = 0usize;
-        listed.lineages.retain(|name, known| {
-            let keep = !name.to_string_lossy().ends_with(&suffix);
-            if !keep {
-                gone = gone.saturating_add(known.frames.len());
-            }
-            keep
-        });
-        listed.frames = listed.frames.saturating_sub(gone);
+        let mut order = self.replay_order();
+        let touched: Vec<OsString> = order
+            .ranks
+            .keys()
+            .filter(|name| name.to_string_lossy().ends_with(&suffix))
+            .cloned()
+            .collect();
+        order.stale.extend(touched);
     }
 
-    /// Forget what captures listed of the lineage directory `lineage`, about
-    /// to change: retention does so for every lineage it writes, whoever
-    /// drives it.
+    /// Mark the lineage directory `lineage` stale, about to change:
+    /// retention does so for every lineage it writes, whoever drives it.
     pub(crate) fn forget_lineage_listing(&self, lineage: &Path) {
         if let Some(name) = lineage.file_name() {
             self.forget_listed(Some(&[name.to_owned()]));
         }
     }
 
-    /// The lineages whose listing captures remember, sorted.
+    /// The lineages the replay order holds, sorted; none while it must be
+    /// listed whole.
     #[cfg(test)]
     pub(crate) fn listed_lineage_names(&self) -> Vec<OsString> {
-        let mut names: Vec<_> = self.listed_lineages().lineages.keys().cloned().collect();
+        let order = self.replay_order();
+        if !order.complete {
+            return Vec::new();
+        }
+        let mut names: Vec<_> = order.ranks.keys().cloned().collect();
+        drop(order);
         names.sort();
         names
     }
 
-    /// What a capture last listed of lineage `name`, while no owner job
-    /// changed it since.
-    fn known_listing(&self, name: &OsStr) -> Option<(PathBuf, Vec<OsString>)> {
-        let known = self
-            .listed_lineages()
-            .lineages
-            .get(name)
-            .map(|known| (known.generation.clone(), known.frames.clone()))?;
-        #[cfg(test)]
-        LISTING_HITS.with(|hits| hits.set(hits.get().saturating_add(1)));
-        Some(known)
+    /// One quantum of bringing the replay order up to date: list each stale
+    /// lineage again, every lineage when the order is not complete.
+    fn update_replay_order(&self, limit: WorkLimit) -> Result<Step<()>, StoreError> {
+        let v2 = self.root.join("retained/v2");
+        let mut order = self.replay_order();
+        if !order.complete {
+            let mut names = BTreeSet::new();
+            if let Some(entries) = open_dir(&v2)? {
+                for entry in entries {
+                    let entry = entry?;
+                    if entry.file_type()?.is_dir() {
+                        names.insert(entry.file_name());
+                    }
+                }
+            }
+            order.lineages.clear();
+            order.ranks.clear();
+            order.stale = names;
+            order.complete = true;
+        }
+        for _ in 0..limit.entry_bound() {
+            let Some(name) = order.stale.pop_first() else {
+                return Ok(Step::Done(()));
+            };
+            if let Some(rank) = order.ranks.remove(&name) {
+                order.lineages.remove(&(rank, name.clone()));
+            }
+            let listed = self.list_lineage(&v2, &name);
+            match listed {
+                Ok(Some((frames, settled))) => {
+                    if !settled {
+                        // A frame its owner's group has not put in place
+                        // yet: the lineage is listed again next time.
+                        order.stale.insert(name.clone());
+                    }
+                    order.ranks.insert(name.clone(), frames.rank);
+                    order.lineages.insert((frames.rank, name), Arc::new(frames));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    order.stale.insert(name);
+                    return Err(error);
+                }
+            }
+        }
+        Ok(if order.stale.is_empty() {
+            Step::Done(())
+        } else {
+            Step::More
+        })
     }
 
-    /// Remember that lineage `name`'s current `generation` holds `frames`.
-    fn learn_listing(&self, name: OsString, generation: PathBuf, frames: Vec<OsString>) {
-        let mut listed = self.listed_lineages();
-        if listed.frames.saturating_add(frames.len()) > MAX_LISTED_FRAMES {
-            return;
+    /// Lineage `name` of `v2` as its current generation holds it, and
+    /// whether that is settled: no frame of it waits to be put in place.
+    /// `None` for a lineage whose first checkpoint is staged but not
+    /// committed yet, or that is gone.
+    fn list_lineage(
+        &self,
+        v2: &Path,
+        name: &OsStr,
+    ) -> Result<Option<(LineageFrames, bool)>, StoreError> {
+        let lineage = v2.join(name);
+        if !lineage.is_dir() {
+            return Ok(None);
         }
-        listed.frames = listed.frames.saturating_add(frames.len());
-        if let Some(replaced) = listed.lineages.insert(name, Listed { generation, frames }) {
-            listed.frames = listed.frames.saturating_sub(replaced.frames.len());
-        }
+        let Some(generation) = retained::current(&lineage)? else {
+            return Ok(None);
+        };
+        LineageFrames::list(self.capture_rank(name), name, generation).map(Some)
+    }
+
+    /// The lineages a replay sends `device`, in order: every lineage of the
+    /// order but those a capture leaves out ([`ReplayBuild`]).
+    fn replayed_lineages(
+        &self,
+        every_document: bool,
+        channels: Option<&BTreeSet<[u8; 32]>>,
+    ) -> Vec<Arc<LineageFrames>> {
+        let order = self.replay_order();
+        let classes = self.classes();
+        order
+            .lineages
+            .values()
+            .filter(|lineage| {
+                let Some(document) = lineage.document else {
+                    return true;
+                };
+                // A workspace keeps far more lineages than a newcomer is
+                // replayed (each author's part of every document, on-demand
+                // ones included). A confined device is replayed the
+                // lineages of its own document; another document's
+                // is none of its.
+                (every_document || !classes.leaves_out(&document))
+                    && channels.is_none_or(|channels| channels.contains(&document))
+            })
+            .cloned()
+            .collect()
     }
 
     fn lease_capture(&self) -> CaptureLease {
@@ -325,6 +531,12 @@ pub(crate) struct ReplayAllocation {
     inner: Arc<Budget>,
     bytes: usize,
 }
+impl ReplayAllocation {
+    /// Hold `other`'s bytes as this allocation's.
+    fn absorb(&mut self, mut other: Self) {
+        self.bytes = self.bytes.saturating_add(std::mem::take(&mut other.bytes));
+    }
+}
 impl Drop for ReplayAllocation {
     fn drop(&mut self) {
         self.inner.used.fetch_sub(self.bytes, Ordering::AcqRel);
@@ -417,7 +629,8 @@ fn v1_frame_charge(
 /// channels' governance) right after the certificates
 /// ([`WorkspaceStore::capture_rank`]): a record's frames wait for the
 /// governance that admits their author and names the group whose keys open
-/// them, and a page asks to join a group only once it has heard of it.
+/// them, and a page asks to join a group only once it has heard of it. A
+/// device's own queue replays between the governance and the desktop.
 pub(crate) fn lineage_rank(lineage: &str) -> &'static str {
     let Some((author, channel)) = lineage.split_once('-') else {
         return "3";
@@ -438,6 +651,10 @@ pub(crate) fn lineage_rank(lineage: &str) -> &'static str {
         "3"
     }
 }
+
+/// The rank a device's own queue replays at: after the governance, before
+/// the shared desktop.
+const QUEUE_RANK: &str = "2";
 
 /// The retained channel of the workspace's shared desktop record, as hex.
 fn desktop_channel() -> &'static str {
@@ -463,9 +680,6 @@ impl WorkspaceStore {
     }
 }
 
-fn digest(bytes: &[u8]) -> [u8; 32] {
-    *blake3::hash(bytes).as_bytes()
-}
 fn open_dir(path: &Path) -> Result<Option<fs::ReadDir>, StoreError> {
     match fs::read_dir(path) {
         Ok(dir) => Ok(Some(dir)),
@@ -474,6 +688,8 @@ fn open_dir(path: &Path) -> Result<Option<fs::ReadDir>, StoreError> {
     }
 }
 
+/// A capture in progress: the replay order brought up to date and taken,
+/// then the device's queue (or a final cut's held commits) listed.
 pub struct ReplayBuild {
     root: PathBuf,
     workspace: PathBuf,
@@ -485,7 +701,6 @@ pub struct ReplayBuild {
     held_listed: bool,
     phase: u8,
     outer: Option<fs::ReadDir>,
-    child: Option<Lineage>,
     sorter: Option<Sorter>,
     next_pin: u64,
     skip: Option<ResumeSkip>,
@@ -494,73 +709,16 @@ pub struct ReplayBuild {
     every_document: bool,
     /// Replay only these record channels' lineages: a browser environment's
     /// device reaches its own record and nothing else of the workspace.
-    channels: Option<std::collections::BTreeSet<[u8; 32]>>,
-    /// The frames listed to pin when the capture is prepared
-    /// (`capture.manifest`): the retained frames, with the lease that keeps
-    /// them in place until then ([`CaptureLeases`]), or a final cut's held
-    /// commits, which nothing changes once the cut is taken. The device's
-    /// own queue is pinned at once. Buffered: a capture lists a frame per
-    /// entry in the owner's turn, and two writes each were most of it.
-    listed: Option<(io::BufWriter<File>, Option<CaptureLease>)>,
-}
-/// The order a capture lists retained frame `name` of lineage `channel` in:
-/// by the lineage's rank, the lineage, its checkpoint first, then by name.
-fn lineage_key(rank: &'static str, channel: &OsStr, name: OsString) -> Vec<OsString> {
-    let order = if name == "checkpoint.delta" { "0" } else { "1" };
-    vec![rank.into(), channel.to_owned(), order.into(), name]
-}
-
-/// The retained lineage a capture is listing: from its generation, or from
-/// what an earlier capture learned of it ([`ListedLineages`]).
-enum Lineage {
-    Reading {
-        rank: &'static str,
-        channel: OsString,
-        generation: PathBuf,
-        entries: fs::ReadDir,
-        /// The frames listed so far, to remember once the generation is
-        /// listed whole; `None` past what one lineage remembers.
-        learned: Option<Vec<OsString>>,
-    },
-    Known {
-        rank: &'static str,
-        channel: OsString,
-        generation: PathBuf,
-        frames: std::vec::IntoIter<OsString>,
-    },
-}
-
-/// Frames one lineage's listing is remembered for: a capture lists larger
-/// lineages from their generation every time.
-const MAX_LISTED_LINEAGE: usize = 256;
-/// Frames remembered over every lineage of a store. Past it, a capture
-/// remembers no more lineages until an owner job changes one.
-const MAX_LISTED_FRAMES: usize = 65_536;
-
-/// What each retained lineage's current generation held when a capture
-/// listed it, until an owner job changes the lineage. In a workspace every
-/// newcomer's capture listed every lineage again, a generation's `CURRENT`
-/// and its entries each time, in the owner's turn; now it lists only the
-/// lineages that changed since the last capture.
-///
-/// It is exact, not a cache to validate. Retention forgets a lineage before
-/// it writes it ([`WorkspaceStore::forget_lineage_listing`]), whoever
-/// drives it. A current generation changes only in an owner job, and after
-/// every normal job but one that says it changed retained history only
-/// through retention, the owner forgets every lineage
-/// ([`WorkspaceStore::forget_listed`]). What changes off the owner (a
-/// stage, a collection, a discard) is never a lineage's current
-/// generation. A store with a shell binding remembers nothing: its
-/// selection retires retained records itself.
-#[derive(Default)]
-pub(crate) struct ListedLineages {
-    lineages: std::collections::HashMap<OsString, Listed>,
-    frames: usize,
-}
-
-struct Listed {
-    generation: PathBuf,
-    frames: Vec<OsString>,
+    channels: Option<BTreeSet<[u8; 32]>>,
+    /// The retained lineages taken, with the lease that keeps their frames
+    /// in place until the replay has read them ([`CaptureLeases`]).
+    lineages: Vec<Arc<LineageFrames>>,
+    lease: Option<CaptureLease>,
+    /// A final cut's held commits, listed to pin when the capture is
+    /// prepared (`capture.manifest`): nothing changes them once the cut is
+    /// taken. The device's own queue is pinned at once. Buffered: a capture
+    /// lists an entry per commit in the owner's turn.
+    listed: Option<io::BufWriter<File>>,
 }
 
 /// Retained frames a resuming device already holds, by
@@ -580,10 +738,7 @@ impl ReplayBuild {
     }
     /// Replay only the lineages of these record channels: everything else of
     /// the workspace stays out of this device's replay.
-    pub(crate) fn with_channels(
-        mut self,
-        channels: Option<std::collections::BTreeSet<[u8; 32]>>,
-    ) -> Self {
+    pub(crate) fn with_channels(mut self, channels: Option<BTreeSet<[u8; 32]>>) -> Self {
         self.channels = channels;
         self
     }
@@ -596,23 +751,31 @@ impl ReplayBuild {
         WorkDiscard::new(self.root)
     }
 }
-struct Candidate {
-    meta: Meta,
-    coverage: bool,
-    charge: u64,
-    index: File,
-    /// Held by the resuming device: indexed for coverage, not replayed.
-    held: bool,
-}
-/// The retained frames a capture listed and its preparation pins first.
+/// A final cut's held commits, listed and pinned when its replay is
+/// prepared.
 struct Link {
-    /// `capture.manifest`: one entry per listed frame, its pin assigned.
+    /// `capture.manifest`: one entry per listed commit, its pin assigned.
     listed: File,
-    _lease: Option<CaptureLease>,
 }
-/// A captured replay: pinned retained frames, ready to prepare and read.
+/// Where a replay is: the retained lineages before the device's queue, the
+/// queue, the lineages after it, then done.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    Early,
+    Queue,
+    Late,
+    Done,
+}
+/// A frame read for a batch that did not fit it: the next batch's first.
+struct Carried {
+    envelope: Envelope,
+    len: usize,
+    charge: usize,
+}
+/// A captured replay: the retained lineages it sends and the device's
+/// pinned queue, read batch by batch.
 pub struct ReplaySnapshot {
-    /// Retained frames listed in the owner's turn, not pinned yet.
+    /// A final cut's held commits, not pinned yet.
     link: Option<Link>,
     root: PathBuf,
     workspace: PathBuf,
@@ -622,24 +785,44 @@ pub struct ReplaySnapshot {
     held_root: Option<PathBuf>,
     sorter: Option<Sorter>,
     ordered: Option<File>,
-    candidate: Option<Candidate>,
-    output: File,
+    lineages: Vec<Arc<LineageFrames>>,
+    next_lineage: usize,
+    /// The lineage being read, where in it, and the frames of it read so
+    /// far, by digest: a frame a generation holds twice is sent once.
+    current: Option<(Arc<LineageFrames>, FrameCursor, HashSet<[u8; 32]>)>,
+    /// Retained frames before the queue that prove a queued twin is
+    /// covered, by digest.
+    covered: HashSet<[u8; 32]>,
+    stage: Stage,
+    lease: Option<CaptureLease>,
+    carried: Option<Carried>,
     cleanup: File,
     ready: bool,
     count: u64,
     pending_count: u64,
     /// Entries in `cleanup.manifest`.
     cleanup_count: u64,
-    read_offset: u64,
     cleanup_offset: u64,
     batch_number: u64,
     stats: WorkStats,
-    digest: fn(&[u8]) -> [u8; 32],
     skip: Option<ResumeSkip>,
+}
+/// Where the next frame of a replay comes from.
+enum Source {
+    Retained(PathBuf),
+    Queued(Meta),
 }
 impl ReplaySnapshot {
     pub(crate) fn stats(&self) -> &WorkStats {
         &self.stats
+    }
+    /// What the replay sent, once it has sent everything.
+    pub(crate) fn summary(&self) -> Option<ReplaySummary> {
+        (self.stage == Stage::Done && self.carried.is_none()).then_some(ReplaySummary {
+            total_frames: self.count,
+            pending_frames: self.pending_count,
+            cleanup_entries: self.cleanup_count,
+        })
     }
     /// Discard this snapshot's work directory.
     ///
@@ -652,24 +835,88 @@ impl ReplaySnapshot {
     fn pin(&self, pin: u64) -> PathBuf {
         self.root.join("pins").join(format!("{pin:016x}.frame"))
     }
-    fn classify(&mut self, mut meta: Meta) -> Result<(), StoreError> {
-        let Some(bytes) = frame_bytes(&self.pin(meta.pin))? else {
-            return Ok(());
+    /// Where the next frame comes from, in replay order.
+    fn next_source(&mut self) -> Result<Option<Source>, StoreError> {
+        loop {
+            match self.stage {
+                Stage::Early | Stage::Late => {
+                    if let Some((lineage, cursor, _)) = &mut self.current {
+                        if let Some(name) = lineage.next(cursor) {
+                            return Ok(Some(Source::Retained(lineage.generation.join(name))));
+                        }
+                        self.current = None;
+                    }
+                    match self.lineages.get(self.next_lineage) {
+                        Some(lineage)
+                            if self.stage == Stage::Early && lineage.rank >= QUEUE_RANK =>
+                        {
+                            self.stage = Stage::Queue;
+                        }
+                        Some(lineage) => {
+                            self.current =
+                                Some((lineage.clone(), FrameCursor::default(), HashSet::new()));
+                            self.next_lineage = self.next_lineage.saturating_add(1);
+                        }
+                        None if self.stage == Stage::Early => self.stage = Stage::Queue,
+                        None => {
+                            // Every retained frame is read: collection may go on.
+                            self.stage = Stage::Done;
+                            self.lease = None;
+                            self.lineages = Vec::new();
+                            self.covered = HashSet::new();
+                        }
+                    }
+                }
+                Stage::Queue => {
+                    if let Some(meta) = self.ordered.as_mut().map(read_meta).transpose()?.flatten()
+                    {
+                        return Ok(Some(Source::Queued(meta)));
+                    }
+                    self.stage = Stage::Late;
+                }
+                Stage::Done => return Ok(None),
+            }
+        }
+    }
+    /// The next frame this replay sends, decoded, with its length and the
+    /// output it is charged; frames it leaves out are passed over.
+    fn next_frame(&mut self) -> Result<Option<Carried>, StoreError> {
+        if let Some(carried) = self.carried.take() {
+            return Ok(Some(carried));
+        }
+        while let Some(source) = self.next_source()? {
+            if let Some(frame) = self.read_frame(&source)? {
+                return Ok(Some(frame));
+            }
+        }
+        Ok(None)
+    }
+    /// Read the frame at `source`: `None` when the replay leaves it out (a
+    /// twin, a frame the resuming device holds, one that does not decode).
+    fn read_frame(&mut self, source: &Source) -> Result<Option<Carried>, StoreError> {
+        let (path, queued) = match source {
+            Source::Retained(path) => (path.clone(), None),
+            Source::Queued(meta) => (self.pin(meta.pin), Some(meta)),
         };
-        increment(&mut self.stats.preparation_reads)?;
+        let Some(bytes) = frame_bytes(&path)? else {
+            return Ok(None);
+        };
+        increment(&mut self.stats.hydration_reads)?;
         self.stats.peak_frame_bytes = self.stats.peak_frame_bytes.max(bytes.capacity());
         let envelope = match transport::decode(frame_payload(&bytes)) {
             Ok(envelope) => envelope,
             Err(error) => {
                 // A retained frame that does not decode is not replayed; it
                 // is reported, never left out unseen.
-                tracing::warn!(
-                    workspace_id = %self.workspace_id,
-                    pin = meta.pin,
-                    %error,
-                    "a retained frame does not decode; it is left out of the replay"
-                );
-                return Ok(());
+                if queued.is_none() {
+                    tracing::warn!(
+                        workspace_id = %self.workspace_id,
+                        path = %path.display(),
+                        %error,
+                        "a retained frame does not decode; it is left out of the replay"
+                    );
+                }
+                return Ok(None);
             }
         };
         let decoded = heap_bytes(&envelope).saturating_add(std::mem::size_of::<Envelope>());
@@ -677,35 +924,13 @@ impl ReplaySnapshot {
             .stats
             .peak_frame_bytes
             .max(bytes.capacity().saturating_add(decoded));
-
         // Canonical complete frames alone can prove retained duplicate coverage.
-        let retained = if let Envelope::Delta {
-            workspace_id,
-            delta,
-            ..
-        } = &envelope
-        {
-            if *workspace_id == self.workspace_id {
-                let payload = super::retained::complete_coedit_payload(delta);
-                if let Some(payload) = &payload {
-                    let body = match payload {
-                        crate::coedit::CoeditPayload::Checkpoint { body, .. }
-                        | crate::coedit::CoeditPayload::RetainedDelta { body, .. } => body,
-                    };
-                    self.stats.peak_frame_bytes = self.stats.peak_frame_bytes.max(
-                        bytes
-                            .capacity()
-                            .saturating_add(decoded)
-                            .saturating_add(body.capacity()),
-                    );
-                }
-                payload.is_some()
-            } else {
-                false
-            }
-        } else {
-            false
-        };
+        let complete = matches!(
+            &envelope,
+            Envelope::Delta { workspace_id, delta, .. }
+                if *workspace_id == self.workspace_id
+                    && super::retained::complete_coedit_payload(delta).is_some()
+        );
         let encoded =
             transport::encode(&envelope).map_err(|_| invalid("replay re-encoding failed"))?;
         let v1_charge = v1_frame_charge(&envelope, bytes.len(), &encoded, encoded.capacity())?;
@@ -716,9 +941,9 @@ impl ReplaySnapshot {
                 .saturating_add(encoded.capacity()),
         );
         // Exact outer re-encoding rejects every unconsumed Envelope suffix;
-        // `retained` independently requires complete Coedit consumption.
-        let coverage = !meta.pending && retained && encoded == bytes;
-        let held = !meta.pending
+        // `complete` independently requires complete Coedit consumption.
+        let coverage = queued.is_none() && complete && encoded == bytes;
+        let held = queued.is_none()
             && self
                 .skip
                 .as_ref()
@@ -734,27 +959,34 @@ impl ReplaySnapshot {
                 .saturating_add(v2.capacity()),
         );
         drop(v2);
-        let hash = (self.digest)(&bytes);
-        // Pin length is immutable. Store measured output reservation in the
-        // ordering key only in the final manifest (ordering is already done).
-        meta.len = bytes.len() as u64;
-        let index_path = self
-            .root
-            .join("index")
-            .join(format!("{}.idx", hex::encode(hash)));
-        let index = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .read(true)
-            .open(index_path)?;
-        self.candidate = Some(Candidate {
-            meta,
-            coverage,
-            charge,
-            index,
-            held,
-        });
-        Ok(())
+        let digest = *blake3::hash(&bytes).as_bytes();
+        match queued {
+            None => {
+                let (_, _, read) = self.current.as_mut().invariant("lineage missing")?;
+                if !read.insert(digest) {
+                    return Ok(None);
+                }
+                if coverage && self.stage == Stage::Early {
+                    self.covered.insert(digest);
+                }
+                if held {
+                    return Ok(None);
+                }
+            }
+            Some(meta) => {
+                self.clean_up(meta)?;
+                if self.covered.contains(&digest) {
+                    return Ok(None);
+                }
+                increment(&mut self.pending_count)?;
+            }
+        }
+        increment(&mut self.count)?;
+        Ok(Some(Carried {
+            envelope,
+            len: bytes.len(),
+            charge: usize::try_from(charge).map_err(|_| invalid("frame charge overflow"))?,
+        }))
     }
     /// Have the replay's cleanup unlink the pending entry `meta` once the
     /// replay is written. A final cut's held commits are not unlinked one by
@@ -767,43 +999,13 @@ impl ReplaySnapshot {
         write_meta(&mut self.cleanup, meta)?;
         increment(&mut self.cleanup_count)
     }
-    fn accept_candidate(&mut self, duplicate: bool) -> Result<(), StoreError> {
-        let candidate = self.candidate.take().invariant("candidate missing")?;
-        let Candidate {
-            mut meta,
-            coverage,
-            charge,
-            mut index,
-            held,
-        } = candidate;
-        if meta.pending {
-            self.clean_up(&meta)?;
-        }
-        if !duplicate {
-            if !meta.pending {
-                index.write_all(&meta.pin.to_le_bytes())?;
-                index.write_all(&meta.len.to_le_bytes())?;
-                index.write_all(&[u8::from(coverage)])?;
-            }
-            if !held {
-                meta.key = vec![charge.to_string().into()];
-                write_meta(&mut self.output, &meta)?;
-                increment(&mut self.count)?;
-                if meta.pending {
-                    increment(&mut self.pending_count)?;
-                }
-            }
-        }
-        Ok(())
-    }
 }
 impl WorkspaceStore {
     /// Begin capturing a replay for `device`.
     ///
     /// # Errors
     ///
-    /// Returns an error when the capture's work directory cannot be made
-    /// or the shell selection it starts with cannot be opened.
+    /// Returns an error when the capture's work directory cannot be made.
     pub fn start_replay_capture(
         &self,
         id: ReplayId,
@@ -827,8 +1029,8 @@ impl WorkspaceStore {
     /// Move the work directory of replay `id`, written and cleaned up, aside
     /// under a fresh name, so its catch-up's final cut can take the name over
     /// at once; the returned discard removes it wherever it is stepped.
-    /// Discarded in place, in the owner's turn, it unlinked every pin and
-    /// index of the first replay in front of every queued job.
+    /// Discarded in place, in the owner's turn, it unlinked every pin of the
+    /// first replay in front of every queued job.
     ///
     /// # Errors
     ///
@@ -868,40 +1070,40 @@ impl WorkspaceStore {
         let root = root.join(format!("replay-{}", hex::encode(id.0)));
         fs::create_dir(&root)?;
         fs::create_dir(root.join("pins"))?;
-        fs::create_dir(root.join("index"))?;
         let sorter = Sorter::new(root.join("sort"))?;
         Ok(ReplayBuild {
             root: root.clone(),
             workspace: self.root.clone(),
             device,
+            listed: if pending_only {
+                Some(io::BufWriter::new(File::create(
+                    root.join("capture.manifest"),
+                )?))
+            } else {
+                None
+            },
             held,
             held_listed: false,
             phase: if pending_only { 3 } else { 2 },
             outer: None,
-            child: None,
             sorter: Some(sorter),
             next_pin: 0,
             skip: None,
             every_document: false,
             channels: None,
-            listed: Some((
-                io::BufWriter::new(File::create(root.join("capture.manifest"))?),
-                (!pending_only).then(|| self.lease_capture()),
-            )),
+            lineages: Vec::new(),
+            lease: (!pending_only).then(|| self.lease_capture()),
         })
     }
     /// Invoke under one owner operation until Done; later mutations must not
-    /// interleave before every selected source has its immutable hardlink,
-    /// or, for a retained frame, is listed under the capture's lease (it is
-    /// pinned when the snapshot is prepared: `CaptureLeases`).
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-    )]
+    /// interleave before the replay order is taken and every queued entry
+    /// has its immutable hardlink, or, for a final cut's held commit, is
+    /// listed.
     ///
     /// # Errors
     ///
-    /// Returns an error when retained history cannot be read or pinned.
+    /// Returns an error when retained history or the queue cannot be read
+    /// or pinned.
     pub fn capture_replay_step(
         &self,
         build: &mut ReplayBuild,
@@ -911,8 +1113,20 @@ impl WorkspaceStore {
         if build.workspace != self.root {
             return Err(invalid("replay store mismatch"));
         }
-        if build.phase > 4 {
+        if build.phase > 3 {
             return Err(invalid("capture already consumed"));
+        }
+        if build.phase == 2 {
+            self.classify_lineages()?;
+            if self.update_replay_order(limit)? == Step::More {
+                return Ok(Step::More);
+            }
+            build.lineages = self.replayed_lineages(build.every_document, build.channels.as_ref());
+            if build.lineages.is_empty() {
+                build.lease = None;
+            }
+            build.phase = 3;
+            return Ok(Step::More);
         }
         let sorter = build
             .sorter
@@ -925,245 +1139,136 @@ impl WorkspaceStore {
         }
         for _ in 0..limit.entry_bound() {
             sorter.stats.last_step_work = sorter.stats.last_step_work.saturating_add(1);
-            if build.phase == 4 {
-                build.phase = 5;
-                let link = match build.listed.take() {
-                    Some((listed, lease)) => {
-                        // Written out before it is read back.
-                        drop(
-                            listed
-                                .into_inner()
-                                .map_err(io::IntoInnerError::into_error)?,
-                        );
-                        Some(Link {
-                            listed: File::open(build.root.join("capture.manifest"))?,
-                            _lease: lease,
-                        })
-                    }
-                    None => None,
-                };
-                let output = File::create(build.root.join("replay.manifest"))?;
-                let cleanup = File::create(build.root.join("cleanup.manifest"))?;
-                return Ok(Step::Done(ReplaySnapshot {
-                    link,
-                    root: build.root.clone(),
-                    workspace: self.root.clone(),
-                    workspace_id: self.workspace_id,
-                    pending_root: PathBuf::from("pending").join(hex::encode(build.device)),
-                    held_root: build
-                        .held
-                        .as_ref()
-                        .map(|held| {
-                            held.strip_prefix(&self.root)
-                                .map(Path::to_path_buf)
-                                .map_err(|_| invalid("invalid held catch-up path"))
-                        })
-                        .transpose()?,
-                    sorter: build.sorter.take(),
-                    ordered: None,
-                    candidate: None,
-                    output,
-                    cleanup,
-                    ready: false,
-                    count: 0,
-                    pending_count: 0,
-                    cleanup_count: 0,
-                    read_offset: 0,
-                    cleanup_offset: 0,
-                    batch_number: 0,
-                    stats: WorkStats::default(),
-                    digest,
-                    skip: build.skip.take(),
-                }));
-            }
             if build.outer.is_none() {
-                let dir = match (build.phase, &build.held) {
-                    (2, _) => {
-                        self.classify_lineages()?;
-                        self.root.join("retained/v2")
-                    }
-                    (_, Some(held)) if !build.held_listed => held.clone(),
-                    _ => self.pending_dir_for(&build.device),
-                };
+                let held_queue = build.held.as_ref().filter(|_| !build.held_listed);
+                let dir =
+                    held_queue.map_or_else(|| self.pending_dir_for(&build.device), Clone::clone);
                 build.outer = open_dir(&dir)?;
                 if build.outer.is_none() {
-                    listed(
-                        &mut build.phase,
-                        build.held.is_some(),
-                        &mut build.held_listed,
-                    );
-                    continue;
+                    if held_queue.is_some() {
+                        build.held_listed = true;
+                        continue;
+                    }
+                    return self.captured(build).map(Step::Done);
                 }
             }
-            let selected = if let Some(lineage) = &mut build.child {
-                match lineage {
-                    Lineage::Reading {
-                        rank,
-                        channel,
-                        generation,
-                        entries,
-                        learned,
-                    } => {
-                        if let Some(entry) = entries.next() {
-                            let entry = entry?;
-                            let name = entry.file_name();
-                            let valid = name.to_string_lossy().ends_with(".delta")
-                                && !name.to_string_lossy().starts_with('.');
-                            if entry.file_type()?.is_file() && valid {
-                                if let Some(frames) = learned {
-                                    if frames.len() < MAX_LISTED_LINEAGE {
-                                        frames.push(name.clone());
-                                    } else {
-                                        *learned = None;
-                                    }
-                                }
-                                Some((entry.path(), lineage_key(rank, channel, name)))
-                            } else {
-                                None
-                            }
-                        } else {
-                            if let Some(frames) = learned.take() {
-                                self.learn_listing(
-                                    std::mem::take(channel),
-                                    std::mem::take(generation),
-                                    frames,
-                                );
-                            }
-                            build.child = None;
-                            None
-                        }
-                    }
-                    Lineage::Known {
-                        rank,
-                        channel,
-                        generation,
-                        frames,
-                    } => {
-                        if let Some(name) = frames.next() {
-                            Some((generation.join(&name), lineage_key(rank, channel, name)))
-                        } else {
-                            build.child = None;
-                            None
-                        }
-                    }
-                }
-            } else if let Some(entry) = self.next_listed(
-                &mut build.outer,
-                build.phase,
-                build.every_document,
-                build.channels.as_ref(),
-            )? {
-                let name = entry.file_name();
-                let kind = entry.file_type()?;
-                match build.phase {
-                    2 if kind.is_dir() => {
-                        let lineage = entry.path();
-                        let rank = self.capture_rank(&name);
-                        // `next_listed` stepped over the lineages a capture
-                        // leaves out. Counted: lineages listed from memory
-                        // and from their generation.
-                        build.child = if let Some((generation, frames)) = self.known_listing(&name)
-                        {
-                            crate::timing::window("capture.lineage_known", crate::timing::start());
-                            Some(Lineage::Known {
-                                rank,
-                                channel: name,
-                                generation,
-                                frames: frames.into_iter(),
-                            })
-                        } else if let Some(active) = retained::current(&lineage)? {
-                            crate::timing::window("capture.lineage_read", crate::timing::start());
-                            Some(Lineage::Reading {
-                                rank,
-                                channel: name,
-                                entries: fs::read_dir(&active)?,
-                                generation: active,
-                                learned: Some(Vec::new()),
-                            })
-                        } else {
-                            // A lineage whose first checkpoint is staged
-                            // but not committed yet.
-                            None
-                        };
-                        None
-                    }
-                    3 if kind.is_file() && name.to_string_lossy().ends_with(".delta") => {
-                        // Counted: what a final cut takes from the commits
-                        // its catch-up held, and from the device's queue.
-                        crate::timing::window(
-                            if build.held.is_some() && !build.held_listed {
-                                "capture.held_entry"
-                            } else {
-                                "capture.queued_entry"
-                            },
-                            crate::timing::start(),
-                        );
-                        Some((entry.path(), vec!["2".into(), name]))
-                    }
-                    _ => None,
-                }
-            } else {
+            let Some(entry) = build.outer.as_mut().invariant("outer missing")?.next() else {
                 build.outer = None;
-                listed(
-                    &mut build.phase,
-                    build.held.is_some(),
-                    &mut build.held_listed,
-                );
-                None
-            };
-            if let Some((source, key)) = selected {
-                let pin = build.next_pin;
-                increment(&mut build.next_pin)?;
-                // Retained frames, and a final cut's held commits, are pinned
-                // when the capture is prepared, off the owner.
-                let held = build.phase == 3 && build.held.is_some() && !build.held_listed;
-                if (build.phase == 2 || held)
-                    && let Some((listed, _)) = build.listed.as_mut()
-                {
-                    write_meta(
-                        listed,
-                        &Meta {
-                            key,
-                            source: source
-                                .strip_prefix(&self.root)
-                                .map_err(|_| invalid("invalid capture path"))?
-                                .into(),
-                            pin,
-                            len: 0,
-                            pending: held,
-                        },
-                    )?;
+                if build.held.is_some() && !build.held_listed {
+                    build.held_listed = true;
                     continue;
                 }
-                let target = build.root.join("pins").join(format!("{pin:016x}.frame"));
-                fs::hard_link(&source, &target)?;
-                let len = fs::metadata(&target)?.len();
-                sorter.push(Meta {
-                    key,
-                    source: source
-                        .strip_prefix(&self.root)
-                        .map_err(|_| invalid("invalid capture path"))?
-                        .into(),
-                    pin,
-                    len,
-                    pending: build.phase == 3,
-                })?;
-                sorter.stats.peak_open_files = sorter.stats.peak_open_files.max(3);
-                if sorter.spilling() {
-                    return Ok(Step::More);
-                }
+                return self.captured(build).map(Step::Done);
+            };
+            let entry = entry?;
+            let name = entry.file_name();
+            if !entry.file_type()?.is_file() || !name.to_string_lossy().ends_with(".delta") {
+                continue;
+            }
+            let held = build.held.is_some() && !build.held_listed;
+            // Counted: what a final cut takes from the commits its catch-up
+            // held, and from the device's queue.
+            crate::timing::window(
+                if held {
+                    "capture.held_entry"
+                } else {
+                    "capture.queued_entry"
+                },
+                crate::timing::start(),
+            );
+            let pin = build.next_pin;
+            increment(&mut build.next_pin)?;
+            let source = entry.path();
+            let meta = Meta {
+                key: vec![name],
+                source: source
+                    .strip_prefix(&self.root)
+                    .map_err(|_| invalid("invalid capture path"))?
+                    .into(),
+                pin,
+                len: 0,
+                pending: true,
+            };
+            // A final cut's held commits are pinned when the capture is
+            // prepared, off the owner.
+            if held && let Some(listed) = build.listed.as_mut() {
+                write_meta(listed, &meta)?;
+                continue;
+            }
+            let target = build.root.join("pins").join(format!("{pin:016x}.frame"));
+            fs::hard_link(&source, &target)?;
+            let len = fs::metadata(&target)?.len();
+            sorter.push(Meta { len, ..meta })?;
+            sorter.stats.peak_open_files = sorter.stats.peak_open_files.max(3);
+            if sorter.spilling() {
+                return Ok(Step::More);
             }
         }
         Ok(Step::More)
     }
-    /// One quantum of pinning the retained frames a capture listed, as the
-    /// capture pinned the rest: a hard link and its place in the order. Once every listed frame is pinned the lease
-    /// ends, and retention may collect what it replaced meanwhile.
+    /// The snapshot a finished capture hands over.
+    fn captured(&self, build: &mut ReplayBuild) -> Result<ReplaySnapshot, StoreError> {
+        build.phase = 4;
+        let link = match build.listed.take() {
+            Some(listed) => {
+                // Written out before it is read back.
+                drop(
+                    listed
+                        .into_inner()
+                        .map_err(io::IntoInnerError::into_error)?,
+                );
+                Some(Link {
+                    listed: File::open(build.root.join("capture.manifest"))?,
+                })
+            }
+            None => None,
+        };
+        let cleanup = File::options()
+            .create_new(true)
+            .append(true)
+            .open(build.root.join("cleanup.manifest"))?;
+        Ok(ReplaySnapshot {
+            link,
+            root: build.root.clone(),
+            workspace: self.root.clone(),
+            workspace_id: self.workspace_id,
+            pending_root: PathBuf::from("pending").join(hex::encode(build.device)),
+            held_root: build
+                .held
+                .as_ref()
+                .map(|held| {
+                    held.strip_prefix(&self.root)
+                        .map(Path::to_path_buf)
+                        .map_err(|_| invalid("invalid held catch-up path"))
+                })
+                .transpose()?,
+            sorter: build.sorter.take(),
+            ordered: None,
+            lineages: std::mem::take(&mut build.lineages),
+            next_lineage: 0,
+            current: None,
+            covered: HashSet::new(),
+            stage: Stage::Early,
+            lease: build.lease.take(),
+            carried: None,
+            cleanup,
+            ready: false,
+            count: 0,
+            pending_count: 0,
+            cleanup_count: 0,
+            cleanup_offset: 0,
+            batch_number: 0,
+            stats: WorkStats::default(),
+            skip: build.skip.take(),
+        })
+    }
+    /// One quantum of pinning a final cut's held commits, as the capture
+    /// pinned the device's queue: a hard link and its place in the order.
     fn pin_listed_step(
         &self,
         snapshot: &mut ReplaySnapshot,
         limit: WorkLimit,
-    ) -> Result<Step<ReplaySummary>, StoreError> {
+    ) -> Result<Step<()>, StoreError> {
         let link = snapshot.link.as_mut().invariant("listed frames missing")?;
         let sorter = snapshot
             .sorter
@@ -1197,16 +1302,17 @@ impl WorkspaceStore {
         snapshot.stats.last_step_work = sorter.stats.last_step_work;
         Ok(Step::More)
     }
-    /// One quantum of ordering a captured snapshot's frames.
+    /// One quantum of ordering a captured snapshot's queue. The retained
+    /// frames need none: they are read in the order the store keeps.
     ///
     /// # Errors
     ///
-    /// Returns an error when the snapshot cannot be read or sorted.
+    /// Returns an error when the queue cannot be pinned or sorted.
     pub fn prepare_replay_step(
         &self,
         snapshot: &mut ReplaySnapshot,
         limit: WorkLimit,
-    ) -> Result<Step<ReplaySummary>, StoreError> {
+    ) -> Result<Step<()>, StoreError> {
         #[cfg(test)]
         super::test_barrier::pause(&self.root, "replay-manifest-prepare");
         let limit = limit.checked()?;
@@ -1214,56 +1320,20 @@ impl WorkspaceStore {
             return Err(invalid("replay store mismatch"));
         }
         if snapshot.ready {
-            return Ok(Step::Done(ReplaySummary {
-                total_frames: snapshot.count,
-                pending_frames: snapshot.pending_count,
-                cleanup_entries: snapshot.cleanup_count,
-            }));
+            return Ok(Step::Done(()));
         }
         snapshot.stats.last_step_work = 0;
         if snapshot.link.is_some() {
             return self.pin_listed_step(snapshot, limit);
         }
-        if let Some(sorter) = &mut snapshot.sorter {
-            let result = sorter.step(limit)?;
-            snapshot.stats = sorter.stats.clone();
-            snapshot.stats.peak_open_files = snapshot.stats.peak_open_files.saturating_add(2); // output + cleanup manifests
-            if let Step::Done(path) = result {
-                snapshot.ordered = Some(File::open(path)?);
-                snapshot.sorter = None;
-            }
-            return Ok(Step::More);
-        }
-        snapshot.stats.peak_open_files = snapshot.stats.peak_open_files.max(6);
-        for _ in 0..limit.entry_bound() {
-            snapshot.stats.last_step_work = snapshot.stats.last_step_work.saturating_add(1);
-            if let Some(candidate) = &mut snapshot.candidate {
-                let mut entry = [0; 17];
-                if candidate.index.read(&mut entry[..1])? == 0 {
-                    snapshot.accept_candidate(false)?;
-                    continue;
-                }
-                candidate.index.read_exact(&mut entry[1..])?;
-                let pin = u64::from_le_bytes(entry[..8].try_into().invariant("entry missing")?);
-                let len = u64::from_le_bytes(entry[8..16].try_into().invariant("entry missing")?);
-                let compare =
-                    len == candidate.meta.len && (!candidate.meta.pending || entry[16] == 1);
-                let candidate_pin = candidate.meta.pin;
-                if compare && equal_files(&snapshot.pin(candidate_pin), &snapshot.pin(pin))? {
-                    snapshot.accept_candidate(true)?;
-                }
-            } else if let Some(meta) =
-                read_meta(snapshot.ordered.as_mut().invariant("ordered missing")?)?
-            {
-                snapshot.classify(meta)?;
-            } else {
-                snapshot.ready = true;
-                return Ok(Step::Done(ReplaySummary {
-                    total_frames: snapshot.count,
-                    pending_frames: snapshot.pending_count,
-                    cleanup_entries: snapshot.cleanup_count,
-                }));
-            }
+        let sorter = snapshot.sorter.as_mut().invariant("queue order missing")?;
+        let result = sorter.step(limit)?;
+        snapshot.stats = sorter.stats.clone();
+        if let Step::Done(path) = result {
+            snapshot.ordered = Some(File::open(path)?);
+            snapshot.sorter = None;
+            snapshot.ready = true;
+            return Ok(Step::Done(()));
         }
         Ok(Step::More)
     }
@@ -1271,8 +1341,9 @@ impl WorkspaceStore {
     ///
     /// # Errors
     ///
-    /// Returns an error when the snapshot is not ready for this store or a
-    /// frame cannot be read.
+    /// Returns an error when the snapshot is not ready for this store, a
+    /// frame cannot be read, or the budget cannot hold the batch's first
+    /// frame (which the next call starts with).
     pub fn read_replay_batch(
         &self,
         snapshot: &mut ReplaySnapshot,
@@ -1288,71 +1359,51 @@ impl WorkspaceStore {
         {
             return Err(invalid("invalid replay batch limits"));
         }
-        let mut input = File::open(snapshot.root.join("replay.manifest"))?;
-        input.seek(SeekFrom::Start(snapshot.read_offset))?;
-        let mut selected = Vec::with_capacity(limits.max_frames);
+        let mut allocation = budget.acquire(0)?;
+        let mut frames = VecDeque::new();
         let mut encoded = 0usize;
         let mut charge = 0usize;
-        let mut end = snapshot.read_offset;
+        let mut decoded_live = 0usize;
         let mut eof = false;
-        loop {
-            let Some(meta) = read_meta(&mut input)? else {
+        // A frame is read only for the batch it goes in, or the next one's
+        // first when it does not fit.
+        while frames.len() < limits.max_frames {
+            let Some(frame) = snapshot.next_frame()? else {
                 eof = true;
                 break;
             };
-            let len = usize::try_from(meta.len).map_err(|_| invalid("frame length overflow"))?;
-            if !selected.is_empty()
-                && (selected.len() == limits.max_frames
-                    || encoded
-                        .checked_add(len)
-                        .is_none_or(|n| n > limits.max_bytes))
+            if !frames.is_empty()
+                && encoded
+                    .checked_add(frame.len)
+                    .is_none_or(|n| n > limits.max_bytes)
             {
+                snapshot.carried = Some(frame);
                 break;
             }
-            let allocation = meta
-                .key
-                .first()
-                .and_then(|s| s.to_str())
-                .and_then(|s| s.parse::<usize>().ok())
-                .ok_or_else(|| invalid("invalid allocation manifest"))?;
+            let held = match budget.acquire(frame.charge) {
+                Ok(held) => held,
+                Err(error) => {
+                    let first = frames.is_empty();
+                    snapshot.carried = Some(frame);
+                    if first {
+                        return Err(error);
+                    }
+                    break;
+                }
+            };
+            allocation.absorb(held);
             charge = charge
-                .checked_add(allocation)
+                .checked_add(frame.charge)
                 .ok_or_else(|| invalid("allocation overflow"))?;
             encoded = encoded
-                .checked_add(len)
+                .checked_add(frame.len)
                 .ok_or_else(|| invalid("batch length overflow"))?;
-            selected.push(meta);
-            end = input.stream_position()?;
+            decoded_live = decoded_live
+                .saturating_add(heap_bytes(&frame.envelope))
+                .saturating_add(std::mem::size_of::<Envelope>());
+            snapshot.stats.peak_frame_bytes = snapshot.stats.peak_frame_bytes.max(decoded_live);
+            frames.push_back(frame.envelope);
         }
-        snapshot.stats.metadata(
-            selected.len().saturating_add(1),
-            selected
-                .iter()
-                .map(Meta::charge)
-                .sum::<usize>()
-                .saturating_add(bounded::MAX_METADATA.saturating_mul(2)),
-            4,
-        );
-        // Deque backing storage is exact-capacity; empty batches charge nothing.
-        let allocation = budget.acquire(charge)?;
-        let mut frames = VecDeque::with_capacity(selected.len());
-        let mut decoded_live = frames
-            .capacity()
-            .saturating_mul(std::mem::size_of::<Envelope>());
-        for meta in selected {
-            let bytes = frame_bytes(&snapshot.pin(meta.pin))?
-                .ok_or_else(|| invalid("pinned frame invalidated"))?;
-            let envelope = transport::decode(frame_payload(&bytes))
-                .map_err(|_| invalid("pinned frame decode failed"))?;
-            increment(&mut snapshot.stats.hydration_reads)?;
-            decoded_live = decoded_live.saturating_add(heap_bytes(&envelope));
-            snapshot.stats.peak_frame_bytes = snapshot
-                .stats
-                .peak_frame_bytes
-                .max(bytes.capacity().saturating_add(decoded_live));
-            frames.push_back(envelope);
-        }
-        snapshot.read_offset = end;
         increment(&mut snapshot.batch_number)?;
         Ok(ReplayBatch {
             number: snapshot.batch_number,
@@ -1371,8 +1422,8 @@ impl WorkspaceStore {
         limit: WorkLimit,
     ) -> Result<Step<()>, StoreError> {
         let limit = limit.checked()?;
-        if snapshot.workspace != self.root || !snapshot.ready {
-            return Err(invalid("replay cleanup not prepared"));
+        if snapshot.workspace != self.root || snapshot.summary().is_none() {
+            return Err(invalid("replay cleanup before the replay was read"));
         }
         let mut input = File::open(snapshot.root.join("cleanup.manifest"))?;
         input.seek(SeekFrom::Start(snapshot.cleanup_offset))?;
@@ -1479,7 +1530,6 @@ impl WorkDiscard {
                                 "extras-sort",
                                 "extras-sort-fallback",
                                 "pins",
-                                "index",
                             ]
                             .iter()
                             .any(|s| name == *s)
@@ -1550,16 +1600,6 @@ fn remove_empty(path: &Path) -> Result<(), StoreError> {
 fn is_hex(value: &str, len: usize) -> bool {
     value.len() == len && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
-/// A capture listed the directory of its `phase`: on to the next. A final
-/// cut with a `held` queue lists it before the device's own.
-const fn listed(phase: &mut u8, held: bool, held_listed: &mut bool) {
-    if *phase == 3 && held && !*held_listed {
-        *held_listed = true;
-    } else {
-        *phase = phase.saturating_add(1);
-    }
-}
-
 fn owned_work_name(name: &std::ffi::OsStr) -> bool {
     name.to_str()
         .and_then(|s| {
@@ -1584,8 +1624,6 @@ fn owned_work_file(dir: &std::ffi::OsStr, name: &std::ffi::OsStr) -> bool {
     };
     if dir == "pins" {
         name.strip_suffix(".frame").is_some_and(|s| is_hex(s, 16))
-    } else if dir == "index" {
-        name.strip_suffix(".idx").is_some_and(|s| is_hex(s, 64))
     } else if dir == "sort"
         || dir == "shell-sort"
         || dir == "extras-sort"

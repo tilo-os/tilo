@@ -224,7 +224,8 @@ pub(crate) struct ReplayHandle {
 struct DetachedReplay {
     store: WorkspaceStore,
     snapshot: ReplaySnapshot,
-    summary: Option<ReplaySummary>,
+    /// Its queue is ordered: batches can be read.
+    prepared: bool,
     outstanding: Option<(u64, bool)>,
     exhausted: bool,
     finished: bool,
@@ -356,16 +357,16 @@ impl DetachedReplay {
         }
         if self.exhausted {
             return Ok(ReplayAdvance::Exhausted(
-                self.summary.invariant("summary missing")?,
+                self.snapshot.summary().invariant("summary missing")?,
             ));
         }
-        if self.summary.is_none() {
+        if !self.prepared {
             match self
                 .store
                 .prepare_replay_step(&mut self.snapshot, WorkLimit::default())?
             {
                 Step::More => return Ok(ReplayAdvance::Preparing),
-                Step::Done(summary) => self.summary = Some(summary),
+                Step::Done(()) => self.prepared = true,
             }
         }
         let batch =
@@ -551,7 +552,7 @@ impl State {
                 let detached = Arc::new(Mutex::new(Some(DetachedReplay {
                     store: self.store.clone(),
                     snapshot,
-                    summary: None,
+                    prepared: false,
                     outstanding: None,
                     exhausted: false,
                     finished: false,
@@ -656,7 +657,9 @@ impl State {
             Step::Done(()) => {
                 detached.finished = true;
                 entry.finished = true;
-                Ok(Step::Done(detached.summary.invariant("summary missing")?))
+                Ok(Step::Done(
+                    detached.snapshot.summary().invariant("summary missing")?,
+                ))
             }
         }
     }
