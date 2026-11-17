@@ -748,6 +748,7 @@ public final class TiloSource: AssistantSource {
         let device = deviceName
         Task { [weak self] in
             var waits = false
+            var quick = 0
             while let place = self?.toldUpTo {
                 let asked = ContinuousClock.now
                 do {
@@ -755,12 +756,20 @@ public final class TiloSource: AssistantSource {
                     guard let self else { return }
                     self.toldUpTo = max(self.toldUpTo, read.newest)
                     if read.told.isEmpty {
-                        // A server that does not hold the ask until its log moves is not asked without end.
+                        // A server that does not hold the ask until its log moves is not asked
+                        // without end. One quick answer with nothing in it is no such server: its
+                        // log also moves for what this device is not told, a look it wrote down.
                         if waits, ContinuousClock.now - asked < .seconds(1) {
-                            self.toldRefused = true
-                            break
+                            quick += 1
+                            if quick >= 3 {
+                                self.toldRefused = true
+                                break
+                            }
+                        } else {
+                            quick = 0
                         }
                     } else {
+                        quick = 0
                         for thing in read.told {
                             if let message = thing.message { self.toldByMessage[message] = thing }
                         }
