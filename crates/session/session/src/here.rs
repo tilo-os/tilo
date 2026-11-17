@@ -45,13 +45,17 @@ impl Shared {
         let joined = self.calls_this_person_is_in();
         // The tree as the loop holds it lists nobody: who is here is placed into the copy a
         // surface reads, as the bar places it into its own.
-        let mut tree = self.handle.read(Clone::clone);
+        let tree = self.handle.read(Clone::clone);
         #[cfg(target_os = "linux")]
-        if let Some(sync) = &self.sync {
-            sync.show(&mut tree, &self.notes, &|app: &str| {
-                Some(crate::app_names::app_name(app))
-            });
-        }
+        let tree = {
+            let mut tree = tree;
+            if let Some(sync) = &self.sync {
+                sync.show(&mut tree, &self.notes, &|app: &str| {
+                    Some(crate::app_names::app_name(app))
+                });
+            }
+            tree
+        };
         let mut workspaces: Vec<WorkspaceHere> = tree
             .workspaces
             .iter()
