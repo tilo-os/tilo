@@ -199,6 +199,14 @@ pub struct PersistentArgs {
     /// the host holds its own person's, and those of the people it let in.
     #[arg(long = "hold-for", value_name = "WORKSPACES")]
     pub hold_for: Option<String>,
+    /// Let this server call addresses on its own network, not only the
+    /// public internet: a model provider a person names, and the site of a
+    /// server an owner has keep a workspace. Off on a public server, where an
+    /// address someone names must not reach the network around it; on where
+    /// the servers that work together share one network, as a stack on one
+    /// machine does.
+    #[arg(long = "call-own-network")]
+    pub call_own_network: bool,
     /// An app authored into the workspace at its first start; repeatable.
     #[arg(long = "seed-app", value_name = "APP_ID")]
     pub seed_apps: Vec<String>,
@@ -1363,6 +1371,7 @@ pub(crate) async fn run(
         // Its own workspaces are for the people this workspace's entry, or an
         // invitation into it, let in: never for anyone holding a root alone.
         workspaces.admit_own_through(&workspace);
+        workspaces.call_private_model_addresses(persistent.call_own_network);
         // The certificate this host serves the workspace with: a build renamed
         // the host's own after a workspace was made with it, and the host took
         // the record's back (`Workspaces::serving_certificate`). Every governed

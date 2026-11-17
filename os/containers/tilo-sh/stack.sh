@@ -542,6 +542,10 @@ server_env() {
     open) env+=(TILO_WORKSPACES_ADMISSION=open) ;;
     *) die "TILO_SH_ADMISSION is invite (production's) or open, not $admission" ;;
   esac
+  # Its servers, and the stacks beside it, answer on this machine's own
+  # addresses: a model provider or another stack named by one is called
+  # there.
+  env+=(TILO_WORKSPACES_CALL_OWN_NETWORK=1)
   # Not here: the moderation and summary model keys (no model is asked
   # locally), and the Discord bridge's real server unless --discord.
   if [[ -n ${discord_api:-} ]]; then
