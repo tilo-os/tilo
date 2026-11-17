@@ -1975,7 +1975,8 @@ pub fn item_label(
 /// A reference is the item's id, an address its app publishes it under
 /// (`<kind>/<field>/<id>`, `<kind>.<field>:<id>`, or either form of a
 /// nested item's), or the label its collection publishes it under — which
-/// is what a person or an agent knows it by. A reference naming none of the
+/// is what a person or an agent knows it by, or its number counting from 1
+/// as the collection lists it. A reference naming none of the
 /// collection's items is refused with the items there are, so a name that
 /// was mistyped or renamed is never reported as an item that went away.
 pub fn item_named(
@@ -2060,6 +2061,18 @@ pub fn item_named_as(
         }
         [] => {}
     }
+    if let Ok(number) = asked.parse::<usize>() {
+        return number
+            .checked_sub(1)
+            .and_then(|at| list.item(at))
+            .map(|(id, _)| id)
+            .ok_or_else(|| {
+                crate::Refusal::new(format!(
+                    "no {one} {number}: the {many} are numbered 1 to {}",
+                    list.count()
+                ))
+            });
+    }
     let listed: Vec<String> = (0..list.count())
         .filter_map(|at| {
             let (id, item) = list.item(at)?;
@@ -2129,9 +2142,16 @@ pub fn item_id_any(record: &ResourceDesc, value: &dyn Any, reference: &str) -> b
 
 /// The item an address names, as written: the last segment of an item
 /// resource id (`<kind>/<field>/<id>`, and the nested forms), or of an
-/// item's stable address (`<kind>.<field>:<id>`).
+/// item's stable address (`<kind>.<field>:<id>`), or the id an outline
+/// writes after an item (`{#<id>}`).
 fn item_parts(reference: &str) -> Vec<String> {
     let mut parts = Vec::new();
+    if let Some(id) = reference
+        .strip_prefix("{#")
+        .and_then(|rest| rest.strip_suffix('}'))
+    {
+        parts.push(id.to_owned());
+    }
     if let Some(last) = reference.rsplit('/').next()
         && last != reference
     {
