@@ -96,6 +96,13 @@ pub(super) struct Notes {
     /// Whether the notebook follows a link for an agent, as the live Notes does: `open-link`,
     /// its one action whose id begins with `open`.
     links: Arc<Mutex<bool>>,
+    /// Rows one page of a directory level holds at most, when set: a level then comes in
+    /// pages, each with the cursor to the next, as a live app's directory does.
+    level_page: Arc<Mutex<Option<usize>>>,
+    /// Whether the live notebook lists each note's actions in its own level, after the note,
+    /// as a record's host lists its items: a note is then several rows of the notebook's
+    /// level, and a page may end between them.
+    placed: Arc<Mutex<bool>>,
 }
 
 /// What a workspace answers about its installed apps.
@@ -151,7 +158,21 @@ impl Notes {
             }]))),
             asks: Arc::default(),
             links: Arc::default(),
+            level_page: Arc::default(),
+            placed: Arc::default(),
         }
+    }
+
+    /// The same live Notes, each note's actions listed in the notebook's level.
+    fn placing_actions(self) -> Self {
+        *self.placed.lock().unwrap() = true;
+        self
+    }
+
+    /// The same Notes, its directory answering a level `rows` rows a page.
+    fn paging_levels(self, rows: usize) -> Self {
+        *self.level_page.lock().unwrap() = Some(rows);
+        self
     }
 
     /// The same Notes, its notebook following a link as the live one does (`open-link`).
@@ -246,6 +267,7 @@ impl Notes {
                 false,
             ),
         ];
+        let placed = *self.placed.lock().unwrap();
         for (page, _, label) in self.notes() {
             let key = Self::live_key(&page);
             let body = format!("{key}/body");
@@ -257,7 +279,7 @@ impl Notes {
                 ("history", "History", Vec::new(), View),
             ] {
                 rows.push(self.row(
-                    &key,
+                    if placed { NOTEBOOK } else { &key },
                     &key,
                     "notes.notebook.pages",
                     &label,
@@ -809,6 +831,32 @@ impl Notes {
                     ..CataloguePage::default()
                 }));
             }
+            let level_page = *self.level_page.lock().unwrap();
+            if let Some(page) = level_page.filter(|_| provider != WORKSPACE) {
+                // A page's cursor is the row it starts at.
+                let from = std::str::from_utf8(&query.cursor)
+                    .ok()
+                    .and_then(|cursor| cursor.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let page = page
+                    .min(usize::try_from(query.max_results).unwrap_or(usize::MAX))
+                    .max(1);
+                let total = rows.len();
+                let rows: Vec<CatalogueRow> = rows.into_iter().skip(from).take(page).collect();
+                let end = from.saturating_add(rows.len());
+                self.count_answered(rows.len());
+                return Pending::ready(Ok(CataloguePage {
+                    revision: "v1".into(),
+                    rows,
+                    next_cursor: if end < total {
+                        end.to_string().into_bytes()
+                    } else {
+                        Vec::new()
+                    },
+                    exhausted: end >= total,
+                    ..CataloguePage::default()
+                }));
+            }
         } else {
             rows.retain(|row| host_matches(row, &query.needle));
             let search_page = *self.search_page.lock().unwrap();
@@ -1024,10 +1072,11 @@ impl ActionHost for Notes {
                 None if resource == self.id(&Self::live_key(TODO)) => succeeded(Some(todo_page())),
                 None => succeeded(Some(json!({
                     "kind": "notes.notebook",
-                    "pages": [
-                        {"item": TODO, "title": "Todo", "parent": null},
-                        {"item": SHOP, "title": "Groceries", "parent": null},
-                    ],
+                    "pages": self
+                        .notes()
+                        .iter()
+                        .map(|(page, _, title)| json!({"item": page, "title": title, "parent": null}))
+                        .collect::<Vec<_>>(),
                     "tags": [],
                 }))),
                 Some(TODO) => match long {
@@ -1037,7 +1086,21 @@ impl ActionHost for Notes {
                     }
                     None => succeeded(Some(todo_page())),
                 },
-                Some(other) => failed("not_found", &format!("no note `{other}`")),
+                // A note the notebook grew by reads as its title.
+                Some(other) => match self
+                    .notes()
+                    .into_iter()
+                    .skip(2)
+                    .find(|note| note.0 == other)
+                {
+                    Some((page, _, title)) => succeeded(Some(json!({
+                        "kind": "notes.page",
+                        "item": page,
+                        "title": title,
+                        "markdown": format!("# {title}"),
+                    }))),
+                    None => failed("not_found", &format!("no note `{other}`")),
+                },
             },
             "append-paragraph" => succeeded(Some(json!({"block": "b9", "note": null}))),
             "history" => succeeded(Some(json!({
@@ -2655,184 +2718,6 @@ impl ActionHost for NoSearch {
     }
 }
 
-tilo_test_env::scenario! {
-    fn a_call_reads_the_directory_once_at_a_cost_that_does_not_grow;
-
-    phase a_level_read_across_a_moving_directory_starts_again_at_the_new_revision;
-    // A level is read as one snapshot: when the app's directory moves on
-    // between its pages, the read starts again at the new revision and the agent
-    // sees the whole level, not an error or a mix of two revisions.
-    {
-        let steady = Notes::new(true);
-        let moving = Notes::new(true);
-        *moving.moves.lock().unwrap() = 2;
-        let (expected, failed) = run(tool(&agent(&steady), "tilo_ls", json!({"path": "notes"})));
-        assert!(!failed, "{expected}");
-        let (listed, failed) = run(tool(&agent(&moving), "tilo_ls", json!({"path": "notes"})));
-        assert!(!failed, "{listed}");
-        assert_eq!(listed, expected);
-        assert_eq!(
-            *moving.moves.lock().unwrap(),
-            0,
-            "both moves were read past"
-        );
-    }
-
-    phase a_directory_that_never_holds_still_is_reported;
-    // A directory that never holds still for one read is reported, once the
-    // time an action is waited for has passed, and is read again with a pause
-    // that grows rather than as fast as it answers.
-    {
-        let moving = Notes::new(true);
-        *moving.moves.lock().unwrap() = u32::MAX;
-        let (text, failed, waited) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .start_paused(true)
-            .build()
-            .unwrap()
-            .block_on(async {
-                let started = tokio::time::Instant::now();
-                let (text, failed) = tool(&agent(&moving), "tilo_ls", json!({"path": "notes"})).await;
-                (text, failed, started.elapsed())
-            });
-        assert!(failed, "{text}");
-        assert!(text.contains("kept changing"), "{text}");
-        assert!(
-            waited >= std::time::Duration::from_millis(DEFAULT_WAIT_MS),
-            "gave up after {waited:?}"
-        );
-        let reads = u32::MAX.saturating_sub(*moving.moves.lock().unwrap());
-        assert!(
-            (20..=50).contains(&reads),
-            "read {reads} times in {waited:?}"
-        );
-    }
-
-    phase a_changing_directory_is_read_again_at_once_then_after_a_growing_pause;
-    {
-        let ms = std::time::Duration::from_millis;
-        let pauses: Vec<_> = (0..10).map(restart_pause).collect();
-        assert_eq!(
-            pauses,
-            [
-                ms(0),
-                ms(0),
-                ms(5),
-                ms(10),
-                ms(20),
-                ms(40),
-                ms(80),
-                ms(160),
-                ms(200),
-                ms(200)
-            ]
-        );
-        assert_eq!(restart_pause(u32::MAX), RESTART_PAUSE_MAX);
-    }
-
-    phase a_call_asks_for_each_directory_level_and_the_running_apps_once;
-    // One call asks the app's directory for each level once and asks which apps
-    // run once: reading a note finds the action that reads it among the levels
-    // its path was resolved through, and running an action resolves its path in
-    // the app it looked up, without asking either again.
-    {
-        let host = Notes::new(true);
-        run(async {
-            let (text, failed) = tool(&agent(&host), "tilo_read", json!({"path": "notes/Todo"})).await;
-            assert!(!failed, "{text}");
-            let asked = host.take_asked();
-            let mut once = asked.clone();
-            once.sort();
-            once.dedup();
-            assert_eq!(asked.len(), once.len(), "asked twice: {asked:#?}");
-
-            let (text, failed) = tool(
-                &agent(&host),
-                "tilo_do",
-                json!({"path": "notes/Todo/body#append-paragraph", "args": {"text": "x"}}),
-            )
-            .await;
-            assert!(!failed, "{text}");
-            let asked = host.take_asked();
-            assert_eq!(
-                asked.iter().filter(|asked| *asked == "apps").count(),
-                1,
-                "{asked:#?}"
-            );
-        });
-    }
-
-    phase a_read_of_one_note_costs_the_same_in_a_notebook_of_any_size;
-    // Reading one note costs what it costs however many notes the notebook
-    // holds: a notebook grown from 2 notes to 32 asks the directory nothing
-    // more and is answered no more rows for one note's read.
-    {
-        let read = json!({"path": "notes/Notebook/Todo"});
-        let small = work_of(&Notes::new(true).live(), "tilo_read", &read);
-        let large = work_of(&Notes::new(true).live().with_notes(30), "tilo_read", &read);
-        eprintln!("one read: {small:?} at 2 notes, {large:?} at 32");
-        assert_eq!(small.2, large.2, "the same note reads the same");
-        assert_eq!(
-            (small.0, small.1),
-            (large.0, large.1),
-            "queries and rows at 2 notes against 32"
-        );
-    }
-
-    phase an_action_on_the_notebook_or_a_note_costs_the_same_in_a_notebook_of_any_size;
-    // Making a note through the notebook's action, or appending to one note's
-    // body, costs the same however many notes the notebook holds: the action is
-    // found by its address, not in a page of the notebook's notes.
-    {
-        for (path, args) in [
-            ("notes/Notebook#new-note", json!({"title": "Plan"})),
-            (
-                "notes/Notebook/Todo/Body#append-paragraph",
-                json!({"text": "milk"}),
-            ),
-        ] {
-            let call = json!({"path": path, "args": args});
-            let small = work_of(&Notes::new(true).live(), "tilo_do", &call);
-            let large = work_of(&Notes::new(true).live().with_notes(30), "tilo_do", &call);
-            eprintln!("{path}: {small:?} at 2 notes, {large:?} at 32");
-            assert_eq!(small.2, large.2, "{path} answers the same");
-            assert_eq!(
-                (small.0, small.1),
-                (large.0, large.1),
-                "{path}: queries and rows at 2 notes against 32"
-            );
-        }
-    }
-
-    phase a_find_costs_what_it_finds_in_a_notebook_of_any_size;
-    // Finding a note by its title, or the action that makes one, costs the
-    // rows that name it however many notes the notebook holds.
-    {
-        for query in ["Todo", "new note"] {
-            let find = json!({"query": query, "app": "notes"});
-            let small = work_of(&Notes::new(true).live(), "tilo_find", &find);
-            let large = work_of(&Notes::new(true).live().with_notes(30), "tilo_find", &find);
-            eprintln!("find {query}: {small:?} at 2 notes, {large:?} at 32");
-            assert_eq!(small.2, large.2, "{query} finds the same");
-            assert_eq!(
-                (small.0, small.1),
-                (large.0, large.1),
-                "{query}: queries and rows at 2 notes against 32"
-            );
-        }
-        let (text, _) = run(tool(
-            &agent(&Notes::new(true).live().with_notes(30)),
-            "tilo_find",
-            json!({"query": "Todo", "app": "notes"}),
-        ));
-        assert!(
-            text.lines()
-                .any(|line| line == "notes/Notebook/Todo  notes.notebook.pages"),
-            "the note is named by the path its listing names it: {text}"
-        );
-    }
-}
-
 /// What one call made the app's directory do: the queries it was asked and
 /// the rows it answered.
 fn work_of(host: &Notes, name: &str, arguments: &Value) -> (usize, usize, String) {
@@ -2979,6 +2864,8 @@ pub(super) async fn answer<H: ActionHost + Send + Sync + 'static>(
 
 #[path = "mcp_agent_flux_tests.rs"]
 mod flux;
+#[path = "mcp_agent_level_tests.rs"]
+mod levels;
 #[path = "mcp_agent_open_tests.rs"]
 mod opening;
 #[path = "mcp_runs_tests.rs"]
