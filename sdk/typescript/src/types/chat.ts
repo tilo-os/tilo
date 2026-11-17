@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@6190627852b619e4";
+export const SURFACE = "so.tilo.chat@22dca5aec1753089";
 
 export interface Category {
   name: string;
@@ -229,6 +229,12 @@ export interface Submission {
   id: string;
   destination: Destination;
   feedback: ReviewedFeedback;
+}
+
+export interface Summary {
+  text: string;
+  through: string;
+  through_ts: number;
 }
 
 /** One of "interface", "content". */
@@ -476,6 +482,7 @@ export interface Agent {
   spent: Spent | null;
   state: AgentState;
   created_at: number;
+  instruction: string | null;
 }
 
 /** One of "active", "retired". */
@@ -619,6 +626,14 @@ export interface MarkReadArgs {
   channel: string;
   part: number;
   seen: number;
+}
+
+/** The arguments of `keep-summary`. */
+export interface KeepSummaryArgs {
+  channel: string;
+  through: string;
+  through_ts: number;
+  text: string;
 }
 
 /** The arguments of `submit-feedback`. */
@@ -847,6 +862,12 @@ export interface SetAgentModelArgs {
   model?: string;
 }
 
+/** The arguments of `set-agent-instruction`. */
+export interface SetAgentInstructionArgs {
+  agent: string;
+  instruction?: string;
+}
+
 /** The arguments of `set-agent-bound`. */
 export interface SetAgentBoundArgs {
   agent: string;
@@ -867,6 +888,7 @@ export interface Workspace extends tilo.Resource {
   feedback: Array<tilo.Entry<FeedbackReport>>;
   moderation: Moderation;
   readonly files: WorkspaceFiles;
+  readonly summaries: Record<string, Record<string, Summary>>;
   beginChat(args: {
     name: string;
     initials: string;
@@ -996,6 +1018,14 @@ export interface Workspace extends tilo.Resource {
   }): Promise<void>;
   /** Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   markReadMany(items: MarkReadArgs[]): Promise<tilo.ActionAnswer[]>;
+  keepSummary(args: {
+    channel: string;
+    through: string;
+    through_ts: number;
+    text: string;
+  }): Promise<void>;
+  /** Runs `keep-summary` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  keepSummaryMany(items: KeepSummaryArgs[]): Promise<tilo.ActionAnswer[]>;
   submitFeedback(args: {
     channel: string;
     submission: unknown;
@@ -1021,7 +1051,7 @@ export interface Workspace extends tilo.Resource {
 
 /** The actions `Workspace` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKSPACE_ACTIONS = ["beginChat", "beginChatMany", "introduce", "introduceMany", "createCategory", "createCategoryMany", "createChannel", "createChannelMany", "createChannelWithId", "createChannelWithIdMany", "deleteCategory", "deleteCategoryMany", "moveChannel", "moveChannelMany", "moveCategory", "moveCategoryMany", "arrangeChannels", "arrangeChannelsMany", "setChannelCategory", "setChannelCategoryMany", "renameChannel", "renameChannelMany", "setChannelTopic", "setChannelTopicMany", "archiveChannel", "archiveChannelMany", "renameCategory", "renameCategoryMany", "deleteChannel", "deleteChannelMany", "reportMessage", "reportMessageMany", "reportPerson", "reportPersonMany", "decideReports", "decideReportsMany", "overturnDecision", "overturnDecisionMany", "markRead", "markReadMany", "submitFeedback", "submitFeedbackMany", "triage", "triageMany", "exportContent", "startCall", "selectInput"] as const;
+export const WORKSPACE_ACTIONS = ["beginChat", "beginChatMany", "introduce", "introduceMany", "createCategory", "createCategoryMany", "createChannel", "createChannelMany", "createChannelWithId", "createChannelWithIdMany", "deleteCategory", "deleteCategoryMany", "moveChannel", "moveChannelMany", "moveCategory", "moveCategoryMany", "arrangeChannels", "arrangeChannelsMany", "setChannelCategory", "setChannelCategoryMany", "renameChannel", "renameChannelMany", "setChannelTopic", "setChannelTopicMany", "archiveChannel", "archiveChannelMany", "renameCategory", "renameCategoryMany", "deleteChannel", "deleteChannelMany", "reportMessage", "reportMessageMany", "reportPerson", "reportPersonMany", "decideReports", "decideReportsMany", "overturnDecision", "overturnDecisionMany", "markRead", "markReadMany", "keepSummary", "keepSummaryMany", "submitFeedback", "submitFeedbackMany", "triage", "triageMany", "exportContent", "startCall", "selectInput"] as const;
 
 /** The `chat.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {
@@ -1288,6 +1318,12 @@ export interface ChatAgent extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set-agent-model` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setAgentModelMany(items: SetAgentModelArgs[]): Promise<tilo.ActionAnswer[]>;
+  setAgentInstruction(args: {
+    agent: string;
+    instruction?: string;
+  }): Promise<void>;
+  /** Runs `set-agent-instruction` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setAgentInstructionMany(items: SetAgentInstructionArgs[]): Promise<tilo.ActionAnswer[]>;
   setAgentBound(args: {
     agent: string;
     bound: Bound[];
@@ -1303,7 +1339,7 @@ export interface ChatAgent extends tilo.Resource {
 
 /** The actions `ChatAgent` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CHATAGENT_ACTIONS = ["createAgent", "createAgentMany", "setAgentSpendLimit", "setAgentSpendLimitMany", "recordAgentSpend", "recordAgentSpendMany", "setAgentOnHost", "setAgentOnHostMany", "setAgentColour", "setAgentColourMany", "renameAgent", "renameAgentMany", "setAgentModel", "setAgentModelMany", "setAgentBound", "setAgentBoundMany", "retireAgent", "retireAgentMany"] as const;
+export const CHATAGENT_ACTIONS = ["createAgent", "createAgentMany", "setAgentSpendLimit", "setAgentSpendLimitMany", "recordAgentSpend", "recordAgentSpendMany", "setAgentOnHost", "setAgentOnHostMany", "setAgentColour", "setAgentColourMany", "renameAgent", "renameAgentMany", "setAgentModel", "setAgentModelMany", "setAgentInstruction", "setAgentInstructionMany", "setAgentBound", "setAgentBoundMany", "retireAgent", "retireAgentMany"] as const;
 
 /** The `chat.agent` kind at `path`. */
 export function chatAgent(ws: tilo.Workspace, path: string): ChatAgent {
