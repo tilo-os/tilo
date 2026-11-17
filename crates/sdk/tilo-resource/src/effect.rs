@@ -232,7 +232,7 @@ pub trait Effect: Sized + 'static {
     /// The spec `id` declares: what a control binding it reads, so binding one
     /// effect costs one declaration rather than the vocabulary's.
     fn spec(id: &str) -> Option<tilo_actions::ActionSpec> {
-        Self::declaration(id).map(|decl| decl.spec::<Self>(Self::OPERATION))
+        Self::declaration(id).map(|decl| decl.spec_checked(Self::OPERATION, check::<Self>))
     }
 
     /// This effect's arguments, named as its declaration's parameters.
@@ -247,7 +247,8 @@ pub trait Effect: Sized + 'static {
     /// The published action of every effect offered on the resource: all
     /// but the `row` ones, which are offered only [bound](Self::bound).
     fn specs() -> Vec<ActionSpec> {
-        kept_specs::<Self>(
+        kept_specs(
+            check::<Self>,
             std::any::TypeId::of::<Self>(),
             Self::OPERATION,
             Self::declarations,
@@ -263,7 +264,7 @@ pub trait Effect: Sized + 'static {
         let id = self.id();
         let arguments = self.arguments();
         let spec = kept_type((std::any::TypeId::of::<Self>(), id, None), || {
-            bound_type::<Self>(Self::OPERATION, id, Self::declaration(id))
+            bound_type(check::<Self>, Self::OPERATION, id, Self::declaration(id))
         })
         .bind(Target::new(arguments.clone()))
         .with_bound(arguments.into_iter().collect());
@@ -293,7 +294,13 @@ pub trait Effect: Sized + 'static {
         let id = self.id();
         match Self::declaration(id) {
             Some(decl) => asking_phrase(
-                asking_spec::<Self>(Self::OPERATION, &decl, params, self.arguments()),
+                asking_spec(
+                    check::<Self>,
+                    Self::OPERATION,
+                    &decl,
+                    params,
+                    self.arguments(),
+                ),
                 self.confirmation_phrase(),
             ),
             None => self.bound(),
@@ -304,7 +311,8 @@ pub trait Effect: Sized + 'static {
     /// (`#[effect(item = field)]`), each with its first parameter bound to
     /// the item and the rest still asked.
     fn item_specs(field: &str, item: &crate::Id) -> Vec<ActionSpec> {
-        item_specs::<Self>(
+        item_specs(
+            check::<Self>,
             std::any::TypeId::of::<Self>(),
             Self::OPERATION,
             Self::declarations,
@@ -378,7 +386,18 @@ enum Bound {
 /// was offered on.
 type BoundArguments = serde_json::Map<String, serde_json::Value>;
 
-/// The one encoder of every effect spec of the vocabulary `E`: the invocation
+/// Why the effect `id` of a vocabulary does not take `arguments`, as the
+/// vocabulary reads them back; `None` when it does.
+type Check = fn(&str, &BoundArguments) -> Option<String>;
+
+/// [`Check`] of the vocabulary `E`: the only part of its specs compiled for it.
+fn check<E: Effect>(id: &str, arguments: &BoundArguments) -> Option<String> {
+    E::decode(id, arguments)
+        .err()
+        .map(|problem| problem.to_string())
+}
+
+/// The one encoder of every effect spec of a vocabulary, which `check`s: the invocation
 /// of effect `effect` under `operation`, with its arguments made as `mode`
 /// says of the ones its target binds ([`BoundArguments`]) and the caller's.
 ///
@@ -386,17 +405,18 @@ type BoundArguments = serde_json::Map<String, serde_json::Value>;
 /// that names an id or a value the effect does not take is refused at the
 /// API, [`INVALID_ARGUMENTS_TYPE`](tilo_actions::resource::INVALID_ARGUMENTS_TYPE)
 /// with why, rather than handed to a host that cannot run it.
-fn encoder<E: Effect>(
+fn encoder(
+    check: Check,
     operation: &'static str,
     effect: &'static str,
     mode: Bound,
 ) -> impl Fn(&Target, &tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static {
     move |target, args| {
         let args = effect_arguments(mode, target, args);
-        if let Err(problem) = E::decode(effect, &args) {
+        if let Some(problem) = check(effect, &args) {
             return EncodedAction {
                 type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
-                payload: problem.to_string().into_bytes(),
+                payload: problem.into_bytes(),
             };
         }
         EncodedAction::encode_operation(
@@ -446,7 +466,8 @@ fn effect_arguments(
 /// and are published on every refresh of a view's actions, so each thread
 /// builds them once per generation of app code
 /// ([`reset_type_schemas`](crate::reset_type_schemas)) and hands out copies.
-fn kept_specs<E: Effect>(
+fn kept_specs(
+    check: Check,
     key: std::any::TypeId,
     operation: &'static str,
     declarations: fn() -> Vec<EffectDecl>,
@@ -469,7 +490,8 @@ fn kept_specs<E: Effect>(
         }
     });
     let specs = found.unwrap_or_else(|| {
-        let built: std::rc::Rc<[ActionSpec]> = offered_specs::<E>(declarations(), operation).into();
+        let built: std::rc::Rc<[ActionSpec]> =
+            offered_specs(check, declarations(), operation).into();
         KEPT.with(|kept| {
             let mut kept = kept.borrow_mut();
             if kept.0 != epoch {
@@ -482,12 +504,12 @@ fn kept_specs<E: Effect>(
     specs.to_vec()
 }
 
-fn offered_specs<E: Effect>(decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionSpec> {
+fn offered_specs(check: Check, decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionSpec> {
     decls
         .into_iter()
         .filter(|decl| !decl.row)
         .map(|decl| {
-            let mut spec = decl.spec::<E>(operation);
+            let mut spec = decl.spec_checked(operation, check);
             // Offered on each item it acts on (`item = field`), its item
             // bound, it stays published here for scripts that name the item,
             // out of the palette's way, as an item verb does.
@@ -503,12 +525,13 @@ fn offered_specs<E: Effect>(decls: Vec<EffectDecl>, operation: &'static str) -> 
 
 /// The type of [`Effect::bound`] of the effect `id`, declared as `decl`: its
 /// target binds every argument.
-fn bound_type<E: Effect>(
+fn bound_type(
+    check: Check,
     operation: &'static str,
     id: &'static str,
     decl: Option<EffectDecl>,
 ) -> Arc<ActionType> {
-    let build = encoder::<E>(operation, id, Bound::Only);
+    let build = encoder(check, operation, id, Bound::Only);
     let spec = match decl {
         Some(decl) => decl.spec_with(operation, Vec::new(), build),
         None => ActionSpec::typed_operation_on(
@@ -526,7 +549,8 @@ fn bound_type<E: Effect>(
 
 /// [`Effect::bound_asking_params`] of the effect `decl` declares, bound to
 /// `args`, asking `params`.
-fn asking_spec<E: Effect>(
+fn asking_spec(
+    check: Check,
     operation: &'static str,
     decl: &EffectDecl,
     params: Vec<ActionParam>,
@@ -537,7 +561,7 @@ fn asking_spec<E: Effect>(
         .filter(|(name, _)| !params.iter().any(|param| param.name == name.as_str()))
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
-    let build = encoder::<E>(operation, decl.id, Bound::UnderCaller);
+    let build = encoder(check, operation, decl.id, Bound::UnderCaller);
     decl.spec_with(operation, params, build)
         .action_type()
         .bind(Target::new(args))
@@ -552,7 +576,8 @@ fn params_from(params: &[ActionParam]) -> Vec<ActionParam> {
 
 /// [`Effect::item_specs`] of the vocabulary `key`, whose declarations
 /// `declarations` are: each type is kept per field, bound here to `item`.
-fn item_specs<E: Effect>(
+fn item_specs(
+    check: Check,
     key: std::any::TypeId,
     operation: &'static str,
     declarations: fn() -> Vec<EffectDecl>,
@@ -566,7 +591,7 @@ fn item_specs<E: Effect>(
             let first = decl.params.first()?.name.to_string();
             let ty = kept_type((key, decl.id, Some(decl.item?)), || {
                 let rest = params_from(decl.params.get(1..).unwrap_or_default());
-                let build = encoder::<E>(operation, decl.id, Bound::OverCaller);
+                let build = encoder(check, operation, decl.id, Bound::OverCaller);
                 Arc::clone(decl.spec_with(operation, rest, build).action_type())
             });
             let bound = BoundArguments::from_iter([(
@@ -827,7 +852,12 @@ impl EffectDecl {
     /// instead put the first field's help text in the search field. One
     /// that takes an entry or content still asks for it.
     pub fn spec<E: Effect>(&self, operation: &'static str) -> ActionSpec {
-        let build = encoder::<E>(operation, self.id, Bound::None);
+        self.spec_checked(operation, check::<E>)
+    }
+
+    /// [`Self::spec`] of a vocabulary that reads arguments back with `check`.
+    fn spec_checked(&self, operation: &'static str, check: Check) -> ActionSpec {
+        let build = encoder(check, operation, self.id, Bound::None);
         let spec = self.spec_with(operation, params_from(&self.params), build);
         let asks_words = matches!(
             spec.input(),
