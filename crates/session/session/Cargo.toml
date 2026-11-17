@@ -196,7 +196,9 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 # The live session over this session's own iroh endpoint: native only.
 tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time"] }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "macros", "time"] }
+# Tilo's API, which the session serves its own person's programs on this computer.
+tilo-api = { path = "../../hosting/tilo-api" }
 # A Rust app's views and resources, published in a development session only
 # (`dev-rust-views`): the sample catalogue, never the live worker.
 tube = { path = "../../../apps/tube", default-features = false, features = ["samples"], optional = true }

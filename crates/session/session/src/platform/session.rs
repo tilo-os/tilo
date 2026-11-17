@@ -1314,6 +1314,14 @@ impl Session {
         let liveness = options.test_control.as_deref().and_then(|control| {
             compositor.serve_liveness(control, crate::mcp_server::bind_private)
         });
+        // Tilo's API for the person's own programs on this computer, as them.
+        if let Some(path) = options.api_server.as_deref() {
+            crate::api_server::serve(
+                path,
+                app_wire.as_ref().and_then(AppWire::agent_broker),
+                std::sync::Arc::clone(&session_services),
+            );
+        }
         let mcp_server = server.map(|server| {
             let mut server = server.serve(
                 app_wire.as_ref().and_then(AppWire::agent_broker),

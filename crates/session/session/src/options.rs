@@ -161,6 +161,9 @@ pub struct Options {
     /// login asks on to work in a workspace as an agent, and the person admits it. `None` : this
     /// session serves no agents (a test, or a session in a window of another desktop).
     pub mcp_server: Option<std::path::PathBuf>,
+    /// Where the session serves Tilo's API to its person's own programs on this computer, as them
+    /// ([`crate::api_server`]): its login's `api.sock`. `None` : it serves none.
+    pub api_server: Option<std::path::PathBuf>,
     /// The programs admitted ahead of time to act as the person at the MCP server, without the
     /// sheet: a test that drives the session as its person names its own executable. Only a
     /// connection whose executable is one of these and that asks to act as the person is; any
@@ -428,6 +431,7 @@ impl Default for Options {
             vpn: None,
             app_socket: AppSocket::default(),
             mcp_server: None,
+            api_server: None,
             admit_repl: Vec::new(),
             agent_key: None,
             test_control: None,

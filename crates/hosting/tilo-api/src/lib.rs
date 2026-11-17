@@ -52,8 +52,8 @@ use hyper::{
     body::{Bytes, Incoming},
     header::{self, HeaderValue},
 };
-use server::Connection;
 use serde_json::{Value, json};
+use server::Connection;
 use session::{SESSION_HEADER, Session};
 use std::{
     collections::HashMap,
@@ -188,6 +188,9 @@ pub struct Server {
     /// Whether the site serves the sign-in page every approval lands on, as
     /// last seen and when ([`Self::sign_in_page`]).
     sign_in_seen: Mutex<Option<(std::time::Instant, Result<(), String>)>>,
+    /// The Tilo desktop this server is part of, when it is: it answers every
+    /// workspace itself, and no call is forwarded anywhere.
+    here: Option<Arc<dyn session::Here>>,
 }
 
 /// How long what the site answered for its sign-in page is trusted.
@@ -209,6 +212,29 @@ impl Server {
     /// The web entry is not a URL, or the HTTP client for the server and the
     /// site could not be built.
     pub fn new(config: &Config, store: Store) -> io::Result<Arc<Self>> {
+        Self::serving(config, store, None)
+    }
+
+    /// The server inside the Tilo desktop `here`, which answers every workspace
+    /// itself, its keys kept in memory.
+    ///
+    /// # Errors
+    /// As [`Self::new`].
+    pub fn here(here: Arc<dyn session::Here>) -> io::Result<Arc<Self>> {
+        let origin = "http://localhost".to_owned();
+        let config = Config {
+            issuer: origin.clone(),
+            web_entry: origin,
+            hosts: Vec::new(),
+        };
+        Self::serving(&config, Store::in_memory(), Some(here))
+    }
+
+    fn serving(
+        config: &Config,
+        store: Store,
+        here: Option<Arc<dyn session::Here>>,
+    ) -> io::Result<Arc<Self>> {
         let http = tilo_net::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .redirects(tilo_net::Redirects::None)
@@ -240,6 +266,7 @@ impl Server {
             sign_in_seen: Mutex::default(),
             v1: v1::State::default(),
             uploads: content::Uploads::default(),
+            here,
         }))
     }
 
@@ -1379,7 +1406,7 @@ impl Server {
         let id = format!("{API_SESSION}{}", grant.id);
         let open = lock(&self.sessions)
             .get(&id)
-            .filter(|session| session.connection().is_live())
+            .filter(|session| session.is_live())
             .cloned();
         if let Some(open) = open {
             return Ok(open);
@@ -1429,16 +1456,22 @@ impl Server {
         label: String,
     ) -> Result<Session, String> {
         let key = grant.key().ok_or("this key cannot act now")?;
-        let connection = self
-            .connection(&grant.id, &key)
-            .await
-            .map_err(|error| error.to_string())?;
-        self.keep_once_let_in(grant, &connection);
+        let reach = if let Some(here) = &self.here {
+            session::Reach::Here(Arc::clone(here))
+        } else {
+            let connection = self
+                .connection(&grant.id, &key)
+                .await
+                .map_err(|error| error.to_string())?;
+            self.keep_once_let_in(grant, &connection);
+            session::Reach::Forwarded(connection)
+        };
         Ok(Session::new(
             grant.id.clone(),
             scope,
             label,
-            connection,
+            key.cert(),
+            reach,
             Arc::downgrade(self),
         ))
     }
@@ -1703,26 +1736,48 @@ fn redirect(location: &str) -> Reply {
 
 /// Serve `server` on `listener` until the process ends.
 pub async fn serve(server: Arc<Server>, listener: tokio::net::TcpListener) {
-    use hyper::service::service_fn;
-    use hyper_util::rt::TokioIo;
     v1::webhooks::Deliveries::start_all(&server);
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             continue;
         };
+        tokio::spawn(serve_connection(Arc::clone(&server), stream, None));
+    }
+}
+
+/// Answer the requests of one connection, each as `authorization` when it
+/// names one: the key a server inside a desktop acts as for whoever reaches it.
+pub(crate) async fn serve_connection(
+    server: Arc<Server>,
+    stream: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+    authorization: Option<HeaderValue>,
+) {
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    let service = service_fn(move |mut request: Request<Incoming>| {
         let server = Arc::clone(&server);
-        tokio::spawn(async move {
-            let service = service_fn(move |request| {
-                let server = Arc::clone(&server);
-                async move { Ok::<_, std::convert::Infallible>(server.respond(request).await) }
-            });
-            if let Err(error) = hyper::server::conn::http1::Builder::new()
-                .serve_connection(TokioIo::new(stream), service)
-                .await
-            {
-                tracing::debug!(%error, "API connection ended");
+        let authorization = authorization.clone();
+        async move {
+            if let Some(authorization) = authorization {
+                // Only the API is served this way: no sign-in, no OAuth.
+                if !request.uri().path().starts_with("/v1") {
+                    return Ok::<_, std::convert::Infallible>(text(
+                        StatusCode::NOT_FOUND,
+                        "only Tilo's API (/v1) is served here",
+                    ));
+                }
+                request
+                    .headers_mut()
+                    .insert(header::AUTHORIZATION, authorization);
             }
-        });
+            Ok(server.respond(request).await)
+        }
+    });
+    if let Err(error) = hyper::server::conn::http1::Builder::new()
+        .serve_connection(TokioIo::new(stream), service)
+        .await
+    {
+        tracing::debug!(%error, "API connection ended");
     }
 }
 

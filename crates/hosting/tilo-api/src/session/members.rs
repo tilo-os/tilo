@@ -150,14 +150,14 @@ impl Session {
         arguments: Map<String, Value>,
         next: &str,
     ) -> Result<Value, Outcome> {
-        let id = self
-            .connection
+        let connection = self.connection().map_err(|error| refused(&error))?;
+        let id = connection
             .server()
-            .enter(&self.connection, workspace)
+            .enter(connection, workspace)
             .await
             .map_err(|error| refused(&error))?;
         let target = RemoteActionTarget::workspace_governance(workspace, verb);
-        self.connection
+        connection
             .device
             .ask_host(id, target, arguments)
             .await

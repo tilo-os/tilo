@@ -469,9 +469,7 @@ impl<'a> Caller<'a> {
                     .map_err(|why| ApiError::new("invalid_arguments", why))?;
                 let mut listed = self
                     .session
-                    .connection()
-                    .server()
-                    .labelled(self.session.connection(), &labels)
+                    .workspaces(&labels)
                     .await
                     .map_err(ApiError::from)?;
                 listed.retain(|workspace| crate::account::labelled(workspace, &labels));
@@ -657,9 +655,7 @@ impl<'a> Caller<'a> {
         let ws = self.workspace();
         let workspace = self
             .session
-            .connection()
-            .server()
-            .workspace(self.session.connection(), &ws)
+            .workspace(&ws)
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::new("not_found", "no such workspace"))?;

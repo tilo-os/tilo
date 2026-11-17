@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 pub const TILO_DESKTOP: &str = "tilo";
 pub const SESSION_DIR: &str = "tilo-session";
 pub const AGENT_SOCKET_FILE: &str = "agent.sock";
+/// The socket in [`SESSION_DIR`] where the desktop serves Tilo's API to its own person's
+/// programs (the REPL, the `tilo` command, scripts), as that person.
+pub const API_SOCKET_FILE: &str = "api.sock";
 pub const ENVIRONMENTS_DIR: &str = "environments";
 pub const GUEST_AGENT_SOCKET: &str = "/run/tilo/agent.sock";
 pub const AGENT_SOCKET_ENV: &str = "TILO_AGENT_SOCK";

@@ -161,10 +161,10 @@ impl Session {
         workspace: &str,
         query: &InvocationsQuery,
     ) -> Result<Invocations, Outcome> {
-        let id = self
-            .connection
+        let connection = self.connection().map_err(|error| refused(&error))?;
+        let id = connection
             .server()
-            .enter(&self.connection, workspace)
+            .enter(connection, workspace)
             .await
             .map_err(|error| refused(&error))?;
         let argument = match serde_json::to_value(query) {
@@ -183,8 +183,7 @@ impl Session {
             appearance: None,
         };
         let unanswered = || failed("unavailable", "the workspace did not answer", "try again");
-        let receipt = self
-            .connection
+        let receipt = connection
             .device
             .actions(id)
             .invoke(&self.caller(), request)

@@ -76,6 +76,7 @@ fn session_launching(
         questions: Some(Questions::new()),
         app_socket: AppSocket::At(root.join("app_wire.sock")),
         mcp_server: Some(root.join("agent.sock")),
+        api_server: Some(root.join("api.sock")),
         admit_repl: vec![program],
         launches,
         ..Options::default()
@@ -219,13 +220,17 @@ fn a_task_made_by_the_apps_action_is_found_by_the_repl_and_a_program() {
         "the seeded tasks are still beside it"
     );
 
-    // The person's REPL, at the session's API.
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    // The person's REPL, at the session's API (`tilolang repl --session`).
     until(&mut session, "the REPL's find", |session| {
-        let (found, failed) = repl.run(session, "find(tasks.Task)");
-        assert!(!failed, "the REPL's find ran: {found}");
-        found.contains("Water the ferns") && found.contains(SEEDED_TASK)
+        let found = crate::common::api_program(
+            session,
+            &root.path().join("api.sock"),
+            &workspace,
+            "find(tasks.Task)",
+        );
+        assert_eq!(found["status"], "ok", "the REPL's find ran: {found}");
+        let text = found["text"].as_str().unwrap_or_default();
+        text.contains("Water the ferns") && text.contains(SEEDED_TASK)
     });
 }
 

@@ -138,6 +138,11 @@ pub(crate) fn refused(error: &ServerError) -> Outcome {
         ServerError::Unavailable(_) => {
             failed("unavailable", error.to_string(), "try again shortly")
         }
+        ServerError::NoAccountHere => failed(
+            "not_permitted",
+            error.to_string(),
+            "make, branch and delete workspaces in Tilo",
+        ),
         // Nothing that can read the workspace answered: the message says what
         // to do.
         ServerError::NoHolder => failed(
@@ -384,7 +389,10 @@ impl Server {
                 ),
             );
         };
-        let key = session.connection();
+        let key = match session.connection() {
+            Ok(key) => key,
+            Err(error) => return answer(structured, path, refused(&error)),
+        };
         match tool {
             "tilo_ls" => self.account_ls(key, path, structured).await,
             "tilo_read" => self.account_read(&grant, key, path, structured).await,

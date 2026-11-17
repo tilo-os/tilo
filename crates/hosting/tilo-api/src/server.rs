@@ -78,12 +78,19 @@ pub enum ServerError {
     /// No host answered with a session, so nothing that can read the
     /// workspace is online.
     NoHolder,
+    /// The server is part of a Tilo desktop, which answers its own
+    /// workspaces and keeps no account: nothing makes, branches or deletes
+    /// workspaces or keys there.
+    NoAccountHere,
 }
 
 impl std::fmt::Display for ServerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound => f.write_str("no such workspace of yours"),
+            Self::NoAccountHere => f.write_str(
+                "This Tilo desktop answers its own workspaces only: do this in Tilo itself.",
+            ),
             Self::NoHolder => f.write_str(
                 "No device that can read this workspace is online. Open Tilo on a device that \
                  holds it, then try again.",
@@ -386,7 +393,9 @@ impl Server {
             )
             .await
             .map_err(|refusal| match ServerError::from(refusal) {
-                ServerError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => ServerError::NotFound,
+                ServerError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => {
+                    ServerError::NotFound
+                }
                 other => other,
             })?;
         let made: tilo_server_session::workspaces::CreatedWorkspace =
@@ -402,7 +411,11 @@ impl Server {
     /// # Errors
     /// Not one of the person's own workspaces ([`ServerError::NotFound`]),
     /// or the server refused or was not reached.
-    pub async fn delete(&self, connection: &Connection, workspace: &str) -> Result<(), ServerError> {
+    pub async fn delete(
+        &self,
+        connection: &Connection,
+        workspace: &str,
+    ) -> Result<(), ServerError> {
         if tilo_server_protocol::WorkspaceId::parse(workspace).is_none() {
             return Err(ServerError::NotFound);
         }
@@ -413,7 +426,9 @@ impl Server {
             .host_action(tilo_server_session::workspaces::DELETE_WORKSPACE, arguments)
             .await
             .map_err(|refusal| match ServerError::from(refusal) {
-                ServerError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => ServerError::NotFound,
+                ServerError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => {
+                    ServerError::NotFound
+                }
                 other => other,
             })?;
         lock(&connection.entered).remove(workspace);

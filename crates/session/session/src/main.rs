@@ -1122,6 +1122,10 @@ fn device_options(
         // A program of this login asks the MCP server of the person at this device to work in a workspace
         // as an agent; a session in another desktop's window serves none.
         mcp_server: owned.then(tilo_session::mcp_server::path).flatten(),
+        // The person's own programs reach this desktop through Tilo's API in the login's private
+        // directory: a nested session's is its own.
+        api_server: tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))
+            .map(|directory| directory.join(tilo_paths::login::API_SOCKET_FILE)),
         // A session in another desktop's window dims none of the window's machine: the display it
         // draws in is that desktop's.
         backlights: owned.then(|| Box::new(Screens) as Box<dyn Backlights>),

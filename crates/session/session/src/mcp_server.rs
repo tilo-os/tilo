@@ -1674,6 +1674,11 @@ impl SessionServices {
         let _ = self.actions.set(actions);
     }
 
+    /// The shell's workspaces, as of the loop's last pass: each one's id and name.
+    pub(crate) fn workspaces(&self) -> Vec<[String; 2]> {
+        self.workspaces.lock_recover().clone()
+    }
+
     /// The session's own actions, once they are made.
     pub(crate) fn actions(&self) -> Option<Arc<crate::session_actions::SessionActions>> {
         self.actions.get().cloned()
@@ -2742,10 +2747,7 @@ fn serve_admitted(
     session: &Arc<SessionServices>,
     (requests, wake, sessions): (&Sender<Request>, &Wake, &Arc<AgentSessions>),
 ) {
-    let tasks = Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
-        Some(&session.person),
-        Arc::new(SessionCatalogue::new(Arc::clone(session))),
-    ));
+    let tasks = person_tasks(session);
     let admitted = Arc::clone(&tasks);
     // The agent the person admitted: its workspace, its person and the agent member it is a
     // session of, from the answer to the host the connection is then served through.
@@ -2843,6 +2845,15 @@ fn serve_admitted(
             tracing::debug!(%error, "MCP server: the client disconnected")
         );
     }
+}
+
+/// Where the programs of a task of the person's sitting here are done: over the session's own
+/// catalogue.
+pub(crate) fn person_tasks(session: &Arc<SessionServices>) -> Arc<tilo_mcp::task_hosts::TaskHosts> {
+    Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
+        Some(&session.person),
+        Arc::new(SessionCatalogue::new(Arc::clone(session))),
+    ))
 }
 
 /// Hand one client to the loop's question and wait for the person's answer,

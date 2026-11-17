@@ -24,6 +24,10 @@
 //! at most [`MAX_PROGRAM_SESSIONS`] are kept, the least recently used ending
 //! first.
 //!
+//! A server inside a Tilo desktop serving its own person ([`Here`]) forwards nothing: the
+//! desktop answers each workspace itself, and the account's own actions (making, branching and
+//! deleting workspaces, keys) are not answered there.
+//!
 //! The session's name is the person's: the client's name and a number of
 //! their own sessions ("Claude Code #2"), which History groups the session's
 //! actions under, and which the workspace's host shows present, doing what it
@@ -36,6 +40,7 @@ pub mod keys;
 pub mod members;
 pub mod unattended;
 
+pub use crate::server::Workspace;
 use crate::server::{Connection, ServerError};
 use crate::store::Scope;
 use serde_json::{Map, Value, json};
@@ -45,7 +50,6 @@ use std::{
     time::Instant,
 };
 use tilo_mcp::{McpServer, Surface};
-use tilo_session_client::remote::SessionActions;
 
 /// The header naming an MCP session (Streamable HTTP).
 pub const SESSION_HEADER: &str = "mcp-session-id";
@@ -83,8 +87,65 @@ impl Reply {
 /// The session in one workspace: the agent surface over the grant's session
 /// there, and the agent present in it.
 struct Served {
-    server: McpServer<SessionActions>,
+    server: Box<dyn Answering>,
 }
+
+/// What answers a workspace's MCP JSON-RPC for one session.
+pub trait Answering: Send + Sync {
+    /// The answer to `request`; `None` for a notification.
+    fn handle(&self, request: Value) -> BoxFuture<'_, Option<Value>>;
+}
+
+type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+impl<A: tilo_actions::remote::ActionHost + Send + Sync + 'static> Answering for McpServer<A> {
+    fn handle(&self, request: Value) -> BoxFuture<'_, Option<Value>> {
+        Box::pin(Self::handle(self, request))
+    }
+}
+
+/// The Tilo desktop a server is part of, answering its person's workspaces itself: a desktop
+/// session serving the API to its own person's programs on this computer.
+pub trait Here: Send + Sync {
+    /// The workspaces it holds.
+    fn workspaces(&self) -> Vec<Workspace>;
+    /// What answers `workspace` for the session `session`, named `label` in History.
+    ///
+    /// # Errors
+    /// It holds no such workspace, or cannot serve it now.
+    fn enter(
+        &self,
+        workspace: &str,
+        session: &str,
+        label: &str,
+    ) -> Result<Box<dyn Answering>, String>;
+}
+
+/// A workspace a desktop holds, as the account lists it: the person's own.
+#[must_use]
+pub fn held(id: String, name: String) -> Workspace {
+    Workspace {
+        id,
+        name,
+        host: None,
+        role: Some("owner".into()),
+        labels: Labels::new(),
+        unattended: false,
+        address: None,
+    }
+}
+
+/// How a session reaches the person's workspaces.
+pub(crate) enum Reach {
+    /// The grant's own connection, to wherever the call is forwarded.
+    Forwarded(Arc<Connection>),
+    /// The desktop this server is part of.
+    Here(Arc<dyn Here>),
+}
+
+/// Why a workspace or the account did not answer.
+type Refusal = ServerError;
+type Labels = tilo_server_session::workspaces::WorkspaceLabels;
 
 /// A session in a workspace one of the person's devices hosts, entered at
 /// that device's MCP server: the device serves the whole session, its people
@@ -104,8 +165,10 @@ pub struct Session {
     id: String,
     /// The person, as their workspaces name them.
     person: String,
-    /// The grant's session with the host the API server forwarded to.
-    connection: Arc<Connection>,
+    /// Who its requests are by ([`Self::caller`]).
+    caller: tilo_actions::remote::Caller,
+    /// How the session reaches the workspaces.
+    reach: Reach,
     /// The server, which answers the account's own actions.
     server: std::sync::Weak<crate::Server>,
     /// The sessions in workspaces the server hosts, by [`queue`], each entered
@@ -234,15 +297,15 @@ impl Session {
     /// Who the session's requests are by: the key's person at the key, as its certificate names
     /// them, which the host reads as that person or as their agent. Never a label.
     pub(crate) fn caller(&self) -> tilo_actions::remote::Caller {
-        let cert = self.connection.key.cert();
-        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+        self.caller.clone()
     }
 
     pub(crate) fn new(
         grant: String,
         scope: Scope,
         label: String,
-        connection: Arc<Connection>,
+        cert: &tilo_user_identity::DeviceCert,
+        reach: Reach,
         server: std::sync::Weak<crate::Server>,
     ) -> Self {
         Self {
@@ -250,8 +313,12 @@ impl Session {
             scope,
             label,
             id: uuid::Uuid::new_v4().simple().to_string(),
-            person: hex::encode(connection.key.cert().user_public_key),
-            connection,
+            person: hex::encode(cert.user_public_key),
+            caller: tilo_actions::remote::Caller::authenticated(
+                cert.user_public_key,
+                cert.device_public_key,
+            ),
+            reach,
             server,
             served: tokio::sync::Mutex::default(),
             on_devices: tokio::sync::Mutex::default(),
@@ -275,9 +342,42 @@ impl Session {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
     }
 
-    /// The grant's session with the server, for the account's own actions.
-    pub(crate) fn connection(&self) -> &Connection {
-        &self.connection
+    /// The grant's own connection, for the account's own actions.
+    pub(crate) fn connection(&self) -> Result<&Arc<Connection>, Refusal> {
+        match &self.reach {
+            Reach::Forwarded(connection) => Ok(connection),
+            Reach::Here(_) => Err(Refusal::NoAccountHere),
+        }
+    }
+
+    /// Whether the session still reaches its workspaces.
+    pub(crate) fn is_live(&self) -> bool {
+        match &self.reach {
+            Reach::Forwarded(connection) => connection.is_live(),
+            Reach::Here(_) => true,
+        }
+    }
+
+    /// The workspaces the session reaches, labelled with every one of `labels` where labels are
+    /// kept.
+    pub(crate) async fn workspaces(&self, labels: &Labels) -> Result<Vec<Workspace>, Refusal> {
+        match &self.reach {
+            Reach::Forwarded(connection) => connection.server().labelled(connection, labels).await,
+            Reach::Here(here) => Ok(here.workspaces()),
+        }
+    }
+
+    /// `workspace` as the session reaches it, when it does.
+    pub(crate) async fn workspace(&self, workspace: &str) -> Result<Option<Workspace>, Refusal> {
+        match &self.reach {
+            Reach::Forwarded(connection) => {
+                connection.server().workspace(connection, workspace).await
+            }
+            Reach::Here(here) => Ok(here
+                .workspaces()
+                .into_iter()
+                .find(|held| held.id == workspace)),
+        }
     }
 
     /// The session in `workspace`, entering it the first time. Each workspace's
@@ -298,12 +398,24 @@ impl Session {
         if let Some(known) = entered.as_ref() {
             return Ok(Arc::clone(known));
         }
-        let id = self
-            .connection
-            .server()
-            .enter(&self.connection, workspace)
-            .await?;
-        let device = &self.connection.device;
+        let connection = match &self.reach {
+            Reach::Forwarded(connection) => connection,
+            Reach::Here(here) => {
+                if !here.workspaces().iter().any(|held| held.id == workspace) {
+                    return Err(Refusal::NotFound);
+                }
+                let session = format!("{}-{}", self.id, program.unwrap_or_default());
+                let server = here
+                    .enter(workspace, &session, &self.label)
+                    .map_err(Refusal::Unavailable)?;
+                let held = Arc::new(Served { server });
+                *entered = Some(Arc::clone(&held));
+                drop(entered);
+                return Ok(held);
+            }
+        };
+        let id = connection.server().enter(connection, workspace).await?;
+        let device = &connection.device;
         let actions = device.actions(id);
         let catalogue =
             tilo_mcp::task_hosts::WorkspaceCatalogue::new(actions.clone(), self.caller());
@@ -314,7 +426,9 @@ impl Session {
                 Some(&self.person),
                 Arc::new(catalogue),
             ))));
-        let held = Arc::new(Served { server });
+        let held = Arc::new(Served {
+            server: Box::new(server),
+        });
         *entered = Some(Arc::clone(&held));
         drop(entered);
         Ok(held)
@@ -342,7 +456,9 @@ impl Session {
             Ok(None) => {}
             Err(refused) => return Reply::one(error(&id, -32000, &refused)),
         }
-        if request.get("method").and_then(Value::as_str) == Some("tools/call") {
+        if matches!(self.reach, Reach::Forwarded(_))
+            && request.get("method").and_then(Value::as_str) == Some("tools/call")
+        {
             let tool = request
                 .pointer("/params/name")
                 .and_then(Value::as_str)
@@ -408,6 +524,9 @@ impl Session {
         workspace: &str,
         program: Option<&str>,
     ) -> Result<Option<Arc<OnDevice>>, String> {
+        let Reach::Forwarded(connection) = &self.reach else {
+            return Ok(None);
+        };
         let queue = queue(workspace, program);
         // A workspace the session already works in on the server is the server's.
         if self.served.lock().await.contains_key(&queue) {
@@ -426,18 +545,13 @@ impl Session {
         let Some(address) = self.device_address(workspace).await else {
             return Ok(None);
         };
-        let endpoint = self
-            .connection
+        let endpoint = connection
             .endpoint()
             .await
             .map_err(|error| error.to_string())?;
-        let on_device = tilo_mcp::enter::enter(
-            &endpoint,
-            &self.connection.entering_key(),
-            workspace,
-            &address,
-        )
-        .await?;
+        let on_device =
+            tilo_mcp::enter::enter(&endpoint, &connection.entering_key(), workspace, &address)
+                .await?;
         let session = Arc::new(OnDevice(on_device));
         *entered = Some(Arc::clone(&session));
         drop(entered);
@@ -450,13 +564,7 @@ impl Session {
         &self,
         workspace: &str,
     ) -> Option<tilo_server_session::workspaces::WorkspaceHostAddress> {
-        let address = self
-            .connection
-            .server()
-            .workspace(&self.connection, workspace)
-            .await
-            .ok()??
-            .address?;
+        let address = self.workspace(workspace).await.ok()??.address?;
         // A listed address with a hint is a device's own, never the answering device's.
         address.address().ok()?;
         Some(address)

@@ -79,6 +79,8 @@ mod agents;
 #[cfg(target_os = "linux")]
 mod ambient_brightness;
 #[cfg(target_os = "linux")]
+mod api_server;
+#[cfg(target_os = "linux")]
 mod app_icons;
 #[cfg(target_os = "linux")]
 mod app_liveness;

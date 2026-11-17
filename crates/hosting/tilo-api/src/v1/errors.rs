@@ -112,6 +112,7 @@ impl From<crate::server::ServerError> for ApiError {
             ServerError::Unavailable(_) => {
                 Self::new("unavailable", error.to_string()).next("try again in a minute")
             }
+            ServerError::NoAccountHere => Self::new("not_permitted", error.to_string()),
             // Nothing that can read the workspace answered: what to do is in
             // the message itself.
             ServerError::NoHolder => Self::new("unavailable", error.to_string())

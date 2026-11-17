@@ -108,11 +108,17 @@ impl Hosts {
                 }
                 Ok(Err(error)) => {
                     tracing::debug!(host = server.name(), %error, "a host did not answer a key");
-                    answers.push((device_of(server.name()), Answer::declining(Decline::Offline)));
+                    answers.push((
+                        device_of(server.name()),
+                        Answer::declining(Decline::Offline),
+                    ));
                 }
                 Err(_) => {
                     tracing::debug!(host = server.name(), "a host took too long to answer a key");
-                    answers.push((device_of(server.name()), Answer::declining(Decline::Offline)));
+                    answers.push((
+                        device_of(server.name()),
+                        Answer::declining(Decline::Offline),
+                    ));
                 }
             }
         }

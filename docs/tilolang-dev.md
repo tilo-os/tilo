@@ -105,8 +105,19 @@ dist/dev/nested-session.sh --headless --software --state /tmp/s --ready /tmp/s.j
 tilolang dev apps/tl/notes --search apps/tl --session /tmp/s.json
 ```
 
-`--session` takes the `--ready` file, the session's runtime directory or its control
-socket.
+`--session` takes the `--ready` file, the session's runtime directory, its control
+socket or its state directory.
+
+To type tilolang at the app's data, as the session's person, attach the REPL the same way:
+
+```sh
+tilolang repl --session            # the only session running, or the one you pick
+tilolang repl --session /tmp/s     # that one
+```
+
+The REPL reaches the session through Tilo's API, which every session serves its own person's
+programs on this computer ([the Tilo API](developers/api.md)). What it changes shows in the
+session's History as the person's, and `undo` takes it back.
 
 There, on every save `tilolang dev`:
 

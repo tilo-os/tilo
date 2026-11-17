@@ -129,7 +129,99 @@ pub(crate) struct Peer {
 #[derive(serde::Deserialize)]
 struct SessionFile {
     control: PathBuf,
+    runtime: PathBuf,
     state: PathBuf,
+}
+
+impl SessionFile {
+    /// The running session `named` names: its ready file, its runtime directory, its control
+    /// socket or its state directory.
+    fn named(named: &Path) -> Result<Self, String> {
+        let file = if named.join(SESSION_FILE).is_file() {
+            named.join(SESSION_FILE)
+        } else if named.is_dir() {
+            control_socket(named)?.with_file_name(SESSION_FILE)
+        } else if named
+            .extension()
+            .is_some_and(|extension| extension == "sock")
+        {
+            named.with_file_name(SESSION_FILE)
+        } else {
+            named.to_path_buf()
+        };
+        let text = std::fs::read_to_string(&file).map_err(|error| {
+            format!(
+                "{}: {error} (name a running nested session: its --ready file, its runtime \
+                 directory, its control socket or its state directory)",
+                file.display()
+            )
+        })?;
+        let session: Self = serde_json::from_str(&text)
+            .map_err(|error| format!("{}: not a session file: {error}", file.display()))?;
+        if !session.control.exists() {
+            return Err(format!(
+                "{}: the session is not running (no {})",
+                file.display(),
+                session.control.display()
+            ));
+        }
+        Ok(session)
+    }
+}
+
+/// A running nested session a person's programs reach Tilo's API in: where it answers, and the
+/// state directory a person started it with, which names it.
+#[derive(Debug)]
+pub(crate) struct Running {
+    pub(crate) state: PathBuf,
+    pub(crate) socket: PathBuf,
+}
+
+impl Running {
+    /// The running session `named` names, as [`SessionFile::named`] reads it.
+    ///
+    /// # Errors
+    /// It names no running session, or one that does not answer.
+    pub(crate) fn named(named: &Path) -> Result<Self, String> {
+        let session = SessionFile::named(named)?;
+        let socket = session
+            .runtime
+            .join(tilo_paths::login::SESSION_DIR)
+            .join(tilo_paths::login::API_SOCKET_FILE);
+        if std::os::unix::net::UnixStream::connect(&socket).is_err() {
+            return Err(format!(
+                "the session {} does not answer yet; try again once it shows its desktop",
+                session.state.display()
+            ));
+        }
+        Ok(Self {
+            state: session.state,
+            socket,
+        })
+    }
+
+    /// Every nested session running for this login, by state directory.
+    #[must_use]
+    pub(crate) fn all() -> Vec<Self> {
+        let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(runtime) else {
+            return Vec::new();
+        };
+        let mut all: Vec<Self> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("tilo-nested-")
+            })
+            .filter_map(|entry| Self::named(&entry.path()).ok())
+            .collect();
+        all.sort_by(|one, other| one.state.cmp(&other.state));
+        all
+    }
 }
 
 impl Peer {
@@ -142,38 +234,9 @@ impl Peer {
         })
     }
 
-    /// The running session `named` names (its ready file, its runtime directory, or its control
-    /// socket), run from the checkout `repo`.
+    /// The running session `named` names ([`SessionFile::named`]), run from the checkout `repo`.
     pub(crate) fn attach(named: &Path, repo: &Path) -> Result<Self, String> {
-        let file = if named.is_dir() {
-            named.join(SESSION_FILE)
-        } else if named
-            .extension()
-            .is_some_and(|extension| extension == "sock")
-        {
-            named
-                .parent()
-                .ok_or("a control socket has a directory")?
-                .join(SESSION_FILE)
-        } else {
-            named.to_path_buf()
-        };
-        let text = std::fs::read_to_string(&file).map_err(|error| {
-            format!(
-                "{}: {error} (name a running nested session: its --ready file, its runtime \
-                 directory or its control socket)",
-                file.display()
-            )
-        })?;
-        let session: SessionFile = serde_json::from_str(&text)
-            .map_err(|error| format!("{}: not a session file: {error}", file.display()))?;
-        if !session.control.exists() {
-            return Err(format!(
-                "{}: the session is not running (no {})",
-                file.display(),
-                session.control.display()
-            ));
-        }
+        let session = SessionFile::named(named)?;
         Ok(Self {
             state: session.state,
             control: session.control,

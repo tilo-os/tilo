@@ -95,12 +95,7 @@ impl Session {
 
     /// Whether `workspace` runs commands unattended, as its listing says.
     async fn read_unattended(&self, workspace: &str) -> Outcome {
-        match self
-            .connection
-            .server()
-            .workspace(&self.connection, workspace)
-            .await
-        {
+        match self.workspace(workspace).await {
             Ok(Some(listed)) => Outcome::Ok(json!({
                 "workspace": workspace,
                 "unattended": listed.unattended,
@@ -126,10 +121,10 @@ impl Session {
                 "pass args {on: true} to ask the person, {on: false} to turn it off",
             ));
         };
-        let id = self
-            .connection
+        let connection = self.connection().map_err(|error| refused(&error))?;
+        let id = connection
             .server()
-            .enter(&self.connection, workspace)
+            .enter(connection, workspace)
             .await
             .map_err(|error| refused(&error))?;
         let mut arguments = Map::new();
@@ -147,8 +142,7 @@ impl Session {
             wait_ms: Some(ANSWERING_MS),
             appearance: None,
         };
-        let receipt = self
-            .connection
+        let receipt = connection
             .device
             .actions(id)
             .invoke(&self.caller(), request)

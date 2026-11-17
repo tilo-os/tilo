@@ -1003,8 +1003,36 @@ pub struct Repl {
     next: u64,
 }
 
+/// What `program` answers in `workspace` through Tilo's API at `socket`, as a program of the
+/// person's on this computer asks it (`tilolang repl --session`): asked on a thread of its own
+/// while the session's loop turns.
+///
+/// # Panics
+/// The API refused the program.
+pub fn api_program(session: &mut Session, socket: &Path, workspace: &str, program: &str) -> Value {
+    let socket = socket.to_path_buf();
+    let path = format!("/v1/workspaces/{workspace}/programs");
+    let body = json!({"program": program});
+    let answered = std::sync::Arc::new(std::sync::OnceLock::new());
+    let answer = std::sync::Arc::clone(&answered);
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let client = tilo_api::client::Client::session(&socket);
+        let _ = answer.set(
+            runtime
+                .block_on(client.post(&path, &body))
+                .map_err(|error| format!("{error:#}")),
+        );
+    });
+    wait_for(session, "the API's answer", |_| answered.get().cloned())
+        .unwrap_or_else(|why| panic!("{program}: {why}"))
+}
+
 impl Repl {
-    /// Connect to the server at `socket` as `tilolang repl` does: asking to act as the person.
+    /// Connect to the server at `socket`, asking to act as the person.
     pub fn connect(socket: &Path) -> Self {
         Self::asking(socket, true)
     }

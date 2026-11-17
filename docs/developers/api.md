@@ -5,7 +5,7 @@ workspace is a resource with fields and actions, and the API names them by path,
 agents do: `pdf-viewer/application.pdf`, and its action `read-form-fields`. The account is a
 resource too: its workspaces and its keys.
 
-Two things serve it:
+Three things serve it:
 
 - **An API server** (`tilo-api`, `https://api.tilo.sh` for hosted Tilo), which you call with a
   key (`Authorization: Bearer tilo_sk_…`). It holds no authority and no workspace of its own: each
@@ -15,7 +15,14 @@ Two things serve it:
   that can read the workspace is online, the call answers `503 unavailable` saying so.
 - **Any Tilo host directly**, from the SDKs and the `tilo` command, as a device of the person
   with its own key. The SDKs link the same Rust client the API server runs (`tilo-api`'s
-  library), which serves these same routes in process: no second implementation, no socket.
+  library), which serves these same routes in process: no second implementation.
+- **A Tilo desktop, to its own person's programs on that computer.** The desktop serves these
+  routes as HTTP on `$XDG_RUNTIME_DIR/tilo-session/api.sock`, in its login's private directory,
+  with the same library: every call acts as the person sitting there, by the desktop's own
+  device key, so it needs no `Authorization`, and a connection from another account is refused.
+  The desktop answers each workspace it holds itself; it makes, branches and deletes no
+  workspaces and mints no keys here. `tilolang repl --session` reaches a development session
+  this way.
 
 MCP is the same calls for agents (`/mcp` on the API server, `tilo mcp` on a computer): its tools
 answer the bodies below as `structuredContent` (see [MCP's typed answers](sdk-wire.md)).

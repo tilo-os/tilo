@@ -51,6 +51,7 @@ tilo-app-module = { version = "0.1.0", path = "../../platform/tilo-app-module" }
 toml.workspace = true
 # `tilolang repl`: Tilo's API as the person, through the client `tilo` uses.
 tilo-api = { path = "../../hosting/tilo-api" }
+tilo-paths.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 # The UI host's half of a window and the patch protocol to it: what `layout-check` lays out.

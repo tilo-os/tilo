@@ -1,16 +1,18 @@
 //! Tilo's API, `/v1`, as a program of the person's reaches it (`tilo`'s
 //! hosted commands, `tilolang repl`): one client, two transports, and nothing
-//! that knows which kind of host answers.
+//! that knows which kind of server answers.
 //!
 //! `docs/developers/api.md` is the callers' reference. A call goes to an API
 //! server over HTTP with a key (`TILO_API_KEY`, and the server named by
 //! `--api` or `TILO_API_URL`), or to a Tilo host in process
 //! ([`crate::direct::Direct`]) as a key this computer holds: the key file
 //! `--key-file` names, or, without an API key, the one `tilo login` kept here.
-//! Every route answers the same either way, so no command here can tell.
+//! Every route answers the same either way, so no command here can tell. A
+//! Tilo desktop on this computer serves the same routes to its own person's
+//! programs on a socket of its login ([`Client::session`]).
 //!
 //! A mutating call carries an `Idempotency-Key` of its own, and every retry of
-//! it sends that same key: the host never runs one invocation twice.
+//! it sends that same key: Tilo never runs one invocation twice.
 
 pub mod device;
 
@@ -28,7 +30,7 @@ const MAX_ANSWER: usize = 64 * 1024 * 1024;
 /// The longest one request is held before the server answers that it still
 /// waits: `Prefer: wait=` takes seconds, 60 at most.
 const WAIT_SECONDS: &str = "60";
-/// How long a call keeps asking while the host is busy with the person's
+/// How long a call keeps asking while Tilo is busy with the person's
 /// changes.
 const BUSY_DEADLINE: Duration = Duration::from_secs(60);
 /// How long an action waits for the person to answer it.
@@ -150,7 +152,7 @@ impl Answer {
     }
 
     /// How long the answer asks the caller to wait before the same call works,
-    /// when it says the host is busy with the person's changes.
+    /// when it says Tilo is busy with the person's changes.
     fn busy_for(&self) -> Option<Duration> {
         let json = self.json();
         (json.pointer("/error/code").and_then(Value::as_str) == Some("rate_limited")).then(|| {
@@ -166,7 +168,7 @@ impl Answer {
 /// Whether a call is asked again while it does not answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Waiting {
-    /// A host busy with the person's changes answers `429`, and the same call
+    /// A workspace busy with the person's changes answers `429`, and the same call
     /// works after the wait it names.
     Busy,
     /// [`Self::Busy`], and an action that waits for the person answers `202`:
@@ -189,6 +191,9 @@ enum Transport {
     },
     /// A Tilo host, reached in process as this computer's own key.
     Direct(crate::direct::Direct),
+    /// A Tilo desktop on this computer, at the socket it serves its person's
+    /// programs on, as that desktop's own device.
+    Session(std::path::PathBuf),
 }
 
 impl Client {
@@ -215,6 +220,16 @@ impl Client {
             "no key: set {KEY_ENV} (`tilo keys create \"<what will use it>\"` asks you for one), \
              or log in with `tilo login` to act as this computer"
         )
+    }
+
+    /// The client of the Tilo desktop serving its person's programs at
+    /// `socket` ([`tilo_paths::login::API_SOCKET_FILE`] in its login's
+    /// session directory).
+    #[must_use]
+    pub fn session(socket: &Path) -> Self {
+        Self {
+            transport: Transport::Session(socket.to_path_buf()),
+        }
     }
 
     fn direct(file: &crate::direct::KeyFile) -> Result<Self> {
@@ -650,6 +665,38 @@ impl Client {
                     .collect()
                     .await
                     .context("reading the answer")?
+                    .to_bytes()
+                    .to_vec();
+                Ok(Answer { status, body })
+            }
+            Transport::Session(socket) => {
+                let reached = || format!("reaching the Tilo desktop at {}", socket.display());
+                let stream = tokio::net::UnixStream::connect(socket)
+                    .await
+                    .with_context(reached)?;
+                let (mut sender, connection) =
+                    hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
+                        .await
+                        .with_context(reached)?;
+                tokio::spawn(connection);
+                let mut request = hyper::Request::builder().method(method.as_str()).uri(path);
+                for (name, value) in headers {
+                    request = request.header(*name, value.as_str());
+                }
+                let request = request
+                    .body(http_body_util::Full::new(
+                        hyper::body::Bytes::copy_from_slice(body),
+                    ))
+                    .context("the request")?;
+                let response = tokio::time::timeout(REQUEST_TIMEOUT, sender.send_request(request))
+                    .await
+                    .with_context(reached)?
+                    .with_context(reached)?;
+                let status = response.status().as_u16();
+                let body = http_body_util::Limited::new(response.into_body(), MAX_ANSWER)
+                    .collect()
+                    .await
+                    .map_err(|error| anyhow!("reading the answer: {error}"))?
                     .to_bytes()
                     .to_vec();
                 Ok(Answer { status, body })

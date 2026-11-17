@@ -12,6 +12,11 @@
 //!
 //! A key is carried as a key file ([`KeyFile`]): its secret and its
 //! certificate, hex, and the host it reaches.
+//!
+//! A Tilo desktop serves the same server for its own person ([`Direct::here`]):
+//! as its own device key, inside the desktop, which answers each workspace
+//! itself. The person's programs on that computer reach it over a socket of
+//! the login's own ([`Direct::serve`]).
 
 use crate::grant_key::GrantKey;
 use crate::store::{GrantKind, Store};
@@ -119,14 +124,63 @@ impl Direct {
             Store::in_memory(),
         )
         .map_err(|error| error.to_string())?;
+        Self::as_key(server, &key, &file.name)
+    }
+
+    /// The API of `here`, the Tilo desktop this is part of, as its device key
+    /// `key` with `cert`, named `name` (History names its sessions so).
+    ///
+    /// # Errors
+    /// The certificate is not for `key`, or does not hold now.
+    pub fn here(
+        here: Arc<dyn crate::session::Here>,
+        key: ed25519_dalek::SigningKey,
+        cert: DeviceCert,
+        name: &str,
+    ) -> Result<Self, String> {
+        let key = GrantKey::held(key, cert, now_ms().saturating_mul(1_000_000))
+            .map_err(|refused| refused.to_string())?;
+        let server = Server::here(here).map_err(|error| error.to_string())?;
+        Self::as_key(server, &key, name)
+    }
+
+    fn as_key(server: Arc<Server>, key: &GrantKey, name: &str) -> Result<Self, String> {
         let (_, token) = server
             .store
-            .resource_key(&key, &file.name, GrantKind::Key, None, now_ms())
+            .resource_key(key, name, GrantKind::Key, None, now_ms())
             .map_err(|error| error.to_string())?;
         Ok(Self {
             server,
             authorization: format!("Bearer {token}"),
         })
+    }
+
+    /// Serve the API on `listener` until it closes, every request as this
+    /// key: to programs of the account that owns the socket, and nobody else.
+    pub async fn serve(self, listener: tokio::net::UnixListener) {
+        use std::os::unix::fs::MetadataExt as _;
+        let Ok(authorization) = hyper::header::HeaderValue::from_str(&self.authorization) else {
+            return;
+        };
+        // Only this process's own account is served.
+        let owner = std::fs::metadata("/proc/self")
+            .ok()
+            .map(|metadata| metadata.uid());
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let peer = stream.peer_cred().ok().map(|credentials| credentials.uid());
+            if owner.is_none() || peer != owner {
+                tracing::warn!(?peer, "API: a connection from another account is refused");
+                continue;
+            }
+            tokio::spawn(crate::serve_connection(
+                Arc::clone(&self.server),
+                stream,
+                Some(authorization.clone()),
+            ));
+        }
     }
 
     /// Answer `method` on `target` (a path with its query) with `headers` and
@@ -333,6 +387,113 @@ mod tests {
             link.contains('#'),
             "the key it opens with is in the fragment: {link}"
         );
+    }
+
+    /// A desktop holding one workspace, which answers every program with what it was asked
+    /// and the name of the session it was entered for.
+    struct Desktop;
+
+    const WORKSPACE: &str = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
+
+    struct Echo(String);
+
+    impl crate::session::Answering for Echo {
+        fn handle(
+            &self,
+            request: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send + '_>,
+        > {
+            let program = request
+                .pointer("/params/arguments/program")
+                .cloned()
+                .unwrap_or_default();
+            let text = format!("{} in {}", program.as_str().unwrap_or_default(), self.0);
+            Box::pin(async move {
+                Some(
+                    serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": {
+                        "structuredContent": {"status": "ok", "output": [text.clone()], "text": text},
+                    }}),
+                )
+            })
+        }
+    }
+
+    impl crate::session::Here for Desktop {
+        fn workspaces(&self) -> Vec<crate::session::Workspace> {
+            vec![crate::session::held(WORKSPACE.into(), "Release".into())]
+        }
+
+        fn enter(
+            &self,
+            workspace: &str,
+            _session: &str,
+            label: &str,
+        ) -> Result<Box<dyn crate::session::Answering>, String> {
+            if workspace != WORKSPACE {
+                return Err(format!("no workspace {workspace} here"));
+            }
+            Ok(Box::new(Echo(label.to_owned())))
+        }
+    }
+
+    /// A program on this computer reaches the desktop's API at its socket, as the desktop's own
+    /// device, with no key of its own: it lists the workspaces the desktop holds and has a
+    /// program done in one, which the desktop answers. The account's own actions are not answered.
+    #[tokio::test]
+    async fn a_desktop_serves_its_persons_programs_at_its_socket() {
+        let (person, _) = UserIdentity::generate("Ada", 1);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let now = tilo_clock::unix_now_ns();
+        let mut cert = DeviceCert {
+            user_public_key: person.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Ada's laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: now.saturating_sub(60_000_000_000),
+            expires_at_ns: Some(now.saturating_add(3600 * 1_000_000_000)),
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
+        let direct = Direct::here(std::sync::Arc::new(Desktop), key, cert, "Ada's laptop").unwrap();
+        let dir = std::env::temp_dir().join(format!("tilo-api-here-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("api.sock");
+        let _ = std::fs::remove_file(&socket);
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        tokio::spawn(direct.serve(listener));
+
+        let client = crate::client::Client::session(&socket);
+        let listed = client.get("/v1/workspaces").await.unwrap();
+        assert_eq!(listed["workspaces"][0]["id"], WORKSPACE, "{listed}");
+        assert_eq!(listed["workspaces"][0]["name"], "Release", "{listed}");
+        let ran = client
+            .post(
+                &format!("/v1/workspaces/{WORKSPACE}/programs"),
+                &serde_json::json!({"program": "notes.notebook.notes.len()"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ran["status"], "ok", "{ran}");
+        assert_eq!(
+            ran["text"], "notes.notebook.notes.len() in Ada's laptop #1",
+            "the program acts as the desktop's own device: {ran}"
+        );
+        assert!(
+            !ran["session"].as_str().unwrap_or_default().is_empty(),
+            "{ran}"
+        );
+        let refused = client
+            .post("/v1/workspaces", &serde_json::json!({"name": "Another"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("answers its own workspaces only"),
+            "{refused}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
