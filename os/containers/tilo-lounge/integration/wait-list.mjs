@@ -172,13 +172,16 @@ await shot('3-on-the-list.png');
 console.log(`ok: a reload stays on the wait list (${report.reloadListed})`);
 
 // 5. A phone, in German: the same entry, its field stacked under its button.
-const phone = await browser.tab({firstRun: true});
+// Someone else's phone, so a browser of its own: a tab beside the first one
+// shares its storage, and so the address already listed, and never offers the
+// field again.
+const phone = await browser.tab({context: await browser.context(), firstRun: true});
 await phone.send('Page.addScriptToEvaluateOnNewDocument', {
   source: `Object.defineProperty(navigator, 'language', {get: () => 'de-DE'});`,
 });
 await phone.send('Emulation.setDeviceMetricsOverride', {width: 390, height: 844, deviceScaleFactor: 2, mobile: true});
 await phone.navigate(site);
-await phone.waitFor(`document.documentElement.dataset.waitList === 'form'`, {timeout: stepLimit(24)}).catch(() => false);
+const phoneForm = await phone.waitFor(`document.documentElement.dataset.waitList === 'form'`, {timeout: stepLimit(6)}).catch(() => false);
 report.phone = await phone.evaluate(`({
   waitList: document.documentElement.dataset.waitList ?? null,
   heading: document.getElementById('arrival-refusal-heading')?.textContent?.trim() ?? null,
@@ -191,6 +194,7 @@ report.phone = await phone.evaluate(`({
 })`).catch(() => null);
 const phoneShot = await phone.screenshot().catch(() => null);
 if (phoneShot) writeFileSync(join(out, '4-phone-german.png'), phoneShot);
+if (!phoneForm) await finish(1, `the phone in German never offered the wait list's field: ${JSON.stringify(report.phone)}`);
 console.log(`ok: a phone in German (${report.phone?.heading})`);
 await phone.close().catch(() => {});
 
