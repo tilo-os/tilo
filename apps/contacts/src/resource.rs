@@ -25,7 +25,24 @@ use crate::part::{Book, ContactPart};
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Contacts {}
 
-#[resource(kind = "contacts.book")]
+impl Contacts {
+    /// What the book's own record holds, read through
+    /// [`fields`](tilo_resource::read::fields): nothing of its own, since the
+    /// contacts are kept in the parts beside it and read from those. A caller
+    /// with no window open is told that, rather than meeting a record that
+    /// offers no read at all.
+    ///
+    /// # Errors
+    /// A named item is not this read's to answer.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(kind = "contacts.book", read_content = Contacts::read_document)]
 impl Contacts {}
 
 pub const FAVORITES_PLACE: &str = "favorites";

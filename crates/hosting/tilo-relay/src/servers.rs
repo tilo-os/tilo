@@ -81,6 +81,18 @@ pub struct Holding {
 }
 
 impl Servers {
+    /// What the record holds, read through
+    /// [`fields`](tilo_resource::read::fields): each server's name, what it
+    /// holds and offers, its update channel, its maintenance window and how
+    /// it unlocks. The person's agent or a script reads what their servers
+    /// are set to as it reads any record.
+    ///
+    /// # Errors
+    /// A named item is not this read's to answer.
+    pub fn read_document(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+
     /// The entry of the server whose device key is `device`, unless it was
     /// retired.
     #[must_use]
@@ -108,7 +120,7 @@ impl Server {
     }
 }
 
-#[resource(kind = "tilo.servers")]
+#[resource(kind = "tilo.servers", read_content = Servers::read_document)]
 impl Servers {
     /// Take a server into the person's servers, named `label`. A server
     /// already there keeps its configuration.

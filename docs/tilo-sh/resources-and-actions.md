@@ -131,7 +131,7 @@ An action that makes something answers what it made: `result.made` holds one ent
 and the `address` it is published under, and the answer repeats the list as `made` at its top. An action
 of several answers each item the same way, in the order it made them.
 
-```json example=what-a-write-made
+```json
 {"status": "ok", "result": {"made": [{"id": "9f2c…", "address": "tasks.tracker/issues/9f2c…"}]},
  "made": [{"id": "9f2c…", "address": "tasks.tracker/issues/9f2c…"}], "resources": ["tasks.tracker/issues/9f2c…"]}
 ```
