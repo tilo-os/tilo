@@ -11,12 +11,16 @@ check() {
 
 depends() {
     # dbus: NetworkManager asks wpa_supplicant for Wi-Fi over the system bus.
-    echo "systemd-cryptsetup dbus"
+    # tpm2-tss: a machine enrolled to unlock unattended quotes its boot chain
+    # with the TPM before it asks a sibling.
+    echo "systemd-cryptsetup dbus tpm2-tss"
     return 0
 }
 
 install() {
-    inst_multiple /usr/libexec/tilo/tilo-sibling-unlock NetworkManager cryptsetup ip systemctl systemd-creds
+    inst_multiple /usr/libexec/tilo/tilo-sibling-unlock NetworkManager cryptsetup ip systemctl systemd-creds \
+        tpm2_createprimary tpm2_flushcontext tpm2_getcap tpm2_load tpm2_pcrread \
+        tpm2_quote tpm2_readpublic
     # Wi-Fi, for a machine whose owner chose a Wi-Fi network for unlocking.
     inst_multiple -o wpa_supplicant
     inst_libdir_dir "NetworkManager/$(NetworkManager --version)"

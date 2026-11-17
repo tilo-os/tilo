@@ -22172,6 +22172,7 @@ dependencies = [
  "tilo-files",
  "tilo-nm",
  "tilo-seal",
+ "tilo-test-env",
  "tilo-unlock-protocol",
  "tokio",
  "workspace-hack",
@@ -22752,6 +22753,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "ed25519-dalek 3.0.0",
+ "hex",
  "p256 0.14.0",
  "postcard",
  "serde",

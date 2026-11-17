@@ -12,7 +12,23 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    run_with(program, args, stdin, &[])
+}
+
+/// [`run`], with `env` set for the child: the TPM tools take the TCTI naming
+/// the TPM to use, which a test points at an emulated one.
+pub fn run_with<I, S>(
+    program: &str,
+    args: I,
+    stdin: Option<&[u8]>,
+    env: &[(&str, &str)],
+) -> Result<Zeroizing<Vec<u8>>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let mut child = Command::new(program)
+        .envs(env.iter().copied())
         .args(args)
         .stdin(if stdin.is_some() {
             Stdio::piped()
@@ -53,4 +69,18 @@ where
     S: AsRef<OsStr>,
 {
     run(program, args, stdin).map(drop)
+}
+
+/// [`check`], with `env` as in [`run_with`].
+pub fn check_with<I, S>(
+    program: &str,
+    args: I,
+    stdin: Option<&[u8]>,
+    env: &[(&str, &str)],
+) -> Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    run_with(program, args, stdin, env).map(drop)
 }

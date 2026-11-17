@@ -20,7 +20,7 @@ use std::time::Duration;
 use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::SharedLink;
 use crate::platform::fabric::{
-    Decided, DecisionOutcome, MAX_UNLOCK_DECISIONS, MergedUnlock, UnlockDecision,
+    AutoApproval, Decided, DecisionOutcome, MAX_UNLOCK_DECISIONS, MergedUnlock, UnlockDecision,
     UnlockDecisionRecord, UnlockEnrolment, UnlockFabricState, UnlockSibling, UnlockView,
     decision_for, merged_unlock_state,
 };
@@ -349,13 +349,38 @@ impl Unlock {
                 })
             })
             .collect();
+        // An enrolment for an unattended unlock asks, with the boot chain it
+        // measures now, to be released without a prompt. The root signs that
+        // acceptance, so any of the person's devices reads it as the owner's.
+        let approval = request
+            .unattended_chain
+            .map(|chain| -> Result<AutoApproval, String> {
+                let mut approval = AutoApproval::unsigned(
+                    *custody.fleet.user_public_key(),
+                    self.local,
+                    vec![chain],
+                    tilo_clock::unix_now_ns(),
+                );
+                let digest = approval
+                    .digest()
+                    .ok_or_else(|| "the unlock policy could not be encoded".to_string())?;
+                approval.signature = store
+                    .sign_root(&custody.identity_id, &digest)
+                    .map_err(|error| error.to_string())?
+                    .to_vec();
+                approval
+                    .validate()
+                    .map_err(|error| format!("the unlock policy is not admissible: {error}"))?;
+                Ok(approval)
+            })
+            .transpose()?;
         let device = DeviceId::new(hex::encode(self.local)).map_err(|error| error.to_string())?;
         let enrolment = UnlockEnrolment {
             cert: cert.clone(),
             sealed_half,
             stamp: tilo_network_actor::fabric::FabricStamp { counter: 0, device },
         };
-        self.publish(enrolment);
+        self.publish(enrolment, approval);
         tracing::info!(
             device = %hex::encode(self.local),
             slot = %slot_name(&cert.slot),
@@ -364,13 +389,22 @@ impl Unlock {
         Ok(EnrolResponse { cert, siblings })
     }
 
-    /// Add `enrolment` to this device's own fabric record, keeping what else it published there.
-    fn publish(&self, enrolment: UnlockEnrolment) {
+    /// Add `enrolment`, and the owner's acceptance of the boot chain it asked
+    /// for, to this device's own fabric record, keeping what else it
+    /// published there.
+    fn publish(&self, enrolment: UnlockEnrolment, approval: Option<AutoApproval>) {
+        let local = self.local;
         self.update_state(|state| {
             state
                 .enrolments
                 .retain(|current| current.cert.slot != enrolment.cert.slot);
             state.enrolments.push(enrolment);
+            if let Some(approval) = approval {
+                state
+                    .auto_approvals
+                    .retain(|current| current.device_public_key != local);
+                state.auto_approvals.push(approval);
+            }
         });
     }
 

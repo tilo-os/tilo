@@ -158,6 +158,11 @@ pub struct EnrolRequest {
     pub slot: SlotId,
     /// The device's TPM attestation key (SEC1 P-256), if it has a TPM.
     pub attestation_key: Option<Vec<u8>>,
+    /// The PCR 4 + 7 composite this device measured now, when the owner is
+    /// enrolling it to unlock unattended: the enrolled device asks for its
+    /// own boot chain to be accepted, and the session holding the root signs
+    /// that acceptance for the person.
+    pub unattended_chain: Option<[u8; 32]>,
     /// The sibling half. Wiped on drop.
     pub sibling_half: Half,
     /// Boot key signature over [`EnrolRequest::proof_digest`]: proof that the
@@ -172,6 +177,7 @@ struct EnrolProofView<'a> {
     boot_public_key: &'a [u8; 32],
     slot: &'a SlotId,
     attestation_key: &'a Option<Vec<u8>>,
+    unattended_chain: &'a Option<[u8; 32]>,
     half_commitment: [u8; 32],
 }
 
@@ -185,6 +191,7 @@ impl EnrolRequest {
         boot_key: &SigningKey,
         slot: SlotId,
         attestation_key: Option<Vec<u8>>,
+        unattended_chain: Option<[u8; 32]>,
         sibling_half: Half,
     ) -> Result<Self, BootKeyCertError> {
         let mut request = Self {
@@ -192,6 +199,7 @@ impl EnrolRequest {
             boot_public_key: boot_key.verifying_key().to_bytes(),
             slot,
             attestation_key,
+            unattended_chain,
             sibling_half,
             proof: [0; 64],
         };
@@ -211,6 +219,7 @@ impl EnrolRequest {
             boot_public_key: &self.boot_public_key,
             slot: &self.slot,
             attestation_key: &self.attestation_key,
+            unattended_chain: &self.unattended_chain,
             half_commitment: blake3::derive_key(
                 "tilo-unlock enrol half commitment v1",
                 self.sibling_half.expose(),

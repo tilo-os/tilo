@@ -1,7 +1,9 @@
 //! The exchange with a sibling over the peer network
 //! ([`tilo_unlock_protocol`], ALPN [`UNLOCK_ALPN`]).
 
+use crate::material::Attestation;
 use crate::token::{Sibling, Token};
+use crate::tpm::{self, Tpm};
 use crate::unlock::{Refusal, Siblings};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine as _;
@@ -12,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
 use tilo_unlock_protocol::{
-    BootId, BootKeyCert, ClientFrame, Half, PROTOCOL_VERSION, SiblingFrame, UNLOCK_ALPN,
-    UnlockHello, UnlockRequest, decode_frame, encode_frame, frame_len, open_release,
+    BootId, BootKeyCert, Challenge, ClientFrame, Half, PROTOCOL_VERSION, SiblingFrame, UNLOCK_ALPN,
+    UnlockHello, UnlockRequest, attest, decode_frame, encode_frame, frame_len, open_release,
 };
 
 pub const TRANSCRIPT: &str = "/run/tilo-sibling-unlock/exchange.json";
@@ -30,8 +32,18 @@ const DECIDE_FOR: Duration =
 pub struct Transcript {
     pub sibling: String,
     pub endpoint: String,
+    /// What this boot could attest, when it could at all.
+    #[serde(default)]
+    pub attestation: String,
     pub sent: Vec<String>,
     pub outcome: String,
+}
+
+/// The attestation key this machine quotes with, and the TPM holding it.
+#[derive(Clone, Debug)]
+pub struct AttestationSource {
+    pub tpm: Tpm,
+    pub key: Attestation,
 }
 
 /// Reports what the person at the boot screen needs: the code to compare
@@ -46,6 +58,9 @@ pub trait Progress: Sync {
 pub struct Peers<'a, P: Progress> {
     pub progress: &'a P,
     pub transcript: Option<&'a Path>,
+    /// The TPM quote that can release this boot without the owner's answer,
+    /// when the certificate names an attestation key and the TPM loads it.
+    pub attestation: Option<&'a AttestationSource>,
 }
 
 pub fn address(sibling: &Sibling) -> Result<EndpointAddr> {
@@ -58,6 +73,41 @@ pub fn address(sibling: &Sibling) -> Result<EndpointAddr> {
         .with_context(|| format!("sibling key {:?} is not 32 bytes of hex", sibling.device))?;
     let id = EndpointId::from_bytes(&key).map_err(|error| anyhow!("sibling key: {error}"))?;
     Ok(EndpointAddr::from(id))
+}
+
+/// The TPM quote proving this boot's chain for one request, when this
+/// machine can make one. Any failure is "no attestation": the request is
+/// still sent, and the owner is asked exactly as for a machine without a
+/// TPM. Nothing here falls back to cleartext or to a weaker check.
+fn attest_for(
+    source: Option<&AttestationSource>,
+    cert: &BootKeyCert,
+    challenge: &Challenge,
+    boot_id: BootId,
+    ephemeral_public: &[u8; 32],
+    transcript: &mut Transcript,
+) -> Option<attest::Quote> {
+    let Some(source) = source else {
+        transcript.attestation = "no attestation key".into();
+        return None;
+    };
+    let nonce = match attest::qualifying_data(cert, challenge, &boot_id, ephemeral_public) {
+        Ok(nonce) => nonce,
+        Err(error) => {
+            transcript.attestation = format!("no qualifying data: {error}");
+            return None;
+        }
+    };
+    match tpm::quote(&source.tpm, &source.key, &nonce) {
+        Ok(quote) => {
+            transcript.attestation = "quoted".into();
+            Some(quote)
+        }
+        Err(error) => {
+            transcript.attestation = format!("no quote: {error:#}");
+            None
+        }
+    }
 }
 
 async fn write_frame(send: &mut SendStream, frame: &ClientFrame) -> Result<Vec<u8>> {
@@ -101,6 +151,7 @@ async fn ask(
     boot_key: &SigningKey,
     boot_id: BootId,
     progress: &impl Progress,
+    attestation: Option<&AttestationSource>,
     transcript: &mut Transcript,
 ) -> Result<Result<Half, Refusal>> {
     let connection = dial(endpoint, sibling).await?;
@@ -127,8 +178,23 @@ async fn ask(
     }
     let ephemeral = tilo_seal::SecretKey::generate().map_err(|error| anyhow!("{error}"))?;
     let ephemeral_public = ephemeral.public_key().map_err(|error| anyhow!("{error}"))?;
-    let request = UnlockRequest::sign(boot_key, cert, &challenge, boot_id, &ephemeral_public, None)
-        .map_err(|error| anyhow!("{error}"))?;
+    let quote = attest_for(
+        attestation,
+        cert,
+        &challenge,
+        boot_id,
+        &ephemeral_public.to_bytes(),
+        transcript,
+    );
+    let request = UnlockRequest::sign(
+        boot_key,
+        cert,
+        &challenge,
+        boot_id,
+        &ephemeral_public,
+        quote,
+    )
+    .map_err(|error| anyhow!("{error}"))?;
     let digest = request
         .digest(cert, &challenge.sibling_public_key)
         .map_err(|error| anyhow!("{error}"))?;
@@ -200,6 +266,7 @@ impl<P: Progress> Siblings for Peers<'_, P> {
                     boot_key,
                     boot_id,
                     self.progress,
+                    self.attestation,
                     &mut transcript,
                 )
                 .await;

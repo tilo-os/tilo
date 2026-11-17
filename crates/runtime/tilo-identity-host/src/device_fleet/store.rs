@@ -404,6 +404,19 @@ impl DeviceFleetStore {
             .map_err(|error| io::Error::other(error.to_string()))
     }
 
+    /// Sign `digest` with `identity_id`'s root. The caller builds the record
+    /// whose digest this is; identity-host learns no policy of its own from
+    /// it, and a device that does not hold the root cannot sign.
+    ///
+    /// # Errors
+    ///
+    /// This device does not hold the identity's root, or signing fails.
+    pub fn sign_root(&self, identity_id: &str, digest: &[u8; 32]) -> io::Result<[u8; 64]> {
+        let (root, _profile) = self.identity(identity_id)?;
+        root.sign(digest)
+            .map_err(|error| io::Error::other(error.to_string()))
+    }
+
     /// Root-certify `agent_public_key` as an agent's grant reaching `scope`, named `label`, from
     /// `issued_at_ns` until `expires_at_ns`, and keep it with `identity_id`'s fleet: a key the
     /// person gave an agent when they started a session for it. It is listed with their devices

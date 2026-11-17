@@ -47,6 +47,8 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
+# An emulated TPM for the attestation tests.
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

@@ -19,7 +19,10 @@
 #        replay     the frames B sent in step 9 are sent to A again.
 #        uncertified  B's token carries a boot key A's identity never
 #                   certified.
-#        revoked    A removes B from the fleet.
+#  10c2. B re-enrols with --unattended (where it has a TPM), and the next
+#      reboot quotes its accepted PCR 4 + 7 chain so A releases the half with
+#      no prompt: a server after a power loss.
+#  10d. A removes B from the fleet.
 
 vm_a ssh 'command -v tilo-control >/dev/null' \
   || die "--unlock drives A through tilo-control, which only the dev disk carries"
@@ -266,6 +269,37 @@ sudo_b "set -eu
   cryptsetup token import \$part < /root/unlock-e2e/certified.json
 " >/dev/null || die "could not restore B's certified token"
 note "an uncertified boot key leaves B at the prompt"
+
+# --- 10c2. unattended: B's boot chain is accepted, so nobody is asked ---------------
+# A server reboots with nobody to approve it. B re-enrols asking for this
+# machine's current PCR 4 + 7 chain to be accepted: its session publishes a
+# root-signed acceptance, and every boot B then quotes that chain with its TPM
+# and A releases the half without a question. Needs a TPM in B; without one the
+# case is reported, never silently skipped.
+if vm_b ssh 'test -e /dev/tpmrm0'; then
+  sudo_b "tilo-sibling-unlock remove $b_root_part --key-file /root/unlock-e2e/pass \
+      && /usr/libexec/tilo-disk-encrypt enrol $b_root_part --sibling --unattended \
+        --key-file /root/unlock-e2e/pass --network tilo-nearby-lan \
+        --session-uid \$(id -u $TILO_USER)" \
+    > "$out/unlock-unattended-enrol.txt" 2>&1 \
+    || { cat "$out/unlock-unattended-enrol.txt" >&2; die "B could not re-enrol for an unattended unlock"; }
+  sudo_b "tilo-sibling-unlock status $b_root_part" > "$out/unlock-unattended-status.json"
+  reboot_b
+  await_ssh_b "without a prompt after its unattended unlock" 120
+  vm_b ssh 'journalctl -b --no-pager -o short-monotonic -t tilo-sibling-unlock' \
+    > "$out/unlock-unattended-b-initrd.txt" 2>&1 || true
+  grep -q 'unlocked with the consent' "$out/unlock-unattended-b-initrd.txt" \
+    || die "B came up, but not through the sibling unlock: $(cat "$out/unlock-unattended-b-initrd.txt")"
+  sudo_b 'cat /run/tilo-sibling-unlock/exchange.json' > "$out/unlock-unattended-exchange.json" \
+    || die "B kept no transcript of the unattended exchange"
+  grep -q '"attestation": "quoted"' "$out/unlock-unattended-exchange.json" \
+    || die "B's unattended exchange carried no TPM quote: $(cat "$out/unlock-unattended-exchange.json")"
+  # Nobody clicked anything: B came up inside its timeout, so A released the
+  # half on the quote like the sibling it is.
+  note "B booted unattended on its accepted boot chain, with no approval on A"
+else
+  note "B has no TPM; the unattended case needs one and did not run"
+fi
 
 # --- 10d. B removed from the fleet --------------------------------------------------
 removed_before="$(a_history removed)"
