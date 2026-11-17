@@ -61,8 +61,12 @@ use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::{Interaction, ModelRefusal, PersonModel, Spender};
 use tilo_actions::remote::person_events;
 
+mod answers;
+mod asks;
 mod going;
 mod summary;
+
+pub use asks::{Answered, Carried, Carries, ServerAsk};
 
 /// What a turn's reply says when the turn goes on with what its person wrote next.
 const WENT_ON: &str = "I am going on with what you wrote next, and answer below.";
@@ -262,6 +266,8 @@ struct Asks {
     turns: Vec<Turn>,
     /// The turns a person stopped whose work is not ended yet.
     stopped: Vec<Turn>,
+    /// The turns their people's answers owe the agents that asked them.
+    answered: Vec<answers::Wake>,
 }
 
 /// The agents a host runs for the workspaces it governs.
@@ -276,18 +282,24 @@ pub struct HostAgents {
     going: Arc<going::Turns>,
     /// The events this host runs for its people, which a turn's tools reach for its person.
     events: Option<PersonEvents>,
+    /// What carries out the answers to what code of this server asked.
+    carriers: asks::Carriers,
 }
 
 impl HostAgents {
     #[must_use]
     pub fn new(workspaces: Workspaces, actions: WorkspaceActions, model: Option<Model>) -> Self {
-        Self {
+        let agents = Self {
             workspaces,
             actions,
             model,
             going: Arc::default(),
             events: None,
-        }
+            carriers: Arc::default(),
+        };
+        // What a turn asks its person is put to them in its conversation.
+        agents.ask_in_conversations();
+        agents
     }
 
     /// These agents, whose turns reach `events`: an agent sets its person's scheduled work and
@@ -354,7 +366,11 @@ impl HostAgents {
     /// written): the next write brings it up again, as ever, and it is never started over at
     /// once, which would ask its person's model again and again.
     async fn look_past(&self, workspace: &str, past: Option<&(String, Ask)>) -> Result<(), String> {
+        // What its people answered about what its agents asked them first.
+        self.settle_asks(workspace).await;
         let asks = self.asks(workspace).await?;
+        // An answer wakes whoever asked: written once under the question's own key.
+        self.wake_answered(workspace, asks.answered);
         let is_past = |turn: &Turn| {
             past.is_some_and(|(agent, ask)| *agent == turn.agent.id.0 && *ask == turn.ask)
         };
@@ -379,6 +395,7 @@ impl HostAgents {
                         {
                             tracing::warn!(%workspace, agent = %ended.0, %error, "a stopped turn of a host agent was not ended");
                         }
+                        agents.take_back_asked(&workspace, &turn, &turn.ask).await;
                         drop(held);
                         agents.look_after(workspace, ended).await;
                     });
@@ -441,6 +458,7 @@ impl HostAgents {
     async fn asks(&self, workspace: &str) -> Result<Asks, String> {
         let agents = self.agents(workspace).await?;
         if agents.is_empty() {
+            self.workspaces.note_waiting(workspace, Vec::new());
             return Ok(Asks::default());
         }
         let routes = self
@@ -463,7 +481,14 @@ impl HostAgents {
         routes: &[(String, String)],
     ) -> Result<Asks, String> {
         let mut asks = Asks::default();
+        // The questions its agents asked that wait for their person, read
+        // from the same parts.
+        let mut waiting = Vec::new();
+        // The answers that owe their askers a turn, and the wakes written already.
+        let mut answered = Vec::new();
+        let mut woken = std::collections::BTreeSet::new();
         let Some(chat) = self.read::<chat::chat::Chat>(workspace, CHAT, "").await? else {
+            self.workspaces.note_waiting(workspace, waiting);
             return Ok(asks);
         };
         for (app, record) in routes {
@@ -479,6 +504,9 @@ impl HostAgents {
             else {
                 continue;
             };
+            waiting.extend(self::asks::waiting_in(workspace, record, &part, agents));
+            answered.extend(answers::answered_in(&part, agents));
+            woken.extend(answers::woken_in(&part));
             for summons in chat::summons::summonses(&chat, &part) {
                 let Some(agent) = agents.get(&summons.agent) else {
                     continue;
@@ -535,6 +563,9 @@ impl HostAgents {
                 });
             }
         }
+        self.workspaces.note_waiting(workspace, waiting);
+        answered.retain(|wake| !woken.contains(&wake.key));
+        asks.answered = answered;
         Ok(asks)
     }
 
@@ -701,6 +732,7 @@ impl HostAgents {
             Ok(scope) => scope,
             Err(error) => return (turn.ask.clone(), Err(error)),
         };
+        let began = turn.ask.clone();
         let mut turn = turn.clone();
         let mut reply = scope.reply(&turn);
         if self.left_begun(workspace, &turn).await {
@@ -750,6 +782,10 @@ impl HostAgents {
             .await;
         }
         let ended = reply.finished(&outcome).await;
+        if matches!(outcome, Outcome::Cancelled) {
+            // Its person stopped it: what it asked them and still waits is taken back.
+            self.take_back_asked(workspace, &turn, &began).await;
+        }
         (turn.ask, ended)
     }
 

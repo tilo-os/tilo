@@ -1,0 +1,407 @@
+//! What an agent working inside a turn wants to do and its person's grants
+//! leave to them, decided with nobody at a screen.
+//!
+//! A turn a server takes for a person works with every device of theirs off, so
+//! a question put to their devices would lapse. Two things take its place.
+//!
+//! A lasting permission: where the person answered a question about exactly
+//! this action with always, and has not taken that back
+//! ([`WorkspaceDocumentsLink::stands`](super::WorkspaceDocumentsLink::stands)),
+//! the invocation goes as it would on their answer now, under a token bound
+//! to that one invocation, its target and its arguments.
+//!
+//! A question in the conversation: otherwise the server keeps what was asked
+//! and puts it to the person in the conversation the turn is in, where it
+//! waits for as long as they take ([`AsksInConversation::ask`]).
+//! The invocation ends at once as asked. Nothing ran, the turn goes on and
+//! ends, and nothing is held while the question waits. The server does it from
+//! the person's own answer ([`super::WorkspaceActions::serve_allowed`]).
+//!
+//! Either way what is decided is what the system names: the app, the kind of
+//! resource, the action, the document and the resource in it
+//! ([`Asked`]). Nothing the agent wrote decides it.
+
+use super::bounded::About;
+use super::link::{AskedInTurn, AsksInConversation};
+use super::publish::Unsaved;
+use super::{
+    ActionHostError, Arc, Caller, Confirmation, InvocationId, InvokeRequest, Outcome, Performed,
+    Worker,
+};
+use tilo_actions::InvocationUpdate;
+use tilo_actions::remote::person_asking::{ActionName, Asked, Thing, Words};
+use tilo_actions::remote::{InvocationReceipt, InvocationState, Pending, RemoteActionMessage};
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+use tilo_relay_protocol::WorkspaceId;
+
+/// What an invocation an agent made inside a turn ends with once its person
+/// is asked about it in the conversation: nothing ran, and the agent neither
+/// waits nor asks again.
+const ASKED_IN_CONVERSATION: &str = "Your person is asked about this in the conversation, and it \
+     is done when they allow it there. Nothing ran yet: tell them it waits for their answer, and do \
+     not make this call again.";
+/// What it ends with when the question could not be put.
+const NOT_ASKED: &str = "Your person could not be asked about this in the conversation";
+/// What it ends with when a question could not show its person all of it.
+const NOT_SHOWN: &str = "This holds more than a question shows your person, so they were not \
+     asked and nothing ran. Do it in smaller parts, each of which they can see whole. What was \
+     too long";
+
+/// The first field of `draft` that shows less than its invocation holds: a
+/// list longer than a draft lists, or a text longer than a draft keeps. A
+/// person shown such a draft would allow what they did not see.
+fn shortened(draft: &tilo_actions::Draft) -> Option<&str> {
+    draft.fields.iter().find_map(|field| {
+        let cut = match &field.value {
+            tilo_actions::DraftValue::List { count, labels } => *count > labels.len(),
+            tilo_actions::DraftValue::Text { text } => {
+                !field.editable && text.chars().count() >= tilo_actions::draft::MAX_FIELD_CHARS
+            }
+            _ => false,
+        };
+        cut.then_some(field.label.as_str())
+    })
+}
+
+/// `invocation` ended with nothing done, told `message`.
+fn failed(invocation: InvocationId, message: String) -> InvocationUpdate {
+    InvocationUpdate::Failed {
+        invocation,
+        error: tilo_actions::ActionFailure {
+            code: tilo_actions::api::ApiError::ConfirmationRequired
+                .code()
+                .to_owned(),
+            message,
+            details: None,
+            retryable: false,
+        },
+    }
+}
+
+/// Whether `outcome` is an invocation that waits for its person's answer.
+const fn waits(outcome: &Performed) -> bool {
+    matches!(
+        outcome,
+        Err(Outcome::Rejected(
+            ActionHostError::ConfirmationRequired { .. }
+        ))
+    )
+}
+
+/// What `caller` asks with `request` in `workspace`, by the names the system
+/// gave it, and those in the system's words: what a lasting permission of
+/// its person's covers, and what one is listed with. `None` for a caller
+/// that is no agent.
+fn asked(
+    caller: &Caller,
+    workspace: &str,
+    request: &InvokeRequest,
+    about: &About,
+) -> Option<(Asked, Words)> {
+    let agent = caller.acting().agent_id()?;
+    let asked = Asked {
+        workspace: workspace.to_owned(),
+        agent: agent.to_owned(),
+        action: ActionName {
+            provider: about.route.app_id.clone(),
+            kind: about.descriptor.resource_kind.clone(),
+            action: request.target.address.action.clone(),
+        },
+        on: Some(Thing {
+            document: about.route.document.clone(),
+            resource: request.target.address.resource.clone(),
+        }),
+    };
+    let words = Words {
+        action: about.descriptor.action_label.clone(),
+        on: about.record.clone(),
+        place: String::new(),
+    };
+    Some((asked, words))
+}
+
+impl Worker {
+    /// Do `request` for `caller` and save what it changed: how it went and
+    /// what is not saved yet. Where it waits for its person, a lasting
+    /// permission of theirs lets it through, and otherwise they are asked: in the
+    /// conversation for an agent inside a turn, else on their own devices.
+    ///
+    /// # Errors
+    /// The receipt of an invocation whose person is being asked.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the receipt is the answer the caller documents"
+    )]
+    pub(super) fn invoke_or_ask(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<(Performed, Option<Unsaved>), InvocationReceipt> {
+        let (mut outcome, mut unsaved, mut about) = self.performed(workspace_id, caller, request);
+        let mut stood = None;
+        if waits(&outcome)
+            && let Some(waiting) = about.as_deref()
+            && let Some(permission) = self.stands_for(workspace_id, caller, request, waiting)
+        {
+            (outcome, unsaved, about) = self.performed(workspace_id, caller, request);
+            stood = Some(permission);
+        }
+        if waits(&outcome)
+            && let Some(about) = about
+            && let Some(receipt) = self
+                .ask_in_conversation(workspace_id, caller, request, &about)
+                .or_else(|| self.ask_person(workspace_id, caller, request, &about))
+        {
+            return Err(receipt);
+        }
+        if let Some(permission) = stood
+            && outcome.is_ok()
+            && let Some(link) = self.shared.link.get()
+        {
+            link.permission_used(workspace_id, caller, &permission);
+        }
+        Ok((outcome, unsaved))
+    }
+
+    /// Do `request` and save what it changed: how it went, what is not
+    /// saved yet, and what its person is asked where it waits for them.
+    fn performed(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> (Performed, Option<Unsaved>, Option<Box<About>>) {
+        let performed = self.perform(workspace_id, caller, request);
+        self.note_written(request.invocation);
+        let (outcome, unsaved) = self.saved(workspace_id, performed);
+        let about = self
+            .log()
+            .entries
+            .get_mut(&request.invocation)
+            .and_then(|entry| entry.about.take());
+        (outcome, unsaved, about)
+    }
+
+    /// The lasting permission of the person `caller` acts for that covers
+    /// `request`, by its id, for an agent working inside a turn. With one
+    /// the server holds that person's answer for this invocation as it would
+    /// had they just allowed it: a token bound to the invocation, its target
+    /// and its arguments.
+    fn stands_for(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+        about: &About,
+    ) -> Option<String> {
+        caller.turn()?;
+        self.bounded(caller)?;
+        if request.confirmation.is_some() {
+            return None;
+        }
+        let workspace = self
+            .workspaces
+            .get(&workspace_id)
+            .and_then(|workspace| workspace.cluster_id(workspace_id))?;
+        let (asked, _) = asked(caller, &workspace, request, about)?;
+        let permission = self
+            .shared
+            .link
+            .get()?
+            .stands(workspace_id, caller, &asked)?;
+        let token = self.shared.token_for(workspace_id, caller, request)?;
+        self.log().entries.get_mut(&request.invocation)?.approval = Some(token);
+        Some(permission)
+    }
+
+    /// Put `request`, which `caller` (an agent working inside a turn) asked
+    /// for and which needs its person's confirmation, to that person as a
+    /// question in the conversation: answered accepted, it ends as asked
+    /// once the server kept the question, and the server does it from their
+    /// answer. `None` when it is not asked there: the caller is in no turn or
+    /// gave a confirmation of its own, the arguments hold something a draft
+    /// withholds (a server keeps no secret while a question waits), the person
+    /// was asked already, or nothing on this server asks in a conversation.
+    /// An invocation a question could not show whole (a list or a text
+    /// longer than a draft holds) is answered too: refused, with nobody
+    /// asked.
+    fn ask_in_conversation(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+        about: &About,
+    ) -> Option<InvocationReceipt> {
+        caller.turn()?;
+        self.bounded(caller)?;
+        if request.confirmation.is_some() {
+            return None;
+        }
+        let invocation = request.invocation;
+        let workspace = self
+            .workspaces
+            .get(&workspace_id)
+            .and_then(|workspace| workspace.cluster_id(workspace_id))?;
+        let (asked, words) = asked(caller, &workspace, request, about)?;
+        let draft = tilo_actions::Draft::render(&about.descriptor, &about.arguments);
+        if draft
+            .fields
+            .iter()
+            .any(|field| field.value == tilo_actions::DraftValue::Withheld)
+        {
+            return None;
+        }
+        // What its person cannot be shown whole they are not asked about,
+        // here or on a device: it is not done.
+        if let Some(label) = shortened(&draft) {
+            let update = failed(invocation, format!("{NOT_SHOWN}: {label}."));
+            if let Some(entry) = self.log().entries.get_mut(&invocation) {
+                entry.update = update.clone();
+            }
+            return Some(InvocationState::new(invocation, update).receipt());
+        }
+        let conversations = self.shared.in_conversation.read_recover().clone()?;
+        if self
+            .log()
+            .entries
+            .get_mut(&invocation)
+            .is_none_or(|entry| std::mem::replace(&mut entry.asked, true))
+        {
+            return None;
+        }
+        let in_turn = AskedInTurn {
+            request: request.clone(),
+            draft,
+            asked,
+            words,
+        };
+        let Some(put) = conversations.ask(workspace_id, caller, in_turn) else {
+            if let Some(entry) = self.log().entries.get_mut(&invocation) {
+                entry.asked = false;
+            }
+            return None;
+        };
+        let shared = Arc::clone(&self.shared);
+        put.then(move |put| shared.asked_in_conversation(invocation, put.as_ref()));
+        Some(InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }).receipt())
+    }
+}
+
+impl super::Shared {
+    /// A token that lets `request` go ahead once for `caller`: bound to that one invocation,
+    /// its target and its arguments.
+    fn token_for(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Option<String> {
+        self.approvals
+            .issue(super::bounded::ApprovalBinding::of(
+                workspace_id,
+                caller,
+                request,
+            ))
+            .ok()
+    }
+
+    /// The question about `invocation` was put to its person in the
+    /// conversation, or could not be (`put`): either way the invocation ends
+    /// here, told which, and nothing ran.
+    fn asked_in_conversation(&self, invocation: InvocationId, put: Option<&Result<(), String>>) {
+        let message = match put {
+            Some(Ok(())) => ASKED_IN_CONVERSATION.to_owned(),
+            Some(Err(why)) => format!("{NOT_ASKED} ({why}), so nothing ran."),
+            None => format!("{NOT_ASKED}, so nothing ran."),
+        };
+        let update = failed(invocation, message);
+        if let Some(entry) = self.log.lock_recover().entries.get_mut(&invocation)
+            && !entry.update.is_terminal()
+        {
+            entry.update = update;
+        }
+    }
+}
+
+impl super::WorkspaceActions {
+    /// Put what an agent working inside a turn asks its person to them in
+    /// the conversation, through `asker`, from now on: the runtime that works
+    /// agents on this server gives itself. Until one is given, such an agent's
+    /// person is asked on their own devices like everybody's.
+    pub fn ask_in_conversations(&self, asker: Arc<dyn AsksInConversation>) {
+        *self.shared.in_conversation.write_recover() = Some(asker);
+    }
+
+    /// Do `request` for `caller` as the person `caller` acts for allowed
+    /// it: the server read their own answer to the question it put to them in
+    /// the conversation ([`AsksInConversation::ask`]), and confirms this one
+    /// invocation, its target and its arguments, and
+    /// nothing else. Only the server calls this, with an answer it read
+    /// itself: no request from outside reaches it. `None` when the server's
+    /// actions are not running.
+    #[must_use]
+    pub fn serve_allowed(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        mut request: InvokeRequest,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        let token = self.shared.token_for(workspace_id, caller, &request)?;
+        request.confirmation = Some(Confirmation::Approved(token));
+        self.serve(workspace_id, caller, RemoteActionMessage::Invoke(request))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_actions::{Draft, DraftField, DraftValue};
+
+    fn draft_of(value: DraftValue, editable: bool) -> Draft {
+        Draft {
+            action_label: "Send".into(),
+            resource_label: "Outbox".into(),
+            fields: vec![DraftField {
+                path: vec!["to".into()],
+                label: "To".into(),
+                value,
+                editable,
+                multiline: false,
+                shows: None,
+                role: None,
+            }],
+            ..Draft::default()
+        }
+    }
+
+    /// A draft that lists fewer entries than its list holds, or keeps less
+    /// of a text than was given, shows its person less than would be done: it is
+    /// named, so the invocation is refused instead of asked. One that shows
+    /// everything is not.
+    #[test]
+    fn a_draft_that_shows_less_than_would_be_done_is_named() {
+        let names = |count: usize| (0..count).map(|n| format!("p{n}")).collect::<Vec<_>>();
+        let listed_whole = DraftValue::List {
+            count: 12,
+            labels: names(12),
+        };
+        assert_eq!(shortened(&draft_of(listed_whole, false)), None);
+        let listed_in_part = DraftValue::List {
+            count: 13,
+            labels: names(12),
+        };
+        assert_eq!(shortened(&draft_of(listed_in_part, false)), Some("To"));
+
+        let short = DraftValue::Text {
+            text: "bo@example.test".into(),
+        };
+        assert_eq!(shortened(&draft_of(short, true)), None);
+        let cut = DraftValue::Text {
+            text: "a".repeat(tilo_actions::draft::MAX_FIELD_CHARS),
+        };
+        assert_eq!(shortened(&draft_of(cut, false)), Some("To"));
+        let flag = DraftValue::Flag { on: true };
+        assert_eq!(shortened(&draft_of(flag, true)), None);
+    }
+}

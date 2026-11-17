@@ -8,7 +8,7 @@
 //! and for an agent that access bounded as every agent's is. What that
 //! replica surveys is the one answer to both what the caller's listing shows
 //! and what the host runs for them: an action it does not offer is refused,
-//! as not permitted when the record publishes it to someone else.
+//! as not permitted when the document publishes it to someone else.
 //!
 //! Nobody acting for a person confirms by their own word, and the host does
 //! not take a person's word from a device that may be their agent: where an
@@ -19,7 +19,7 @@
 //! invocation is refused.
 //!
 //! Before what such an action changed is saved, the host reads the caller's
-//! standing again and checks every field the change writes against it
+//! permissions again and checks every field the change writes against them
 //! ([`refused_writes`]): a commenter's change outside comments and reactions,
 //! or anything a viewer's action wrote, is never saved.
 
@@ -63,14 +63,14 @@ pub(super) struct Bounded {
     pub(super) agent_name: Option<String>,
 }
 
-/// The replica a bounded caller acts through, by the record it holds and who.
+/// The replica a bounded caller acts through, by the document it holds and who.
 pub(super) type BoundedKey = (
     DocumentRoute,
     ui::permissions::policy::PersonId,
     Option<String>,
 );
 
-/// A caller's replica of one record, and the standing it was opened with.
+/// A caller's replica of one document, and the permissions it was opened with.
 pub(super) struct BoundedReplica {
     pub(super) held: Mounted,
     access: policy::MemberAccess,
@@ -79,12 +79,12 @@ pub(super) struct BoundedReplica {
 }
 
 /// Callers' replicas whose last write is still on its way to be saved, by
-/// the caller and record they act through, with what hears whether it was
+/// the caller and document they act through, with what hears whether it was
 /// ([`SaveWatch`](super::publish::SaveWatch)).
 ///
 /// Such a replica is kept here rather than let go: the next action of the
 /// same caller reuses it once the host holds the write, instead of opening
-/// the record again over every change it holds. Nothing unsaved is ever
+/// the document again over every change it holds. Nothing unsaved is ever
 /// acted on: a write the host refused or never confirmed lets the replica
 /// go, to be opened again from what the workspace holds.
 pub(super) struct Parked<T> {
@@ -217,11 +217,11 @@ pub(super) fn own_word_refused() -> ActionHostError {
 }
 
 /// The node below the workspace a change writing at `keys` (storage keys, top
-/// down) of a record of `app` acts at: its comments or reactions when it
+/// down) of a document of `app` acts at: its comments or reactions when it
 /// writes inside them, wherever a model keeps them; else the field the action
 /// that wrote it is declared below (`#[action(field = ...)]`: filing a report
 /// is a comment, whose app keeps it where its own footprint says), else the
-/// record.
+/// document.
 fn written_node(app: &str, keys: &[String], declared: Option<&str>) -> TreePath {
     let record = TreePath::root().app(app);
     let inside = |field: &str| keys.iter().any(|key| key == field);
@@ -243,7 +243,7 @@ fn key_of(prop: &automerge::Prop) -> String {
     }
 }
 
-/// The keys a change writes, as its record's replica reports them.
+/// The keys a change writes, as its document's replica reports them.
 pub(super) type WrittenKeys = Result<Vec<Vec<String>>, String>;
 
 /// The storage keys `mutation` writes at, each top down to what it put or
@@ -321,6 +321,8 @@ pub(super) struct About {
     /// The record's name in its app's index of the workspace, else what the
     /// app calls the resource the action is on.
     pub(super) record: String,
+    /// The document the action acts on.
+    pub(super) route: DocumentRoute,
 }
 
 /// The question the person is put about `request`, which `caller` asks the
@@ -790,6 +792,7 @@ impl Worker {
                 .unwrap_or_else(|| descriptor.resource_label.clone()),
             descriptor: descriptor.clone(),
             arguments,
+            route: route.clone(),
         }
     }
 

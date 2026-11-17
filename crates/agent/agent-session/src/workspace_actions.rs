@@ -40,15 +40,16 @@
 //!
 //! The service joins each workspace as the host's own device ([`HostDevice`], from
 //! the [`WorkspaceDocumentsLink`] the host supplies): a member of the workspace's
-//! channels like any other, admitted by the workspace's members. It reads
+//! documents like any other, admitted by the workspace's members. It reads
 //! only records it holds keys for and writes nothing in the clear. When the
-//! host device itself takes part in the workspace's channels (a workspace the host
+//! host device itself takes part in the workspace's documents (a workspace the host
 //! governs), it cannot be admitted to them a second time; the host hands the
 //! service the keys it holds instead
 //! ([`WorkspaceDocumentsLink::host_keys`]), for each record a request reads or
 //! acts on, fresh for every act.
 
 mod arguments;
+mod asked_in_turn;
 mod bounded;
 mod canonical;
 mod catalogue;
@@ -81,7 +82,8 @@ pub(super) use arguments::invoke_arguments;
 pub use content::MAX_PUT_BYTES;
 pub use host_actions::HostActions;
 pub use link::{
-    FeedbackReviewer, HostDevice, ViewDocument, ViewReadPolicy, WorkspaceDocumentsLink,
+    AskedInTurn, AsksInConversation, FeedbackReviewer, HostDevice, ViewDocument, ViewReadPolicy,
+    WorkspaceDocumentsLink,
 };
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
@@ -320,6 +322,8 @@ struct Shared {
     puts: tilo_actions::remote::HostedContentPuts,
     /// The answers people gave to invocations run for them.
     approvals: bounded::Approvals,
+    /// What asks an agent's person in the conversation its turn is in.
+    in_conversation: std::sync::RwLock<Option<Arc<dyn AsksInConversation>>>,
     /// Workspaces whose notes and folder wait for a pass to bring them into step.
     projecting: Mutex<HashSet<WorkspaceId>>,
     /// Records whose name in their app's index waits to be read again.
@@ -349,6 +353,7 @@ impl WorkspaceActions {
                 stores: Mutex::default(),
                 puts: tilo_actions::remote::HostedContentPuts::default(),
                 approvals: bounded::Approvals::default(),
+                in_conversation: std::sync::RwLock::default(),
                 projecting: Mutex::default(),
                 renaming: Mutex::default(),
             }),
@@ -1255,7 +1260,7 @@ struct Worker {
     parked: bounded::Parked<bounded::BoundedReplica>,
     /// The route of the mounted record each part is held beside.
     beside: HashMap<DocumentRoute, DocumentRoute>,
-    /// The routes whose channel this worker opened for the session, so a
+    /// The routes whose document this worker opened for the session, so a
     /// record the host starts is sealed from its first change
     /// ([`publish::Worker::commit`](publish)).
     channels_opened: HashSet<DocumentRoute>,
@@ -2179,25 +2184,13 @@ impl Worker {
         if let Some(receipt) = self.terminal(workspace_id, &caller, &request) {
             return receipt;
         }
-        let performed = self.perform(workspace_id, &caller, &request);
-        self.note_written(invocation);
-        let (outcome, unsaved) = self.saved(workspace_id, performed);
-        let about = self
-            .log()
-            .entries
-            .get_mut(&invocation)
-            .and_then(|entry| entry.about.take());
-        if matches!(
-            outcome,
-            Err(Outcome::Rejected(
-                ActionHostError::ConfirmationRequired { .. }
-            ))
-        ) && let Some(about) = about
-            && let Some(receipt) = self.ask_person(workspace_id, &caller, &request, &about)
-        {
-            self.log().running.remove(&invocation);
-            return receipt;
-        }
+        let (outcome, unsaved) = match self.invoke_or_ask(workspace_id, &caller, &request) {
+            Ok(ran) => ran,
+            Err(receipt) => {
+                self.log().running.remove(&invocation);
+                return receipt;
+            }
+        };
         log_outcome(&request.target, &outcome);
         let left = outcome
             .as_ref()
@@ -2804,8 +2797,8 @@ impl Worker {
                 return Err(Outcome::Rejected(ActionHostError::NotPermitted));
             }
         }
-        // When the host device takes part in the workspace's channels, it opens a
-        // new record's channel for the member and hands it the keys, so the
+        // When the host device takes part in the workspace's documents, it opens a
+        // new record's document for the member and hands it the keys, so the
         // first change goes out sealed instead of waiting for keys.
         if genesis.is_some()
             && let Some(keys) = self

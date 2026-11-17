@@ -1,4 +1,4 @@
-//! Agents on this host (feature `agents`): the link between the relay and
+//! Agents on this host (feature `agents`): the link between the server and
 //! `tilo-agent-session`'s [`AgentHost`].
 //!
 //! [`RelayAgentLink`] is what the supervisor asks of the relay:
@@ -8,13 +8,13 @@
 //!   root-holding approver answers it with the agent's certificate and the
 //!   delegation together (`ApproverDecision::IssueDelegate`), so consent is one
 //!   step and the host never holds the root.
-//! - **Admission.** Approved delegations are registered in the relay's agent
+//! - **Admission.** Approved delegations are registered in the server's agent
 //!   register, which confines the device to its workspaces; withdrawn ones are
-//!   refused from the next access audit on. Each workspace this relay governs
+//!   refused from the next access audit on. Each workspace this server governs
 //!   that the delegation names puts the agent on its governed roster
 //!   (`WorkspaceOperation::DelegateMembership`), and every change to its grant is
 //!   carried onto those rosters: a withdrawn or narrowed grant takes it off
-//!   the workspace and its channels.
+//!   the workspace and its documents.
 //! - **Asking first.** An action the person's grants leave to them is put
 //!   to their approving device as a question for that one invocation
 //!   ([`CertificationProtocol::confirm`]); the agent runs it only on the
@@ -58,13 +58,13 @@ const APPROVAL_WAIT_NS: u64 = 10 * 60 * 1_000_000_000;
 /// How long an agent's question about one invocation waits for its person.
 const CONFIRMATION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 
-/// The relay as an agent supervisor sees it.
+/// The server as an agent supervisor sees it.
 #[derive(Clone)]
 pub struct RelayAgentLink {
     user_public_key: [u8; 32],
     certification: CertificationProtocol,
     agents: AgentRegistry,
-    /// The workspaces this relay governs, whose rosters follow each agent's grant.
+    /// The workspaces this server governs, whose rosters follow each agent's grant.
     workspaces: Option<crate::workspaces::Workspaces>,
     runtime: tokio::runtime::Handle,
 }
@@ -142,7 +142,7 @@ impl AgentHostLink for RelayAgentLink {
     fn withdraw(&self, device_public_key: [u8; 32]) {
         self.agents.write_recover().insert(device_public_key, None);
         crate::authority_epoch::bump();
-        // Governed workspaces take it off their channels and refuse its writes.
+        // Governed workspaces take it off their documents and refuse its writes.
         self.reconcile_workspaces(device_public_key, None);
     }
 
@@ -173,8 +173,8 @@ impl AgentHostLink for RelayAgentLink {
 }
 
 /// The person's side of one agent's actions that ask first: each is a
-/// question on the person's approving devices, through the channel their
-/// grants are approved on. It runs nothing itself.
+/// question on the person's approving devices, put the way their grants
+/// are approved. It runs nothing itself.
 struct RelayApprover {
     certification: CertificationProtocol,
     delegation: Delegation,
@@ -819,7 +819,46 @@ struct RelayRecordsLink {
     certification: CertificationProtocol,
 }
 
+impl RelayRecordsLink {
+    /// The person a turn of this server acts for, and where their own store
+    /// is kept, when `caller` is such a turn's agent: one a person's own
+    /// session was handed to, working inside a turn. Nothing else is decided
+    /// by what stands for a person.
+    fn turn_of(&self, caller: &Caller) -> Option<(&crate::workspaces::Workspaces, [u8; 32])> {
+        let acting = caller.acting();
+        if acting.app().is_some()
+            || !acting.is_agent()
+            || !caller.is_session_delegated()
+            || caller.turn().is_none()
+        {
+            return None;
+        }
+        Some((self.workspaces.as_ref()?, *caller.user_public_key()?))
+    }
+}
+
 impl WorkspaceDocumentsLink for RelayRecordsLink {
+    /// What stands for the person the turn acts for, read from their own
+    /// store on this server now: for the turn's own agent and nobody else.
+    fn stands(
+        &self,
+        _workspace: WorkspaceId,
+        caller: &Caller,
+        asked: &tilo_actions::remote::person_asking::Asked,
+    ) -> Option<String> {
+        let (workspaces, person) = self.turn_of(caller)?;
+        if caller.acting().agent_id() != Some(asked.agent.as_str()) {
+            return None;
+        }
+        workspaces.stands(&person, asked)
+    }
+
+    fn permission_used(&self, _workspace: WorkspaceId, caller: &Caller, permission: &str) {
+        if let Some((workspaces, person)) = self.turn_of(caller) {
+            workspaces.permission_used(&person, permission);
+        }
+    }
+
     /// On the approving devices of the person `caller` is or acts for: the
     /// host's own person's, or a member's own root, as their device requests
     /// are answered.
