@@ -1297,7 +1297,9 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 quote! {
                     // An item the caller names by its id costs nothing more;
                     // one written as its collection publishes its name is
-                    // resolved before the action runs.
+                    // resolved before the action runs. One neither reads stays
+                    // as written: the action's own parameter reads it, in the
+                    // words it documents.
                     let mut __resolved = ::core::option::Option::None;
                     if !#krate::items::entry_target(<#self_ty>::__OUTBOXES, #named)
                         && let ::core::option::Option::Some(__field) =
@@ -1308,20 +1310,11 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                             )
                         && !params.#ident.as_str().trim().is_empty()
                         && !#krate::Fields::item_holds(&*record, __field, params.#ident.as_str())
+                        && let ::core::result::Result::Ok(__id) =
+                            #krate::Fields::item_named(&*record, __field, params.#ident.as_str())
                     {
                         let mut __named = ::core::clone::Clone::clone(params);
-                        match #krate::Fields::item_named(&*record, __field, params.#ident.as_str())
-                        {
-                            ::core::result::Result::Ok(__id) => __named.#ident = __id,
-                            // A reference this collection does not hold but
-                            // the record does is the action's to judge: it may
-                            // keep the item in another of its collections.
-                            ::core::result::Result::Err(__why) => {
-                                if !#krate::Fields::item_id_any(&*record, params.#ident.as_str()) {
-                                    return ::core::result::Result::Err(__why);
-                                }
-                            }
-                        }
+                        __named.#ident = __id;
                         __resolved = ::core::option::Option::Some(__named);
                     }
                     let params = __resolved.as_ref().unwrap_or(params);
