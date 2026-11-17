@@ -153,8 +153,8 @@ fi
 # API start beside themselves and no package depends on. A run handed it has it where the build
 # left it, beside the tests' own build.
 if tests tilo-agent-session tilo-session; then
-    path=$(handed_bin tilolang-host)
-    [[ -n $path ]] || cargo build --locked -p tilolang-host --bin tilolang-host
+    path=$(handed_bin tilolang-process)
+    [[ -n $path ]] || cargo build --locked -p tilolang-process --bin tilolang-process
 fi
 
 # The sign-in and rollback tests observe an emulated TPM, which the builder has
