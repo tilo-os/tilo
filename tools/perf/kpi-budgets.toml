@@ -7,6 +7,8 @@
 # [kpi."<id>"] entries:
 #   unit                     the record's unit; a mismatch fails
 #   p50, p95, p99, max       ceilings on that percentile of the record
+#   baseline_only            true: the series is held to its own baseline
+#                            alone, with no ceiling to miss
 #   enforce                  true: a ceiling miss fails the run at once;
 #                            false (default): it is reported as a target not
 #                            yet met (marketing targets that are not true yet)
@@ -1496,6 +1498,7 @@ source = "frames an idle desktop of the demo windows presents per second (headle
 # page below and its CPU per frame.
 [kpi."browser.typing.key_to_frame"]
 unit = "ms"
+baseline_only = true
 baseline_min_runs = 3
 source = "page key event to the first presented frame after it, a fast typist's keys into a note (headless, SwiftShader)"
 
@@ -1504,6 +1507,7 @@ source = "page key event to the first presented frame after it, a fast typist's 
 # (EventLatency): the browser's own floor for a key, on any machine.
 [kpi."browser.typing.plain_page_key_to_frame"]
 unit = "ms"
+baseline_only = true
 baseline_min_runs = 3
 source = "key event to the frame that presented it (EventLatency), the same keys into a plain page's editable text, same browser (headless, SwiftShader)"
 

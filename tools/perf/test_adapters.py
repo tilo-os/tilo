@@ -11,6 +11,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import adapters  # noqa: E402
+import compare  # noqa: E402
 
 ENV = {"commit": "a" * 40, "profile": "release", "renderer": "swiftshader", "virtualization": "kvm",
        "runner": "runner", "hardware": "test cpu; 4 cpus", "started_at": "2026-11-06T01:15:00Z"}
@@ -93,6 +94,18 @@ class BrowserQualification(unittest.TestCase):
         recorded = {field: kpi for field, (kpi, _) in adapters.BROWSER_KPIS.items()
                     if field not in adapters.BROWSER_DEMO_FIELDS}
         self.assertEqual(budgeted, set(recorded.values()))
+
+
+class Budgets(unittest.TestCase):
+    def test_the_budgets_load(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        for kpi, entry in budgets.kpis.items():
+            with self.subTest(kpi=kpi):
+                ceilings = [name for name in compare.CEILINGS if name in entry]
+                self.assertTrue(ceilings or entry.get("baseline_only"),
+                                "a budget names a ceiling, or says baseline_only")
+                self.assertFalse(ceilings and entry.get("baseline_only"),
+                                 "a baseline_only series has no ceiling to miss")
 
 
 if __name__ == "__main__":

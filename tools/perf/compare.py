@@ -20,7 +20,8 @@ For every record of the run:
   carries its verdict, so the next run reads it.
 - **Absolute budgets.** `tools/perf/kpi-budgets.toml` ceilings on p50, p95,
   p99 or max. An `enforce = true` miss fails at once; otherwise the miss is
-  reported as a target not yet met.
+  reported as a target not yet met. `baseline_only = true` names a series held
+  to its own baseline alone: it has no ceiling to miss.
 - **Missing results.** Each budgeted KPI is owed by one job, the workflow
   that produces it (`[jobs]` in kpi-budgets.toml): a group, the KPI id's
   first segment, belongs to one job, and a job may also claim single KPIs of
@@ -130,7 +131,7 @@ def load_budgets(path: Path) -> Budgets:
     defaults = {**DEFAULTS, **data.get("defaults", {})}
     kpis = data.get("kpi", {})
     jobs = load_jobs(path, data.get("jobs", {}), kpis)
-    allowed = {"unit", "enforce", "source", *CEILINGS, *DEFAULTS}
+    allowed = {"unit", "enforce", "source", "baseline_only", *CEILINGS, *DEFAULTS}
     for kpi, entry in kpis.items():
         if not record.KPI.fullmatch(kpi):
             raise ValueError(f"{path}: budget KPI {kpi!r} is not a KPI id")
@@ -139,8 +140,14 @@ def load_budgets(path: Path) -> Budgets:
             raise ValueError(f"{path}: {kpi} has unknown keys {sorted(unknown)}")
         if entry.get("unit") not in record.UNITS:
             raise ValueError(f"{path}: {kpi} needs a unit from {sorted(record.UNITS)}")
-        if not any(name in entry for name in CEILINGS):
-            raise ValueError(f"{path}: {kpi} names no ceiling ({', '.join(CEILINGS)})")
+        ceilings = [name for name in CEILINGS if name in entry]
+        if entry.get("baseline_only") and ceilings:
+            raise ValueError(f"{path}: {kpi} is baseline_only and also names {', '.join(ceilings)}")
+        if not ceilings and not entry.get("baseline_only"):
+            raise ValueError(f"{path}: {kpi} names no ceiling ({', '.join(CEILINGS)}); "
+                             "say baseline_only = true for a series held to its own baseline alone")
+        if entry.get("enforce") and not ceilings:
+            raise ValueError(f"{path}: {kpi} enforces no ceiling")
     budgets = Budgets(defaults, kpis, jobs)
     orphans = sorted(kpi for kpi in kpis if jobs and budgets.owner(kpi) is None)
     if orphans:
