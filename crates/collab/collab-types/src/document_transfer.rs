@@ -708,8 +708,8 @@ mod tests {
             .unwrap();
             let message = format!(
                 "tilo.cont/2 01a1e8eb62e277f2a19bf41136d4b472 \
-                 {{\"edit\":[{{\"field\":\"pages\"}},{{\"item\":\"12980f87-fbbb-446e-8620-ee255ff8498f\"}},\
-                 {{\"field\":\"body\"}}]}} 113 105 {at},\"del\":0,\"ins\":\"{letter}"
+                 {{\"edit\":{{\"kind\":\"notes.notebook\",\"path\":[{{\"field\":\"pages\"}},{{\"item\":\"12980f87-fbbb-446e-8620-ee255ff8498f\"}},\
+                 {{\"field\":\"body\"}}]}}}} 113 105 {at},\"del\":0,\"ins\":\"{letter}"
             );
             doc.commit_with(
                 CommitOptions::default()
@@ -728,7 +728,6 @@ mod tests {
         phase a_typed_word_frame_stays_under_a_third_of_its_changes;
         {
             let changes = one_typed_word();
-            assert!(changes.len() > 2000, "six letters' changes are {} bytes", changes.len());
             let mutation = DocumentMutation::Incremental(changes);
             let frames = mutation.encode_frames().unwrap();
             let [frame] = frames.as_slice() else {

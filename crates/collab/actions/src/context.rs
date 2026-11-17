@@ -496,7 +496,7 @@ impl ActionContext {
         {
             return None;
         }
-        let claim = ContinuedAction::token(self.what.as_ref())?;
+        let claim = ContinuedAction::token(self)?;
         let now = std::str::from_utf8(&action.payload).ok()?;
         let then = std::str::from_utf8(&earlier.payload).ok()?;
         let kept = now
@@ -559,23 +559,40 @@ impl ActionContext {
 }
 
 /// What a continuation says its change is, in the terms a change's claim is
-/// written in: an edit at a path (the whole record for an empty one), or one
-/// of the record's verbs. A continuation writes it as JSON.
+/// written in, as its gesture's first entry says it: an edit of a resource
+/// kind at a path (the whole record for an empty one), or one of its verbs
+/// on an item. A continuation writes it as JSON.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ContinuedAction {
-    Edit(Vec<PathStep>),
-    Verb(String),
+    Edit {
+        kind: String,
+        path: Vec<PathStep>,
+    },
+    Verb {
+        action: crate::ActionKey,
+        item: Option<String>,
+    },
 }
 
 impl ContinuedAction {
-    /// The claim a continuation of an entry that did `what` writes; `None`
-    /// for one whose JSON holds a blank, which ends the token.
-    fn token(what: Option<&Did>) -> Option<String> {
-        let action = match what {
-            None => Self::Edit(Vec::new()),
-            Some(Did::Edit(edit)) => Self::Edit(edit.path.clone()),
-            Some(Did::Verb(verb)) => Self::Verb(verb.action.action.clone()),
+    /// The claim a continuation of `entry` writes; `None` for one whose
+    /// JSON holds a blank, which ends the token.
+    fn token(entry: &ActionContext) -> Option<String> {
+        let edit = |path: &[PathStep]| Self::Edit {
+            kind: entry
+                .resource
+                .as_ref()
+                .map_or_else(String::new, |resource| resource.kind.clone()),
+            path: path.to_vec(),
+        };
+        let action = match &entry.what {
+            Some(Did::Verb(verb)) => Self::Verb {
+                action: verb.action.clone(),
+                item: entry.item.as_ref().map(|item| item.id.clone()),
+            },
+            Some(Did::Edit(changed)) => edit(&changed.path),
+            None => edit(&[]),
             Some(_) => return None,
         };
         serde_json::to_string(&action)
@@ -2022,7 +2039,7 @@ mod tests {
         let message = next.continuation_of(&first).unwrap();
         assert_eq!(
             message,
-            r#"tilo.cont/2 00000000000000000000000000000007 {"edit":[{"field":"snippets"},{"item":"s1"},{"field":"favorite"}]} 30 28 é \"q\""#
+            r#"tilo.cont/2 00000000000000000000000000000007 {"edit":{"kind":"","path":[{"field":"snippets"},{"item":"s1"},{"field":"favorite"}]}} 30 28 é \"q\""#
         );
         assert_eq!(
             ActionContext::continued(&message, &first),

@@ -19,7 +19,7 @@ use automerge::transaction::{CommitOptions, Transactable};
 use tilo_automerge::ApplyIncoming;
 
 use crate::action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
-use crate::context::{ActionContext, ChangeKind};
+use crate::context::{ActionContext, CONTINUATION_PREFIX, ChangeKind};
 use crate::entry::{Described, Did};
 use crate::envelope::ActionEnvelope;
 use crate::registry::ActionRegistry;
@@ -467,11 +467,12 @@ thread_local! {
 /// its writer's earlier changes).
 #[must_use]
 pub fn entry_of(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Option<ActionContext> {
-    let meta = doc.get_change_meta_by_hash(&hash)?;
-    let message = meta.message.as_deref()?;
-    match ActionContext::from_change_message(message) {
-        Some(entry) => Some(entry),
-        None => ActionContext::continued(message, &opening_entry(doc, hash)?),
+    let entry = opening_entry(doc, hash)?;
+    match doc.get_change_meta_by_hash(&hash)?.message.as_deref() {
+        Some(message) if message.starts_with(CONTINUATION_PREFIX) => {
+            ActionContext::continued(message, &entry)
+        }
+        _ => Some(entry),
     }
 }
 

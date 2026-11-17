@@ -141,20 +141,13 @@ impl ClaimedAction {
     }
 
     /// What a continuation message (the next keystroke of a gesture) says
-    /// its change is: a field edit at its path, or the verb it names, of the
-    /// record's own kind and app.
+    /// its change is: what its gesture's first entry claims.
     #[must_use]
     pub fn of_continuation(message: &str) -> Option<Self> {
         let rest = message.strip_prefix(tilo_actions::context::CONTINUATION_PREFIX)?;
         Some(match serde_json::from_str(rest.split(' ').nth(1)?).ok()? {
-            ContinuedAction::Edit(path) => Self::Edit {
-                kind: String::new(),
-                path,
-            },
-            ContinuedAction::Verb(action) => Self::Verb {
-                action: ActionKey::new("", "", action),
-                item: None,
-            },
+            ContinuedAction::Edit { kind, path } => Self::Edit { kind, path },
+            ContinuedAction::Verb { action, item } => Self::Verb { action, item },
         })
     }
 
@@ -653,35 +646,26 @@ mod tests {
             );
         }
 
-        phase a_continuation_claims_what_it_says;
-        // A continuation claims what it says: the field edit at its path, or
-        // the verb it names, of the record's own app and kind.
+        phase a_continuation_claims_what_its_gestures_first_entry_claims;
         {
             let claim = |message: &str| {
                 ChangeClaim::of_change([1; 32], Some(message), Vec::new()).map(|claim| claim.action)
             };
-            assert_eq!(
-                claim(r#"tilo.cont/2 0123456789abcdef0123456789abcdef {"edit":[{"field":"rows"},{"item":"r1"},{"field":"title"}]} 4 5 x"#),
-                Ok(ClaimedAction::Edit {
-                    kind: String::new(),
-                    path: vec![
-                        PathStep::Field("rows".into()),
-                        PathStep::Item("r1".into()),
-                        PathStep::Field("title".into()),
-                    ],
-                })
-            );
-            assert_eq!(
-                claim(r#"tilo.cont/2 0123456789abcdef0123456789abcdef {"verb":"type-text"} 1 5 x"#),
-                Ok(ClaimedAction::Verb {
-                    action: ActionKey::new("", "", "type-text"),
-                    item: None,
-                })
-            );
-            assert_eq!(
-                claim(r#"tilo.cont/2 g {"edit":[]} 0 0 "#),
-                Ok(ClaimedAction::whole_resource_edit(String::new()))
-            );
+            let gesture = tilo_actions::ActionId(uuid::Uuid::from_u128(7));
+            let typed = |what: Option<Did>, payload: &str| ActionContext {
+                what,
+                action: Some(tilo_actions::EncodedAction {
+                    type_id: "sheets.type".into(),
+                    payload: payload.as_bytes().to_vec(),
+                }),
+                ..ActionContext::for_resource("r1", "sheets.workbook", "Plan").in_gesture(Some(gesture))
+            };
+            let verb = ActionKey::new("sheets", "sheets.workbook", "type-text");
+            for what in [None, Some(Did::Verb(tilo_actions::VerbCall::new(verb, [])))] {
+                let first = typed(what.clone(), r#""a""#);
+                let next = typed(what, r#""ab""#).continuation_of(&first).unwrap();
+                assert_eq!(claim(&next), claim(&first.change_message().unwrap()), "{next}");
+            }
             assert_eq!(claim(r#"tilo.cont/2 g {"cell":"r1"} 0 1 x"#), Err(ClaimError::Unnamed));
         }
     }

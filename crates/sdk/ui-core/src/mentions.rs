@@ -27,7 +27,6 @@ pub fn member_of(value: &str) -> Option<MemberId> {
         tilo_reference::Embed::Resource(_) => None,
     }
 }
-const AUTHOR_MARK: &str = "author";
 /// The key a stored enum value keeps its variant under (`tilo_resource::VARIANT_KEY`).
 const VARIANT_KEY: &str = "$variant";
 /// The key the `Str` variant of a stored mark value keeps its string under, and the bare key an older
@@ -259,7 +258,7 @@ impl Walk<'_> {
             };
             let by = marks
                 .iter()
-                .filter(|other| other.name() == AUTHOR_MARK)
+                .filter(|other| other.name() == tilo_resource::text::AUTHOR_MARK)
                 .filter(|other| (other.start..other.end).contains(&mark.start))
                 .find_map(|other| match other.value() {
                     ScalarValue::Str(author) => MemberId::of_actor_bytes(author.as_bytes())
