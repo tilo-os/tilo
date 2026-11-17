@@ -82,6 +82,9 @@ struct Sending {
 /// A send as carried out: what it carried, whom it reached, and whether it landed.
 #[derive(Clone, Debug, serde::Serialize)]
 struct Sent {
+    /// The number the pass gave it, which its answer from Chat comes back under.
+    #[serde(skip)]
+    number: u64,
     to: Vec<Recipient>,
     attached: Vec<tilo_reference::Attached>,
     text: String,
@@ -105,6 +108,23 @@ pub(crate) struct Sends {
     /// The message Chat answered each ask's send with, by the ask's number: written on the
     /// thread Chat's answer lands on, read by the pass.
     posted: Posted,
+    /// The sends handed to Chat whose answer has not come back, by the number the pass gave each.
+    flying: Rc<RefCell<std::collections::BTreeMap<u64, Flying>>>,
+    /// The number the next send handed to Chat takes.
+    sent_count: Rc<Cell<u64>>,
+    /// What Chat answered each send, by its number: written on the thread its answer lands on,
+    /// read by the pass.
+    settled: Settled,
+}
+
+/// What Chat answered each send, by its number: the message landed, or why it did not.
+type Settled = std::sync::Arc<std::sync::Mutex<Vec<(u64, Result<(), String>)>>>;
+
+/// A send handed to Chat, waiting for its answer: whom to tell.
+struct Flying {
+    /// Whether the person sitting here sent it, who is told when it did not land.
+    by_person: bool,
+    answer: tilo_actions::remote::Completer<Result<tilo_actions::ActionOutput, ApiError>>,
 }
 
 /// The message Chat posted for each ask, by the ask's number.
@@ -259,9 +279,11 @@ pub(crate) const SEND: &str = "send";
 
 impl Shared {
     /// Carry out the sends taken since the last pass ([`SendToService`]): each item named by its
-    /// id is carried as the record it is, and the send goes as one action of the sender's own, for
-    /// Chat to find whom it names.
+    /// id is carried as the record it is, and the send goes as one action, for Chat to find whom
+    /// it names. A send is settled once Chat answered it: its caller is told whether the message
+    /// landed, and a send of the person's own that did not is told them, with why.
     pub(crate) fn deliver_sends(&self) {
+        self.search.poll_answers();
         let waiting = std::mem::take(&mut *self.sends.waiting.borrow_mut());
         for sending in waiting {
             let workspace = sending
@@ -278,39 +300,89 @@ impl Shared {
                 }
                 None => None,
             };
-            let to = sending.to;
-            let refused = refused.or_else(|| {
-                self.send_to(
+            let number = self.sends.sent_count.get();
+            self.sends.sent_count.set(number.wrapping_add(1));
+            let started = match refused {
+                Some(reason) => Err(reason),
+                None => self.send_to(
                     sending.by.as_ref(),
-                    &workspace,
-                    &to,
+                    (&workspace, number),
+                    &sending.to,
                     &attached,
                     &sending.text,
                     sending.asked,
-                )
-                .err()
-            });
-            if let Some(reason) = &refused {
-                tracing::warn!(%reason, %workspace, "a send did not land");
-            }
+                ),
+            };
             let mut sent = self.sends.sent.borrow_mut();
             sent.push(Sent {
-                to,
+                number,
+                to: sending.to,
                 attached,
                 text: sending.text,
-                refused: refused.clone(),
+                refused: None,
             });
             let over = sent.len().saturating_sub(KEPT);
             sent.drain(..over);
             drop(sent);
             self.sends.moved.set(true);
-            // The send is in the record now, so the caller is answered: the receipt of an
-            // invocation is what says the message landed, or why it did not.
-            sending.answer.complete(match refused {
-                Some(reason) => Err(ApiError::Failed(reason)),
-                None => Ok(tilo_actions::ActionOutput::default()),
-            });
+            let flying = Flying {
+                by_person: sending.by.as_ref().is_none_or(|by| by.acting.is_person()),
+                answer: sending.answer,
+            };
+            match started {
+                Ok(()) => {
+                    self.sends.flying.borrow_mut().insert(number, flying);
+                }
+                Err(reason) => self.settle_send(number, flying, Err(reason)),
+            }
         }
+        let settled = self
+            .sends
+            .settled
+            .lock()
+            .map(|mut settled| std::mem::take(&mut *settled))
+            .unwrap_or_default();
+        for (number, outcome) in settled {
+            let flying = self.sends.flying.borrow_mut().remove(&number);
+            if let Some(flying) = flying {
+                self.settle_send(number, flying, outcome);
+            }
+        }
+    }
+
+    /// Settle the send `number` with what Chat answered: the reading says whether it landed, its
+    /// caller is told, and a send of the person's own that did not land is told them too, with
+    /// why: the box that sent it closed as it was sent, and nothing opened where it stood.
+    fn settle_send(&self, number: u64, flying: Flying, outcome: Result<(), String>) {
+        let Flying { by_person, answer } = flying;
+        if let Err(reason) = &outcome {
+            let mut sent = self.sends.sent.borrow_mut();
+            let sent = sent.iter_mut().find(|sent| sent.number == number);
+            let to: Vec<&str> = sent
+                .as_ref()
+                .map(|sent| sent.to.iter().map(|to| to.name.trim()).collect())
+                .unwrap_or_default();
+            tracing::warn!(%reason, ?to, "a send did not land");
+            if by_person {
+                let notice = crate::notices::Notice::new(
+                    t("send-to-resource"),
+                    1,
+                    crate::i18n::t_args("send-to-refused-title", &[("to", to.join(", ").into())]),
+                    reason.clone(),
+                );
+                self.notifications.borrow().tell(&notice);
+            }
+            if let Some(sent) = sent {
+                sent.refused = Some(reason.clone());
+                self.sends.moved.set(true);
+            }
+        }
+        // The caller is answered once the message is in the record: the receipt of an invocation
+        // is what says the message landed, or why it did not.
+        answer.complete(match outcome {
+            Err(reason) => Err(ApiError::Failed(reason)),
+            Ok(()) => Ok(tilo_actions::ActionOutput::default()),
+        });
     }
 
     /// Read whom a message can go to again when the search's index moved, for the next reading of
@@ -353,15 +425,16 @@ impl Shared {
     /// the workspace and kept by this person, and the message reaches Chat as
     /// one action — `chat.workspace#send` — so one change carries every
     /// recipient, what it is about and the words. A report is filed where it
-    /// goes, and nothing opens over the window it is about.
+    /// goes, and nothing opens over the window it is about. What Chat answers
+    /// is settled under `number` ([`Self::deliver_sends`]).
     ///
     /// # Errors
     /// The workspace is not open here, an agent could not be made or admitted,
-    /// or Chat refused the send.
+    /// or the action could not be handed to Chat.
     fn send_to(
         &self,
         by: Option<&tilo_actions::ActionInvoker>,
-        workspace: &str,
+        (workspace, number): (&str, u64),
         to: &[Recipient],
         attached: &[tilo_reference::Attached],
         text: &str,
@@ -371,18 +444,17 @@ impl Shared {
         if text.is_empty() && attached.is_empty() {
             return Err("a message needs words or something to carry".into());
         }
-        // A window's box sends as the person at it; an agent or a script as itself.
-        let agent = by.filter(|by| !by.acting.is_person());
         let (workspace, target) = match addressed(self.feedback.as_ref(), workspace, to)? {
             Addressed::Message { workspace, to } => {
                 let resolved = self.recipients_of(&workspace, &to, &agent_name(attached))?;
                 // Only a person's box opens the conversation where it stood.
+                let by_person = by.is_none_or(|by| by.acting.is_person());
                 let target = send_target(
                     &workspace,
                     &resolved,
                     attached,
                     text,
-                    asked.is_none() && agent.is_none(),
+                    asked.is_none() && by_person,
                 )?;
                 (workspace, target)
             }
@@ -406,45 +478,40 @@ impl Shared {
                 )
             }
         };
+        let settled = std::sync::Arc::clone(&self.sends.settled);
         // An ask from the canvas is told which message Chat posted: its turn stands by it.
-        if let Some(asked) = asked {
-            let posted = std::sync::Arc::clone(&self.sends.posted);
-            let wake = std::sync::Arc::clone(&self.wake_handle);
-            return self
-                .search
-                .perform_answered(
-                    &workspace,
-                    target,
-                    Box::new(move |answer| {
+        let posted = asked.map(|asked| (asked, std::sync::Arc::clone(&self.sends.posted)));
+        let wake = std::sync::Arc::clone(&self.wake_handle);
+        self.search
+            .perform_answered(
+                &workspace,
+                target,
+                Box::new(move |answer| {
+                    if let Some((asked, posted)) = posted {
                         let message = answer
                             .as_ref()
+                            .ok()
+                            .and_then(Option::as_ref)
                             .and_then(|answer| answer.get("message"))
                             .and_then(Value::as_str)
                             .map(str::to_owned);
-                        let Some(message) = message else {
-                            tracing::warn!(asked, "Chat's answer to an ask names no message");
-                            return;
-                        };
-                        if let Ok(mut posted) = posted.lock() {
-                            posted.insert(asked, message);
+                        match message {
+                            Some(message) => {
+                                if let Ok(mut posted) = posted.lock() {
+                                    posted.insert(asked, message);
+                                }
+                            }
+                            None => {
+                                tracing::warn!(asked, "Chat's answer to an ask names no message");
+                            }
                         }
-                        wake();
-                    }),
-                )
-                .map_err(|error| error.to_string());
-        }
-        self.search
-            .perform(&workspace, target, &mut |own| {
-                let look = &mut tilo_session_core::surfaces::Look::none();
-                match agent {
-                    Some(by) => {
-                        self.published
-                            .invoke_as(&by.acting.by, &own.address, &own.arguments, look)
                     }
-                    None => self.published.invoke(&own.address, &own.arguments, look),
-                }
-                .map(drop)
-            })
+                    if let Ok(mut settled) = settled.lock() {
+                        settled.push((number, answer.map(drop)));
+                    }
+                    wake();
+                }),
+            )
             .map_err(|error| error.to_string())
     }
 

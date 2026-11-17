@@ -959,23 +959,18 @@ impl Chat {
     }
 
     /// Whether the conversation `id` takes messages now: a text channel of
-    /// the record, or a direct conversation between members it knows.
+    /// the record, or a direct conversation, named by its members.
     ///
-    /// An agent is a member by being named as one: its id is its identity,
-    /// and the workspace's own record of its agents is what says it exists —
-    /// the chat does not list them a second time, so a conversation with an
-    /// agent the workspace just made takes the person's first message.
+    /// A member is one by being named as one: the workspace's member list and
+    /// its record of its agents say who exists, and the chat does not list
+    /// them a second time, so a conversation with someone who never opened
+    /// Chat takes the first message to them.
     #[must_use]
     pub fn takes_messages(&self, id: &Id) -> bool {
-        if let Some(channel) = self.channels.get(id) {
-            return channel.kind != ChannelKind::Voice;
+        match self.channels.get(id) {
+            Some(channel) => channel.kind != ChannelKind::Voice,
+            None => Self::direct_members(id).is_some(),
         }
-        let Some(members) = Self::direct_members(id) else {
-            return false;
-        };
-        members
-            .iter()
-            .all(|member| !member.is_person() || self.people.find(&member_slot(member)).is_some())
     }
 
     /// Everyone who can be mentioned: the workspace's people and agents.

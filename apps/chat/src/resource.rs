@@ -54,7 +54,14 @@ impl Chat {
             .map(|(id, _)| {
                 conversation_entry(
                     id,
-                    &self.display_names(id, None, &crate::projection::AgentNames::new()),
+                    &self.display_names(
+                        id,
+                        None,
+                        (
+                            &std::collections::HashMap::new(),
+                            &std::collections::HashMap::new(),
+                        ),
+                    ),
                     "",
                 )
                 .showing(self.member_rows(id))
@@ -720,9 +727,8 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
         // two people it is between, so opening and sending read and write the
         // same record and the same parts as a channel's.
         ChatEffect::OpenDirectConversation { public_key } => {
-            let state = cx.live().get();
-            let (_, id) = chat.borrow().direct_conversation(public_key, &state)?;
-            chat.borrow_mut().open_conversation(&id, &state);
+            let (_, id) = chat.borrow().direct_conversation(public_key)?;
+            chat.borrow_mut().open_conversation(&id, &cx.live().get());
             return Ok(ui::framework::Effected::done());
         }
         ChatEffect::OpenAgent { agent } => {
@@ -732,8 +738,7 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             return Ok(ui::framework::Effected::done());
         }
         ChatEffect::SendDirectMessage { public_key, text } => {
-            let state = cx.live().get();
-            let (peer, id) = chat.borrow().direct_conversation(public_key, &state)?;
+            let (peer, id) = chat.borrow().direct_conversation(public_key)?;
             if text.trim().is_empty() {
                 return Err(crate::i18n::t("chat-person-chat-empty"));
             }
@@ -751,7 +756,7 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             let mut chat = chat.borrow_mut();
             if chat.active_channel == id.as_str() {
                 let held = chat.held_messages();
-                chat.messages = state.message_rows(&held, id.as_str());
+                chat.messages = cx.live().get().message_rows(&held, id.as_str());
                 chat.scroll = 0.0;
                 chat.request_relayout();
             }

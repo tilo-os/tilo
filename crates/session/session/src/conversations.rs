@@ -422,7 +422,10 @@ impl Conversations {
                 Some(chat.display_names(
                     &Id::from_raw(channel),
                     Some(opened.records.author()),
-                    &Self::agent_names(opened),
+                    (
+                        &Self::agent_names(opened),
+                        &chat::projection::PeopleNames::new(),
+                    ),
                 ))
             })
             .unwrap_or_default()
@@ -913,7 +916,7 @@ fn turns(
                         title: chat.display_names(
                             &summons.conversation,
                             Some(&MemberId::person(person)),
-                            agent_names,
+                            (agent_names, &chat::projection::PeopleNames::new()),
                         ),
                         instruction,
                         subject,

@@ -1640,7 +1640,7 @@ impl crate::Session {
                     .filter(|_| action == tilo_actions::remote::APPLICATION_OPEN_ACTION)
                 {
                     return search
-                        .perform_checked(
+                        .perform(
                             &workspace,
                             tilo_desktop_search::Target::Launch {
                                 app: app.to_owned(),

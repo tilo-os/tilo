@@ -94,6 +94,7 @@ shell-window-waits-for-host = { $app } is waiting for { $host } to take this dev
 agent-bindings-app-name = Agents
 send-to-agent-unnamed = Agent
 send-to-resource = Send to
+send-to-refused-title = Not sent to { $to }
 agent-bindings-lost-title = { $agent } is asked again
 agent-bindings-lost-body = This computer could not read that you let { $agent } work here, so it asks you again the next time { $agent } connects. Nothing else was removed.
 agent-bindings-unreadable-title = Your answers about agents could not be read

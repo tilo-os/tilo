@@ -94,6 +94,7 @@ impl ChatApp {
             self.perms = ChatPermissions::from_context(permissions);
             changed
         });
+        let names_before = self.workspace_names.clone();
         if let Some(capture) = self.capture_agent_presence.clone() {
             self.adopt_workspace(&capture);
         } else if ui::presence::frame::frame(|presence| self.adopt_workspace(presence)).is_none() {
@@ -101,6 +102,11 @@ impl ChatApp {
             // record's own words about each person stand (`live_status`).
             self.workspace_presence_answers = false;
             return perms_changed || agents_changed;
+        }
+        if self.workspace_names != names_before {
+            // A direct conversation is named by what the member list calls its people: read the
+            // conversations again.
+            self.synced = None;
         }
         // Who is in a call is not presence: it arrives from the host and from
         // the call's own service while this frame is being built, and a call
@@ -156,12 +162,11 @@ impl ChatApp {
             .retain(|id, _| presence.names.contains_key(id));
         self.workspace_colors
             .retain(|id, _| presence.names.contains_key(id));
+        // Every member the workspace lists is kept, named or not: the list is who a message can
+        // go to, before they ever open Chat.
         for (id, name) in &presence.names {
-            let name = name.trim();
-            if name.is_empty() {
-                continue;
-            }
-            self.workspace_names.insert(id.clone(), name.to_string());
+            self.workspace_names
+                .insert(id.clone(), name.trim().to_owned());
             // A colour is the same kind of answer: assigned per workspace so two
             // people never collide, and shared with the caret pill and cursor.
             self.workspace_colors

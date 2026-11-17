@@ -54,8 +54,8 @@ use ui::search::Scope;
 /// The action host as the session's search reaches it: what open apps publish and run, and running
 /// what is chosen by address.
 /// What hears an app action's answer ([`AppActions::invoke_answered`]): on whichever thread the
-/// answer lands.
-pub type Answered = Box<dyn FnOnce(Option<serde_json::Value>) + Send>;
+/// answer lands, the value it answered, or why it did not run.
+pub type Answered = Box<dyn FnOnce(Result<Option<serde_json::Value>, String>) + Send>;
 
 pub trait AppActions {
     /// What the apps publish through the action host, by app and workspace: those open now and
@@ -90,8 +90,7 @@ pub trait AppActions {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), ApiError>;
     /// [`Self::invoke`], and tell `answered` what the action answered once it settled: its value,
-    /// or `None` when it answered none or failed. A host that hears no answers tells it `None`
-    /// at once.
+    /// or why it failed. A host that hears no answers tells it that the action was taken, at once.
     ///
     /// # Errors
     /// The host's refusal.
@@ -102,7 +101,7 @@ pub trait AppActions {
         answered: Answered,
     ) -> Result<(), ApiError> {
         let invoked = self.invoke(target, arguments);
-        answered(None);
+        answered(invoked.as_ref().map(|()| None).map_err(ToString::to_string));
         invoked
     }
     /// Tell each [`Self::invoke_answered`] caller its action's answer once the action settled. A
@@ -1143,17 +1142,6 @@ impl SessionSearch {
         (settings, catalogue)
     }
 
-    /// Carry out `target` , chosen in search in `workspace` : through the action host, or for the
-    /// session's own actions through `own` , the session's published surface.
-    pub fn perform(
-        &self,
-        workspace: &str,
-        target: Target,
-        own: &mut dyn FnMut(&InvokeTarget) -> Result<(), ApiError>,
-    ) -> Result<(), ApiError> {
-        self.perform_checked(workspace, target, own)
-    }
-
     /// Tell the callers of [`Self::perform_answered`] what their actions answered, once settled.
     pub(crate) fn poll_answers(&self) {
         if let Some(apps) = &self.apps {
@@ -1203,9 +1191,9 @@ impl SessionSearch {
         refused
     }
 
-    /// [`Self::perform`], saying whether it was carried out: a caller that has another way to reach
-    /// the same place needs to know.
-    pub(crate) fn perform_checked(
+    /// Carry out `target` , chosen in search in `workspace` : through the action host, or for the
+    /// session's own actions through `own` , the session's published surface.
+    pub fn perform(
         &self,
         workspace: &str,
         target: Target,
@@ -1962,7 +1950,7 @@ mod tests {
             .with_argument(record_rows::KIND_PARAM, "document")
             .with_argument(record_rows::PACKAGE_PARAM, "so.tilo.notes"),
         ));
-        let refused = search.perform_checked("here", row, &mut |_| Ok(()));
+        let refused = search.perform("here", row, &mut |_| Ok(()));
         assert!(
             matches!(
                 refused,
@@ -2021,7 +2009,7 @@ mod tests {
                 .expect("the form is found by its name");
             assert_eq!(hit.title, "application.pdf");
             search
-                .perform_checked("here", hit.target, &mut |_| Ok(()))
+                .perform("here", hit.target, &mut |_| Ok(()))
                 .expect("the record opens");
             let link = InvokeTarget::place(
                 "here",
@@ -2180,7 +2168,7 @@ mod tests {
                 .with_argument(record_rows::PACKAGE_PARAM, "so.tilo.notes"),
             ));
             search
-                .perform_checked("here", row, &mut |_| Ok(()))
+                .perform("here", row, &mut |_| Ok(()))
                 .expect("the record is brought here and opened");
             assert_eq!(
                 opened.borrow().as_slice(),
@@ -2203,7 +2191,7 @@ mod tests {
             ));
             assert!(
                 matches!(
-                    search.perform_checked("here", row, &mut |_| Ok(())),
+                    search.perform("here", row, &mut |_| Ok(())),
                     Err(ApiError::Failed(ref reason)) if reason.contains("is gone")
                 ),
                 "a record whose file is gone is still held, and the launch says why it does not open"

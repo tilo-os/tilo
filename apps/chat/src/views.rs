@@ -469,7 +469,11 @@ impl Channel {
                 Some(channel) if channel.is_channel() && !channel.name.trim().is_empty() => {
                     channel.name.trim().to_owned()
                 }
-                _ => chat.display_names(&channel_id, Some(me), &names.agents),
+                _ => chat.display_names(
+                    &channel_id,
+                    Some(me),
+                    (&names.agents, &std::collections::HashMap::new()),
+                ),
             },
             topic: channel
                 .as_ref()
