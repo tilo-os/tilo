@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from hang import HANG_BOUND
 
@@ -461,12 +462,19 @@ class PrePushLintTests(unittest.TestCase):
         self.git("cherry-pick", mine)
         return main
 
+    def outlive_the_rebase_window(self):
+        """Make every pass of pushed commits older than the window a rebased push reuses it in."""
+        long_ago = time.time() - 24 * 3600
+        for entry in (self.root / ".git/pre-push-lint").glob("change-*"):
+            os.utime(entry, (long_ago, long_ago))
+
     def test_a_retry_after_rebasing_onto_unrelated_commits_lints_nothing_again(self):
         self.write("native/src/lib.rs", LIB.format(answer=50))
         self.commit("feat: answer 50")
         first = self.push()
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+        self.outlive_the_rebase_window()
         main = self.rebase({"web/src/lib.rs": LIB.format(answer=51), "docs/notes.md": "words\n"})
         retry = self.push(remote_oid=main)
         self.assertEqual(retry.returncode, 0, retry.stderr)
@@ -495,10 +503,71 @@ class PrePushLintTests(unittest.TestCase):
         self.write("native/src/lib.rs", 'pub const ANSWER: &str = include_str!("../../docs/answer.txt");\n')
         self.commit("feat: answer from the docs")
         self.assertEqual(self.push().returncode, 0)
+        self.outlive_the_rebase_window()
         main = self.rebase({"docs/answer.txt": "43\n"})
         retry = self.push(remote_oid=main)
         self.assertEqual(retry.returncode, 0, retry.stderr)
         self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+
+    def test_commits_that_passed_are_pushed_again_unlinted_after_a_rebase_that_left_them_as_they_were(self):
+        # Main gained a change to a file the lint reads, so the inputs are not the ones that
+        # passed; the commits are. A relint here takes minutes, and main moves again meanwhile.
+        self.write("docs/answer.txt", "42\n")
+        self.commit("docs: the answer")
+        self.base = self.head()
+        self.write("native/src/lib.rs", 'pub const ANSWER: &str = include_str!("../../docs/answer.txt");\n')
+        self.commit("feat: answer from the docs")
+        self.assertEqual(self.push().returncode, 0)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+        main = self.rebase({"docs/answer.txt": "43\n"})
+        retry = self.push(remote_oid=main)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [], retry.stderr)
+        self.assertIn("passed the lint 0 min ago and are pushed as they were", retry.stderr)
+        # A second rebase is the same push again, and so is every later one inside the window.
+        self.base = main
+        again = self.push(remote_oid=self.rebase({"docs/answer.txt": "44\n"}))
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_commits_changed_since_they_passed_are_linted_again(self):
+        self.write("native/src/lib.rs", LIB.format(answer=60))
+        self.commit("feat: answer 60")
+        self.assertEqual(self.push().returncode, 0)
+        # Amended, as resolving a rebase conflict does: no longer the commit that passed.
+        self.write("native/src/lib.rs", LIB.format(answer=61))
+        self.git("commit", "-qa", "--amend", "--no-edit")
+        retry = self.push()
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+        # One more commit on top is another push too.
+        self.write("native/src/more.rs", "pub fn more() {}\n")
+        self.commit("feat: more")
+        self.assertEqual(self.push().returncode, 0)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+
+    def test_commits_that_failed_are_linted_again_however_soon(self):
+        self.write("native/src/lib.rs", LIB.format(answer=62))
+        self.commit("feat: answer 62")
+        self.assertEqual(self.push(status=1).returncode, 1)
+        main = self.rebase({"docs/notes.md": "words\n"})
+        retry = self.push(remote_oid=main, status=1)
+        self.assertEqual(retry.returncode, 1)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+
+    def test_mains_own_lint_reads_every_commit_on_the_tree_it_landed_on(self):
+        # The push went unlinted on the strength of an earlier pass; lint-head on main is what
+        # says what main's other commits did to it, so it never takes that pass for its own.
+        self.write("docs/answer.txt", "42\n")
+        self.commit("docs: the answer")
+        self.base = self.head()
+        self.write("native/src/lib.rs", 'pub const ANSWER: &str = include_str!("../../docs/answer.txt");\n')
+        self.commit("feat: answer from the docs")
+        self.assertEqual(self.push().returncode, 0)
+        main = self.rebase({"docs/answer.txt": "43\n"})
+        wide = self.push(remote_oid=main, wide=True)
+        self.assertEqual(wide.returncode, 0, wide.stderr)
+        self.assertIn(NATIVE_CLIPPY, self.calls())
 
     def test_a_failed_lint_is_not_remembered(self):
         self.write("native/src/lib.rs", LIB.format(answer=53))

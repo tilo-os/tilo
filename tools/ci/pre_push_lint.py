@@ -29,7 +29,12 @@ race to the next commit, again on each retry.
 The Clippy runs start together, so a one-crate push costs about one build. A run
 that passed is not repeated while everything it reads is unchanged
 (tools/ci/lint_inputs.py), so a push retried after a rebase onto unrelated
-commits does not lint again. Cargo compiles wherever `$CARGO` points when it is
+commits does not lint again. Commits that passed are not linted again either
+when they are pushed once more as they were, rebased onto a newer main, within
+REBASE_WINDOW: main takes a commit every minute or two and a lint takes minutes,
+so a push that relints after every rebase loses to the next commit each time and
+never lands. What the commits main gained in between do to them is what `t`'s
+lint-head says on main. Cargo compiles wherever `$CARGO` points when it is
 set - any cargo drop-in, which may build on another machine - and otherwise the
 `cargo` on PATH. Formatting is always checked by the `cargo` and `rustfmt` on
 PATH: they compile nothing, so they need no other machine.
@@ -49,6 +54,7 @@ escape, and CONTRIBUTING.md asks contributors never to use it.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -109,6 +115,10 @@ MAIN_REF = "refs/heads/main"
 INTEGRATION_REF = "refs/heads/integration"
 # How many passing lint keys a clone keeps.
 KEPT_PASSES = 256
+# How long commits that passed the lint are pushed again without it after a rebase that left them
+# as they were. Long enough for a push to be retried until it wins the race for main's head, short
+# enough that main has not become another tree under them.
+REBASE_WINDOW = 20 * 60
 # Identifiers of the language itself, and words every crate uses, say nothing
 # about which crate names what a change did: a dependent is picked by the names
 # a change removed or declared, never by these.
@@ -640,7 +650,17 @@ class Passes:
     def passed(self, key: str | None) -> bool:
         return key is not None and (self.directory / key).is_file()
 
-    def record(self, key: str | None, label: str) -> None:
+    def passed_since(self, key: str | None, seconds: float) -> float | None:
+        """How long ago the run of `key` passed, when that is within `seconds`."""
+        if key is None:
+            return None
+        try:
+            age = time.time() - (self.directory / key).stat().st_mtime
+        except FileNotFoundError:
+            return None
+        return age if 0 <= age <= seconds else None
+
+    def keep(self, key: str | None, label: str) -> None:
         if key is None:
             return
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -656,6 +676,35 @@ class Passes:
         entries.sort(key=lambda modified: modified[0])
         for _modified, stale in entries[:-KEPT_PASSES]:
             stale.unlink(missing_ok=True)
+
+
+def change_key(root: Path, push: Push) -> str | None:
+    """What the pushed commits change, whatever they stand on, or None when that cannot be named.
+
+    A commit's patch id is the same before and after a rebase that applied it unchanged, and
+    another one as soon as a conflict was resolved or the commit amended. A merge has none, and
+    neither has a worktree that is not the commit: both are linted.
+    """
+    if git(root, "status", "--porcelain").stdout.strip():
+        return None
+    digest = hashlib.sha256()
+    for start, head in push.comparisons:
+        commits = git(root, "rev-list", "--reverse", "--parents", f"{start}..{head}").stdout.split("\n")
+        commits = [line.split() for line in commits if line.strip()]
+        if not commits or any(len(parents) != 2 for parents in commits):
+            return None
+        patches = subprocess.run(["git", "log", "--reverse", "--patch", "--no-color", "--no-ext-diff",
+                                  "--format=commit %H", f"{start}..{head}"],
+                                 cwd=root, capture_output=True, text=True, check=False)
+        named = subprocess.run(["git", "patch-id", "--stable"], cwd=root, input=patches.stdout,
+                               capture_output=True, text=True, check=False)
+        ids = [line.split()[0] for line in named.stdout.splitlines() if line.strip()]
+        if patches.returncode or named.returncode or len(ids) != len(commits):
+            return None  # an empty commit has no patch id: nothing says it is the one that passed
+        for patch in ids:
+            digest.update(patch.encode() + b"\n")
+        digest.update(b"\0")
+    return f"change-{digest.hexdigest()}"
 
 
 def lint_keys(root: Path, metadata: dict, runs: list[Lint]) -> list[str | None]:
@@ -757,6 +806,17 @@ def main(argv: list[str]) -> int:
         say(f"pre-push: {tip[:12]} is not the commit checked out here, and the lint reads the files "
             "on disk: check it out and push again")
         return 1
+    # Only a push asks this: `--range` and `--wide` are how main itself is linted, and they read
+    # every commit on the tree it landed on.
+    passes = Passes(root)
+    change = None
+    if not (options.range or options.wide or options.only or options.plan):
+        change = change_key(root, push)
+        age = passes.passed_since(change, REBASE_WINDOW)
+        if age is not None:
+            say(f"pre-push: these commits passed the lint {age / 60:.0f} min ago and are pushed as "
+                "they were, on a newer main; what main's commits since do to them is linted on main")
+            return 0
     try:
         selection = select(root, push, files, options.wide)
     except (subprocess.CalledProcessError, RuntimeError) as error:
@@ -802,7 +862,6 @@ def main(argv: list[str]) -> int:
     runs = lint_runs(root, selection, web, formatting,
                      options.own_build_dirs, options.wide)
     checked = f"{'clippy and rustfmt' if formatting else 'clippy'} for {packages(len(selection.native))}{page}"
-    passes = Passes(root)
     pending = []
     for run, key in zip(runs, lint_keys(root, selection.metadata, runs)):
         if passes.passed(key):
@@ -812,8 +871,11 @@ def main(argv: list[str]) -> int:
     results, elapsed = run_together(root, [run for run, _key in pending], options.keep_logs)
     for (_run, key), (run, status, _output) in zip(pending, results):
         if status == 0:
-            passes.record(key, " ".join(run.command))
-    return report(results, elapsed, checked)
+            passes.keep(key, " ".join(run.command))
+    status = report(results, elapsed, checked)
+    if status == 0:
+        passes.keep(change, "the pushed commits")
+    return status
 
 
 if __name__ == "__main__":
