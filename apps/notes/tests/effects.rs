@@ -210,25 +210,6 @@ fn only_safe_links_are_opened() {
     );
 }
 
-#[test]
-fn markdown_text_an_agent_hands_over_becomes_a_shown_note() {
-    let mut app = notes();
-    app.effect(&NotesEffect::ImportMarkdownContent {
-        title: "Plan".into(),
-        body: "# Plan\n\nShip it\n".into(),
-    })
-    .unwrap();
-    app.settle();
-    let page = crate::framework_support::shown(&app)
-        .pages()
-        .iter()
-        .find(|page| page.title == "Plan")
-        .map(|page| page.id)
-        .expect("the text became a note");
-    assert_eq!(body(&app, page), ["Ship it"], "its title is not repeated");
-    assert_eq!(shown(&mut app), Some(page));
-}
-
 /// What acts on one note is offered on that note, and opening a note or a
 /// tag on the item too; the notebook keeps only what is not about one note.
 #[test]

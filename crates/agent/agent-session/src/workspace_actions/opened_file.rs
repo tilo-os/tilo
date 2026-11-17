@@ -139,7 +139,7 @@ impl Worker {
                 let body = String::from_utf8(bytes)
                     .map_err(|_| refused(format!("{} is not text", file.name)))?;
                 arguments.insert("title".into(), json!(file.name));
-                arguments.insert("body".into(), json!(body));
+                arguments.insert("markdown".into(), json!(body));
             }
             Takes::Image => {
                 let (_, width, height) =

@@ -321,38 +321,64 @@ fn an_agents_append_is_marked_as_the_agents() {
     );
 }
 
-/// What an agent appends is named as the text it wrote, so the person's view draws exactly
-/// those characters in the agent's colour with its caret at their end.
+/// What an agent writes is named as the text it wrote, so the person's view draws exactly those
+/// characters in the agent's colour with its caret at their end: the body of a note it creates,
+/// the line it appends, the paragraph it rewrites.
 #[test]
-fn an_agents_append_answers_the_characters_it_wrote() {
+fn an_agents_writes_answer_the_characters_they_wrote() {
     let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
-    let page = made_by(&mut app, "helper", "Plan");
-    let output = app
-        .call_by(
-            agent("helper"),
-            &crate::part::chain_resource(),
-            "append-to-note",
-            serde_json::json!({ "title": "Plan", "markdown": "The agent added this line." }),
-        )
-        .unwrap();
-    app.settle();
-    let added = part_doc(&app, page, |doc| {
-        crate::read::page_block_snapshots(doc, page)
-    });
-    let (block, text) = added.last().expect("the appended block");
-    assert_eq!(text, "The agent added this line.");
-    assert_eq!(
-        output.wrote(),
+    let wrote = |app: &mut ui::framework::testing::TestApp<crate::NotesShell>,
+                 action: &str,
+                 arguments: serde_json::Value| {
+        let output = app
+            .call_by(
+                agent("helper"),
+                &crate::part::chain_resource(),
+                action,
+                arguments,
+            )
+            .unwrap();
+        app.settle();
+        let page = page_ids(app)[0];
+        let blocks = part_doc(app, page, |doc| {
+            crate::read::page_block_snapshots(doc, page)
+        });
+        (output.wrote(), blocks, page)
+    };
+    let text = |blocks: &[(String, String)], at: usize| ui::tilo_actions::InteractionTextRange {
+        block: blocks[at].0.clone(),
+        start: 0,
+        end: blocks[at].1.chars().count() as u64,
+    };
+    let body = |ranges| {
         Some(ui::tilo_actions::InteractionAnchor::Text {
             region: "body".into(),
-            ranges: vec![ui::tilo_actions::InteractionTextRange {
-                block: block.clone(),
-                start: 0,
-                end: text.chars().count() as u64,
-            }],
-        }),
-        "the answer names the line it added: {:?}",
-        output.value
+            ranges,
+        })
+    };
+    let made = serde_json::json!({ "title": "Plan for Friday", "markdown": "Hall B, 10 to 12.\n\nBring the deck." });
+    let (answer, blocks, page) = wrote(&mut app, "create-page", made);
+    assert_eq!(
+        answer,
+        body(vec![text(&blocks, 0), text(&blocks, 1)]),
+        "{blocks:?}"
+    );
+    let added =
+        serde_json::json!({ "title": "Plan for Friday", "markdown": "The agent added this line." });
+    let (answer, blocks, _) = wrote(&mut app, "append-to-note", added);
+    assert_eq!(answer, body(vec![text(&blocks, 2)]), "{blocks:?}");
+    let rewritten = serde_json::json!({
+        "page": page.to_string(),
+        "markdown": "Hall B, 10 to 12.\n\nBring the deck and the cables.\n\nThe agent added this line.",
+    });
+    let (answer, blocks, _) = wrote(&mut app, "write-note", rewritten);
+    let Some(ui::tilo_actions::InteractionAnchor::Text { ranges, .. }) = answer else {
+        panic!("a rewrite names what it wrote: {answer:?}");
+    };
+    assert_eq!(
+        ranges.iter().map(|range| &range.block).collect::<Vec<_>>(),
+        [&blocks[1].0],
+        "only the paragraph it changed: {blocks:?}"
     );
 }
 

@@ -155,7 +155,7 @@ fetches it the first time a page asks for `dom: true`.
 
 A development build of the Notes bundle (`wasm-dev`, unoptimized), headless
 Chrome on a laptop, with a note made through Notes' own
-`import-markdown-content` action:
+`create-page` action:
 
 | | 1280 px | 390 px |
 |---|---|---|

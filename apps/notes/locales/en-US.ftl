@@ -210,7 +210,6 @@ notes-effect-back = Back
 notes-effect-forward = Forward
 notes-effect-import-markdown-file = Import Markdown
 notes-effect-import-notion-export = Import Notion export
-notes-effect-import-markdown-content = Import Markdown content
 notes-effect-export-markdown = Export Markdown
 notes-effect-export-markdown-content = Export Markdown content
 notes-effect-insert-image = Insert image

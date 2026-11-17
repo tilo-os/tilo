@@ -972,7 +972,7 @@ impl PagePart {
     /// place, and the rest are added or removed. What the note's file in the
     /// workspace's folder was written to is applied this way, as the change
     /// of whoever wrote the file.
-    #[action(item = pages, audience = "agents", step = "write", writes = pages)]
+    #[action(item = pages, answers, audience = "agents", step = "write", writes = pages)]
     pub fn write_note(
         &mut self,
         page: &Id,
