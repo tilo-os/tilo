@@ -615,18 +615,25 @@ impl Session {
             if let (Some(id), Some("tools/call")) = (
                 request.get("id"),
                 request.get("method").and_then(Value::as_str),
-            ) && let Some(refused) = crate::account::beyond_workspace(
-                request
+            ) {
+                let tool = request
                     .pointer("/params/name")
                     .and_then(Value::as_str)
-                    .unwrap_or_default(),
-                request.pointer("/params/arguments").unwrap_or(&Value::Null),
-                request
+                    .unwrap_or_default();
+                let arguments = request.pointer("/params/arguments").unwrap_or(&Value::Null);
+                let structured = request
                     .pointer("/params/_meta/so.tilo.mcp/structured")
                     .and_then(Value::as_bool)
-                    .unwrap_or(false),
-            ) {
-                return Reply::one(result(id, &refused));
+                    .unwrap_or(false);
+                if let Some(refused) = crate::account::beyond_workspace(tool, arguments, structured)
+                {
+                    return Reply::one(result(id, &refused));
+                }
+                // Its workspace answers a call in it; the account answers the
+                // keys the key holds there.
+                if crate::account::on_account(tool, arguments) {
+                    return self.account(id, tool, arguments, structured).await;
+                }
             }
             return Box::pin(self.serve(&workspace, request)).await;
         }
