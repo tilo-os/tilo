@@ -780,7 +780,30 @@ impl BotRunner {
     /// A live holder renews once its deadline is within
     /// [`SCHEDULE_RENEW_NS`], not on every pass: the workspace is written only
     /// when its state changes.
+    ///
+    /// A draining server (one about to restart) holds none: it lets its claim
+    /// go, so another holder of the workspace takes the schedule at once.
     async fn hold_schedule_lease(&self, lease: &str, now: SystemTime) -> bool {
+        if self.workspaces.draining() {
+            if let Err(error) = self
+                .workspaces
+                .author_own_workspace_state(
+                    &self.workspace,
+                    self.workspaces.serving_certificate(),
+                    |peer| {
+                        peer.workspace_mut().release_lease(
+                            self.workspaces.serving_certificate(),
+                            lease,
+                            now,
+                        )
+                    },
+                )
+                .await
+            {
+                tracing::warn!(%error, "a draining server's schedule claim was not let go");
+            }
+            return false;
+        }
         let Some(state) = self.workspaces.state(&self.workspace).await else {
             return false;
         };

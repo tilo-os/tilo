@@ -112,6 +112,12 @@ enum Cmd {
     },
     /// Print daemon status (config + on-disk state summary).
     Status,
+    /// Ask the running daemon about an OS update, as the update service does.
+    /// Exits 0 when it may go ahead, 75 when it has to wait.
+    Rollout {
+        #[command(subcommand)]
+        ask: RolloutAsk,
+    },
     /// Publish a `RevocationEntry` for a device pubkey (hex-encoded, 32 bytes).
     ///
     /// Requires access to the user root private key, so this
@@ -123,6 +129,16 @@ enum Cmd {
         #[arg(long, default_value = "compromised")]
         reason: String,
     },
+}
+
+#[derive(Subcommand)]
+enum RolloutAsk {
+    /// Whether this machine may restart into the staged image TARGET now;
+    /// the daemon takes its person's update lease and drains before it says so.
+    Prepare { target: String },
+    /// This machine booted IMAGE and passed its health verdict; the update lease
+    /// goes to the person's next server.
+    Booted { image: String },
 }
 
 fn load(path: &std::path::Path) -> anyhow::Result<ServerConfig> {
@@ -145,12 +161,57 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return Ok(std::process::ExitCode::from(code));
     }
-    run().map(|()| std::process::ExitCode::SUCCESS)
+    dispatch()
 }
 
-fn run() -> anyhow::Result<()> {
+fn dispatch() -> anyhow::Result<std::process::ExitCode> {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Rollout { ask } => cmd_rollout(&cli.config, ask),
+        cmd => command(&cli.config, cmd).map(|()| std::process::ExitCode::SUCCESS),
+    }
+}
+
+/// Ask the daemon about an update and say what it answered: 0 to go ahead,
+/// 75 to wait.
+fn cmd_rollout(
+    config: &std::path::Path,
+    ask: RolloutAsk,
+) -> anyhow::Result<std::process::ExitCode> {
+    use tilo_server::rollout::{Answer, Request};
+    let cfg = load(config)?;
+    let request = match ask {
+        RolloutAsk::Prepare { target } => Request::Prepare { target },
+        RolloutAsk::Booted { image } => Request::Booted { image },
+    };
+    let answer = match tilo_server::rollout::ask(&cfg.state_root, &request) {
+        Ok(answer) => answer,
+        Err(why) => Answer::Wait { why },
+    };
+    let (said, code) = match &answer {
+        Answer::Restart => (
+            "restart: this server holds the update lease and has drained".to_owned(),
+            0,
+        ),
+        Answer::Wait { why } => (format!("wait: {why}"), 75),
+        Answer::Released => (
+            "released: the update booted healthy; the next server may update".to_owned(),
+            0,
+        ),
+        Answer::Halted { target, booted } => (
+            format!(
+                "halted: {target} did not boot (running {booted}); this server keeps the update lease so no other server starts it"
+            ),
+            0,
+        ),
+        Answer::Nothing => ("nothing: no update was under way".to_owned(), 0),
+    };
+    println!("{said}");
+    Ok(std::process::ExitCode::from(code))
+}
+
+fn command(config: &std::path::Path, cmd: Cmd) -> anyhow::Result<()> {
+    match cmd {
         Cmd::FilesWorkspaceJoin { options } => files_setup::join(&options),
         Cmd::FilesWorkspaceInitialize { options } => files_setup::initialize(&options),
         Cmd::FilesWorkspaceCheck {
@@ -192,11 +253,12 @@ fn run() -> anyhow::Result<()> {
             device,
             service,
         } => cmd_home_peer_remove(&identity_root, identity_dir.as_deref(), &device, &service),
-        Cmd::Status => cmd_status(&cli.config),
+        Cmd::Status => cmd_status(config),
         Cmd::RevokeDevice {
             device_pubkey_hex,
             reason,
-        } => cmd_revoke_device(&cli.config, &device_pubkey_hex, &reason),
+        } => cmd_revoke_device(config, &device_pubkey_hex, &reason),
+        Cmd::Rollout { ask } => cmd_rollout(config, ask).map(drop),
     }
 }
 

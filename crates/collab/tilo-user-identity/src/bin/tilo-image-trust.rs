@@ -154,6 +154,10 @@ fn bootc_status_field_bytes(bytes: &[u8], selector: &str) -> Result<String, Stri
         // assumes for a deployment that predates the field.
         "booted-transport" => ("booted", &["image", "image", "transport"]),
         "staged-transport" => ("staged", &["image", "image", "transport"]),
+        // The manifest digest a deployment was pulled at: what tells two
+        // generations of one image reference apart.
+        "booted-digest" => ("booted", &["image", "imageDigest"]),
+        "staged-digest" => ("staged", &["image", "imageDigest"]),
         "booted-version" => ("booted", &["image", "version"]),
         "staged-version" => ("staged", &["image", "version"]),
         "rollback-version" => ("rollback", &["image", "version"]),
@@ -1076,6 +1080,11 @@ mod tests {
             assert_eq!(
                 bootc_status_field_bytes(status, "rollback-image").unwrap(),
                 ""
+            );
+            let digested = br#"{"status":{"staged":{"image":{"imageDigest":"sha256:next"}}}}"#;
+            assert_eq!(
+                bootc_status_field_bytes(digested, "staged-digest").unwrap(),
+                "sha256:next"
             );
             let rollback = br#"{"status":{"rollback":{"image":{"version":"2026.10.18","timestamp":"2026-10-18T04:12:00Z"}}}}"#;
             assert_eq!(

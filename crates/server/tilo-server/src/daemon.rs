@@ -729,6 +729,12 @@ impl Server {
                 crate::servers::enroll(governed, &identity.device_cert)
                     .await
                     .map_err(|error| ServerError::Identity(format!("admin workspace: {error}")))?;
+                // Its OS updates wait their turn among the person's servers.
+                let rollout = crate::rollout::serve(crate::rollout::ServerMachine::new(
+                    governed.clone(),
+                    cfg.state_root.clone(),
+                ))?;
+                push_background_task(&background_tasks, rollout);
             }
             governed.serve_content(Arc::new(crate::content::StoresContent(Arc::clone(
                 &content,
@@ -2104,6 +2110,50 @@ mod tests {
                 "Living workspace NAS"
             );
             assert!(!temp.path().join("server/home-peer-name").exists());
+            // Its OS update waits its turn in that admin workspace: the
+            // update service asks on the server's socket, the server takes
+            // the update lease and drains before it answers that the machine
+            // may restart, and lets the lease go once the update booted.
+            let state_root = temp.path().join("server");
+            let ask = |request| {
+                let state_root = state_root.clone();
+                tokio::task::spawn_blocking(move || crate::rollout::ask(&state_root, &request))
+            };
+            assert_eq!(
+                ask(crate::rollout::Request::Prepare {
+                    target: "sha256:next".into()
+                })
+                .await
+                .unwrap()
+                .unwrap(),
+                crate::rollout::Answer::Restart
+            );
+            let admin = crate::servers::admin_workspace_id(&user.public_key);
+            let lease = |state: tilo_peer_state::StatePeer| {
+                state
+                    .workspace()
+                    .lease(crate::rollout::UPDATE_LEASE, std::time::SystemTime::now())
+                    .holder
+                    .map(|holder| holder.device)
+            };
+            assert_eq!(
+                lease(governed.state(&admin).await.unwrap()),
+                Some(governed.serving_certificate().device_public_key)
+            );
+            assert!(
+                governed.draining(),
+                "it takes no work under leases any more"
+            );
+            assert_eq!(
+                ask(crate::rollout::Request::Booted {
+                    image: "sha256:next".into()
+                })
+                .await
+                .unwrap()
+                .unwrap(),
+                crate::rollout::Answer::Released
+            );
+            assert_eq!(lease(governed.state(&admin).await.unwrap()), None);
             let mut revocation = tilo_user_identity::RevocationEntry {
                 user_public_key: user.public_key,
                 revoked_device_public_key: host.public_key,
