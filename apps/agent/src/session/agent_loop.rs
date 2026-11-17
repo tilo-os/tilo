@@ -1722,6 +1722,7 @@ impl Session {
         // looking for what to do: a turn of only that is not a lookup.
         if calls.iter().all(|call| {
             call.name != tools::INVOKE
+                && call.name != tools::canvas::SHOW
                 && call.name != tools::PLAN
                 && call.name != crate::programs::TILO
                 && call.name != tools::web::SEARCH_WEB
@@ -2016,6 +2017,21 @@ impl Session {
         call: &StreamedCall,
         failed: &mut bool,
     ) -> Result<Handled> {
+        // Showing is the canvas' place, its own tool so the call names only what it shows: it
+        // runs as the invoke of that place, and everything below sees that invoke.
+        let shown;
+        let call = if call.name == tools::canvas::SHOW {
+            let place = tools::canvas::place_id(&self.task_catalogue());
+            shown = StreamedCall {
+                index: call.index,
+                id: call.id.clone(),
+                name: tools::INVOKE.to_owned(),
+                input: tools::canvas::show_as_invoke(&call.input, place.as_deref()),
+            };
+            &shown
+        } else {
+            call
+        };
         // Both are about the step and neither depends on the other: the note
         // is shown once per distinct step, while every resource the step
         // reads is listed, however many steps share a note.

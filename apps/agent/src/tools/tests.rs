@@ -705,6 +705,7 @@ tilo_test_env::scenario! {
                 LIST_OPERATIONS,
                 DESCRIBE_OPERATION,
                 INVOKE,
+                canvas::SHOW,
                 crate::pages::READ_RESULT,
                 crate::tools::web::SEARCH_WEB,
                 crate::tools::web::READ_PAGE,

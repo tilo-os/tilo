@@ -2282,6 +2282,7 @@ tilo_test_env::scenario! {
                     "list_operations",
                     "describe_operation",
                     "invoke",
+                    "show",
                     "read_result",
                     "search_web",
                     "read_page",
