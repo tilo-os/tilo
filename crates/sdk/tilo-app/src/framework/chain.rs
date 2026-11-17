@@ -111,12 +111,26 @@ pub trait Chained: Resource {
     fn chain() -> DocumentId;
 
     /// The chain that belongs beside `base` rather than beside the app's own
-    /// record: the messages of one conversation, kept beside its record
-    /// ([`DocumentId::of_direct`]). [`Self::chain`] for every chain there is
-    /// only one of.
+    /// record of the workspace: the messages of one conversation, kept beside
+    /// its record ([`DocumentId::of_direct`]), and the parts of an app that
+    /// keeps a record per member, kept beside the member's own
+    /// ([`DocumentId::of_member`]). The default is [`Self::chain`], for every
+    /// chain there is only one of.
     fn chain_beside(base: &DocumentId) -> DocumentId {
         let _ = base;
         Self::chain()
+    }
+
+    /// The places the app derives from everything the chain holds — a book's
+    /// groups, its favorites, its likely duplicates — computed where the
+    /// chain is published from the app's record and the parts held, and
+    /// published as the chain's own children beside its items.
+    fn places(
+        base: &<Self::Base as Resource>::State,
+        parts: &[(u64, Rc<Self::State>)],
+    ) -> Vec<tilo_resource::Derived<Self>> {
+        let _ = (base, parts);
+        Vec::new()
     }
 
     /// The part `action` changes, given the parts this device holds, oldest
@@ -1350,6 +1364,15 @@ impl<P: Chained> ChainState<P> {
                     .filter(|child| seen.insert(child.id.clone())),
             );
         }
+        // The places the app derives from everything the chain holds, at the
+        // address each is published under.
+        for place in
+            tilo_resource::derived::published::<P>(P::places(&(self.base)(), &parts)).to_resources()
+        {
+            if seen.insert(place.id.clone()) {
+                resource.children.push(place);
+            }
+        }
         // Parts no longer held are forgotten with their publication.
         self.part_published
             .borrow_mut()
@@ -2418,9 +2441,12 @@ impl Chains {
     pub(crate) fn open<P: Chained>(
         &self,
         workspace: Option<&WorkspaceResources>,
+        record: Option<&DocumentId>,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Rc<ChainState<P>>> {
-        let chain = P::chain();
+        // Beside the record the window shows: the app's own record of the
+        // workspace, or the one per member where the app keeps those.
+        let chain = record.map_or_else(P::chain, P::chain_beside);
         if let Some(held) = self.opened::<P>(&chain) {
             return Some(held);
         }

@@ -906,7 +906,11 @@ pub(crate) fn build_root<A: ResourceApp>(
     // A window someone uses opens the records the app keeps beside its own,
     // so they are published before any view shows them.
     if permissions.is_some() {
-        A::records(&mut super::Records::new(&storage).with_base(live.clone(), dispatch.clone()));
+        A::records(
+            &mut super::Records::new(&storage)
+                .with_base(live.clone(), dispatch.clone())
+                .at(run.launched.record.as_ref()),
+        );
         for record in A::PERSON_RESOURCES {
             record.open(&storage);
         }

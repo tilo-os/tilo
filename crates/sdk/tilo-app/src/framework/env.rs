@@ -242,7 +242,10 @@ impl<R: Resource> ResourceEnv<R> {
     /// is not this record's resource.
     pub fn chain<P: super::Chained<Base = R>>(&self) -> Option<super::Chain<P>> {
         let live = self.live.clone();
-        let state = self.storage.chain::<P>(move || live.get())?;
+        let record = self.document_id().cloned();
+        let state = self
+            .storage
+            .chain::<P>(record.as_ref(), move || live.get())?;
         self.chain_of(state)
     }
 

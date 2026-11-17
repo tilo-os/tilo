@@ -245,10 +245,11 @@ impl ViewStorage {
     /// the window keeps no records in a workspace (a view of a past version).
     pub(crate) fn chain<P: super::Chained>(
         &self,
+        record: Option<&ui_core::resource::DocumentId>,
         base: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
     ) -> Option<Rc<super::chain::ChainState<P>>> {
         super::controls::opened_resource::<P>();
-        self.chains.open::<P>(self.records.as_ref(), base)
+        self.chains.open::<P>(self.records.as_ref(), record, base)
     }
 
     /// The chain of `P` that lives beside the record `base` rather than
