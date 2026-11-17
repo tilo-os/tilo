@@ -264,6 +264,14 @@ impl Gateway {
 /// connections and TLS sessions to a provider are reused across requests and
 /// clients, and consecutive model turns skip the handshake.
 pub(super) fn provider_client() -> Result<reqwest::Client, String> {
+    provider_builder()
+        .build()
+        .map_err(|_| "gateway HTTP client is unavailable".to_string())
+}
+
+/// [`provider_client`] before it is built, for a transport that adds a rule
+/// of its own to it.
+fn provider_builder() -> reqwest::ClientBuilder {
     tilo_net::http::client()
         .connect_timeout(CONNECT_TIMEOUT)
         // Below common provider keep-alive limits, so a pooled connection is
@@ -275,8 +283,6 @@ pub(super) fn provider_client() -> Result<reqwest::Client, String> {
         // Photos operations retry explicitly in `while_busy`.
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
-        .build()
-        .map_err(|_| "gateway HTTP client is unavailable".to_string())
 }
 
 /// Serve clients concurrently, each as its own task, at most `limit` at

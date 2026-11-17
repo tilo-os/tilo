@@ -178,7 +178,7 @@ impl Transport for FetchTransport {
 
 /// Decode the gateway's public event wire once for synchronous and async clients.
 /// Completed-call compatibility events are inert: only the final turn can dispatch.
-pub(crate) fn decode_event(kind: &str, payload: &str) -> Result<Option<StreamEvent>, ModelError> {
+pub fn decode_event(kind: &str, payload: &str) -> Result<Option<StreamEvent>, ModelError> {
     let event = match kind {
         crate::EVENT_TOOL_CALL => return Ok(None),
         "text_delta" | "reasoning_delta" => {

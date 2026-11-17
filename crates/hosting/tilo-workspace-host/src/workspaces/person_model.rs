@@ -22,10 +22,12 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use agent_provider_config::EndpointLocation;
 use agent_provider_config::protocol::{
-    ErrorKind, ModelError, ModelRequest, ModelResponse, StreamEvent,
+    Content, ErrorKind, Message, ModelError, ModelRequest, ModelResponse, Role, StreamEvent,
+    ToolChoice,
 };
 pub use agent_provider_config::{
     Interaction, ModelDescriptor, ProviderProfile, ProviderProtocol, protocol,
@@ -33,14 +35,23 @@ pub use agent_provider_config::{
 use tilo_clock::time::Instant;
 use tilo_history::FluentArgs;
 use tilo_lock::RwLockRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 use super::Workspaces;
 use super::person_settings::{credentials, key_id, provider_config};
 
+#[cfg(feature = "agents")]
+mod live;
 #[cfg(any(test, feature = "test-support"))]
 pub mod scripted;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, feature = "agents"))]
+mod wire_tests;
+
+/// How often a call a thread waits for looks whether it was stopped: at once
+/// to a person, and seldom enough to cost nothing.
+const STOP_LOOK: Duration = Duration::from_millis(25);
 
 /// Where a call's stream goes as it arrives: text and reasoning to show, and
 /// a tool call's arguments as they grow. Presentation only: the answer the
@@ -86,6 +97,19 @@ pub enum ModelRefusal {
         /// The provider, as the person named it.
         provider: String,
     },
+    /// The request carries something the chosen model does not take.
+    CannotTake {
+        /// The model, as the person reads its name.
+        model: String,
+        /// What it does not take.
+        what: Input,
+    },
+    /// The workspace the work is in does not let its content go to this
+    /// provider.
+    WorkspaceRefuses {
+        /// The provider, as the person named it.
+        provider: String,
+    },
     /// The person's settings or their vault could not be read.
     SettingsUnreadable,
     /// The provider was asked and gave no answer: its own failure, the
@@ -102,6 +126,8 @@ impl ModelRefusal {
             Self::ChoiceUnusable { .. } => "choice-unusable",
             Self::NoKey { .. } => "no-key",
             Self::AddressRefused { .. } => "address-refused",
+            Self::CannotTake { .. } => "cannot-take",
+            Self::WorkspaceRefuses { .. } => "workspace-refuses",
             Self::SettingsUnreadable => "settings-unreadable",
             Self::Provider(_) => "provider",
         }
@@ -134,6 +160,17 @@ impl ModelRefusal {
                 args.set("provider", provider.as_str());
                 "model-address-refused"
             }
+            Self::CannotTake {
+                model,
+                what: Input::Picture,
+            } => {
+                args.set("model", model.as_str());
+                "model-cannot-take-picture"
+            }
+            Self::WorkspaceRefuses { provider } => {
+                args.set("provider", provider.as_str());
+                "model-workspace-refuses"
+            }
             Self::SettingsUnreadable => "model-settings-unreadable",
             // A provider's failure is already a sentence safe to show: it
             // never carries a credential or the provider's own text.
@@ -149,7 +186,10 @@ impl ModelRefusal {
         let kind = match self {
             Self::NoModelLinked { .. } | Self::ChoiceUnusable { .. } => ErrorKind::NoProvider,
             Self::NoKey { .. } => ErrorKind::Authentication,
-            Self::AddressRefused { .. } => ErrorKind::PermissionDenied,
+            Self::AddressRefused { .. } | Self::WorkspaceRefuses { .. } => {
+                ErrorKind::PermissionDenied
+            }
+            Self::CannotTake { .. } => ErrorKind::InvalidRequest,
             Self::SettingsUnreadable => ErrorKind::Unavailable,
             Self::Provider(error) => return error.clone(),
         };
@@ -167,6 +207,15 @@ impl std::fmt::Display for ModelRefusal {
 }
 
 impl std::error::Error for ModelRefusal {}
+
+/// What a request can carry that not every model takes. A document's pages
+/// travel as pictures of them; a recording has no place in a request yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Input {
+    /// A picture: a photo, a page of a document, what a window shows.
+    Picture,
+}
 
 /// What answers one kind of a person's work now: the provider as they named
 /// it, and the model. Never its key.
@@ -194,6 +243,22 @@ pub struct Answer {
     pub linked: Linked,
 }
 
+impl Answer {
+    /// The answer's words, without its reasoning and its tool calls.
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.response
+            .message
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                Content::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
 /// One call on its way to a provider: the person's own provider and model,
 /// and the request.
 pub struct ProviderCall<'a> {
@@ -205,6 +270,9 @@ pub struct ProviderCall<'a> {
     pub request: &'a ModelRequest,
     /// When the answer is due.
     pub deadline: Instant,
+    /// Whether the host's operator lets the provider be at an address off
+    /// the public internet.
+    pub private_addresses: bool,
     key: Option<&'a str>,
 }
 
@@ -232,11 +300,21 @@ pub trait ModelProvider: Send + Sync {
     /// Ask `call`'s provider, handing what streams to `events` as it
     /// arrives. Dropping the answer on its way stops the call.
     fn answer<'a>(&'a self, call: ProviderCall<'a>, events: Events<'a>) -> ProviderFuture<'a>;
+
+    /// Whether `endpoint` is a provider on the public internet, reached over
+    /// TLS: what a person's provider is, unless the host's operator lets
+    /// its people name others.
+    fn reaches(&self, endpoint: &str) -> bool {
+        EndpointLocation::of_endpoint(endpoint) == Some(EndpointLocation::Hosted)
+            && endpoint.trim_start().starts_with("https://")
+    }
 }
 
 /// A host that speaks to no provider.
+#[cfg(any(test, not(feature = "agents")))]
 struct NoProvider;
 
+#[cfg(any(test, not(feature = "agents")))]
 impl ModelProvider for NoProvider {
     fn answer<'a>(&'a self, _: ProviderCall<'a>, _: Events<'a>) -> ProviderFuture<'a> {
         Box::pin(async { Err(ModelError::new(ErrorKind::Unavailable)) })
@@ -263,11 +341,23 @@ impl Models {
     /// Models answered on the runtime this is called on.
     pub(super) fn new() -> Self {
         Self {
-            provider: std::sync::RwLock::new(Arc::new(NoProvider)),
+            provider: std::sync::RwLock::new(host_provider()),
             private_addresses: AtomicBool::new(false),
             runtime: tokio::runtime::Handle::try_current().ok(),
         }
     }
+}
+
+/// What a host asks providers through unless a test scripts them: the model
+/// gateway's transport where the host runs agents, nothing elsewhere.
+#[cfg(feature = "agents")]
+fn host_provider() -> Arc<dyn ModelProvider> {
+    Arc::new(live::GatewayProvider::default())
+}
+
+#[cfg(not(feature = "agents"))]
+fn host_provider() -> Arc<dyn ModelProvider> {
+    Arc::new(NoProvider)
 }
 
 impl Workspaces {
@@ -284,6 +374,7 @@ impl Workspaces {
             models: Arc::clone(&self.inner.models),
             root: self.person_settings_root(&person),
             kind,
+            workspace: None,
         }
     }
 
@@ -313,6 +404,8 @@ pub struct PersonModel {
     /// The person's own store on this host.
     root: PathBuf,
     kind: Interaction,
+    /// The workspace the work is in, when its caller said.
+    workspace: Option<WorkspaceId>,
 }
 
 impl std::fmt::Debug for PersonModel {
@@ -328,6 +421,16 @@ impl PersonModel {
     #[must_use]
     pub const fn kind(&self) -> Interaction {
         self.kind
+    }
+
+    /// This model, asked for work in `workspace`: where what a request
+    /// carries comes from. A workspace's rule on where its content may be
+    /// sent is held against the provider here, so every caller that works
+    /// in a workspace says which.
+    #[must_use]
+    pub fn working_in(mut self, workspace: WorkspaceId) -> Self {
+        self.workspace = Some(workspace);
+        self
     }
 
     /// What would answer now, or why nothing can. It reads the person's
@@ -355,12 +458,15 @@ impl PersonModel {
                 tracing::warn!(%error, "a person's model settings were not read");
                 ModelRefusal::SettingsUnreadable
             })??;
-        let provider = Arc::clone(&*self.models.provider.read_recover());
+        resolved.takes(request)?;
+        may_send(self.workspace.as_ref(), &resolved.profile)?;
+        let provider = self.provider();
         let call = ProviderCall {
             profile: &resolved.profile,
             model: &resolved.model,
             request,
             deadline,
+            private_addresses: self.models.private_addresses.load(Ordering::Acquire),
             key: resolved.key.as_ref().map(|secret| secret.password.as_str()),
         };
         let response = tokio::time::timeout_at(
@@ -377,13 +483,15 @@ impl PersonModel {
     }
 
     /// [`Self::answer`] for a caller on a thread of its own, which waits
-    /// here until the answer, `deadline` or `cancel`. Never called from an
-    /// asynchronous task: that one awaits [`Self::answer`].
+    /// here until the answer, `deadline`, or `stopped` says the call was let
+    /// go of (the person cancelled, a newer message replaced the turn).
+    /// Never called from an asynchronous task: that one awaits
+    /// [`Self::answer`] and drops it to stop.
     pub fn answer_blocking(
         &self,
         request: &ModelRequest,
         deadline: Instant,
-        cancel: &Cancel,
+        stopped: &(dyn Fn() -> bool + Sync),
         events: Events<'_>,
     ) -> Result<Answer, ModelRefusal> {
         let Some(runtime) = self.models.runtime.as_ref() else {
@@ -394,11 +502,37 @@ impl PersonModel {
         runtime.block_on(async {
             tokio::select! {
                 answer = self.answer(request, deadline, events) => answer,
-                () = cancel.cancelled() => {
+                () = until(stopped) => {
                     Err(ModelRefusal::Provider(ModelError::new(ErrorKind::Cancelled)))
                 }
             }
         })
+    }
+
+    /// One answer in words to `instructions` about `input`, with no tools:
+    /// a judgment, a label, a summary. For a caller on a thread of its own,
+    /// as [`Self::answer_blocking`] is.
+    pub fn say_blocking(
+        &self,
+        (instructions, input): (&str, &str),
+        max_output_tokens: u32,
+        deadline: Instant,
+        stopped: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Answer, ModelRefusal> {
+        let request = ModelRequest {
+            messages: vec![
+                Message::text(Role::System, instructions),
+                Message::text(Role::User, input),
+            ],
+            tools: Vec::new(),
+            tool_choice: ToolChoice::None,
+            max_output_tokens,
+        };
+        self.answer_blocking(&request, deadline, stopped, &mut |_| {})
+    }
+
+    fn provider(&self) -> Arc<dyn ModelProvider> {
+        Arc::clone(&*self.models.provider.read_recover())
     }
 
     fn resolve(&self) -> Result<Resolved, ModelRefusal> {
@@ -406,50 +540,32 @@ impl PersonModel {
             &self.root,
             self.kind,
             self.models.private_addresses.load(Ordering::Acquire),
+            &*self.provider(),
         )
     }
 }
 
-/// Stops a call a thread waits for ([`PersonModel::answer_blocking`]): the
-/// person cancelled, or a newer message replaced the turn.
-#[derive(Clone, Default)]
-pub struct Cancel {
-    inner: Arc<Cancelling>,
+/// Returns once `stopped` says the call was let go of.
+async fn until(stopped: &(dyn Fn() -> bool + Sync)) {
+    while !stopped() {
+        tokio::time::sleep(STOP_LOOK).await;
+    }
 }
 
-#[derive(Default)]
-struct Cancelling {
-    cancelled: AtomicBool,
-    wake: tokio::sync::Notify,
-}
-
-impl Cancel {
-    /// Stop the call, now or when it starts.
-    pub fn cancel(&self) {
-        self.inner.cancelled.store(true, Ordering::Release);
-        self.inner.wake.notify_waiters();
-    }
-
-    /// Whether the call was stopped.
-    #[must_use]
-    pub fn is_cancelled(&self) -> bool {
-        self.inner.cancelled.load(Ordering::Acquire)
-    }
-
-    /// Returns once the call is stopped.
-    pub async fn cancelled(&self) {
-        loop {
-            // Listening before the flag is read: a stop between the two
-            // still wakes this.
-            let woken = self.inner.wake.notified();
-            tokio::pin!(woken);
-            woken.as_mut().enable();
-            if self.is_cancelled() {
-                return;
-            }
-            woken.await;
-        }
-    }
+/// Whether `workspace` lets what a call carries go to `provider`: the one
+/// place a workspace's rule on where its content may be sent refuses a call
+/// ([`ModelRefusal::WorkspaceRefuses`]). No workspace keeps such a rule yet,
+/// so everything may go.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the one place a workspace's rule will refuse; no workspace keeps one yet"
+)]
+fn may_send(
+    workspace: Option<&WorkspaceId>,
+    provider: &ProviderProfile,
+) -> Result<(), ModelRefusal> {
+    let _ = (workspace, provider);
+    Ok(())
 }
 
 /// A person's choice for one kind of work, read from their store: the
@@ -461,6 +577,22 @@ struct Resolved {
 }
 
 impl Resolved {
+    /// Whether the model takes everything `request` carries.
+    fn takes(&self, request: &ModelRequest) -> Result<(), ModelRefusal> {
+        let pictured = request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(|part| matches!(part, Content::Image { .. }));
+        if pictured && !self.model.vision {
+            return Err(ModelRefusal::CannotTake {
+                model: self.model.display_label().to_owned(),
+                what: Input::Picture,
+            });
+        }
+        Ok(())
+    }
+
     fn linked(&self) -> Linked {
         Linked {
             provider: self.profile.display_label().to_owned(),
@@ -478,6 +610,7 @@ fn resolve(
     root: &Path,
     kind: Interaction,
     private_addresses: bool,
+    provider: &dyn ModelProvider,
 ) -> Result<Resolved, ModelRefusal> {
     // A person who never set anything up keeps no store, and asking about
     // them makes none.
@@ -509,20 +642,15 @@ fn resolve(
             })
             .ok_or(ModelRefusal::NoModelLinked { kind })?,
     };
-    let provider = || profile.display_label().to_owned();
-    let public = EndpointLocation::of_endpoint(&profile.endpoint) == Some(EndpointLocation::Hosted)
-        && profile.endpoint.trim_start().starts_with("https://");
+    let named = || profile.display_label().to_owned();
+    let public = provider.reaches(&profile.endpoint);
     if !public && !private_addresses {
-        return Err(ModelRefusal::AddressRefused {
-            provider: provider(),
-        });
+        return Err(ModelRefusal::AddressRefused { provider: named() });
     }
     // A sign-in in place of a key is kept on the person's own computer, so
     // this host holds nothing to ask such a provider with.
     if profile.sign_in.is_some() {
-        return Err(ModelRefusal::NoKey {
-            provider: provider(),
-        });
+        return Err(ModelRefusal::NoKey { provider: named() });
     }
     let vault = credentials(root).map_err(|error| {
         tracing::warn!(%error, "a person's vault was not opened for their model");
@@ -533,9 +661,7 @@ fn resolve(
         .filter(|secret| !secret.password.is_empty());
     // Only a server on the operator's own network may take no key.
     if key.is_none() && public {
-        return Err(ModelRefusal::NoKey {
-            provider: provider(),
-        });
+        return Err(ModelRefusal::NoKey { provider: named() });
     }
     Ok(Resolved {
         profile: profile.clone(),

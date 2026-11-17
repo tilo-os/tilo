@@ -10,3 +10,5 @@ model-choice-gone = { $model } can no longer be used. Choose another model in Se
 model-no-key = { $provider } has no API key here yet. Add it in Settings.
 model-address-refused = { $provider } is at an address that cannot be reached from here.
 model-settings-unreadable = Your model settings could not be read. Try again in a moment.
+model-cannot-take-picture = { $model } does not read pictures. Choose a model that does in Settings.
+model-workspace-refuses = This workspace does not let its content go to { $provider }.

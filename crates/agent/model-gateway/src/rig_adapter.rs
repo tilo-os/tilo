@@ -1208,26 +1208,69 @@ pub(super) async fn complete(
     request: neutral::ModelRequest,
     emit: Emit<'_>,
 ) -> Result<String, ModelError> {
-    let mut timing = PlanTiming::start();
-    timing.stream = call.stream;
+    let timing = PlanTiming::start();
     let request = neutral_request(request)?;
     let (profile_id, model_id) = (call.profile_id.to_owned(), call.model_id.to_owned());
-    let (profile, mut secret) =
-        blocking_model(move || plan_profile(&profile_id, &model_id)).await?;
-    let budget = timing
-        .budget(call, &profile, request.max_tokens)
-        .map_err(|_| ModelError::new(neutral::ErrorKind::TimedOut))?;
+    let (profile, secret) = blocking_model(move || plan_profile(&profile_id, &model_id)).await?;
+    let answer = complete_with(
+        client,
+        call,
+        (&profile, secret),
+        request,
+        emit,
+        (timing, Carry::default()),
+    )
+    .await?;
+    serde_json::to_string(&answer).map_err(|_| ModelError::new(neutral::ErrorKind::InvalidResponse))
+}
+
+/// How a turn is carried besides what its call names.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Carry {
+    /// Ask again a request the provider provably did not take (it was busy,
+    /// or no connection to it could be made), waiting what it asks.
+    pub(super) resend: bool,
+    /// Hold the turn to its caller's own deadline alone, not also to what a
+    /// person's device waits for a plan.
+    pub(super) callers_deadline: bool,
+}
+
+/// `request` asked of `profile` with `secret`, as `call` says: the one path
+/// every neutral turn takes once its profile and key are known, whether the
+/// gateway read them from its person's settings or a trusted host handed it
+/// a person's own. The answer is priced here, and the call's content-free
+/// timing line is written here.
+pub(super) async fn complete_with(
+    client: &reqwest::Client,
+    call: &PlanCall<'_>,
+    (profile, mut secret): (&ProviderProfile, Option<Zeroizing<String>>),
+    request: CompletionRequest,
+    emit: Emit<'_>,
+    (mut timing, carry): (PlanTiming, Carry),
+) -> Result<neutral::ModelResponse, ModelError> {
+    timing.stream = call.stream;
+    let budget = if carry.callers_deadline {
+        timing.timeout_ms = Some(call.timeout.as_millis());
+        call.timeout
+            .checked_sub(timing.started.elapsed())
+            .filter(|budget| !budget.is_zero())
+            .ok_or_else(|| ModelError::new(neutral::ErrorKind::TimedOut))?
+    } else {
+        timing
+            .budget(call, profile, request.max_tokens)
+            .map_err(|_| ModelError::new(neutral::ErrorKind::TimedOut))?
+    };
     let transport = GatewayHttp {
         client: client.clone(),
-        endpoint: turn_url(&profile),
+        endpoint: turn_url(profile),
         profile: profile.clone(),
         model: call.model_id.into(),
         streaming: call.stream,
-        api: provider_transform::openai_api(&profile),
+        api: provider_transform::openai_api(profile),
         target: crate::openai::Target::Standard,
         budget,
         body: None,
-        retry_refusals: false,
+        retry_refusals: carry.resend,
         stream_end: Arc::default(),
         failure: Arc::default(),
         status: Arc::default(),
@@ -1260,8 +1303,7 @@ pub(super) async fn complete(
         // What this answer costs, priced here so every caller spends against
         // one figure: the gateway's, at its price table's list prices.
         answer.cost_micros = crate::pricing::cost_micros(call.model_id, &answer.usage);
-        serde_json::to_string(&answer)
-            .map_err(|_| ModelError::new(neutral::ErrorKind::InvalidResponse))
+        Ok(answer)
     });
     secret.zeroize();
     if why.is_empty()

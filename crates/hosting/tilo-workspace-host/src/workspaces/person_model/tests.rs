@@ -14,6 +14,7 @@
 )]
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_provider_config::protocol::{Content, Message, Role, StreamStatus, ToolChoice};
 
@@ -452,11 +453,17 @@ async fn a_call_ends_at_its_deadline_or_when_it_is_stopped() {
     );
 
     // A thread of its own waits for the answer, as an agent's does, and is
-    // told to stop once the provider has the call.
-    let cancel = Cancel::default();
-    let (waiting, stopping) = (model.clone(), cancel.clone());
+    // told to stop once the provider has the call: the flag a turn already
+    // holds is all it takes.
+    let stop = Arc::new(AtomicBool::new(false));
+    let (waiting, stopping) = (model.clone(), Arc::clone(&stop));
     let waited = tokio::task::spawn_blocking(move || {
-        waiting.answer_blocking(&asking("Work"), soon(), &stopping, &mut |_| {})
+        waiting.answer_blocking(
+            &asking("Work"),
+            soon(),
+            &|| stopping.load(Ordering::Acquire),
+            &mut |_| {},
+        )
     });
     tilo_test_env::within("the provider is asked", async {
         while scripted.asked().len() < 2 {
@@ -464,8 +471,7 @@ async fn a_call_ends_at_its_deadline_or_when_it_is_stopped() {
         }
     })
     .await;
-    assert!(!cancel.is_cancelled());
-    cancel.cancel();
+    stop.store(true, Ordering::Release);
     let stopped = tilo_test_env::within("the stopped call returns", waited)
         .await
         .unwrap();
@@ -474,10 +480,10 @@ async fn a_call_ends_at_its_deadline_or_when_it_is_stopped() {
         ModelRefusal::Provider(ModelError::new(ErrorKind::Cancelled))
     );
 
-    // A call stopped before it starts never reaches the provider's answer.
+    // A call stopped before it starts never waits for the provider's answer.
     let again = model.clone();
     let stopped = tokio::task::spawn_blocking(move || {
-        again.answer_blocking(&asking("Work"), soon(), &cancel, &mut |_| {})
+        again.answer_blocking(&asking("Work"), soon(), &|| true, &mut |_| {})
     });
     let stopped = tilo_test_env::within("a call stopped beforehand returns", stopped)
         .await
@@ -486,6 +492,101 @@ async fn a_call_ends_at_its_deadline_or_when_it_is_stopped() {
         stopped.unwrap_err(),
         ModelRefusal::Provider(ModelError::new(ErrorKind::Cancelled))
     );
+}
+
+/// A plain question is answered in words, with no tools offered: what a
+/// judgment, a label or a summary asks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plain_question_is_answered_in_words() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let scripted = ScriptedProvider::answering([Reply::text("yes").costing(12)]);
+    workspaces.answer_models_with(scripted.clone());
+    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
+    let model = workspaces.person_model(ADA, Interaction::Classifier);
+
+    let said = tokio::task::spawn_blocking(move || {
+        model.say_blocking(
+            ("Answer yes or no.", "Is this sender someone I know?"),
+            16,
+            soon(),
+            &|| false,
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(said.text(), "yes");
+    assert_eq!(said.response.cost_micros, 12);
+    let asked = &scripted.asked()[0].request;
+    assert!(asked.tools.is_empty());
+    assert_eq!(asked.tool_choice, ToolChoice::None);
+    assert_eq!(asked.max_output_tokens, 16);
+    assert_eq!(
+        asked.messages,
+        vec![
+            Message::text(Role::System, "Answer yes or no."),
+            Message::text(Role::User, "Is this sender someone I know?"),
+        ]
+    );
+}
+
+/// A picture goes only to a model that reads pictures: one that does not is
+/// never asked, and the person is told which model it is.
+#[tokio::test]
+async fn a_picture_goes_only_to_a_model_that_reads_pictures() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let scripted = ScriptedProvider::answering([Reply::text("A receipt.")]);
+    workspaces.answer_models_with(scripted.clone());
+    let provider = workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
+    let model = workspaces
+        .person_model(ADA, Interaction::Request)
+        .working_in(tilo_relay_protocol::WorkspaceId::default());
+    let mut pictured = asking("What is this?");
+    pictured.messages[0].content.push(Content::Image {
+        media_type: "image/png".into(),
+        base64: "AAAA".into(),
+    });
+
+    let refused = model
+        .answer(&pictured, soon(), &mut |_| {})
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        ModelRefusal::CannotTake {
+            model: "gemini-main".into(),
+            what: Input::Picture,
+        }
+    );
+    assert_eq!(refused.code(), "cannot-take");
+    assert_eq!(
+        refused.words(None),
+        "gemini-main does not read pictures. Choose a model that does in Settings."
+    );
+    assert!(scripted.asked().is_empty(), "the model is not asked");
+
+    // The provider's list says the model reads pictures: it is asked.
+    let root = workspaces.person_settings_root(&ADA);
+    let mut config = provider_config(&root);
+    for model in &mut config
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.id == provider)
+        .unwrap()
+        .models
+    {
+        model.vision = true;
+    }
+    save_provider_config(&root, &config).unwrap();
+    let answer = model.answer(&pictured, soon(), &mut |_| {}).await.unwrap();
+    assert_eq!(answer.text(), "A receipt.");
+    assert_eq!(scripted.asked()[0].request, pictured);
 }
 
 /// What a provider is handed prints without its key, and so does everything

@@ -10,3 +10,5 @@ model-choice-gone = { $model } kann nicht mehr verwendet werden. Wähle in den E
 model-no-key = Für { $provider } ist hier noch kein API-Schlüssel hinterlegt. Füge ihn in den Einstellungen hinzu.
 model-address-refused = { $provider } hat eine Adresse, die von hier aus nicht erreichbar ist.
 model-settings-unreadable = Deine Modelleinstellungen konnten nicht gelesen werden. Versuche es gleich noch einmal.
+model-cannot-take-picture = { $model } liest keine Bilder. Wähle in den Einstellungen ein Modell, das es kann.
+model-workspace-refuses = Dieser Arbeitsbereich lässt seine Inhalte nicht an { $provider } gehen.
