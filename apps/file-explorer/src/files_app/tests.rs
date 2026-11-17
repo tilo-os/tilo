@@ -3949,7 +3949,7 @@ mod command_path_tests {
 
         let resource = {
             let state = w.state();
-            state.entry_resource(&state.entries[0])
+            state.entry_resource(&state.entries[0]).into_resource()
         };
         let presentation = resource.presentation.as_ref().expect("unavailable badge");
         assert_eq!(presentation.badge.as_deref(), Some("Unavailable"));
