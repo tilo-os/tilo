@@ -182,6 +182,13 @@ say 'the machine serves'
 # What is up: multi-user reached, the hosted-VM service bound its socket, the API
 # server inert until configured, the update timers enabled, the boot path judging
 # itself by the server probe.
+# A console answers at its getty before the boot has settled: firstboot starts
+# before multi-user.target (for up to its own enrollment timeout), so the target
+# is not reached just because someone can type. Wait for it as a person would.
+for _ in $(seq 1 90); do
+  as_root 'systemctl is-active --quiet multi-user.target' && break
+  sleep 5
+done
 refuse 'multi-user.target is active' 'systemctl is-active --quiet multi-user.target'
 refuse 'the API server is enabled and inert without its configuration' \
   'systemctl is-enabled --quiet tilo-api.service && ! systemctl is-active --quiet tilo-api.service'
