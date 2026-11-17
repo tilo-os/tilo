@@ -281,7 +281,7 @@ fn a_workspace_whose_state_is_gone_starts_again_under_its_id() {
 }
 
 /// The workspace as the image's entrypoint starts it on the state volume a workspace
-/// service leaves: the server's own state in `relay/`, the workspace id beside
+/// service leaves: the server's own state in `server/`, the workspace id beside
 /// it, and the avatars and sealed secrets the image mounts.
 fn start_lounge(
     state: &std::path::Path,
@@ -431,7 +431,7 @@ fn a_page_is_told_the_packet_relay_its_host_runs_from_the_first_answer() {
         .expect("the host names the packet relay it runs");
     assert!(
         relay.starts_with("http://127.0.0.1:"),
-        "the server is the host's own, not a public one: {relay}"
+        "the relay is the host's own, not a public one: {relay}"
     );
     let named = address
         .endpoint_addr
@@ -1626,8 +1626,3 @@ fn a_device_that_came_in_before_enters_again_without_the_entry() {
     );
     workspace.stop();
 }
-
-/// The release of tilo.sh that starts its relay on fresh state, on what the
-/// live relay's release kept.
-#[path = "persistent_workspace/release_upgrade.rs"]
-mod release_upgrade;

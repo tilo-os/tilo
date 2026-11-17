@@ -158,7 +158,7 @@ enum Command {
     LiveSessionJoined(WorkspaceId),
     /// The live session of `workspace_id` heard something: drain it.
     LiveSessionHeard(WorkspaceId),
-    /// The live session of `workspace_id` ended: the server closed it, or the live session
+    /// The live session of `workspace_id` ended: the relay closed it, or the live session
     /// no longer admits what it reads.
     LiveSessionEnded(WorkspaceId),
     /// The first consumer that reads the members' presence came, or the last one went.

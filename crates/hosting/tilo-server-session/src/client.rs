@@ -479,7 +479,7 @@ impl ServerClient {
         Ok(response)
     }
     /// Resolve the authenticated direct filesystem endpoint advertised by a
-    /// relay. The returned address is never the server socket itself.
+    /// server. The returned address is never the server socket itself.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn discover_content_endpoint(
         endpoint: &Endpoint,

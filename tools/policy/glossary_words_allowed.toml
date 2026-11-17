@@ -16,11 +16,6 @@ paths = [
 ]
 
 [[allow]]
-reason = "The pinned source of a released server version, kept byte for byte."
-words = ["*"]
-paths = ["tools/server-upgrade/*"]
-
-[[allow]]
 reason = "The BIP39 word list."
 words = ["*"]
 paths = ["crates/collab/threshold-identity/src/bip39.rs"]
@@ -42,9 +37,36 @@ words = ["seat"]
 paths = ["apps/poker/*"]
 
 [[allow]]
-reason = "iroh's NAT relay."
+reason = "iroh's NAT and packet relay, and the live session's relaying device: iroh's own infrastructure, and the one Tilo role that keeps the word relay."
 words = ["relay"]
 identifiers = ["RelayMode", "RelayUrl", "RelayMap", "RelayNode", "RelayUrlParseError"]
+paths = [
+    "crates/browser/tilo-browser-runtime/web/peer.mjs",
+    "crates/browser/tilo-web-desktop/scripts/agent-shell.mjs",
+    "crates/dev/test-server/Cargo.toml",
+    "crates/dev/test-server/src/lib.rs",
+    "crates/hosting/tilo-server/src/agents.rs",
+    "crates/hosting/tilo-server/src/daemon.rs",
+    "crates/hosting/tilo-server/src/web/mod.rs",
+    "crates/hosting/tilo-workspace-host/Cargo.toml",
+    "crates/platform/tilo-net-p2p/src/lib.rs",
+    "crates/session/client/src/session.rs",
+    "crates/session/session/src/sync/client/mod.rs",
+    "crates/session/session/src/window_share.rs",
+    "crates/system/fs/src/full_replica.rs",
+    "crates/system/tilo-sibling-unlock/Cargo.toml",
+    "docs/architecture/web-page-actors.md",
+    "docs/architecture/workspace.md",
+    "docs/device-reach.md",
+    "docs/hosted-browser.md",
+    "os/containers/tilo-server/Containerfile",
+    "os/containers/tilo-sh/stack.sh",
+    "os/dev-image/usr/lib/systemd/system/tilo-device-admin.service",
+    "os/docs/peer-sync.md",
+    "os/hosted-guest/hosted-init",
+    "os/hosted-guest/kernel/base.config",
+    "os/hosted-guest/kernel/fragment.config",
+]
 
 [[allow]]
 reason = "The name a device's store and a page's store keep a run of unpublished writes under: files and keys written under it, found by it for as long as stores keep runs this way."

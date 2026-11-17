@@ -20,7 +20,7 @@
 # binaries, the entrypoint and the unit beside this file.
 #
 # Published by t: `image-server` builds it (tools/ci/publish/server-build.sh),
-# and `sign-relay` and `publish-server` release it on version tags.
+# and `sign-server` and `publish-server` release it on version tags.
 # ============================================================================
 
 # ---- Frozen RPM repo (cross-time reproducibility) --------------------------
@@ -38,7 +38,7 @@ FROM registry.fedoraproject.org/fedora-minimal:44@sha256:694cfd38a85e4c48bae777d
 
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
-# Runtime dependency: CA roots for rustls connections to hosted Iroh server
+# Runtime dependency: CA roots for rustls connections to hosted Iroh relay
 # endpoints. Iroh does not use the system OpenSSL ABI. BusyBox is statically
 # linked, so it remains usable after removing the package manager, coreutils,
 # and their otherwise inherited OpenSSL dependency closure.

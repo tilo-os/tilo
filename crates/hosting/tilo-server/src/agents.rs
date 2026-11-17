@@ -1280,7 +1280,7 @@ pub async fn start(
     start_inner(cfg, identity, options, None).await
 }
 
-/// Start the app-serving host with an explicit transport server policy.
+/// Start the app-serving host with an explicit transport relay policy.
 ///
 /// # Errors
 /// The same as [`start`].
@@ -1320,8 +1320,13 @@ async fn start_inner(
     let web_entry = cfg.web_entry.clone();
     let server = match relay_mode {
         Some(mode) => {
-            Server::start_with_app_serving_and_relay_mode(cfg, identity, Some(host_actions.clone()), mode)
-                .await?
+            Server::start_with_app_serving_and_relay_mode(
+                cfg,
+                identity,
+                Some(host_actions.clone()),
+                mode,
+            )
+            .await?
         }
         None => Server::start_with_app_serving(cfg, identity, Some(host_actions.clone())).await?,
     };

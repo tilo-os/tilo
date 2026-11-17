@@ -76,7 +76,7 @@ host_container=tilo-sh-$pod
 place_port=${TILO_SH_VM_HOST_PLACER_PORT:-7702}
 status_port=${TILO_SH_VM_HOST_STATUS_PORT:-7701}
 member_port=${TILO_SH_VM_HOST_MEMBER_PORT:-7703}
-relay_iroh=${TILO_SH_SERVER_IROH:-127.0.0.1:24104}
+server_iroh=${TILO_SH_SERVER_IROH:-127.0.0.1:24104}
 server_root=${TILO_SH_SERVER_ROOT:-$secrets/workspace-root-lounge}
 server_state=${TILO_SH_SERVER_STATE:-$state/workspaces/lounge/server}
 enroll=${TILO_SH_TILO_ENROLL:-tilo-enroll}
@@ -350,12 +350,12 @@ up() {
     -e TILO_VM_MEMORY_MIB="$memory_mib" \
     -e TILO_VM_STATUS_LISTEN="127.0.0.1:$status_port" \
     -e TILO_VM_GUEST_REF="$guest_ref" \
-    -e TILO_VM_SERVER_ENDPOINT="$relay_iroh" \
-    -e TILO_TAKE_WORK_SERVER="$relay_iroh" \
+    -e TILO_VM_SERVER_ENDPOINT="$server_iroh" \
+    -e TILO_TAKE_WORK_SERVER="$server_iroh" \
     -e TILO_TAKE_WORK_DEVICE="$server_key" \
     -e TILO_TAKE_WORK_ENDPOINT="$server_endpoint" \
     "$image" >/dev/null
-  say "$pod and the placer are up: workspaces' VMs run here, joining the relay at $relay_iroh"
+  say "$pod and the placer are up: workspaces' VMs run here, joining the server at $server_iroh"
 }
 
 down() {
@@ -400,7 +400,7 @@ TILO_HOSTED_ACCOUNT=acct-tilo-sh
 TILO_HOSTED_VM_SIZE=${TILO_SH_HOSTED_VM_SIZE:-default}
 TILO_HOSTED_PLANS=$server_secrets/vm-host-plans.json
 TILO_HOSTED_BROWSER_ACTIONS=$server_workspaces/lounge/server/browser-actions.jsonl
-TILO_HOSTED_BROWSER_SERVER=$server_endpoint@$relay_iroh
+TILO_HOSTED_BROWSER_SERVER=$server_endpoint@$server_iroh
 ENV
 }
 

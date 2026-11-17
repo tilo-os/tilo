@@ -29,7 +29,7 @@
 //    where it did, under OUT (`summary.json`, `run.log`, `browser/`).
 //
 // Two things are the harness's own, not the deployment's: the host's packet
-// server is plain http here (a deployment's ingress publishes an https one), so
+// relay is plain http here (a deployment's ingress publishes an https one), so
 // Chrome gets --webtransport-developer-mode; and the certificate is made per
 // run, which the CLI trusts with `TILO_TEST_CA_FILE` and the browser loads as
 // the only certificate it accepts.
@@ -210,7 +210,7 @@ bundle = resolve(bundle);
 const firstOf = (name, dirs) => dirs.map(dir => join(dir, name)).find(existsSync);
 const serverBin = resolve(option('--server', firstOf('tilo-server', [join(target, 'debug'), join(target, 'release')]) ?? 'tilo-server'));
 const tiloBin = resolve(option('--tilo', firstOf('tilo', [join(target, 'debug'), join(target, 'release')]) ?? 'tilo'));
-for (const bin of [serverBin, tiloBin]) if (!existsSync(bin)) throw new Error(`missing ${bin}; pass --build, or --relay and --tilo`);
+for (const bin of [serverBin, tiloBin]) if (!existsSync(bin)) throw new Error(`missing ${bin}; pass --build, or --server and --tilo`);
 // The builder's build container carries Chromium where CI's CHROME points.
 if (!process.env.CHROME && existsSync('/usr/lib64/chromium-browser/chromium-browser')) {
   process.env.CHROME = '/usr/lib64/chromium-browser/chromium-browser';

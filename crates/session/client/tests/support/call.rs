@@ -57,7 +57,7 @@ pub async fn invited(key: &SigningKey, named: &iroh::EndpointAddr) -> iroh::Endp
     let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
     match named.relay_urls().next() {
-        Some(server) => builder.relay_mode(iroh::RelayMode::Custom(server.clone().into())),
+        Some(relay) => builder.relay_mode(iroh::RelayMode::Custom(relay.clone().into())),
         None => builder,
     }
     .bind()

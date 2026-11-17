@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tilo.sh on this machine: the Lounge relay, the API server, the web entry
+# tilo.sh on this machine: the Lounge server, the API server, the web entry
 # and (where the machine can) the Linux VM host, from this checkout, started
 # with production's entrypoints and the environment production's manifests
 # give them (tilo/infra apps/tilo-sh-server, apps/tilo-api,
@@ -104,8 +104,8 @@ default when the cargo drop-in there runs a program for it and serves this
 machine's ports (\`\$cargo exec --forward\`). Then this machine carries only the
 ports a person and their tools use, under the same numbers: the site at
 http://tilo.localhost:BASE+20, the API server at http://localhost:BASE+10, the
-relay origin, the mail sink and the releases, plus the UDP the page reaches the
-relay on (WebTransport, iroh). Everything else (the programs, every service,
+server origin, the mail sink and the releases, plus the UDP the page reaches the
+server on (WebTransport, iroh). Everything else (the programs, every service,
 the state, the build) stays there, and \`down --wipe\` deletes it there. The
 commands that act on the stack run there too (owner, invite, tilo, hold, mail,
 logs, restart); \`browser\` opens the page here, and \`check\` needs a stack here.
@@ -155,7 +155,7 @@ optimized), which start from an empty build directory: what the checks
 run, for a rehearsal of it. Caddy is
 the one TILO_SH_CADDY names, else the one on PATH, else a pinned release
 fetched once. The
-relay and the API server trust the local Caddy's CA through the fixed bundle path
+server and the API server trust the local Caddy's CA through the fixed bundle path
 Tilo's programs read, which bwrap (bubblewrap) puts in front of this machine's
 own for those processes alone. No process sees this session's D-Bus or runtime
 directory. TILO_SH_BUNDLE names a built desktop bundle
@@ -195,15 +195,15 @@ die() { printf 'tilo-sh: %s\n' "$*" >&2; exit 1; }
 # -- where everything is -----------------------------------------------------
 
 base=${TILO_SH_PORT_BASE:-24100}
-server_port=$base               # Caddy: the relay's public origin (eu1.tilo.sh)
-plain_port=$((base + 1))       # the relay's origin-forwarding listener (9780)
+server_port=$base               # Caddy: the server's public origin (eu1.tilo.sh)
+plain_port=$((base + 1))       # the server's origin-forwarding listener (9780)
 packet_port=$((base + 2))      # the relay's packet relay (8443)
-routes_port=$((base + 3))      # the relay's own routes (8790): /mode, /avatars, /discord/callback
-iroh_port=$((base + 4))        # the relay's iroh endpoint, UDP (7704)
-server_web_port=$((base + 5))   # the relay's own dev TLS listener, which nothing here uses
+routes_port=$((base + 3))      # the server's own routes (8790): /mode, /avatars, /discord/callback
+iroh_port=$((base + 4))        # the server's iroh endpoint, UDP (7704)
+server_web_port=$((base + 5))   # the server's own dev TLS listener, which nothing here uses
 live_port=$((base + 6))        # Caddy: the live session's origin (live-eu1.tilo.sh)
 caddy_http_port=$((base + 7))  # Caddy's HTTP port, which serves nothing here
-link_port=$((base + 8))        # the relay's WebTransport listener, UDP: how pages reach it
+link_port=$((base + 8))        # the server's WebTransport listener, UDP: how pages reach it
 api_port=$((base + 10))       # the API server (mcp.tilo.sh)
 site_port=$((base + 20))       # Caddy: the site's public origin (tilo.sh, Cloudflare's edge)
 web_port=$((base + 21))        # the web entry's own plain listener (8080), behind it
@@ -475,7 +475,7 @@ not_answered() { # WHAT WHY
 # while it says it is starting and runs; one that stopped, or that does not
 # answer at all, fails at once.
 wait_server_up() {
-  local what='relay (its readiness probe, /mode)' url="http://127.0.0.1:$routes_port/mode"
+  local what='server (its readiness probe, /mode)' url="http://127.0.0.1:$routes_port/mode"
   local said deadline=$((SECONDS + 30))
   until said=$(curl -sS --max-time 2 "$url" 2>/dev/null) && [[ $said == *'"server":"up"'* ]]; do
     running server || not_answered "$what" 'stopped before it served'
@@ -1619,9 +1619,9 @@ up_native() {
   echo "${TILO_SH_ADMISSION:-invite}" > "$state/admission"
   make_secrets
   # The stack's own TLS first: the VM host's member device joins the workspace
-  # at the relay, whose home relay is that TLS origin, so the host is given the
+  # at the server, whose home relay is that TLS origin, so the host is given the
   # authority that signed it — which this makes. The host starts before the
-  # relay, which reads where to place a workspace once, when it starts.
+  # server, which reads where to place a workspace once, when it starts.
   [[ -z $discord ]] || start_native_discord
   start_mail
   start_native_tls
@@ -1855,7 +1855,7 @@ up_images() {
   # The server: the Lounge image, as the deployment runs it (uid 10001, a
   # read-only root, the state volume, the secrets read-only, a /tmp).
   # The server reaches its own live origin through Caddy (its endpoint's home
-  # server), so it trusts the local CA as production trusts Cloudflare's: in
+  # relay), so it trusts the local CA as production trusts Cloudflare's: in
   # the bundle at the path every Tilo client, iroh's included, reads.
   trust_bundle
   local server_args=()
@@ -2045,7 +2045,7 @@ forward_tcp() {
   printf '%s\n' "$server_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$discord_rest_port,$discord_gateway_port,$discord_control_port"
 }
 
-# The page reaches the relay over QUIC (WebTransport, then iroh), which ssh
+# The page reaches the server over QUIC (WebTransport, then iroh), which ssh
 # cannot carry: the drop-in serves these through its own datagram channel.
 forward_udp() { printf '%s\n' "$packet_port,$iroh_port,$link_port"; }
 

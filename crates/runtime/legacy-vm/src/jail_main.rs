@@ -40,7 +40,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             "--vcpus" => vcpus = Some(number(args.next(), "--vcpus")?),
             "--memory-mib" => memory = Some(number(args.next(), "--memory-mib")?),
             "--server-endpoint" => {
-                let text = args.next().ok_or("--relay-endpoint takes ADDR:PORT")?;
+                let text = args.next().ok_or("--server-endpoint takes ADDR:PORT")?;
                 server = Some(Endpoint::parse(&text)?);
             }
             "--boot" => boot = Some(true),

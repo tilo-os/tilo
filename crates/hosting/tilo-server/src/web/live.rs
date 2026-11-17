@@ -176,7 +176,7 @@ type Members = BTreeMap<DeviceKey, Arc<Grant>>;
 /// and nothing else — a device that never opened a live session is
 /// nobody here.
 pub(crate) struct Authority {
-    relay: ServerProtocol,
+    server: ServerProtocol,
     /// The devices this host certified for its browser environments: they
     /// publish their window's page and are offered nobody else's tracks.
     environments: crate::environment::EnvironmentRegistry,
@@ -184,10 +184,10 @@ pub(crate) struct Authority {
 }
 
 impl Authority {
-    pub(crate) fn new(relay: ServerProtocol) -> Self {
-        let environments = relay.environments.clone();
+    pub(crate) fn new(server: ServerProtocol) -> Self {
+        let environments = server.environments.clone();
         Self {
-            relay,
+            server,
             environments,
             members: Mutex::new(Members::new()),
         }
@@ -236,13 +236,13 @@ impl Authority {
         workspace: WorkspaceId,
         op: WorkspaceOperation,
     ) -> bool {
-        let workspaces = self.relay.workspaces.lock().await;
+        let workspaces = self.server.workspaces.lock().await;
         let Some(workspace) = workspaces.get(&workspace).cloned() else {
             return false;
         };
         drop(workspaces);
         let runtime = workspace.lock().await;
-        workspace_access::decide(&runtime, &self.relay.trust(), peer, op).admitted()
+        workspace_access::decide(&runtime, &self.server.trust(), peer, op).admitted()
     }
 
     /// Admit the device that reached an iroh connection, which proves itself
@@ -339,11 +339,11 @@ pub(crate) struct LiveOrigin {
 }
 
 impl LiveOrigin {
-    /// Start the live origin for `relay`'s workspace: the origin its sessions copy
+    /// Start the live origin for `server`'s workspace: the origin its sessions copy
     /// into, and the answer that cuts an admitted one when the workspace moves
     /// its membership. Must be called inside a Tokio runtime.
-    pub(crate) fn start(relay: ServerProtocol) -> Self {
-        let authority = Arc::new(Authority::new(relay));
+    pub(crate) fn start(server: ServerProtocol) -> Self {
+        let authority = Arc::new(Authority::new(server));
         let origin = Relay::new(authority.clone());
         let refreshing = authority.clone();
         let refresh = tokio::spawn(async move {

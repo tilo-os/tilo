@@ -1,4 +1,4 @@
-# Composite relay and complete filesystem replica for a user-owned Tilo home peer.
+# Composite server and complete filesystem replica for a user-owned Tilo home peer.
 #
 # Create the identity/config directories, then run `podman compose up -d` and
 # approve the nearby server from Tilo Settings. Identity and the signed

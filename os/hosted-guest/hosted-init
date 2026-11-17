@@ -31,7 +31,7 @@ mounted /sys || mount -t sysfs -o nosuid,nodev,noexec sysfs /sys
 mounted /dev || mount -t devtmpfs -o nosuid,strictatime,mode=0755 devtmpfs /dev
 # Under devtmpfs, which carries the device nodes but no directories of its own.
 mkdir -p /dev/pts /dev/shm
-# A pty server runs in the guest, as user tilo: the pts nodes must be its.
+# A pty relay runs in the guest, as user tilo: the pts nodes must be its.
 mounted /dev/pts \
   || mount -t devpts -o nosuid,noexec,gid=5,mode=620,ptmxmode=666 devpts /dev/pts
 mounted /dev/shm || mount -t tmpfs -o nosuid,nodev,mode=1777 tmpfs /dev/shm

@@ -78,7 +78,8 @@ the graph may make it.
 ## Not used
 
 Old names: room, desk, space, channel (except Chat's channels), principal, subject, collaborator,
-participant, host, relay (except iroh's NAT relay), run, seat, arrangement, record, slot.
+participant, host, relay (except iroh's NAT and packet relay, and the device relaying a live
+session), run, seat, arrangement, record, slot.
 
 Vague metaphors: door, gate, plane, lane, custody, standing, ledger, witness, seam. Name the thing.
 

@@ -6,7 +6,7 @@ ad-hoc direct invite and an optional always-on workspace host at the same time.
 Peer sync starts automatically in every normal desktop session. The shell
 loads the certified device identity, binds an Iroh endpoint, and joins the
 workspace mesh; Iroh attempts a direct path and falls back to its encrypted
-transport server when necessary. Recovery and deliberately offline sessions
+transport relay when necessary. Recovery and deliberately offline sessions
 can use `--disable-peer-sync`.
 
 Invites carry a signed Iroh `EndpointAddr`; no multicast discovery or fixed
@@ -78,7 +78,7 @@ A Fedora Desktop may have an enrolled home peer but no local Files daemon or
 namespace. Do not infer a new empty workspace from this, or from an offline
 peer. The saved `home-peers.json` under the host's existing identity root
 (`$XDG_DATA_HOME/tilo`, normally `~/.local/share/tilo`) identifies the enrolled
-device, server service and relay workspace IDs to probe:
+device, server service and server workspace IDs to probe:
 
 ```sh
 tilo-server-admin home-peer-files-status \

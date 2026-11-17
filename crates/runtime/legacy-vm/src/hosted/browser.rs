@@ -81,8 +81,8 @@ pub const READY_PATIENCE: Duration = Duration::from_secs(120);
 pub const UP_PATIENCE: Duration = Duration::from_secs(60);
 
 /// The line a session is handed at hand-off: the server's material, with the address the session
-/// dials replaced by `relay`. The endpoint's id stays, so it joins the same server at the one
-/// address this VM dials.
+/// dials replaced by one this VM reaches it at. The endpoint's id stays, so it joins the same
+/// server at the one address this VM dials.
 ///
 /// # Errors
 ///

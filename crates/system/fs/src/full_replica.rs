@@ -83,7 +83,7 @@ pub struct FullReplicaStatus {
     pub namespace_generation: Option<String>,
     /// Authenticated filesystem endpoints that serve the complete content
     /// proof. They are published only with a ready proof, so discovery never
-    /// substitutes a server-only endpoint for the blob/sync protocols.
+    /// substitutes a relay-only endpoint for the blob/sync protocols.
     #[serde(default)]
     pub filesystem_endpoints: Vec<EndpointAddr>,
     /// Milliseconds since Unix epoch, refreshed by every successful atomic
@@ -154,7 +154,7 @@ pub fn aggregate_status(states: &[FullReplicaStatus]) -> FullReplicaStatus {
         }
         // Residency and endpoint availability are distinct facts. A complete
         // durable replica remains ready while its transport endpoint is
-        // restarting; server advertisement separately requires a fresh,
+        // restarting; relay advertisement separately requires a fresh,
         // serving endpoint before it exposes full-content service.
     }
     aggregate

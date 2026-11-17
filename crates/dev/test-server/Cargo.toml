@@ -6,7 +6,7 @@ publish = false
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "A relay host on this machine's loopback and fresh device keys for tests: no test reaches a relay or directory out on the internet, and two runs side by side are never one node"
+description = "A host on this machine's loopback and fresh device keys for tests: no test reaches a relay or directory out on the internet, and two runs side by side are never one node"
 
 # Test support only: depend on this from [dev-dependencies], never from a
 # production dependency table.

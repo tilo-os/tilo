@@ -88,7 +88,7 @@ open before anything is installed.
   once it has checked the window's id was minted under that device's own
   salt — a confined device shares its own windows and nobody else's. Its frames travel the
   workspace's live session, the same MoQ path a call's pictures take, through
-  the server; keys, pointer, scroll, text and clipboard go back to the window
+  the relay; keys, pointer, scroll, text and clipboard go back to the window
   the same way.
 - **It ends** when its last window closed and the idle limit passed, at the
   device certificate's two hours, or when the VM sleeps.
@@ -116,7 +116,7 @@ command.
   drops private, shared, link-local (the metadata endpoint), loopback,
   multicast and reserved networks and Azure's platform address. Every VM is
   given exactly one more destination, the relay its session joins through
-  (`--relay-endpoint`, from `TILO_VM_SERVER_ENDPOINT`), over UDP and TCP; a
+  (`--server-endpoint`, from `TILO_VM_SERVER_ENDPOINT`), over UDP and TCP; a
   relay on the host's own loopback (a local stack) is reached at `10.0.2.4`.
   IPv6 is off.
 - **Limits** are the VM's: its size's CPU and memory in the jail's cgroup,

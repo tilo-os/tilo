@@ -221,9 +221,9 @@ struct Web {
 
 impl Web {
     /// What `/host` answers: who this host is, and where its endpoint is dialled now. A
-    /// device dials the host at this address, so it follows the endpoint: a server the endpoint
+    /// device dials the host at this address, so it follows the endpoint: a relay the endpoint
     /// reached only after the listener started (its first network report found none, as when
-    /// the host's own server is not routable yet) is named as soon as it is.
+    /// the host's own relay is not routable yet) is named as soon as it is.
     fn current_host_info(&self) -> HostInfo {
         let mut info = self.host_info.clone();
         if let (Some(endpoint), Some(address)) = (&self.endpoint, info.address.as_mut()) {
@@ -234,7 +234,7 @@ impl Web {
 }
 
 /// Move `address` to the endpoint's address `now`. An endpoint that has lost its relays keeps
-/// the server `address` named, as a host keeps what it named elsewhere
+/// the relay `address` named, as a host keeps what it named elsewhere
 /// (`tilo_endpoint_reachability::own_address::follow`): it is reached there again once the
 /// relay is back, and an address with no relay reaches it from nowhere.
 fn follow_endpoint(address: &mut HostAddress, now: iroh_base::EndpointAddr) {
@@ -458,7 +458,7 @@ impl Server {
         let host_cert = context.server.identity.cert.clone();
         // Where a page dials this host: its endpoint's key and addresses, and
         // the relay it is reached through — which the endpoint names from the
-        // moment this host serves anything ([`Relay::start`] waits for it), as
+        // moment this host serves anything ([`Server::start`] waits for it), as
         // a page has no UDP socket and its own endpoint carries no packet
         // without one.
         // `/host` answers the endpoint's address as it is when asked

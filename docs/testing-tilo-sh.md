@@ -242,8 +242,7 @@ images reproduce what is deployed.
 A release starts the Lounge on fresh state: it does not read the previous
 release's people, roles, wait list or invitations back. The deployment brings
 them over once, in the server's own pod (tilo/infra `apps/tilo-sh-server`), with
-nobody reaching the cluster. `t test release-tilo-sh` proves the same steps on
-the previous release's own state (`server-upgrade`).
+nobody reaching the cluster.
 
 1. **Dispatch the release**: `t dispatch release-tilo-sh --ref main --repo tilo
    --publish`, and keep the three image digests it prints (the signing steps are

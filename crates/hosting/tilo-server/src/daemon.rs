@@ -3,7 +3,7 @@
 //! [`crate::peer::run_peer`].
 //!
 //! Also exposes the `Server` struct so integration tests can spin up
-//! two relays in the same process and let them merge.
+//! two servers in the same process and let them merge.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -209,7 +209,7 @@ pub struct Server {
     _workspace_keys: Option<Arc<crate::workspace_keys::KeyService>>,
     /// What puts its workspaces' questions about running commands unattended
     /// to people: the server's confirmations, held here so that its workspaces
-    /// hold them only weakly and nothing of the relay outlives it.
+    /// hold them only weakly and nothing of the server outlives it.
     _asks_people: Arc<crate::certification::CertificationProtocol>,
     /// The packet relay this host runs for the pages it serves, when it runs
     /// one ([`ServerConfig::packet_relay`]).
@@ -436,7 +436,7 @@ impl Server {
         .await
     }
 
-    /// Start an app-serving host with an explicit transport server policy.
+    /// Start an app-serving host with an explicit transport relay policy.
     ///
     /// # Errors
     /// The same as [`Server::start`].
@@ -583,7 +583,7 @@ impl Server {
         .transpose()?
         .map(Arc::new);
         // Where this host is dialled — what each workspace's governance names of
-        // it, and what a link it hands out carries — is the server, which the
+        // it, and what a link it hands out carries — is the relay, which the
         // endpoint knows only once it has connected to one. The workspaces opened
         // below name it straight away, and a host that has none yet names it when
         // it makes its first, so wait for the relay before serving either.
@@ -863,7 +863,7 @@ impl Server {
         self.endpoint.addr()
     }
 
-    /// The iroh endpoint this relay's device dials from.
+    /// The iroh endpoint this server's device dials from.
     #[must_use]
     pub fn endpoint(&self) -> Endpoint {
         self.endpoint.clone()
@@ -1059,7 +1059,7 @@ pub fn server_node_id(device_key: &ed25519_dalek::SigningKey) -> [u8; 32] {
     tilo_server_protocol::server_node_id(&device_key.to_bytes())
 }
 
-/// Run this host's own iroh packet relay on `addr`: the server, and the URL
+/// Run this host's own iroh packet relay on `addr`: the relay, and the URL
 /// its peers dial. A page has no UDP socket, so it reaches this host only
 /// through a relay, and the host advertises this one in its signed address.
 async fn spawn_packet_relay(
@@ -1825,7 +1825,8 @@ mod tests {
             let status_path = temp.path().join("full-replica.json");
             let server_identity = identity(DeviceCapabilities::member());
             let filesystem_endpoint = EndpointAddr::new(
-                iroh::SecretKey::from_bytes(&server_identity.device_signing_key.to_bytes()).public(),
+                iroh::SecretKey::from_bytes(&server_identity.device_signing_key.to_bytes())
+                    .public(),
             )
             .with_ip_addr("127.0.0.1:43210".parse().unwrap());
             let mut status = fs::full_replica::FullReplicaStatus::syncing();

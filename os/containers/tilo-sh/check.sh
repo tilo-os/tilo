@@ -364,8 +364,8 @@ if [[ $hosted == 1 ]]; then
     mkdir -p "$form_dir"
     cp "$repo/apps/browser/test-pages/visa-form.html" "$form_dir/visa-form.html"
     # A VM reaches the public internet and one address of this machine: the
-    # relay's own endpoint, as the VM dials it (10.0.2.4, which pasta maps to
-    # this machine's loopback). The relay's endpoint is UDP; its port's TCP side
+    # server's own endpoint, as the VM dials it (10.0.2.4, which pasta maps to
+    # this machine's loopback). The server's endpoint is UDP; its port's TCP side
     # is the stack's to serve, and this is the page it serves.
     form_port=$iroh_port
     python3 -m http.server --bind 127.0.0.1 --directory "$form_dir" "$form_port" \

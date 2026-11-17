@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The web page and the tilo.sh stack end to end, on one stack: the Lounge's
-# relay, the API server, the web entry and the programs this checkout built,
+# server, the API server, the web entry and the programs this checkout built,
 # brought up once by tilo-sh/stack.sh as production's manifests bring them up
 # (their images' entrypoints, their environment, production's Caddy in front).
 # The site every flow meets is the web entry image's, not a server beside it,

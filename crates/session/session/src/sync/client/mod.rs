@@ -702,7 +702,7 @@ impl Local {
             .unwrap_or_default()
     }
 
-    /// The endpoints this device's server turned away from each workspace's live session and has not
+    /// The endpoints this device's relay turned away from each workspace's live session and has not
     /// let in since, by workspace, and why ([`crate::live::TurnedAway`]): nothing for a session
     /// that runs no live session.
     #[must_use]
@@ -1420,7 +1420,7 @@ impl Client {
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
         let binding = network::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
         let reached = binding.reached.clone();
-        // The live session's server role, when this device may serve one, is one more protocol on the
+        // The live session's relay role, when this device may serve one, is one more protocol on the
         // endpoint this session binds.
         let mut live = engine
             .as_ref()
@@ -1679,7 +1679,7 @@ impl Client {
         self.hosting.local.live_states()
     }
 
-    /// The endpoints this device's server turned away from each workspace's live session and has not
+    /// The endpoints this device's relay turned away from each workspace's live session and has not
     /// let in since, by workspace, and why ([`crate::live::TurnedAway`]).
     #[must_use]
     #[cfg(target_os = "linux")]
@@ -1969,7 +1969,7 @@ impl Client {
             .map(|reachability| reachability.relay_urls())
             .unwrap_or_default();
         let relay = match urls.as_slice() {
-            [server] => Some(server.clone()),
+            [relay] => Some(relay.clone()),
             _ => None,
         };
         Some(SiblingDials::new(
@@ -2274,7 +2274,7 @@ fn endpoint_for(
     // keeps net report, address discovery and port mapping off the network until a workspace this
     // session shows has someone else in it. A peer's key also resolves on the local network
     // ([`tilo_endpoint_reachability::Nearby`]), so two of the person's devices that share one find
-    // each other while their relays rest, and with their own server (or none) that is what finds
+    // each other while their relays rest, and with their own relay (or none) that is what finds
     // them. The lookup only answers for a key this device already dials: hearing an endpoint there
     // dials nobody.
     let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)

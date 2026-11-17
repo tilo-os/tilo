@@ -7,8 +7,8 @@
 //! mixes the run and the test into every key it hands out.
 //!
 //! A host runs on its own thread with its own runtime, so a test may start one inside a runtime or
-//! beside one. The server also answers QUIC address discovery, so a test's endpoints pick their
-//! server at once instead of waiting out a probe nothing answers.
+//! beside one. The relay also answers QUIC address discovery, so a test's endpoints pick their
+//! relay at once instead of waiting out a probe nothing answers.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -309,7 +309,7 @@ fn discovery_trust() -> iroh::tls::CaTlsConfig {
 }
 
 /// Serve QUIC address discovery on this machine's loopback, on the port iroh's endpoints ask every
-/// server for it, and answer what a device of this machine trusts to reach it.
+/// relay for it, and answer what a device of this machine trusts to reach it.
 ///
 /// An endpoint asks each relay where that relay sees it from, and takes the relay that answers as
 /// its home — the relay its address then names. A relay that answers nothing leaves the endpoint
@@ -378,7 +378,7 @@ pub async fn direct_endpoint() -> iroh::Endpoint {
         .expect("an endpoint on this machine")
 }
 
-/// A person's host on this machine's loopback, governing one workspace: what its devices server
+/// A person's host on this machine's loopback, governing one workspace: what its devices relay
 /// through, and where they are told it is.
 pub struct Host(Running);
 
@@ -448,7 +448,7 @@ mod tests {
 
     use super::{endpoint, endpoint_key, loopback_url, relay_through_loopback_in};
 
-    /// A profile seeded with this machine's server reads it back as its device's relays: what a
+    /// A profile seeded with this machine's relay reads it back as its device's relays: what a
     /// session started on that profile binds with.
     #[test]
     fn a_seeded_profile_relays_through_this_machines_loopback() {

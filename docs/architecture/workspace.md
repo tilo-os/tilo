@@ -228,7 +228,7 @@ other fields are declared for the parts that apply them.
 
 Devices talk over iroh, and nothing else. A device reaches the other devices
 that hold a workspace, directly or through any device that stores it;
-store-and-forward is what a store does. There is no separate server protocol,
+store-and-forward is what a store does. There is no separate relay protocol,
 no second send path, and no gossip path beside it.
 
 A device is one iroh endpoint, under its device key, and one member of each
@@ -571,23 +571,23 @@ serving the workspace relays for its members. A device is in the live session on
 it holds the workspace's keys and reached that device; while it is not taken
 in, it asks again, waiting longer each time and at most every fifteen
 seconds, each device up to a quarter sooner by its own key so that the
-devices a server missed together do not come back together (`retry_wait` in
+devices a relay missed together do not come back together (`retry_wait` in
 `crates/session/session/src/live.rs`), since a device that comes back tells
 nobody. The relaying device takes sixteen sessions through admission at
 once, at most four of them of one endpoint, and four more of endpoints that
 none of its workspaces names as a device, which therefore cannot keep a
 workspace's devices out (`MAX_ADMITTING`, `MAX_ADMITTING_OF_ONE` and
-`MAX_ADMITTING_STRANGERS` in `crates/collab/tilo-live/src/server.rs`). One
+`MAX_ADMITTING_STRANGERS` in `crates/collab/tilo-live/src/relay.rs`). One
 more it closes as busy, unread: it judged nobody, so the device it closed
-asks again the same way and reads as told busy by it (`server-busy`), where a
+asks again the same way and reads as told busy by it (`relay-busy`), where a
 device that did not reach it reads as waiting to reach it and a device it
 judged and did not admit reads as refused. A live session reads thirty-two devices
 at once (`MAX_HEARD` in `crates/collab/tilo-live/src/live_session.rs`): each is
-three tracks that it and the server hold open, about 250 KiB between them,
+three tracks that it and the relay hold open, about 250 KiB between them,
 and that, not the transport, is what a further device costs. A device that
 is in the live session beyond those is not heard on this device, and the live session's
 row says how many those are and why (`unheard`, `unheard_why`, `not_heard`).
-The connection to the server is allowed the streams thirty-two devices take
+The connection to the relay is allowed the streams thirty-two devices take
 once its session is admitted (`MAX_BI_STREAMS` and `MAX_UNI_STREAMS` in
 `crates/collab/tilo-live/src/native.rs`), on a session's endpoint as on one
 bound for the live session alone. The share's reading
