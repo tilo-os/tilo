@@ -24,7 +24,6 @@ use ui::widget::{EventCtx, GroupRow, STRIP_EDGE_GUTTER_PX, StripLane, Widget as 
 use ui::winit::event::WindowEvent;
 use ui::{TextRenderer, Theme};
 
-use super::strip::build_row_lazily;
 use super::{DesktopHandle, DesktopSurface, Shared};
 use crate::navigation::{self, Admitted, RouteIds};
 
@@ -415,7 +414,8 @@ impl DesktopSurface {
     /// keeps. The one the person works in is the shown row; these are drawn behind it, each in its
     /// own display's lane.
     pub(super) fn show_display_strips(&mut self) {
-        let shared = self.shared.borrow();
+        let shared = std::rc::Rc::clone(&self.shared);
+        let shared = shared.borrow();
         let tree = &shared.tree;
         let mut behind = Vec::new();
         if tree.is_partitioned() {
@@ -428,18 +428,7 @@ impl DesktopSurface {
                     && let Some(workspace) = workspace
                     && let Some(strip) = workspace.strips.iter().find(|s| s.id == plan.strip)
                 {
-                    let focused = tree.active_group_for(plan.strip);
-                    let (mut row, deferred) = build_row_lazily(
-                        self.tiles.as_mut(),
-                        self.controls.as_ref(),
-                        workspace,
-                        strip,
-                        focused,
-                    );
-                    row.set_fullscreen(tree.fullscreen_group(), false);
-                    self.unbuilt
-                        .extend(deferred.into_iter().map(|tab| (plan.strip, tab)));
-                    self.rows.insert(plan.strip, row);
+                    self.build_strip_row(tree, workspace, strip, &mut HashMap::new());
                 }
                 behind.push(plan.strip);
             }

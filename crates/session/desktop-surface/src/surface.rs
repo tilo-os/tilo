@@ -41,7 +41,7 @@ use crate::navigation::{
 use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 
 use paging::Sideways;
-use strip::{build_row, build_row_lazily, strip_style};
+use strip::{build_row_lazily, strip_style};
 use ui::widget::DrawChild;
 
 mod arrivals;
@@ -1348,7 +1348,11 @@ impl DesktopSurface {
     /// Build (once) and show the active workspace's active strip.
     fn show_active_strip(&mut self) {
         let shown_before = self.shown;
-        let shared = self.shared.borrow();
+        // The rows follow the tree first: a window just moved into a strip that has no row yet
+        // brings its running content there, rather than the row being built with a new one.
+        self.reconcile();
+        let shared = Rc::clone(&self.shared);
+        let shared = shared.borrow();
         let tree = &shared.tree;
         let Some(workspace) = tree.active_workspace() else {
             if self.shown.take().is_some() {
@@ -1361,24 +1365,13 @@ impl DesktopSurface {
             && !self.rows.contains_key(&strip_id)
             && let Some(strip) = workspace.strips.iter().find(|s| s.id == strip_id)
         {
-            let focused = tree.active_group_for(strip_id);
-            let (mut row, deferred) = build_row_lazily(
-                self.tiles.as_mut(),
-                self.controls.as_ref(),
-                workspace,
-                strip,
-                focused,
-            );
-            // A row comes back with the window covering this display, so a rebuild while it covers
-            // does not take it back.
-            row.set_fullscreen(tree.fullscreen_group(), false);
+            self.build_strip_row(tree, workspace, strip, &mut HashMap::new());
             // The focused window, built first, is also the one in view.
             if self.reveal.is_none() {
-                self.reveal = focused.map(|group| (strip_id, group));
+                self.reveal = tree
+                    .active_group_for(strip_id)
+                    .map(|group| (strip_id, group));
             }
-            self.unbuilt
-                .extend(deferred.into_iter().map(|tab| (strip_id, tab)));
-            self.rows.insert(strip_id, row);
         }
         let changed = self.shown != strip_id;
         let tree = if changed {
@@ -1391,6 +1384,31 @@ impl DesktopSurface {
             self.show_strip_changed(shown_before, strip_id, &tree);
         }
         self.show_display_strips();
+    }
+
+    /// Give `strip` of `workspace` its row: the one place a strip gets one. Its focused window is
+    /// built now and a tab running elsewhere brings its content from `live`; the rest are built
+    /// as the frames allow ([`Self::build_deferred`]). A row comes back with the window covering
+    /// its display, so a rebuild while it covers does not take it back.
+    fn build_strip_row(
+        &mut self,
+        tree: &tilo_desktop_model::Layout,
+        workspace: &Workspace,
+        strip: &tilo_desktop_model::Strip,
+        live: &mut HashMap<TabId, TileHost>,
+    ) {
+        let (mut row, deferred) = build_row_lazily(
+            self.tiles.as_mut(),
+            self.controls.as_ref(),
+            workspace,
+            strip,
+            tree.active_group_for(strip.id),
+            live,
+        );
+        row.set_fullscreen(tree.fullscreen_group(), false);
+        self.unbuilt
+            .extend(deferred.into_iter().map(|tab| (strip.id, tab)));
+        self.rows.insert(strip.id, row);
     }
 
     /// Build deferred tabs of the shown strip until the frame's budget is spent. Tabs of strips not
@@ -1520,17 +1538,7 @@ impl DesktopSurface {
                     .flat_map(|group| &group.tabs)
                     .any(|tab| live.contains_key(&tab.id));
                 if survives {
-                    let mut row = build_row(
-                        self.tiles.as_mut(),
-                        self.controls.as_ref(),
-                        workspace,
-                        strip,
-                        &mut live,
-                    );
-                    if tree.active_strip_id() == Some(strip.id) {
-                        row.set_fullscreen(tree.fullscreen_group(), false);
-                    }
-                    self.rows.insert(strip.id, row);
+                    self.build_strip_row(tree, workspace, strip, &mut live);
                 }
             }
         }

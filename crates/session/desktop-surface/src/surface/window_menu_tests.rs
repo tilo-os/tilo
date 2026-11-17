@@ -13,8 +13,8 @@ use tilo_desktop_model::width::{
     WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
 };
 use tilo_desktop_model::{
-    Capability, Display, GRANT_ALWAYS, IdMinter, Layout, Strip, StripId, TabId, TileContent,
-    WindowWidth, Workspace, WorkspaceId,
+    Capability, Display, GRANT_ALWAYS, IdMinter, Layout, TabId, TileContent, WindowWidth,
+    Workspace, WorkspaceId,
 };
 use ui::widget::TabHolder;
 use ui::window_share::OpenWindow;
@@ -472,21 +472,41 @@ fn equalizing_gives_every_window_of_the_strip_the_same_share() {
     );
 }
 
-/// A window moves into another strip of its workspace, by that strip's name.
+/// The apps of a shell, counting the tiles built for each tab.
+struct Counted(Rc<RefCell<HashMap<TabId, usize>>>);
+
+impl TileSource for Counted {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> ui::widget::TileHost {
+        let mut built = self.0.borrow_mut();
+        let count = built.entry(tab.id).or_default();
+        *count = count.saturating_add(1);
+        ui::widget::TileHost::new(ui::widget::TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+}
+
+/// A window moves into another strip of its workspace, by that strip's name, and keeps the
+/// content it shows there: built again, an app that draws nothing new leaves the window without
+/// its bar until it draws. The strip is made and the window moved in one pass, as the New strip
+/// row does.
 #[test]
 fn a_window_moves_to_another_strip_by_its_name() {
-    let (surface, handle) = apps_shell(1);
+    let built = Rc::new(RefCell::new(HashMap::new()));
+    let (surface, handle) = shell_with(2, Box::new(Counted(Rc::clone(&built))));
     let mut frame = present(surface);
-    let route = first_route(&handle);
-    let mut tree = handle.read(Clone::clone);
-    tree.workspaces[0]
-        .strips
-        .push(Strip::new(StripId(90), "Research"));
-    handle.replace_tree(tree);
     settle(&mut frame);
+    let route = first_route(&handle);
+    let strip = handle
+        .apply_command(&tilo_desktop_model::commands::DesktopCommand::CreateStrip {
+            name: "Research".into(),
+        })
+        .unwrap()
+        .expect("the strip is made");
 
     let rows = handle.window_menu(route.tab);
-    let across = row(&rows, &format!("{MOVE_TO_STRIP}:90")).expect("the strip is offered");
+    let across = row(&rows, &move_to_strip_id(strip)).expect("the strip is offered");
     assert!(across.enabled, "{across:?}");
     assert_eq!(
         across.label, "Research",
@@ -495,26 +515,18 @@ fn a_window_moves_to_another_strip_by_its_name() {
     let tree = handle.read(Clone::clone);
     assert!(matches!(
         command(&tree, &route, &across.id, None),
-        Some(Verb::Chrome(ChromeEffect::MoveTab { to: Destination { strip: Some(ref strip), .. }, .. })) if strip == "90"
+        Some(Verb::Chrome(ChromeEffect::MoveTab { to: Destination { strip: Some(ref to), .. }, .. })) if *to == strip.0.to_string()
     ));
     handle
         .choose_window_menu(route.tab, &across.id, None)
         .unwrap();
     settle(&mut frame);
-    let strips: Vec<StripId> = handle.read(|tree| {
-        tree.workspaces[0]
-            .strips
-            .iter()
-            .filter(|strip| {
-                strip
-                    .window_groups
-                    .iter()
-                    .any(|group| group.id == route.group)
-            })
-            .map(|strip| strip.id)
-            .collect()
-    });
-    assert_eq!(strips, vec![StripId(90)], "the window is there now");
+    assert_eq!(
+        handle.read(|tree| crate::surface::route_of(tree, route.tab).map(|ids| ids.strip)),
+        Some(strip),
+        "the window is there now"
+    );
+    assert_eq!(built.borrow().get(&route.tab), Some(&1), "with its content");
 }
 
 /// With one strip, a window that shares it is offered a new strip below, and choosing it leaves

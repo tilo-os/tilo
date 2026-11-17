@@ -47,15 +47,17 @@ pub(super) fn strip_row(groups: Vec<WindowGroup>) -> GroupRow {
     GroupRow::new(groups).with_leading_inset(STRIP_EDGE_GUTTER_PX)
 }
 
-/// A strip's row with only the focused window's active tab built; the other tabs are placeholders,
-/// returned in the order to build them: each group's active tab by distance from the focused
-/// window, then the inactive tabs.
+/// A strip's row with only the focused window's active tab built, each tab that is running
+/// elsewhere taking its content from `live`; the other tabs are placeholders, returned in the
+/// order to build them: each group's active tab by distance from the focused window, then the
+/// inactive tabs.
 pub(super) fn build_row_lazily(
     tiles: &mut dyn TileSource,
     controls: Option<&ui::ControlDomain>,
     workspace: &Workspace,
     strip: &tilo_desktop_model::Strip,
     focused: Option<GroupId>,
+    live: &mut HashMap<TabId, TileHost>,
 ) -> (GroupRow, Vec<TabId>) {
     let focus = focused
         .and_then(|id| strip.window_groups.iter().position(|g| g.id == id))
@@ -75,10 +77,13 @@ pub(super) fn build_row_lazily(
                 .with_maximized(group.maximized);
             for tab in &group.tabs {
                 let active = tab.id == group.active_tab;
-                if active && index == focus {
-                    if let Some(host) = built.host_for_tab_mut(tab.id) {
-                        *host = build_tile(tiles, controls, workspace, tab);
-                    }
+                let Some(host) = built.host_for_tab_mut(tab.id) else {
+                    continue;
+                };
+                if let Some(running) = live.remove(&tab.id) {
+                    *host = running;
+                } else if active && index == focus {
+                    *host = build_tile(tiles, controls, workspace, tab);
                 } else {
                     deferred.push((!active, index.abs_diff(focus), tab.id));
                 }
@@ -89,37 +94,4 @@ pub(super) fn build_row_lazily(
     deferred.compact_sort_by_key(|&(inactive, distance, _)| (inactive, distance));
     let order = deferred.into_iter().map(|(_, _, tab)| tab).collect();
     (strip_row(groups), order)
-}
-
-/// A strip's row as the tree describes it. Each tab takes its content from `live` when present
-/// there, else from `tiles` .
-pub(super) fn build_row(
-    tiles: &mut dyn TileSource,
-    controls: Option<&ui::ControlDomain>,
-    workspace: &Workspace,
-    strip: &tilo_desktop_model::Strip,
-    live: &mut HashMap<TabId, TileHost>,
-) -> GroupRow {
-    let groups = strip
-        .window_groups
-        .iter()
-        .map(|group| {
-            let tabs = group
-                .tabs
-                .iter()
-                .map(|tab| (descriptor(tab), placeholder()))
-                .collect();
-            let mut built = WindowGroup::new(group.id, tabs, group.active_tab, group.width)
-                .with_maximized(group.maximized);
-            for tab in &group.tabs {
-                if let Some(host) = built.host_for_tab_mut(tab.id) {
-                    *host = live
-                        .remove(&tab.id)
-                        .unwrap_or_else(|| build_tile(tiles, controls, workspace, tab));
-                }
-            }
-            built
-        })
-        .collect();
-    strip_row(groups)
 }
