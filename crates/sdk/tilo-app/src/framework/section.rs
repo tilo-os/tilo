@@ -138,12 +138,25 @@ impl SectionKind {
         let by = actor(by);
         let origin = ChangeOrigin::action(format!("{}/{verb}", self.kind)).by(by.clone());
         let actions = format!("{}/", self.kind);
+        let aliases: Vec<String> = aliases
+            .iter()
+            .filter_map(|alias| {
+                tilo_failure::ignored!(
+                    "an earlier id that is not a person's names nobody whose step this is",
+                    tilo_actions::policy::PersonId::parse(alias).ok()
+                )
+            })
+            .map(|alias| {
+                actor(&tilo_actions::Actor::Member(
+                    tilo_actions::MemberId::person(alias),
+                ))
+            })
+            .collect();
         let owns = |version: &tilo_resource::history::Version| {
             version.message.as_deref().is_some_and(|message| {
-                ui_core::storage::made_by(message, &actions, &by)
-                    || aliases
-                        .iter()
-                        .any(|alias| ui_core::storage::made_by(message, &actions, alias))
+                std::iter::once(&by)
+                    .chain(&aliases)
+                    .any(|who| ui_core::storage::made_by(message, &actions, who))
             })
         };
         let mut stepped = false;

@@ -992,7 +992,12 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         .expect("the laptop's choice came off through the action that made it");
     assert_eq!(
         cleared["actor"],
-        serde_json::json!(PERSON),
+        serde_json::json!(
+            serde_json::to_string(&tilo_actions::Actor::Member(
+                tilo_actions::MemberId::person(PERSON)
+            ))
+            .expect("an actor serializes")
+        ),
         "the person's own change, not a file written behind their back"
     );
     assert_eq!(

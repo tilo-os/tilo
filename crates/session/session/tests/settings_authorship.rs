@@ -95,7 +95,7 @@ tilo_test_env::scenario! {
         let _settled = ui::motion::testing::settled();
         let mut home = tilo_test_env::TestHome::new().unwrap();
         let (_identity, person) = this_computers_person(&mut home);
-        let person = hex::encode(person);
+        let person = settings_actor(&hex::encode(person));
         let mut session = session();
         session.step(std::time::Duration::from_millis(1)).unwrap();
 
@@ -138,7 +138,7 @@ tilo_test_env::scenario! {
         let _settled = ui::motion::testing::settled();
         let mut home = tilo_test_env::TestHome::new().unwrap();
         let (_identity, person) = this_computers_person(&mut home);
-        let person = hex::encode(person);
+        let person = settings_actor(&hex::encode(person));
 
         // A session from before this computer had an identity changed the setting as the placeholder it
         // was started with.
@@ -177,4 +177,12 @@ tilo_test_env::scenario! {
             "the undo is the person's: {undone:?}"
         );
     }
+}
+
+/// How the settings document names `person` as who made a change: their typed actor.
+fn settings_actor(person: &str) -> String {
+    serde_json::to_string(&tilo_actions::Actor::Member(
+        tilo_actions::MemberId::person(person),
+    ))
+    .expect("an actor serializes")
 }
