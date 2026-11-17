@@ -25,6 +25,19 @@ use tilo_server_protocol::WorkspaceId;
 
 use super::{Outcome, Worker, commit_failed, invoke_arguments};
 
+mod by_path;
+
+/// Whether `target` is one of Files' verbs on the workspace's own folder, by a path in the
+/// workspace ([`by_path`]): they change its tree where it is kept.
+pub(super) fn acts_on_tree(target: &tilo_actions::remote::RemoteActionTarget) -> bool {
+    target
+        .address
+        .resource
+        .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
+        == Some(FILES_APP)
+        && tree::is_tree_verb(&target.address.action)
+}
+
 /// The records of a workspace's tree as the host holds them: each with the
 /// number of its chunk, the tree's own record first, and the chunks the host
 /// holds at all, each with the heads it stands at.

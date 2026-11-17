@@ -34,7 +34,7 @@ mod answer;
 mod find;
 #[path = "mcp_agent_launch.rs"]
 mod launch;
-use launch::{opens_a_file, starts_app};
+use launch::{names_files, opens_a_file, starts_app};
 #[path = "mcp_agent_link.rs"]
 mod link;
 #[path = "mcp_agent_record.rs"]
@@ -1048,10 +1048,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // Files is every workspace's own folder, served by the framework
         // rather than installed into it: `files#open` reaches it wherever the
         // workspace is, and puts a file into its tree.
-        if matches!(
-            name.to_ascii_lowercase().as_str(),
-            "files" | "file-explorer" | "so.tilo.file-explorer"
-        ) {
+        if names_files(name) {
             return Ok(AppRef::Installed {
                 app_id: fs_protocol::tree::FILES_APP.to_owned(),
                 opens: true,
@@ -2650,7 +2647,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
     }
 
-    async fn do_one_value(
+    async fn do_in_app(
         &self,
         path: &str,
         arguments: serde_json::Map<String, Value>,

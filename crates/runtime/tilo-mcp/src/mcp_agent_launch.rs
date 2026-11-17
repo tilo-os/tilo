@@ -60,6 +60,37 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         })
     }
 
+    /// Do the one action `path` names. One of Files' verbs on the workspace's own folder
+    /// ([`in_workspace_folder`]), which is on no one device, is asked of the workspace, with no
+    /// app started for it; every other action is done in the app that offers it.
+    pub(super) async fn do_one_value(
+        &self,
+        path: &str,
+        arguments: serde_json::Map<String, Value>,
+        invocation: Option<String>,
+        wait_ms: Option<u64>,
+    ) -> Result<Done, super::Failure> {
+        // Only a path that begins with Files' name is read here before it is read where it acts.
+        let app = path.split(['#', '/']).next().unwrap_or_default().trim();
+        if names_files(app)
+            && let Ok(parsed) = super::parse_path(path)
+            && let Some(action) = parsed.action.as_deref()
+            && in_workspace_folder(&parsed, action, &arguments)
+        {
+            let files = fs_protocol::tree::FILES_APP;
+            let value = self
+                .app_in_workspace(files, action, arguments, invocation, wait_ms)
+                .await?;
+            let reply = outcome(&value);
+            return Ok(Done::Launched {
+                value,
+                reply,
+                not_shown: None,
+            });
+        }
+        Box::pin(self.do_in_app(path, arguments, invocation, wait_ms)).await
+    }
+
     /// `action` (`open` or `start`) of the app `resolved` names, which runs already: it is there,
     /// and what is in it. Running is not shown: `open` asks for the app's window on the person's
     /// shell, or brings the one there into view, and says why beside what it did when neither
@@ -194,6 +225,29 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
 pub(super) fn starts_app(action: &str) -> bool {
     action == tilo_actions::remote::APPLICATION_OPEN_ACTION
         || action == tilo_actions::remote::APPLICATION_START_ACTION
+}
+
+/// Whether `name` names Files, every workspace's own folder: its name, the last part of its id,
+/// or its id.
+pub(super) fn names_files(name: &str) -> bool {
+    ["files", "file-explorer", "so.tilo.file-explorer"]
+        .iter()
+        .any(|files| name.eq_ignore_ascii_case(files))
+}
+
+/// Whether `action` with `arguments`, asked of the app `parsed` names, is one of Files' verbs on
+/// the workspace's own folder: a path in the workspace, and no device whose own disk it would
+/// change. Those go to the workspace, which changes its tree wherever that is kept, as a file put
+/// into the workspace does; with a `device` they stay Files' own on that device.
+pub(super) fn in_workspace_folder(
+    parsed: &ParsedPath,
+    action: &str,
+    arguments: &serde_json::Map<String, Value>,
+) -> bool {
+    parsed.segments.is_empty()
+        && names_files(&parsed.app)
+        && fs_protocol::tree::is_tree_verb(action)
+        && !arguments.contains_key("device")
 }
 
 /// Whether `arguments` are those of an app's own `open` of a file: they name the file's
