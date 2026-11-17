@@ -252,6 +252,12 @@ async fn the_assistant_calls_a_service_with_a_key_it_never_sees() {
     );
     assert_eq!(remembers["uses"][0]["by"], "Scout");
     assert_eq!(
+        remembers["uses"][0]["using"],
+        format!("{}/{}", person_vault::PROVIDER, person_vault::WEB_CALL)
+    );
+    assert_eq!(remembers["uses"][0]["what"], "GET /v1/balance");
+    assert_eq!(remembers["uses"][0]["allowed"], "once");
+    assert_eq!(
         remembers["uses"][0]["places"],
         serde_json::json!([service.url()])
     );

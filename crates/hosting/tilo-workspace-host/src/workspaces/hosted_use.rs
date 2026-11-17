@@ -57,7 +57,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use accounts::vault_items::{self, ItemId, Place, VaultItems};
+use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{ActionKind, Answer, PersonId, Rule, TreePath};
@@ -364,12 +364,14 @@ impl Use {
 
     /// Carry it out for `by` with what the vault under `root` keeps: the
     /// one place the reference becomes its secret, inside the code that
-    /// signs in.
+    /// signs in. What it is used for and how its person allowed it
+    /// (`purpose`) is written down with the use.
     async fn carry_out(
         self,
         workspaces: &Workspaces,
         root: &Path,
         by: &str,
+        purpose: UsedFor<'_>,
     ) -> Result<Value, String> {
         match self {
             Self::Mail(adding) => {
@@ -378,16 +380,19 @@ impl Use {
                     root,
                     adding,
                     by,
+                    purpose,
                 )
                 .await?;
                 workspaces.person_settings_changed();
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
             Self::Key(setting) => {
-                let kept = super::person_vault::key_from_item(root, &setting, by)?;
+                let kept = super::person_vault::key_from_item(root, &setting, by, purpose)?;
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
-            Self::Call(call) => web_call::send(workspaces.call_reach(), root, call, by).await,
+            Self::Call(call) => {
+                web_call::send(workspaces.call_reach(), root, call, by, purpose).await
+            }
         }
     }
 }
@@ -646,9 +651,23 @@ impl Workspaces {
                 .map_err(|error| refused(error.to_string()))?
         };
         wanted.sendable(self, &root).map_err(refused)?;
-        if stands || wanted.allowed_once(&self.inner.vault_uses, &using, &arguments) {
+        // A leave that covers the use is what allowed it; else an allow its
+        // person gave this very use, which is spent by being found.
+        let allowed = if stands {
+            Some(Allowance::Always)
+        } else if wanted.allowed_once(&self.inner.vault_uses, &using, &arguments) {
+            Some(Allowance::Once)
+        } else {
+            None
+        };
+        if allowed.is_some() {
+            let purpose = UsedFor {
+                using: &word,
+                what: "",
+                allowed,
+            };
             return wanted
-                .carry_out(self, &root, &using.name)
+                .carry_out(self, &root, &using.name, purpose)
                 .await
                 .map(TurnUse::Done)
                 .map_err(refused);
@@ -880,21 +899,16 @@ impl Workspaces {
             return Ok(None);
         }
         let wanted = Use::read(&target, &kept.arguments)?;
-        if answer == UseAnswer::Always && wanted.takes_leave() {
+        let word = person_vault::use_word(&target);
+        let always = answer == UseAnswer::Always && wanted.takes_leave();
+        if always {
             let (item, kind, places) = wanted.wanted(&root).map_err(refused)?;
             let mut items =
                 VaultItems::open_in(&root).map_err(|error| refused(error.to_string()))?;
             // A leave is given only for a use the item allows.
             items
                 .fits(&item, kind, &places)
-                .and_then(|_| {
-                    items.let_always(
-                        &item,
-                        &places,
-                        (&using.agent, &using.name),
-                        &person_vault::use_word(&target),
-                    )
-                })
+                .and_then(|_| items.let_always(&item, &places, (&using.agent, &using.name), &word))
                 .map_err(|error| refused(error.to_string()))?;
         }
         if matches!(wanted, Use::Call(_)) {
@@ -903,8 +917,17 @@ impl Workspaces {
             self.inner.vault_uses.calls.allow(&using, &kept.arguments);
             return Ok(Some(json!({"allowed": "once"})));
         }
+        let purpose = UsedFor {
+            using: &word,
+            what: "",
+            allowed: Some(if always {
+                Allowance::Always
+            } else {
+                Allowance::Once
+            }),
+        };
         wanted
-            .carry_out(self, &root, &using.name)
+            .carry_out(self, &root, &using.name, purpose)
             .await
             .map(Some)
             .map_err(refused)

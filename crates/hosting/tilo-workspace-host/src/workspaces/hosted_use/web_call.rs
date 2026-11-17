@@ -41,7 +41,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use accounts::vault_items::{self, ItemId, KeyIn, Place, VaultItems};
+use accounts::vault_items::{self, ItemId, KeyIn, Place, UsedFor, VaultItems};
 use serde_json::{Map, Value, json};
 use tilo_lock::MutexRecover as _;
 use tilo_net::{HeaderMap, HeaderName, HeaderValue, Method, Url};
@@ -275,16 +275,25 @@ fn key_header(name: &str, text: &str) -> Result<(HeaderName, HeaderValue), Strin
     Ok((name, value))
 }
 
+/// What a call does, as its key's use is written down: the method and the
+/// path. Never the address's query, where a key may ride and where whoever
+/// wrote the request may have put anything, and never what is sent.
+fn in_a_line(method: &Method, url: &Url) -> String {
+    format!("{} {}", method.as_str(), url.path())
+}
+
 /// Make `call` for `by` with the key the vault under `root` keeps, from a
 /// server that reaches `reach`, its name looked up as every server's own
-/// request looks one up ([`send_through`]).
+/// request looks one up ([`send_through`]). `purpose` is what the key's use
+/// is written down with: the use's word and how its person allowed it.
 pub(super) async fn send(
     reach: Destinations,
     root: &Path,
     call: WebCall,
     by: &str,
+    purpose: UsedFor<'_>,
 ) -> Result<Value, String> {
-    send_through(reach, system_lookup(), root, call, by).await
+    send_through(reach, system_lookup(), root, call, by, purpose).await
 }
 
 /// Make `call` for `by` with the key the vault under `root` keeps, from a
@@ -292,12 +301,15 @@ pub(super) async fn send(
 /// place the reference becomes its secret. The client asks `lookup` once,
 /// checks every address it answers and connects to exactly those. Answers
 /// the status, the headers and the body, the key struck out of all of it.
+/// The use is written down with `purpose` and with what this call does
+/// ([`in_a_line`]), whatever `purpose` says of that.
 async fn send_through(
     reach: Destinations,
     lookup: Lookup,
     root: &Path,
     call: WebCall,
     by: &str,
+    purpose: UsedFor<'_>,
 ) -> Result<Value, String> {
     let mut url = address(&call, reach)?;
     let method = method(&call)?;
@@ -312,8 +324,14 @@ async fn send_through(
         let key_in = items.key_in(&item).map_err(|error| error.to_string())?;
         let sent = headers(&call, &key_in)?;
         rides_alone(&url, &key_in)?;
+        // Said before the key is anywhere in the request.
+        let what = in_a_line(&method, &url);
+        let purpose = UsedFor {
+            what: &what,
+            ..purpose
+        };
         let key = items
-            .use_as(&item, kind, &places, by)
+            .use_for(&item, kind, &places, by, purpose)
             .map_err(|error| error.to_string())?;
         (key_in, sent, key)
     };
@@ -704,6 +722,7 @@ mod tests {
                 root.path(),
                 call.clone(),
                 "Scout",
+                UsedFor::default(),
             )
             .await;
             assert_eq!(refused, Err(INSIDE.to_owned()), "{answers:?}");
@@ -715,7 +734,15 @@ mod tests {
         }
         // A name that answers nothing is not dialled either.
         let (lookup, asked) = answering(&[]);
-        let nowhere = send_through(Destinations::Public, lookup, root.path(), call, "Scout").await;
+        let nowhere = send_through(
+            Destinations::Public,
+            lookup,
+            root.path(),
+            call,
+            "Scout",
+            UsedFor::default(),
+        )
+        .await;
         assert_eq!(nowhere, Err(UNREACHED.to_owned()));
         assert_eq!(asked.load(Ordering::SeqCst), 1);
         assert!(quiet.accept().is_err(), "nothing was dialled");
@@ -730,13 +757,69 @@ mod tests {
         let reached = std::thread::spawn(move || listening.accept().is_ok());
         let (root, call) = kept_for(&service);
         let (lookup, asked) = answering(&["127.0.0.1"]);
-        let cut = send_through(Destinations::Any, lookup, root.path(), call, "Scout").await;
+        let cut = send_through(
+            Destinations::Any,
+            lookup,
+            root.path(),
+            call,
+            "Scout",
+            UsedFor::default(),
+        )
+        .await;
         assert_eq!(cut, Err(UNREACHED.to_owned()), "no refusal says more");
         assert_eq!(asked.load(Ordering::SeqCst), 1, "one lookup");
         assert!(
             reached.join().unwrap(),
             "the connection went to the address the lookup answered"
         );
+    }
+
+    /// A call's key is written down as used for the call's method and path,
+    /// under the use's word and with how its person allowed it: never with
+    /// the address's query, and never with what was sent.
+    #[tokio::test]
+    async fn a_call_is_written_down_by_its_method_and_path_alone() {
+        let listening = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let service = format!(
+            "https://api.example.test:{}",
+            listening.local_addr().unwrap().port()
+        );
+        let reached = std::thread::spawn(move || listening.accept().is_ok());
+        let (root, mut call) = kept_for(&service);
+        let item = item_of(&call).unwrap();
+        call.url = format!("{service}/v1/charges?account=7&note=kept-nowhere#end-kept-nowhere");
+        call.method = "post".to_owned();
+        call.body = "amount=12&memo=kept-nowhere".to_owned();
+        let (lookup, _) = answering(&["127.0.0.1"]);
+        let purpose = UsedFor {
+            using: "tilo.vault/web-call",
+            what: "what a caller says of it is not what is written",
+            allowed: Some(vault_items::Allowance::Once),
+        };
+        let cut = send_through(
+            Destinations::Any,
+            lookup,
+            root.path(),
+            call,
+            "Scout",
+            purpose,
+        )
+        .await;
+        assert_eq!(cut, Err(UNREACHED.to_owned()));
+        assert!(reached.join().unwrap(), "the call went out");
+        let uses = VaultItems::open_in(root.path())
+            .unwrap()
+            .uses(&item)
+            .unwrap();
+        assert_eq!(uses.len(), 1);
+        assert_eq!(uses[0].using, "tilo.vault/web-call");
+        assert_eq!(uses[0].what, "POST /v1/charges");
+        assert_eq!(uses[0].allowed, Some(vault_items::Allowance::Once));
+        assert_eq!(uses[0].by, "Scout");
+        let said = format!("{uses:?}");
+        for unwritten in [KEY, "account=7", "amount=12", "kept-nowhere", "caller says"] {
+            assert!(!said.contains(unwritten), "{unwritten}: {said}");
+        }
     }
 
     fn call(url: &str) -> WebCall {

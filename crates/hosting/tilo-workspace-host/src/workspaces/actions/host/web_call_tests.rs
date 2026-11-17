@@ -363,6 +363,16 @@ async fn a_call_asks_its_person_first_and_their_allow_sends_that_call_once() {
     assert_eq!(uses.len(), 2, "{remembers}");
     assert_eq!(uses[0]["by"], "Scout");
     assert_eq!(uses[0]["places"], json!([paying.url()]));
+    // And what for: the call's own word, its method and path, and that its
+    // person allowed that one call. An "Always" answered anyway let one
+    // call through, and is written down as that.
+    let word = person_vault::use_word(&person_vault::call_target());
+    for used in uses {
+        assert_eq!(used["using"], json!(word), "{remembers}");
+        assert_eq!(used["what"], "GET /v1/balance", "{remembers}");
+        assert_eq!(used["allowed"], "once", "{remembers}");
+    }
+    assert!(!remembers.to_string().contains(KEY), "{remembers}");
     assert!(
         remembers
             .get("always")

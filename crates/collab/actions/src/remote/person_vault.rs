@@ -13,8 +13,8 @@
 //! which is not its secret. An action that needs a secret takes one as a
 //! parameter ([`item_param`]). Whatever signs in resolves it on the host,
 //! where the secret is used, and only at a place the item belongs to; each
-//! use is remembered with when, where and for whom ([`USES`]), never with
-//! what was handed.
+//! use is remembered with when, where, for whom and what for ([`USES`]),
+//! never with what was handed.
 //!
 //! A use made with nobody watching, by an agent that works for the person on
 //! their server, asks the person first, in the conversation the agent works in.
@@ -38,8 +38,8 @@ pub const ADD: &str = "add";
 /// Forget an item ([`RemoveItem`]), answering the items that remain as a
 /// [`KeptItems`].
 pub const REMOVE: &str = "remove";
-/// When and where an item was handed to something that signs in
-/// ([`UsesOf`]), as an [`ItemUses`].
+/// When, where, for whom and what for an item was handed to something that
+/// signs in ([`UsesOf`]), as an [`ItemUses`].
 pub const USES: &str = "uses";
 /// Take back the leaves of an item ([`TakeBack`]): who may use it
 /// without its person being asked again. Answers what the item remembers
@@ -260,6 +260,20 @@ pub struct ItemUse {
     /// under; empty when the person used it themselves.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub by: String,
+    /// What it was used for: the use's own word, such as
+    /// `tilo.vault/web-call`. Left out where none was said.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub using: String,
+    /// What was done with it there, in one line: a web call's method and
+    /// path, without the address's query. Never the secret, never what was
+    /// sent.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub what: String,
+    /// How its person allowed it: `once` where they were asked and allowed
+    /// that one use, `always` under a leave they gave ([`AlwaysUse`]). Left
+    /// out where neither is known.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub allowed: String,
 }
 
 /// The uses an item remembers, oldest first: the newest of them.
@@ -803,6 +817,35 @@ mod tests {
             serde_json::from_value(serde_json::json!({"item": format!("vault.item:{ID}")}))
                 .unwrap();
         assert_eq!(back.agent, None);
+    }
+
+    /// A use says what it was for where that was written down, and reads
+    /// without it where it was not.
+    #[test]
+    fn a_use_says_what_it_was_for_where_that_is_known() {
+        let plain: ItemUse = serde_json::from_value(serde_json::json!({
+            "at": 7,
+            "places": ["https://api.example.test"],
+        }))
+        .unwrap();
+        assert!(plain.using.is_empty() && plain.what.is_empty() && plain.allowed.is_empty());
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap(),
+            serde_json::json!({"at": 7, "places": ["https://api.example.test"]})
+        );
+        let call = ItemUse {
+            at: 8,
+            places: vec!["https://api.example.test".into()],
+            by: "Scout".into(),
+            using: "tilo.vault/web-call".into(),
+            what: "GET /v1/balance".into(),
+            allowed: "once".into(),
+        };
+        let said = serde_json::to_value(&call).unwrap();
+        assert_eq!(said["using"], "tilo.vault/web-call");
+        assert_eq!(said["what"], "GET /v1/balance");
+        assert_eq!(said["allowed"], "once");
+        assert_eq!(serde_json::from_value::<ItemUse>(said).unwrap(), call);
     }
 
     /// A reference is an item's address and nothing else reads as one.

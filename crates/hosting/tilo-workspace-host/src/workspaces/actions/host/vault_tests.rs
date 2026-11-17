@@ -505,7 +505,8 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
     assert_eq!(uses.as_array().map(Vec::len), Some(1), "{uses}");
     assert_eq!(uses[0]["places"], json!(["https://models.example"]));
     assert_eq!(uses[0]["by"], "Helper");
-    assert_eq!(fields(&uses[0]), ["at", "by", "places"]);
+    assert_eq!(uses[0]["using"], "tilo.models/set-key-from-item");
+    assert_eq!(fields(&uses[0]), ["at", "by", "places", "using"]);
     let refused = ask(
         &service,
         workspace_id,
