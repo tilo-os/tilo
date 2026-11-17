@@ -629,6 +629,17 @@ impl Workbook {
         self.sheets.get(id)
     }
 
+    /// The name formulas reach sheet `id` by, folded as [`crate::refs::fold_sheet`] does. A
+    /// reference takes the first sheet of its name, so a later sheet of the same name has none.
+    pub fn name_reaching(&self, id: &Id) -> Option<String> {
+        let name = crate::refs::fold_sheet(&self.sheet(id)?.name.0);
+        self.sheets
+            .iter()
+            .find(|(_, other)| crate::refs::fold_sheet(&other.name.0) == name)
+            .is_some_and(|(first, _)| first == id)
+            .then_some(name)
+    }
+
     pub fn sheet_id(&self, index: usize) -> Option<&Id> {
         self.sheets.ids().nth(index)
     }

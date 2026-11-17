@@ -486,9 +486,11 @@ pub fn answer(
     }
     let workbook = crate::workbook::Workbook::read(doc).ok()?;
     let touched = touched_cells(changes);
-    let sheet_id = touched
-        .first()
-        .map(|(sheet, _, _)| sheet.clone())
+    // A delete also rewrites the formulas of other sheets that read the rows: the answer is
+    // about the sheet the rows left.
+    let sheet_id = reshaped_sheet(changes)
+        .filter(|_| action == "delete-rows")
+        .or_else(|| touched.first().map(|(sheet, _, _)| sheet.clone()))
         .or_else(|| changes.iter().find_map(|patch| sheet_of(&props(patch))))?;
     let sheet_key = ui::tilo_resource::Id::from_raw(sheet_id.clone());
     let sheet = workbook.sheet(&sheet_key)?;
@@ -541,7 +543,145 @@ pub fn answer(
     if shown_end != end {
         note_formula_errors(&mut content, &snap, start, end);
     }
+    let note = match action {
+        "delete-rows" => {
+            lost_references(&workbook, &touched).map(|lost| ("reference_errors", lost))
+        }
+        "sort-rows" => {
+            unmoved_references(&workbook, &sheet_key, start, end).map(|kept| ("references", kept))
+        }
+        _ => None,
+    };
+    if let (Some((key, note)), Some(fields)) = (note, content.as_object_mut()) {
+        fields.insert(key.into(), note);
+    }
     Some(content)
+}
+
+/// The most cells an answer names when it lists the formulas a change concerns.
+const MAX_NAMED_CELLS: usize = 20;
+
+/// `cells`, each named with its sheet, as an answer lists them: the first few and how many more.
+fn named_cells(cells: Vec<String>, how: &str) -> Option<serde_json::Value> {
+    if cells.is_empty() {
+        return None;
+    }
+    let more = cells.len().saturating_sub(MAX_NAMED_CELLS);
+    let mut note = serde_json::json!({
+        "cells": cells.into_iter().take(MAX_NAMED_CELLS).collect::<Vec<_>>(),
+        "how": how,
+    });
+    if more > 0
+        && let Some(fields) = note.as_object_mut()
+    {
+        fields.insert("more".into(), more.into());
+    }
+    Some(note)
+}
+
+/// The formulas a delete rewrote that now hold `#REF!`, on every sheet: what pointed at the
+/// deleted cells says so rather than reading the cells that slid into their place.
+fn lost_references(
+    workbook: &crate::workbook::Workbook,
+    touched: &[(String, String, String)],
+) -> Option<serde_json::Value> {
+    let mut cells = Vec::new();
+    for (id, sheet) in workbook.sheets.iter() {
+        let layout = sheet.layout();
+        let mut lost: Vec<Addr> = touched
+            .iter()
+            .filter(|(on, _, _)| on == id.as_str())
+            .filter_map(|(_, row, column)| {
+                let row = ui::tilo_resource::Id::from_raw(row.clone());
+                let column = ui::tilo_resource::Id::from_raw(column.clone());
+                let raw = &sheet.cells.cell(&row, &column)?.raw.0;
+                (raw.starts_with('=') && raw.contains("#REF!"))
+                    .then(|| layout.addr(&row, &column))
+                    .flatten()
+            })
+            .collect();
+        lost.sort_unstable_by_key(|(col, row)| (*row, *col));
+        cells.extend(
+            lost.into_iter()
+                .map(|(col, row)| format!("{}!{}", sheet.name.0, addr_to_a1(col, row))),
+        );
+    }
+    named_cells(
+        cells,
+        "these formulas pointed at deleted cells and hold #REF! now; write them again to point them elsewhere",
+    )
+}
+
+/// The formulas outside the sorted cells `start..=end` of sheet `sorted` that point at some of
+/// its rows: a sort moves what cells hold and no reference follows it, so these read other
+/// rows' values now. One that reads every sorted row reads the same values as before and is
+/// left out.
+fn unmoved_references(
+    workbook: &crate::workbook::Workbook,
+    sorted: &ui::tilo_resource::Id,
+    start: Addr,
+    end: Addr,
+) -> Option<serde_json::Value> {
+    let named = workbook.name_reaching(sorted);
+    let mut cells = Vec::new();
+    for (id, sheet) in workbook.sheets.iter() {
+        let own = id == sorted;
+        if !own && named.is_none() {
+            continue;
+        }
+        let layout = sheet.layout();
+        let mut pointing: Vec<Addr> = sheet
+            .cells
+            .cells()
+            .filter(|(_, _, cell)| cell.raw.0.starts_with('=') && (own || cell.raw.0.contains('!')))
+            .filter_map(|(row, column, cell)| {
+                let at = layout.addr(&row, &column)?;
+                let moved_itself =
+                    own && (start.0..=end.0).contains(&at.0) && (start.1..=end.1).contains(&at.1);
+                if moved_itself {
+                    return None;
+                }
+                let mut points = false;
+                crate::refs::each_reference(&cell.raw.0, |sheet, first, last| {
+                    let reads_sorted = match sheet {
+                        None => own,
+                        Some(written) => {
+                            named.as_deref() == Some(crate::refs::fold_sheet(written).as_str())
+                        }
+                    };
+                    let meets = first.0 <= end.0
+                        && last.0 >= start.0
+                        && first.1 <= end.1
+                        && last.1 >= start.1;
+                    let every_row = first.1 <= start.1 && last.1 >= end.1;
+                    points |= reads_sorted && meets && !every_row;
+                });
+                points.then_some(at)
+            })
+            .collect();
+        pointing.sort_unstable_by_key(|(col, row)| (*row, *col));
+        cells.extend(
+            pointing
+                .into_iter()
+                .map(|(col, row)| format!("{}!{}", sheet.name.0, addr_to_a1(col, row))),
+        );
+    }
+    named_cells(
+        cells,
+        "a sort moves what cells hold, not the formulas pointing at them: these keep their addresses and read what the sort put there",
+    )
+}
+
+/// The sheet whose rows or columns `changes` added or removed.
+fn reshaped_sheet(changes: &[automerge::Patch]) -> Option<String> {
+    changes.iter().find_map(|patch| {
+        let props = props(patch);
+        props
+            .windows(2)
+            .any(|pair| matches!(pair, [field, lines] if field == "cells" && (lines == "rows" || lines == "columns")))
+            .then(|| sheet_of(&props))
+            .flatten()
+    })
 }
 
 fn props(patch: &automerge::Patch) -> Vec<String> {
