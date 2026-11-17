@@ -578,7 +578,15 @@ pub fn answer(
                 )
             })
             .collect();
-        let (first, rest) = cells.split_first()?;
+        let Some((first, rest)) = cells.split_first() else {
+            // A change that wrote no cell, as a sheet made with none: the sheet itself, so
+            // its maker has its id.
+            return Some(serde_json::json!({
+                "sheet": snap.name,
+                "item": sheet_id,
+                "rows": [],
+            }));
+        };
         rest.iter()
             .fold((*first, *first), |(start, end), &(col, row)| {
                 (

@@ -436,6 +436,25 @@ fn a_past_version_reads_and_shows_its_cells() {
     );
 }
 
+/// A sheet made with no content answers with itself: its maker has the id to write to, and is
+/// not told the call failed after it took effect.
+#[test]
+fn a_sheet_made_with_no_content_answers_itself() {
+    let mut app = app();
+    let answer = call(&mut app, "new-sheet", json!({"name": "Empty"}));
+    let state = app.state();
+    let (id, _) = state
+        .sheets
+        .iter()
+        .find(|(_, sheet)| sheet.name.0 == "Empty")
+        .expect("the sheet was made");
+    assert_eq!(
+        (&answer["sheet"], &answer["item"], &answer["rows"]),
+        (&json!("Empty"), &json!(id.as_str()), &json!([])),
+        "{answer}"
+    );
+}
+
 /// The sheet `arguments` name, kept as CSV content and read back through `read-content`.
 fn csv_of(app: &mut TestApp<SheetsShell>, arguments: Value) -> Value {
     let output = app
