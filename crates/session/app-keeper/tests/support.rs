@@ -285,6 +285,16 @@ impl Rig {
         shot.pixel(x, y).expect("pixel")
     }
 
+    /// The colour the desktop shows at `(x, y)`, the pointer and every pen's cursor in front.
+    pub fn pixel_with_cursor(&mut self, x: u32, y: u32) -> [u8; 4] {
+        let desktop = self.desktop();
+        desktop.render().expect("render");
+        let shot = desktop
+            .screenshot_with_cursor(OUTPUT)
+            .expect("screenshot with cursors");
+        shot.pixel(x, y).expect("pixel")
+    }
+
     /// The desktop's windows: app id, title and rectangle.
     pub fn windows(&self) -> Vec<(Option<String>, Option<String>, (i32, i32, i32, i32))> {
         self.desktop

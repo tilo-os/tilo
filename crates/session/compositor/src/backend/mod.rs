@@ -218,6 +218,17 @@ pub trait Backend {
             "{name}: this backend does not read frames back"
         )))
     }
+
+    /// What the output named `name` shows, the pointer and every pen's cursor in front, read
+    /// back: what a display draws, where [`Backend::screenshot`] leaves them out so the scene can
+    /// be compared on its own. A backend that does not say draws no cursor.
+    fn screenshot_with_cursor(
+        &mut self,
+        state: &mut State,
+        name: &str,
+    ) -> Result<Screenshot, BackendError> {
+        self.screenshot(state, name)
+    }
 }
 
 impl dyn Backend {

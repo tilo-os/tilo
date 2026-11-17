@@ -40,6 +40,10 @@ use wayland_protocols::wp::color_management::v1::client::{
     wp_image_description_creator_params_v1::WpImageDescriptionCreatorParamsV1,
     wp_image_description_v1::{self, WpImageDescriptionV1},
 };
+use wayland_protocols::wp::cursor_shape::v1::client::{
+    wp_cursor_shape_device_v1::{Shape, WpCursorShapeDeviceV1},
+    wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
+};
 use wayland_protocols::wp::idle_inhibit::zv1::client::{
     zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
 };
@@ -201,6 +205,11 @@ pub struct Seen {
     pub tool_serial: Option<(u32, u32)>,
     /// The Wacom hardware id a tool named, as the two words the protocol carries.
     pub tool_wacom_id: Option<(u32, u32)>,
+    /// The serial of the last proximity-in a tool sent.
+    pub tool_proximity_serial: u32,
+    /// Whether a tool is in proximity to a surface of this client.
+    pub tool_entered: bool,
+    pub cursor_shape: Option<WpCursorShapeManagerV1>,
     pub wm_dialog: Option<XdgWmDialogV1>,
     pub icon_manager: Option<XdgToplevelIconManagerV1>,
     pub tag_manager: Option<XdgToplevelTagManagerV1>,
@@ -494,6 +503,21 @@ impl TestClient {
         format: wl_shm::Format,
         row: impl Fn(i32) -> &'a [u8],
     ) {
+        let surface = self.surface.as_ref().expect("surface");
+        self.fill_rows(surface, width, height, scale, format, row);
+    }
+
+    /// Attach a buffer to `surface` whose row `y` repeats the pixel `row(y)` gives, at `scale`,
+    /// and commit it with a frame callback.
+    fn fill_rows<'a>(
+        &self,
+        surface: &WlSurface,
+        width: i32,
+        height: i32,
+        scale: i32,
+        format: wl_shm::Format,
+        row: impl Fn(i32) -> &'a [u8],
+    ) {
         let qh = self.queue.handle();
         let pixel_len = row(0).len();
         let stride = width * i32::try_from(pixel_len).unwrap();
@@ -504,7 +528,6 @@ impl TestClient {
             file.write_all(&row(y).repeat(usize::try_from(width).unwrap()))
                 .unwrap();
         }
-        let surface = self.surface.as_ref().expect("surface");
         surface.set_buffer_scale(scale);
         let pool = self.seen.shm.as_ref().expect("wl_shm").create_pool(
             file.as_fd(),
@@ -518,6 +541,56 @@ impl TestClient {
         surface.frame(&qh, ());
         surface.commit();
         pool.destroy();
+    }
+
+    /// Show `rgba` in every pixel of `surface` , `size` square, and commit it.
+    pub fn fill(&self, surface: &WlSurface, size: i32, rgba: [u8; 4]) {
+        // ARGB8888 is B, G, R, A in memory.
+        let word = u32::from_le_bytes([rgba[2], rgba[1], rgba[0], rgba[3]]);
+        let pixel = word.to_le_bytes();
+        self.fill_rows(surface, size, size, 1, wl_shm::Format::Argb8888, |_| {
+            pixel.as_slice()
+        });
+    }
+
+    /// Create a surface showing `rgba` everywhere, as the cursor image a tool names.
+    pub fn tool_cursor(&self, size: i32, rgba: [u8; 4]) -> WlSurface {
+        let surface = self
+            .seen
+            .compositor
+            .as_ref()
+            .expect("wl_compositor")
+            .create_surface(&self.queue.handle(), ());
+        self.fill(&surface, size, rgba);
+        surface.commit();
+        surface
+    }
+
+    /// Put `surface` under the tool's hotspot at that point, as a pen's app names its cursor.
+    pub fn set_tool_cursor(&self, surface: &WlSurface, hotspot: (i32, i32)) {
+        let tool = self.seen.tablet_tools.last().expect("a tablet tool");
+        tool.set_cursor(
+            self.seen.tool_proximity_serial,
+            Some(surface),
+            hotspot.0,
+            hotspot.1,
+        );
+    }
+
+    /// Name the cursor shape the compositor draws for the tool, as a pen's app does.
+    pub fn set_tool_shape(&self, shape: Shape) {
+        let qh = self.queue.handle();
+        let device = self
+            .seen
+            .cursor_shape
+            .as_ref()
+            .expect("wp_cursor_shape_manager_v1")
+            .get_tablet_tool_v2(
+                self.seen.tablet_tools.last().expect("a tablet tool"),
+                &qh,
+                (),
+            );
+        device.set_shape(self.seen.tool_proximity_serial, shape);
     }
 
     /// Ask for a layer surface on `layer` : `size` (0 for the whole output along an axis), anchored
@@ -823,6 +896,16 @@ pub fn shown(compositor: &mut Compositor, x: u32, y: u32) -> Option<[u8; 4]> {
     frame.pixel(x, y)
 }
 
+/// Draw a frame and read back the pixel at `(x, y)` of the one output, with the pointer and every
+/// pen's cursor in front as a display draws them.
+pub fn shown_with_cursor(compositor: &mut Compositor, x: u32, y: u32) -> Option<[u8; 4]> {
+    compositor.draw_frame().expect("a frame");
+    let frame = compositor
+        .screenshot_with_cursor("HEADLESS-1")
+        .expect("the frame");
+    frame.pixel(x, y)
+}
+
 pub fn input(compositor: &mut Compositor, event: InputEvent) {
     compositor.input(event).expect("input");
 }
@@ -1052,6 +1135,9 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 "wl_seat" => seen.seat = Some(registry.bind(name, version.min(7), qh, ())),
                 "zwp_tablet_manager_v2" => {
                     seen.tablet_manager = Some(registry.bind(name, 1, qh, ()));
+                }
+                "wp_cursor_shape_manager_v1" => {
+                    seen.cursor_shape = Some(registry.bind(name, version.min(2), qh, ()));
                 }
                 "xdg_wm_dialog_v1" => seen.wm_dialog = Some(registry.bind(name, 1, qh, ())),
                 "xdg_toplevel_icon_manager_v1" => {
@@ -1369,6 +1455,11 @@ impl Dispatch<ZwpTabletToolV2, ()> for Seen {
                 hardware_id_hi,
                 hardware_id_lo,
             } => seen.tool_wacom_id = Some((hardware_id_hi, hardware_id_lo)),
+            zwp_tablet_tool_v2::Event::ProximityIn { serial, .. } => {
+                seen.tool_proximity_serial = serial;
+                seen.tool_entered = true;
+            }
+            zwp_tablet_tool_v2::Event::ProximityOut => seen.tool_entered = false,
             _ => {}
         }
         if !seen
@@ -1378,6 +1469,18 @@ impl Dispatch<ZwpTabletToolV2, ()> for Seen {
         {
             seen.tablet_tools.push(tool.clone());
         }
+    }
+}
+
+impl Dispatch<WpCursorShapeManagerV1, ()> for Seen {
+    fn event(
+        _: &mut Self,
+        _: &WpCursorShapeManagerV1,
+        _: <WpCursorShapeManagerV1 as wayland_client::Proxy>::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
     }
 }
 
@@ -1659,6 +1762,7 @@ delegate_noop!(Seen: ignore WpImageDescriptionCreatorParamsV1);
 delegate_noop!(Seen: ignore WpImageDescriptionCreatorIccV1);
 delegate_noop!(Seen: ignore WpColorManagementSurfaceV1);
 delegate_noop!(Seen: ignore ZwpPointerConstraintsV1);
+delegate_noop!(Seen: ignore WpCursorShapeDeviceV1);
 delegate_noop!(Seen: ignore ZwpRelativePointerManagerV1);
 delegate_noop!(Seen: ignore ZwpKeyboardShortcutsInhibitManagerV1);
 delegate_noop!(Seen: ignore WlRegion);

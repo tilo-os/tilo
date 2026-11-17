@@ -44,7 +44,7 @@ mod window_tags;
 
 use crate::harness::{
     HostLog, Seen, Square, TestClient, headless, mapped_client, mapped_client_without_touch, pump,
-    shown,
+    shown, shown_with_cursor,
 };
 
 use std::cell::RefCell;
@@ -997,6 +997,11 @@ fn a_pen_is_a_pointer_to_apps_without_tablet_support() {
     );
 }
 
+/// `at` as a pixel column, the positions these tests use being whole numbers.
+fn pixel(at: f64) -> u32 {
+    u32::try_from(at as i64).expect("a whole pixel")
+}
+
 /// A pen at `(x, y)` with the tool `serial` identifies, in `phase`.
 fn pen_input(phase: TabletPhase, x: f64, y: f64, serial: u64, id_wacom: u64) -> InputEvent {
     use smithay::backend::input::{TabletToolCapabilities, TabletToolDescriptor, TabletToolType};
@@ -1051,9 +1056,7 @@ fn a_tools_hardware_identity_reaches_its_client_whole() {
         ))
         .unwrap();
     pump(&mut compositor, &mut [&mut client], |_, clients| {
-        clients[0].seen.tablet_tools.len() == 1
-            && clients[0].seen.tool_serial.is_some()
-            && clients[0].seen.tool_wacom_id.is_some()
+        clients[0].seen.tool_entered
     });
     assert_eq!(
         client.seen.tool_serial,
@@ -1064,6 +1067,93 @@ fn a_tools_hardware_identity_reaches_its_client_whole() {
         client.seen.tool_wacom_id,
         Some((0x2, 0x0000_0802)),
         "and its Wacom id"
+    );
+}
+
+#[test]
+fn a_pens_cursor_is_drawn_where_the_pen_is_and_hides_when_it_leaves() {
+    use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
+
+    const GREEN: [u8; 4] = [0, 255, 0, 255];
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
+    const RED: [u8; 4] = [255, 0, 0, 255];
+
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "painter", (200, 100), GREEN);
+    let seat = client.seen.seat.clone().expect("wl_seat");
+    client
+        .seen
+        .tablet_manager
+        .as_ref()
+        .expect("zwp_tablet_manager_v2")
+        .get_tablet_seat(&seat, &client.queue.handle(), ());
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    let (_, (x, y, w, h)) = compositor.windows()[0].clone();
+    let (x, y) = (f64::from(x + w / 2), f64::from(y + h / 2));
+
+    // The pen enters a window of a client that takes tablets: its tool's cursor is a surface
+    // of its own, drawn where the pen is.
+    compositor
+        .input(pen_input(
+            TabletPhase::ProximityIn,
+            x,
+            y,
+            0x1_2345_6789,
+            0x2_0000_0802,
+        ))
+        .unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.tool_entered
+    });
+    let cursor = client.tool_cursor(8, BLUE);
+    client.set_tool_cursor(&cursor, (0, 0));
+    crate::harness::settle(&mut compositor, &mut client);
+    assert_eq!(
+        shown_with_cursor(&mut compositor, pixel(x), pixel(y)),
+        Some(BLUE),
+        "the pen's cursor is drawn at the pen"
+    );
+
+    // A named shape replaces it: what the theme draws for the shape is there, not the window.
+    client.set_tool_shape(Shape::Crosshair);
+    crate::harness::settle(&mut compositor, &mut client);
+    assert_ne!(
+        shown_with_cursor(&mut compositor, pixel(x), pixel(y)),
+        Some(GREEN),
+        "the named shape is drawn"
+    );
+
+    // A second tool has a cursor of its own, drawn at its own place.
+    let (ex, ey) = (x - f64::from(w) / 4.0, y);
+    compositor
+        .input(pen_input(TabletPhase::ProximityIn, ex, ey, 0x99, 0x803))
+        .unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.tablet_tools.len() == 2 && clients[0].seen.tool_entered
+    });
+    let eraser = client.tool_cursor(8, RED);
+    client.set_tool_cursor(&eraser, (0, 0));
+    crate::harness::settle(&mut compositor, &mut client);
+    assert_eq!(
+        shown_with_cursor(&mut compositor, pixel(ex), pixel(ey)),
+        Some(RED),
+        "the second tool draws its own cursor"
+    );
+    assert_ne!(
+        shown_with_cursor(&mut compositor, pixel(x), pixel(y)),
+        Some(RED),
+        "the first tool's cursor is still its own"
+    );
+
+    // The pen leaving takes only its tool's cursor away.
+    compositor
+        .input(pen_input(TabletPhase::ProximityOut, ex, ey, 0x99, 0x803))
+        .unwrap();
+    crate::harness::settle(&mut compositor, &mut client);
+    assert_eq!(
+        shown_with_cursor(&mut compositor, pixel(ex), pixel(ey)),
+        Some(GREEN),
+        "the tool that left draws nothing"
     );
 }
 

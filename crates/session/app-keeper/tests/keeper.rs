@@ -1292,6 +1292,7 @@ fn pad_input(action: PadAction) -> InputEvent {
 
 #[test]
 fn a_pen_reaches_a_kept_app_with_its_values_and_its_surface() {
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
     let mut rig = Rig::new(None);
     let mut app = App::connect(&mut rig);
     app.open_window(&mut rig, "Canvas", Some("canvas"));
@@ -1317,8 +1318,8 @@ fn a_pen_reaches_a_kept_app_with_its_values_and_its_surface() {
         app.surface.as_ref().unwrap(),
     );
 
-    // The tool's cursor shape goes to the desktop's shape device for that tool, and a cursor
-    // surface set with the desktop's own serial is mirrored like any surface.
+    // The tool's cursor shape goes to the desktop's shape device for that tool, and the desktop
+    // draws it where the pen is.
     let shape = {
         use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
         Shape::Crosshair
@@ -1327,29 +1328,54 @@ fn a_pen_reaches_a_kept_app_with_its_values_and_its_surface() {
     app.set_tool_cursor_shape(&tablet_tool, app.heard.tools[0].proximity_in[0].0, shape);
     rig.settle(&mut [&mut app]);
     assert_eq!(rig.keeper.describe().fault, None);
+    assert_ne!(
+        rig.pixel_with_cursor(x as u32, y as u32),
+        GREEN,
+        "the pen's named shape is drawn at the pen"
+    );
 
+    // A cursor surface the app gives the tool is drawn as the tool's image.
     let cursor = app
         .heard
         .compositor
         .as_ref()
         .unwrap()
         .create_surface(&app.queue.handle(), ());
-    cursor.commit();
+    app.draw(&cursor, (16, 16), BLUE);
     let proxy = app.heard.tool.clone().unwrap();
     let serial = app.heard.tools[0].proximity_in[0].0;
-    proxy.set_cursor(serial, Some(&cursor), 1, 2);
+    proxy.set_cursor(serial, Some(&cursor), 0, 0);
     rig.settle(&mut [&mut app]);
     assert_eq!(rig.keeper.describe().fault, None);
+    assert_eq!(
+        rig.pixel_with_cursor(x as u32, y as u32),
+        BLUE,
+        "the tool's own surface is drawn at the pen"
+    );
     proxy.set_cursor(serial, None, 0, 0);
     rig.settle(&mut [&mut app]);
     assert_eq!(rig.keeper.describe().fault, None);
+    assert_eq!(
+        rig.pixel_with_cursor(x as u32, y as u32),
+        GREEN,
+        "a tool with no image draws nothing"
+    );
 
+    // The pen leaving takes the tool's image with it.
+    proxy.set_cursor(serial, Some(&cursor), 0, 0);
+    rig.settle(&mut [&mut app]);
+    assert_eq!(rig.pixel_with_cursor(x as u32, y as u32), BLUE);
     rig.desktop()
         .input(pen_input(x, y, TabletPhase::ProximityOut))
         .unwrap();
     rig.pump(&mut [&mut app], |_, apps| {
         apps[0].heard.tools[0].proximity_out >= 1
     });
+    assert_eq!(
+        rig.pixel_with_cursor(x as u32, y as u32),
+        GREEN,
+        "the tool's image goes when the pen leaves"
+    );
 }
 
 #[test]

@@ -2301,6 +2301,16 @@ impl Compositor {
         Ok(self.data.backend.screenshot(&mut self.data.state, name)?)
     }
 
+    /// What `name` shows with the pointer and every pen's cursor in front, read back: what the
+    /// display draws, where [`Compositor::screenshot`] leaves cursors out so a scene can be
+    /// compared on its own.
+    pub fn screenshot_with_cursor(&mut self, name: &str) -> Result<Screenshot, Error> {
+        Ok(self
+            .data
+            .backend
+            .screenshot_with_cursor(&mut self.data.state, name)?)
+    }
+
     /// Route one input event from another device — a portal `RemoteDesktop` or `InputCapture`
     /// session, a share, a remote-typing link — through the firewall ([`remote_input`]): it reaches
     /// the seat only while the person allows it.
