@@ -133,6 +133,33 @@ enum Screens {
         var first = empty
         first.setup = .needsProvider(Drawing.providers)
         screens.append(Screen(name: "first-run-provider", size: window, view: rooted(await model(first), scheme) { MacWindow() }))
+        // What Tilo asks before it pairs and the provider step at an iPhone's width, drawn by
+        // this Mac: the same views without the phone's own bars. And the step after a provider
+        // is linked, before its menu is opened: an open menu is the system's own and stands in
+        // no picture drawn off a screen.
+        let phone = CGSize(width: 393, height: 852)
+        screens.append(Screen(name: "way-in-asked-phone", size: phone, view: rooted(await model(asked), scheme) {
+            WayIn().background(Token.content)
+        }))
+        screens.append(Screen(name: "provider-step-phone", size: phone, view: rooted(await model(first), scheme) {
+            VStack(spacing: 0) {
+                ConversationView(chat: .main, picturedSecret: "")
+                Composer(chat: .main)
+            }
+            .background(Token.content)
+        }))
+        var choosing = empty
+        choosing.setup = .needsModel(Drawing.providers.flatMap { provider in
+            ["Large", "Small"].map { ModelChoice(id: .init("\(provider.id.value)/\($0.lowercased())"), name: $0, provider: provider.name) }
+        })
+        screens.append(Screen(name: "model-step", size: window, view: rooted(await model(choosing), scheme) { MacWindow() }))
+        screens.append(Screen(name: "model-step-phone", size: phone, view: rooted(await model(choosing), scheme) {
+            VStack(spacing: 0) {
+                ConversationView(chat: .main, picturedSecret: "")
+                Composer(chat: .main)
+            }
+            .background(Token.content)
+        }))
         screens.append(Screen(name: "empty", size: window, view: rooted(await model(empty), scheme) { MacWindow() }))
         screens.append(Screen(name: "lock-screen", size: CGSize(width: 300, height: 470), view: rooted(await model(empty), scheme) { LockScreenBoard() }))
         screens.append(Screen(name: "live-activities", size: CGSize(width: 393, height: 560), view: rooted(await model(empty), scheme) { LiveBoard() }))
