@@ -34,7 +34,9 @@ pub struct Workspace {
     pub generation: u64,
     /// Every person governance records, removed ones included: a person's
     /// name is their recorded one, else their device's label; the owner's
-    /// role is [`Role::Owner`].
+    /// role is [`Role::Owner`], whether they are the workspace's structural
+    /// owner or the person a host keeps it for; and the row of the person the
+    /// asking device acts for carries `Member::is_self`.
     pub members: Vec<Member>,
 }
 

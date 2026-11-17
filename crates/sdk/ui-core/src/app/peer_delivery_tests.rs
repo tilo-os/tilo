@@ -82,11 +82,12 @@ tilo_test_env::scenario! {
                 epoch: uuid::Uuid::new_v4(),
             });
         let primary = |fixture: &mut RoutedOwners| fixture.app.pending_primary_document().unwrap();
-        let (_, published, _) = primary(&mut fixture).expect("the record whole at first");
-        fixture.app.advance_primary_document(published);
-        assert!(primary(&mut fixture).is_none());
+        assert!(
+            primary(&mut fixture).is_none(),
+            "the record goes out on its own route alone"
+        );
         // Binding the primary document has the route republish its record
-        // whole once; after that nothing is pending on either.
+        // whole once; after that nothing is pending.
         fixture.app.publish_owned_documents();
         fixture.app.document_routes.sent.clear();
         fixture.app.publish_owned_documents();
@@ -130,13 +131,10 @@ tilo_test_env::scenario! {
             other => panic!("expected exactly the local incremental, got {other:?}"),
         }
         fixture.app.document_routes.sent.clear();
-        let (mutation, published, _) = primary(&mut fixture).expect("the local change travels");
-        assert_eq!(
-            mutation.data(),
-            expected,
-            "the primary document publishes it too"
+        assert!(
+            primary(&mut fixture).is_none(),
+            "the primary document does not publish it a second time"
         );
-        fixture.app.advance_primary_document(published);
 
         // Unsent local history interleaved with a committed read is still
         // published on its own: the read's history is held by the owner that
@@ -165,13 +163,7 @@ tilo_test_env::scenario! {
             ),
             other => panic!("expected one incremental with the unsent local change, got {other:?}"),
         }
-        assert_eq!(
-            primary(&mut fixture)
-                .map(|(mutation, _, _)| mutation.data().to_vec())
-                .expect("the primary document keeps them too"),
-            expected,
-            "and the primary document keeps them too"
-        );
+        assert!(primary(&mut fixture).is_none(), "nor as the primary document");
     }
 
     phase native_owned_committed_read_applies_over_an_unfinished_word;
@@ -703,5 +695,106 @@ tilo_test_env::scenario! {
             expected,
             "the next publication carries this replica's unsent change only"
         );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn one_typed_word_is_one_change_on_the_wire;
+
+    phase a_typed_word_goes_out_once;
+    // The window's own record is published on its owner's route: a word typed
+    // into it is one change on the wire, not that change again as the
+    // window's primary document.
+    {
+        let mut fixture = RoutedOwners::new();
+        let binding = fixture.bindings[0].clone();
+        let route = binding.broker_route().unwrap();
+        fixture.app.actions.bound_broker_route_for_test =
+            Some(crate::collaboration::PrimaryRouteWitness {
+                route: route.clone(),
+                epoch: uuid::Uuid::new_v4(),
+            });
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            fixture.app.publish_owned_documents();
+            if fixture.app.document_routes.owners.iter().all(|owner| !owner.needs_snapshot) {
+                break;
+            }
+            assert!(crate::time::now() < deadline, "the route never opened");
+            std::thread::sleep(crate::time::Duration::from_millis(5));
+        }
+        fixture.app.broadcast_doc_delta();
+        fixture.app.document_routes.sent.clear();
+        let before = fixture
+            .records
+            .read_checked(&binding.checkout.id, |doc| doc.base_heads())
+            .unwrap();
+        binding
+            .with_document(&mut fixture.app.state.doc, |doc, _| {
+                doc.put(ROOT, "word", "ada0x").unwrap();
+            })
+            .unwrap();
+        // The store's save commits the words typed so far, then a frame's
+        // passes publish: the owner routes, and the primary document.
+        let id = &binding.checkout.id;
+        let records = &fixture.records;
+        let commit = records.with_action_state(id, |doc, _, state| state.commit_for_save(doc));
+        commit.unwrap();
+        fixture.app.publish_owned_documents();
+        let primary = fixture.app.pending_primary_document().unwrap();
+        let expected = fixture
+            .records
+            .read_checked(&binding.checkout.id, |doc| doc.clone().save_after(&before))
+            .unwrap();
+        assert!(!expected.is_empty(), "the word was committed for publication");
+        let mut sent: Vec<Vec<u8>> = fixture
+            .app
+            .document_routes
+            .sent
+            .iter()
+            .filter(|(sent, _)| *sent == route)
+            .filter_map(|(_, request)| match request {
+                CollabRequest::Document { mutation, .. } => Some(mutation.data().to_vec()),
+                _ => None,
+            })
+            .collect();
+        sent.extend(primary.map(|(mutation, _, _)| mutation.data().to_vec()));
+        assert_eq!(sent, [expected], "one typed word is one change on the wire");
+
+        // Each letter goes out under the action of the person who typed it,
+        // the next letters of a word too.
+        let gesture = tilo_actions::ActionId(uuid::Uuid::new_v4());
+        let typed = |text: &str| tilo_actions::ActionContext {
+            action: Some(tilo_actions::EncodedAction {
+                type_id: "notes.type".into(),
+                payload: format!("{text:?}").into_bytes(),
+            }),
+            invoker: Some(tilo_actions::ActionInvoker::person("alice")),
+            ..tilo_actions::ActionContext::default().in_gesture(Some(gesture))
+        };
+        for (text, message) in [
+            ("a", typed("a").change_message().unwrap()),
+            ("ab", typed("ab").continuation_of(&typed("a")).unwrap()),
+        ] {
+            fixture.app.document_routes.sent.clear();
+            fixture
+                .records
+                .with_history(id, |doc, _| {
+                    doc.put(ROOT, "body", text).unwrap();
+                    doc.commit_with(
+                        automerge::transaction::CommitOptions::default().with_message(message),
+                    );
+                })
+                .unwrap();
+            fixture.app.publish_owned_documents();
+            match &fixture.app.document_routes.sent[..] {
+                [(_, CollabRequest::Document { commit: Some(commit), .. })] => assert_eq!(
+                    commit.author.actor,
+                    Some(tilo_actions::MemberId::person("alice").into()),
+                    "every letter travels under its action"
+                ),
+                other => panic!("expected one change under its action, got {other:?}"),
+            }
+        }
     }
 }

@@ -77,7 +77,7 @@ fn original_remote_authorizer_with_spec(
         let grant = grant.clone();
         let lease = crate::invocation_scope::PublishedInvocationLease::new(
             expected.clone(),
-            crate::collaboration::RouteSpec::record(
+            crate::collaboration::RouteSpec::document(
                 "test.counter",
                 uuid::Uuid::from_u128(1),
                 crate::DocumentId::for_tab(900).as_str(),
@@ -172,7 +172,7 @@ tilo_test_env::scenario! {
             wrong.wire_id += 1;
             Ok(crate::invocation_scope::PublishedInvocationLease::new(
                 wrong,
-                crate::collaboration::RouteSpec::record(
+                crate::collaboration::RouteSpec::document(
                     "test.counter",
                     uuid::Uuid::from_u128(1),
                     crate::DocumentId::for_tab(900).as_str(),

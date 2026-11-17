@@ -8,7 +8,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow, Publishes, ViewCx};
+use ui::framework::{Chain, EffectAnswer, EffectCx, Effected, LiveRow, Publishes, ViewCx};
 use ui::widget::Element;
 
 use super::files::{
@@ -18,6 +18,7 @@ use super::files::{
 use super::{ContactId, ContactsApp, FAVORITES_FILTER, FileWork, ImportConflict, VCardVersion};
 use crate::actions::ContactsEffect;
 use crate::model::group_names_equal;
+use crate::part::{Book, ContactPart};
 use crate::resource::Contacts;
 
 pub(crate) enum Ask {
@@ -62,27 +63,31 @@ impl Store {
 fn answer(
     asked: &Asked,
     file_work: &Rc<Cell<Option<FileWork>>>,
+    chain: Option<&Chain<ContactPart>>,
     effect: ContactsEffect,
     cx: &mut EffectCx<Contacts>,
 ) -> EffectAnswer {
-    let book = cx.live().get();
+    // Read from the parts as they stand now: an effect may answer before
+    // the window's next frame follows them.
+    let shown = Rc::new(chain.map_or_else(Book::default, |chain| Book::of(&chain.parts())));
     let ask = match effect {
         ContactsEffect::ImportVcard => {
             let work = begin_file_work(file_work, FileWork::Import)?;
             let asked = Rc::clone(asked);
+            let chain = chain.cloned();
             return Ok(
                 cx.choose_files(contacts_import_request(), move |(), files, cx| {
-                    import_chosen(files, work, asked, cx)
+                    import_chosen(files, work, asked, chain, cx)
                 }),
             );
         }
         ContactsEffect::ExportVcardContent { contact, name } => {
-            return crate::content_export::vcards(&book, contact, name.as_deref())
+            return crate::content_export::vcards(&shown, contact, name.as_deref())
                 .map(Effected::value);
         }
         ContactsEffect::ExportAllVcard => {
-            let ids: Vec<ContactId> = book.contacts.iter().map(|c| c.id).collect();
-            let (bytes, count) = export_bytes(&book, &ids, VCardVersion::V4)?;
+            let ids: Vec<ContactId> = shown.contacts.iter().map(|c| c.id).collect();
+            let (bytes, count) = export_bytes(&shown, &ids, VCardVersion::V4)?;
             let work = begin_file_work(file_work, FileWork::Export)?;
             return Ok(save_export(
                 bytes,
@@ -94,7 +99,7 @@ fn answer(
             ));
         }
         ContactsEffect::OpenGroup { name } => {
-            let group = book
+            let group = shown
                 .all_groups()
                 .into_iter()
                 .find(|group| group_names_equal(group, &name))
@@ -104,7 +109,7 @@ fn answer(
         ContactsEffect::OpenFavorites => Ask::OpenFavorites,
         ContactsEffect::SortContacts { order } => Ask::Sort(order),
         ContactsEffect::EditField { contact, field } => {
-            if book.contact(contact).is_none() {
+            if shown.contact(contact).is_none() {
                 return Err("contact no longer exists".into());
             }
             let slot = crate::form::Slot::of_detail_key(&field)
@@ -112,7 +117,7 @@ fn answer(
             Ask::EditField(contact, slot)
         }
         ContactsEffect::OpenWebsite { contact } => {
-            let website = book
+            let website = shown
                 .contact(contact)
                 .ok_or_else(|| "contact no longer exists".to_string())?
                 .website
@@ -124,13 +129,13 @@ fn answer(
             Ask::OpenWebsite(website)
         }
         ContactsEffect::ReadDuplicate { survivor, source } => {
-            return Ok(Effected::value(read_duplicate(&book, survivor, source)?));
+            return Ok(Effected::value(read_duplicate(&shown, survivor, source)?));
         }
         ContactsEffect::OpenReview { survivor, source } => {
-            let kept = book
+            let kept = shown
                 .contact(survivor)
                 .ok_or_else(|| "surviving contact no longer exists".to_string())?;
-            let other = book
+            let other = shown
                 .contact(source)
                 .ok_or_else(|| "source contact no longer exists".to_string())?;
             crate::actions::duplicate_candidate(kept, other)
@@ -138,7 +143,7 @@ fn answer(
             Ask::Review(survivor, source)
         }
         ContactsEffect::ExportContact { contact } => {
-            if book.contact(contact).is_none() {
+            if shown.contact(contact).is_none() {
                 return Err("contact no longer exists".into());
             }
             if asked.borrow().export_open || file_work.get().is_some() {
@@ -156,7 +161,7 @@ fn answer(
 /// The possible duplicate `source` of `survivor`: both contacts, by item and
 /// name, and what they share.
 fn read_duplicate(
-    book: &Contacts,
+    book: &Book,
     survivor: ContactId,
     source: ContactId,
 ) -> Result<serde_json::Value, String> {
@@ -170,7 +175,7 @@ fn read_duplicate(
         .ok_or_else(|| "contacts are no longer a likely duplicate".to_string())?;
     let person = |contact: &crate::model::Contact| {
         serde_json::json!({
-            "item": crate::resource::contact_resource_id(contact.id),
+            "item": crate::part::contact_resource_id(contact.id),
             "name": contact.display_name(),
         })
     };
@@ -249,10 +254,17 @@ impl ContactsApp {
 /// The view of the address book: `app` follows the document, and the view
 /// answers the book's effects and publishes the pending import and account
 /// reviews.
-pub(crate) fn window(cx: &ViewCx<Contacts>, mut app: ContactsApp) -> Element {
-    app.document = Some(cx.live().clone());
-    app.actions = Some(cx.actions());
+pub(crate) fn window(cx: &ViewCx<crate::resource::Contacts>, mut app: ContactsApp) -> Element {
+    let chain = cx.chain::<ContactPart>();
+    let book = chain
+        .as_ref()
+        .map(|chain| cx.chain_value(chain, |_, parts| Rc::new(Book::of(parts))));
+    app.watch(book, chain.clone());
     app.attach_dispatcher(cx.dispatcher());
+    if let Some(chain) = &chain {
+        app.attach_writing(chain.dispatcher());
+    }
+    app.actions = Some(cx.actions());
     app.attach_actions(&cx.actions());
     app.jobs = Some(cx.jobs());
     if cx.mode().is_live() {
@@ -262,14 +274,24 @@ pub(crate) fn window(cx: &ViewCx<Contacts>, mut app: ContactsApp) -> Element {
     if let Some(file) = cx.launch().file() {
         app.open_cards(String::from_utf8_lossy(file.bytes()).into_owned());
     }
-    // A picked search hit (or an agent's `open`) shows its contact.
-    cx.on_open_item(app.opener());
+    // A picked search hit (or an agent's `open`) shows its contact, which
+    // the parts publish.
+    let mut open = app.opener();
+    cx.on_open(move |anchor: &str| {
+        let (_, item) = ui::tilo_resource::items::item_of_resource::<ContactPart>(anchor)
+            .ok_or_else(|| {
+                ui::tilo_resource::Refusal::new(format!("`{anchor}` names no contact"))
+            })?;
+        open(&item)
+    });
     let asked = Rc::clone(&app.asked);
     {
         let asked = Rc::clone(&asked);
         // The one file operation running, which the window shows.
         let file_work = Rc::clone(&app.file_work);
-        cx.effects(move |effect: ContactsEffect, cx| answer(&asked, &file_work, effect, cx));
+        cx.effects(move |effect: ContactsEffect, cx| {
+            answer(&asked, &file_work, chain.as_ref(), effect, cx)
+        });
     }
     {
         let asked = Rc::clone(&asked);

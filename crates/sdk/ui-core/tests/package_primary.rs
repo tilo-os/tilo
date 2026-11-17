@@ -23,7 +23,7 @@ tilo_test_env::scenario! {
             })
             .unwrap();
         b.try_open_resource(&checkout).unwrap();
-        assert_eq!(a.route(&checkout).unwrap().record, None);
+        assert_eq!(a.route(&checkout).unwrap().document, None);
         b.with(&checkout.id, |doc| {
             doc.put(ROOT, "message", "two").unwrap();
         })

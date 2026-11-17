@@ -117,7 +117,7 @@ async fn arrive(
 fn held(page: &Link, route: &DocumentRoute) -> Option<AutoCommit> {
     let bytes = page
         .engine()
-        .record(&route.cluster_id, &route.app_id, &route.record)
+        .record(&route.cluster_id, &route.app_id, &route.document)
         .ok()??;
     AutoCommit::load(&bytes).ok()
 }
@@ -183,7 +183,7 @@ async fn history(
         else {
             continue;
         };
-        if document_id != route.record {
+        if document_id != route.document {
             continue;
         }
         let covers = collab_types::SealedCompaction::parse(&envelope)
@@ -208,7 +208,7 @@ async fn history(
         .relay
         .workspaces()
         .unwrap()
-        .document_history(workspace, &route.app_id, &route.record)
+        .document_history(workspace, &route.app_id, &route.document)
         .await
     {
         for write in held.writes {
@@ -246,7 +246,7 @@ async fn covered_twice(
         else {
             continue;
         };
-        if document_id != route.record {
+        if document_id != route.document {
             continue;
         }
         match collab_types::SealedCompaction::parse(&envelope) {
@@ -298,7 +298,7 @@ async fn reads_whole(
     loop {
         let read =
             page.engine()
-                .record_update(&route.cluster_id, &route.app_id, &route.record, None);
+                .record_update(&route.cluster_id, &route.app_id, &route.document, None);
         if let Ok(ResourceReading::Captured { bytes, .. }) = &read {
             let doc = AutoCommit::load(bytes).unwrap();
             let has: BTreeSet<String> = doc.keys(automerge::ROOT).collect();
@@ -308,14 +308,14 @@ async fn reads_whole(
             assert!(
                 Instant::now() < deadline,
                 "{what}: the chat's {:?} reads without {:?}",
-                route.record,
+                route.document,
                 keys.difference(&has).collect::<Vec<_>>()
             );
         } else {
             if Instant::now() >= deadline {
                 eprintln!(
                     "CHAT-RESTART history of {:?}:\n{}\npage: {}\nfailures: {:?}",
-                    route.record,
+                    route.document,
                     history(host, workspace, workspace_id, route).await,
                     page.status().key_state,
                     page.status().failures
@@ -324,7 +324,7 @@ async fn reads_whole(
             assert!(
                 Instant::now() < deadline,
                 "{what}: the chat's {:?} never read whole: {:?}",
-                route.record,
+                route.document,
                 read.map(|read| matches!(read, ResourceReading::Pending))
             );
         }
@@ -360,10 +360,10 @@ async fn round(seed: u64) {
     let chat = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: lounge.workspace.clone(),
-        record: String::new(),
+        document: String::new(),
     };
     let part = DocumentRoute {
-        record: neighbour_wire::document_part(CHAT_CHAIN, 0),
+        document: neighbour_wire::document_part(CHAT_CHAIN, 0),
         ..chat.clone()
     };
     let page_host = |host: &TestHost| {
@@ -452,7 +452,7 @@ async fn round(seed: u64) {
             twice.is_empty(),
             "seed {seed}: after the restart the host retains writes of {:?} beside the fold that \
              replaced them: {twice:?}",
-            route.record
+            route.document
         );
     }
     let unread_after = unread(&host, &lounge.workspace).await;

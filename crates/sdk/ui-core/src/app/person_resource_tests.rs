@@ -104,7 +104,7 @@ fn app_holding(record: &StoredResource) -> App {
     // The app shows a record of a shared workspace; the record kept beside it
     // is not in it.
     app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
-        route: crate::collaboration::RouteSpec::record(APP, uuid::Uuid::new_v4(), "shown"),
+        route: crate::collaboration::RouteSpec::document(APP, uuid::Uuid::new_v4(), "shown"),
         epoch: uuid::Uuid::new_v4(),
     });
     app.refresh_document_routes();
@@ -149,13 +149,13 @@ fn from_device(
         collab_types::document_artifact_id(
             &route.app_id,
             &route.cluster_id.to_string(),
-            route.record.as_deref().unwrap_or(""),
+            route.document.as_deref().unwrap_or(""),
         ),
         collab_types::Ed25519PublicKey::from_bytes([0; 32]),
         collab_types::document_attestation_id(
             &route.app_id,
             &route.cluster_id.to_string(),
-            route.record.as_deref().unwrap_or(""),
+            route.document.as_deref().unwrap_or(""),
         ),
         collab_types::OpKind::Change,
         crate::time::SystemTime::UNIX_EPOCH,
@@ -183,7 +183,7 @@ tilo_test_env::scenario! {
         let (route, laptop_document) = sent.into_iter().next().unwrap();
         assert_eq!(route.app_id, APP);
         assert_eq!(route.cluster_id.to_string(), WORKSPACE);
-        assert_eq!(route.record.as_deref(), Some(laptop.checkout().id.as_str()));
+        assert_eq!(route.document.as_deref(), Some(laptop.checkout().id.as_str()));
         assert_eq!(laptop.route(), Some(route.clone()));
         phone_app.publish_owned_documents();
         let (phone_route, _) = snapshots(&mut phone_app).into_iter().next().unwrap();
@@ -249,7 +249,7 @@ tilo_test_env::scenario! {
             .expect("the person's own cluster carries their record");
         assert_eq!(route.app_id, APP);
         assert_eq!(route.cluster_id, collab_types::personal_cluster(&ROOT_KEY));
-        assert_eq!(route.record.as_deref(), Some(laptop.checkout().id.as_str()));
+        assert_eq!(route.document.as_deref(), Some(laptop.checkout().id.as_str()));
 
         // Another device of the person derives the very same route for the
         // record of that kind, without either device naming the other.
@@ -351,7 +351,7 @@ tilo_test_env::scenario! {
         // A request on a route the app does not keep a person's record on is
         // not this record's to answer.
         laptop_app.apply_collab_event_for_test(CollabEvent::DocumentSnapshotRequested {
-            route: crate::collaboration::RouteSpec::record(APP, uuid::Uuid::new_v4(), "elsewhere"),
+            route: crate::collaboration::RouteSpec::document(APP, uuid::Uuid::new_v4(), "elsewhere"),
         });
         laptop_app.publish_owned_documents();
         assert!(snapshots(&mut laptop_app).is_empty());
@@ -516,7 +516,7 @@ fn owned_and_read(kind: &str) -> (StoredResource, StoredResource) {
 /// `Recording` transport that stands in for its broker.
 #[cfg(unix)]
 fn recording_window(app: &str, record: &StoredResource) -> (App, Arc<Mutex<Recording>>) {
-    let primary = crate::collaboration::RouteSpec::record(app, uuid::Uuid::new_v4(), "shown");
+    let primary = crate::collaboration::RouteSpec::document(app, uuid::Uuid::new_v4(), "shown");
     let recording = Arc::new(Mutex::new(Recording {
         route: Some(primary.clone()),
         ..Recording::default()
@@ -527,7 +527,7 @@ fn recording_window(app: &str, record: &StoredResource) -> (App, Arc<Mutex<Recor
     assert!(manager.send(CollabRequest::Hello {
         app_id: primary.app_id,
         cluster_id: primary.cluster_id,
-        record: primary.record,
+        record: primary.document,
         resource_type: None,
         handle: None,
     }));

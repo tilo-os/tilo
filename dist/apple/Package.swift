@@ -28,6 +28,12 @@ let package = Package(
         ),
         .testTarget(name: "ShellCoreTests", dependencies: ["ShellCore"]),
         .testTarget(name: "ShellWebTests", dependencies: ["ShellCore", "ShellWeb"]),
+        // Tilo inside a native app: Tilo's own page as the client behind a Swift interface
+        // (pairing, live reads, typed actions), and the view that shows one live Tilo thing.
+        .target(name: "TiloLive", dependencies: ["ShellCore"]),
+        // The engine with nothing on screen, for a check to drive against a Tilo site.
+        .executableTarget(name: "TiloLiveProbe", dependencies: ["ShellCore", "TiloLive"]),
+        .testTarget(name: "TiloLiveTests", dependencies: ["ShellCore", "TiloLive"]),
     ],
     swiftLanguageModes: [.v6]
 )

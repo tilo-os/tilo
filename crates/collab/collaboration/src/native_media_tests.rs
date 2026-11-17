@@ -143,7 +143,7 @@ fn native_media_full_normal_lane_still_dispatches_reserved_leave() {
         .map(|index| RouteSpec {
             app_id: "so.tilo.chat".into(),
             cluster_id,
-            record: (index != 0).then(|| format!("record-{index}")),
+            document: (index != 0).then(|| format!("record-{index}")),
         })
         .collect::<Vec<_>>();
     for route in &routes {

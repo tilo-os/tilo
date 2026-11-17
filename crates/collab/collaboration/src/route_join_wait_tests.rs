@@ -7,12 +7,12 @@
 #[test]
 fn a_route_whose_first_read_never_answers_holds_up_nothing_else() {
     let workspace = Uuid::new_v4();
-    let stuck = RouteSpec::record(
+    let stuck = RouteSpec::document(
         "so.tilo.chat",
         workspace,
         "derived:part.0@derived:messages@workspace",
     );
-    let other = RouteSpec::record(
+    let other = RouteSpec::document(
         "so.tilo.chat",
         workspace,
         "derived:part.1@derived:messages@workspace",

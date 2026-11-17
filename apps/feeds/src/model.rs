@@ -523,32 +523,33 @@ impl ReadSettings {
     }
 }
 
-/// The library: folders, subscriptions and their articles, in the order
-/// they were made.
+/// The library: its folders and subscriptions, in the order they were made.
+///
+/// What a subscription brought in — its articles — grows without bound, and
+/// is kept in parts beside the library ([`crate::part::ArticlePart`]); what
+/// stays here is what a reader navigates: the folders and the subscriptions.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Library {
     /// Folders
     pub folders: Collection<Folder>,
     /// Subscriptions
     pub feeds: Collection<Feed>,
-    /// Articles
-    pub articles: Collection<Article>,
 }
 
-/// Bring a library of version 1 up to this one: an article's body was one
-/// JSON string of blocks, and is a list of blocks now.
+/// Bring a library stored before its articles moved into parts up to this
+/// one: the articles such a record kept itself are dropped, not read, and
+/// from then on the parts beside the library hold them. Nothing converts
+/// them.
 ///
 /// # Errors
-/// Returns why a stored body does not read as blocks.
+/// Returns why a stored version is not one this reads.
 pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
-    use tilo_resource::evolution::{collection_items, retype_json};
-    if from != 1 {
+    use ui::automerge::transaction::Transactable as _;
+    let _ = doc.delete(&ui::automerge::ROOT, "articles");
+    if from >= 3 {
         return Err(ModelError::invalid(format!(
             "no feeds migration from {from}"
         )));
-    }
-    for article in collection_items(doc, &ui::automerge::ROOT, "articles")? {
-        retype_json::<Vec<ContentBlock>>(doc, &article, "blocks")?;
     }
     Ok(())
 }
@@ -559,7 +560,7 @@ impl Library {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.feeds.is_empty() && self.articles.is_empty()
+        self.feeds.is_empty() && self.folders.is_empty()
     }
 
     pub fn feed(&self, id: &Id) -> Option<Row<'_, Feed>> {
@@ -572,27 +573,9 @@ impl Library {
         self.folders.at(at).map(|(id, folder)| Row::new(id, folder))
     }
 
-    pub fn article(&self, id: &Id) -> Option<Row<'_, Article>> {
-        let at = self.articles.position(id)?;
-        self.articles
-            .at(at)
-            .map(|(id, article)| Row::new(id, article))
-    }
-
-    pub fn article_mut(&mut self, id: &Id) -> Option<&mut Article> {
-        self.articles.get_mut(id)
-    }
-
     /// Every subscription, in the order they were added.
     pub fn feed_rows(&self) -> impl Iterator<Item = Row<'_, Feed>> {
         self.feeds.iter().map(|(id, feed)| Row::new(id, feed))
-    }
-
-    /// Every article, in the order they arrived.
-    pub fn article_rows(&self) -> impl Iterator<Item = Row<'_, Article>> {
-        self.articles
-            .iter()
-            .map(|(id, article)| Row::new(id, article))
     }
 
     /// Folders in the order they were made.
@@ -615,152 +598,6 @@ impl Library {
     pub fn feed_at(&self, url: &str) -> Option<Row<'_, Feed>> {
         let url = url.trim();
         self.feed_rows().find(|feed| feed.url == url)
-    }
-
-    pub fn unread_for_feed(&self, feed: &Id) -> usize {
-        self.articles
-            .values()
-            .filter(|a| &a.feed_id == feed && !a.read)
-            .count()
-    }
-
-    pub fn unread_for_folder(&self, folder: &Id) -> usize {
-        self.unread_count_for(&Filter::Folder(folder.clone()))
-    }
-
-    pub fn total_unread(&self) -> usize {
-        self.articles.values().filter(|a| !a.read).count()
-    }
-
-    pub fn total_starred(&self) -> usize {
-        self.articles.values().filter(|a| a.starred).count()
-    }
-
-    /// Does an article match the active filter?
-    fn matches(&self, a: &Article, filter: &Filter) -> bool {
-        match filter {
-            Filter::All => true,
-            Filter::Unread => !a.read,
-            Filter::Starred => a.starred,
-            Filter::Feed(id) => &a.feed_id == id,
-            Filter::Folder(fid) => self
-                .feeds
-                .get(&a.feed_id)
-                .is_some_and(|f| f.folder.as_ref() == Some(fid)),
-            Filter::Tag(key) => a.tags.iter().any(|tag| tag_key(tag) == *key),
-        }
-    }
-
-    /// Unique article tags, alphabetized for navigation and the places
-    /// the library publishes.
-    pub fn tags(&self) -> Vec<String> {
-        self.tags_limited(usize::MAX)
-    }
-
-    /// Alphabetized unique tags with bounded retained allocation. The scan is
-    /// linear in cached articles, but sidebar/resource materialization never
-    /// grows with an archival tag vocabulary.
-    pub fn tags_limited(&self, limit: usize) -> Vec<String> {
-        let mut tags = self
-            .articles
-            .values()
-            .flat_map(|article| article.tags.iter())
-            .fold(Vec::with_capacity(limit.min(32)), |mut tags, tag| {
-                match tags.binary_search(tag) {
-                    Err(index) if index < limit => {
-                        tags.insert(index, tag.clone());
-                        if tags.len() > limit {
-                            tags.pop();
-                        }
-                    }
-                    Ok(_) | Err(_) => {}
-                }
-                tags
-            });
-        tags.truncate(limit);
-        tags
-    }
-
-    pub fn has_tag(&self, tag: &str) -> bool {
-        let tag = tag.to_owned();
-        self.articles
-            .values()
-            .any(|article| article.tags.contains(&tag))
-    }
-
-    /// Articles matching `filter`, newest first.
-    pub fn articles_for(&self, filter: &Filter) -> Vec<Row<'_, Article>> {
-        let mut v: Vec<Row<'_, Article>> = self
-            .article_rows()
-            .filter(|a| self.matches(a, filter))
-            .collect();
-        // Newest first; stable on title for equal timestamps.
-        v.sort_by(|a, b| {
-            b.published
-                .cmp(&a.published)
-                .then_with(|| a.title.cmp(&b.title))
-        });
-        v
-    }
-
-    pub fn count_for(&self, filter: &Filter) -> usize {
-        self.articles
-            .values()
-            .filter(|a| self.matches(a, filter))
-            .count()
-    }
-
-    pub fn unread_count_for(&self, filter: &Filter) -> usize {
-        self.articles
-            .values()
-            .filter(|a| self.matches(a, filter) && !a.read)
-            .count()
-    }
-
-    /// The unread articles matching `filter`, in the order they arrived.
-    pub fn unread_ids_for(&self, filter: &Filter) -> Vec<Id> {
-        self.article_rows()
-            .filter(|a| self.matches(a, filter) && !a.read)
-            .map(|a| a.id.clone())
-            .collect()
-    }
-
-    /// Mark every article matching `filter` as read. Returns affected ids.
-    pub fn mark_all_read(&mut self, filter: &Filter) -> Vec<Id> {
-        let ids = self.unread_ids_for(filter);
-        for id in &ids {
-            if let Some(a) = self.article_mut(id) {
-                a.read = true;
-            }
-        }
-        ids
-    }
-
-    /// Whether the subscription `feed` already holds an article at `url`
-    /// (or one titled `title`, for a feed whose articles have no links).
-    pub fn has_article(&self, feed: &Id, url: &str, title: &str) -> bool {
-        self.articles.values().any(|a| {
-            &a.feed_id == feed
-                && if url.is_empty() {
-                    a.url.is_empty() && a.title == title
-                } else {
-                    a.url == url
-                }
-        })
-    }
-
-    /// Unsubscribe: remove a feed and every article belonging to it.
-    /// Returns the ids of the articles that were removed. A no-op returning
-    /// an empty vec if the feed is unknown.
-    pub fn remove_feed(&mut self, id: &Id) -> Vec<Id> {
-        let removed: Vec<Id> = self
-            .article_rows()
-            .filter(|a| &a.feed_id == id)
-            .map(|a| a.id.clone())
-            .collect();
-        self.articles.retain(|_, a| &a.feed_id != id);
-        self.feeds.remove(id);
-        removed
     }
 }
 
@@ -793,117 +630,6 @@ mod tests {
         assert_eq!(feed.shown_title(), "The Guardian: World");
         let gemini = Feed::subscribing("gemini://example.org/gemlog/", None);
         assert_eq!(gemini.shown_title(), "example.org");
-    }
-
-    fn feed(s: &mut Library, id: &str, folder: Option<&Id>) -> Id {
-        let id = Id::from_raw(id);
-        s.feeds.push(
-            id.clone(),
-            Feed {
-                title: "F".into(),
-                url: format!("http://x/{id}"),
-                folder: folder.cloned(),
-                ..Feed::default()
-            },
-        );
-        id
-    }
-
-    fn art(s: &mut Library, id: &str, feed_id: &Id, read: bool, starred: bool, when: i64) -> Id {
-        let id = Id::from_raw(id);
-        s.articles.push(
-            id.clone(),
-            Article {
-                feed_id: feed_id.clone(),
-                title: format!("a{when}"),
-                url: format!("http://x/{id}"),
-                published: when,
-                read,
-                starred,
-                ..Article::default()
-            },
-        );
-        id
-    }
-
-    #[test]
-    fn library_orders_filters_counts_and_finds_articles() {
-        {
-            let mut s = Library::new();
-            let f = feed(&mut s, "f", None);
-            art(&mut s, "a1", &f, false, false, 100);
-            art(&mut s, "a2", &f, false, false, 300);
-            art(&mut s, "a3", &f, false, false, 200);
-            let got: Vec<i64> = s
-                .articles_for(&Filter::All)
-                .iter()
-                .map(|a| a.published)
-                .collect();
-            assert_eq!(got, vec![300, 200, 100]);
-        }
-
-        {
-            let mut s = Library::new();
-            let folder = Id::from_raw("n");
-            s.folders.push(folder.clone(), Folder::named("N"));
-            let f = feed(&mut s, "f", Some(&folder));
-            art(&mut s, "a1", &f, false, false, 1);
-            art(&mut s, "a2", &f, true, false, 2);
-            assert_eq!(s.unread_for_feed(&f), 1);
-            assert_eq!(s.unread_for_folder(&folder), 1);
-            assert_eq!(s.total_unread(), 1);
-        }
-
-        {
-            let mut s = Library::new();
-            let f = feed(&mut s, "f", None);
-            let a1 = art(&mut s, "a1", &f, false, true, 1);
-            art(&mut s, "a2", &f, true, false, 2);
-            assert_eq!(s.articles_for(&Filter::Unread).len(), 1);
-            assert_eq!(s.articles_for(&Filter::Starred).len(), 1);
-            assert_eq!(s.articles_for(&Filter::Starred)[0].id, &a1);
-        }
-
-        {
-            let mut s = Library::new();
-            let f = feed(&mut s, "f", None);
-            art(&mut s, "a1", &f, false, false, 1);
-            art(&mut s, "a2", &f, false, false, 2);
-            let affected = s.mark_all_read(&Filter::All);
-            assert_eq!(affected.len(), 2);
-            assert_eq!(s.total_unread(), 0);
-        }
-
-        {
-            let mut s = Library::new();
-            let f = feed(&mut s, "f", None);
-            let other = feed(&mut s, "g", None);
-            let a = art(&mut s, "a1", &f, false, false, 1);
-            let url = s.article(&a).unwrap().url.clone();
-            assert!(s.has_article(&f, &url, "whatever"), "same url is held");
-            assert!(!s.has_article(&other, &url, "whatever"), "per feed");
-        }
-
-        {
-            let mut s = Library::new();
-            let keep = feed(&mut s, "keep", None);
-            let drop = feed(&mut s, "drop", None);
-            let survivor = art(&mut s, "survivor", &keep, false, false, 1);
-            let doomed = art(&mut s, "doomed", &drop, false, false, 2);
-
-            let removed = s.remove_feed(&drop);
-            assert_eq!(removed, vec![doomed], "returns the removed article ids");
-            assert!(s.feed(&drop).is_none(), "the feed is gone");
-            assert!(s.feed(&keep).is_some(), "the other feed survives");
-            assert_eq!(
-                s.articles.len(),
-                1,
-                "only the doomed feed's article is dropped"
-            );
-            assert!(s.articles.contains(&survivor));
-            // Removing an unknown feed is a harmless no-op.
-            assert!(s.remove_feed(&Id::from_raw("gone")).is_empty());
-        }
     }
 
     #[test]

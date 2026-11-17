@@ -439,7 +439,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
             .map(|provider| provider.document_id.clone())
             .collect()
     };
-    assert_eq!(records(true), vec![tasks.record.clone()], "{offered:?}");
+    assert_eq!(records(true), vec![tasks.document.clone()], "{offered:?}");
     assert!(
         records(false)
             .iter()

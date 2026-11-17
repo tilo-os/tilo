@@ -33,6 +33,7 @@ mod put;
 mod schema;
 #[path = "mcp_step.rs"]
 mod step;
+use step::batch_invocation;
 #[path = "mcp_turns.rs"]
 mod turns;
 use serde::Deserialize;
@@ -3249,26 +3250,6 @@ fn call_failed(value: &Value) -> bool {
         return true;
     }
     value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded")
-}
-/// The invocation id of batch step `index`. The first is the caller's, so
-/// a retry of the batch reports that action instead of starting it again;
-/// each later step's id is derived from it and stable across that retry.
-fn batch_invocation(parent: Option<&str>, index: usize) -> Result<Option<String>, String> {
-    let Some(parent) = parent else {
-        return Ok(None);
-    };
-    let parent = invocation_id(parent)?;
-    if index == 0 {
-        return Ok(Some(parent.0.to_string()));
-    }
-    let mut bytes = *parent.0.as_bytes();
-    let mix = (index as u128).to_le_bytes();
-    for (byte, mix) in bytes.iter_mut().zip(mix) {
-        *byte ^= mix;
-    }
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Ok(Some(uuid::Uuid::from_bytes(bytes).to_string()))
 }
 /// The `path` an application `open` names, taken out of its arguments: the
 /// workspace launches the app empty and this bridge hands the path to the

@@ -19,7 +19,7 @@ const READ_DOCUMENT: &str = "read-record";
 
 /// The address of the API's read of `route`.
 fn address(route: &DocumentRoute) -> ActionAddress {
-    let open = surface::open_document_address(&route.app_id, &route.record);
+    let open = surface::open_document_address(&route.app_id, &route.document);
     ActionAddress::new(open.resource, READ_DOCUMENT)
 }
 
@@ -48,7 +48,7 @@ fn descriptor(route: &DocumentRoute) -> ActionDescriptor {
         semantic_identity: None,
         address: address(route),
         resource_kind: surface::APPLICATION_KIND.to_owned(),
-        resource_label: format!("{app} record {}", route.record),
+        resource_label: format!("{app} record {}", route.document),
         action_label: format!("read the {app} record as data"),
         keywords: vec!["messages".into(), "conversation".into()],
         icon: None,

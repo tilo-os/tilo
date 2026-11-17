@@ -8,6 +8,7 @@
 //! Ctrl+K and agents do.
 
 use crate::account_editor::CATALOG;
+use crate::part::{Book, ContactPart};
 use crate::resource::Contacts;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -165,7 +166,7 @@ enum ContentKey {
     reason = "independent frame bookkeeping (list, structure, layout and paint staleness) and the seeding flags; none is a state machine"
 )]
 pub struct ContactsApp {
-    pub(crate) store: Rc<Contacts>,
+    pub(crate) store: Rc<Book>,
     awaiting: Option<ContactId>,
     selected: Option<ContactId>,
     mode: Mode,
@@ -212,9 +213,17 @@ pub struct ContactsApp {
     asked: effects::Asked,
     pending_conflict_resolution: Option<(String, bool)>,
 
-    document: Option<ui::framework::Live<Contacts>>,
-    presented: Option<(u64, u64)>,
+    /// The book the parts add up to, as the window follows it.
+    book: Option<LocalState<Rc<Book>>>,
+    /// The book as last shown.
+    presented: Option<Rc<Book>>,
+    /// The chain the contacts are kept in: what the window writes through
+    /// and takes back from.
+    pub(crate) chain: Option<ui::framework::Chain<ContactPart>>,
+    /// The book's own dispatcher: what its effects are invoked through.
     dispatcher: Option<Dispatcher<Contacts>>,
+    /// The chain's dispatcher: what the contacts are written through.
+    writing: Option<Dispatcher<ContactPart>>,
     pub(crate) jobs: Option<Jobs<Contacts>>,
     pub(crate) account_editor: Option<crate::account_editor::Editor>,
     account_pane: Option<Element>,
@@ -287,7 +296,7 @@ impl ContactsApp {
     fn try_perform_action(
         &self,
         _doc: &mut ui::widget::Edits<'_>,
-        invoke: Invoke<Contacts>,
+        invoke: Invoke<ContactPart>,
     ) -> Result<(), ui::tilo_actions::ActionError> {
         self.submit(invoke)
             .map_err(ui::tilo_actions::ActionError::Refused)
@@ -298,6 +307,7 @@ impl ContactsApp {
         operation: &str,
         error: &ui::tilo_actions::ActionError,
     ) {
+        self.refresh_book();
         self.show_toast(format!("Couldn't {operation}: {error}"));
     }
 
@@ -333,6 +343,22 @@ impl ContactsApp {
         self.dispatcher = Some(dispatcher);
     }
 
+    /// The chain the contacts are written through.
+    pub(crate) fn attach_writing(&mut self, writing: Dispatcher<ContactPart>) {
+        self.writing = Some(writing);
+    }
+
+    /// The book the parts add up to, and the chain they are kept in: what the
+    /// window follows and writes through.
+    pub(crate) fn watch(
+        &mut self,
+        book: Option<LocalState<Rc<Book>>>,
+        chain: Option<ui::framework::Chain<ContactPart>>,
+    ) {
+        self.book = book;
+        self.chain = chain;
+    }
+
     pub(crate) fn attach_actions(&mut self, actions: &ui::framework::Actions<Contacts>) {
         self.sort_binding = actions.effect_binding(ContactsEffect::SORT_CONTACTS);
     }
@@ -346,18 +372,37 @@ impl ContactsApp {
         Ok(())
     }
 
-    fn follow_document(&mut self) {
-        let Some(document) = &self.document else {
+    /// Present the book the parts add up to now, taking back a projection the
+    /// API refused (a contact a peer deleted that this window still showed).
+    fn refresh_book(&mut self) {
+        let Some(chain) = &self.chain else {
             return;
         };
-        let Some(book) = document.changed_since(&mut self.presented) else {
-            return;
-        };
+        let book = Rc::new(Book::of(&chain.parts()));
+        self.presented = Some(Rc::clone(&book));
         self.present_book(&book);
         self.project_identities(&book);
     }
 
-    pub(crate) fn present_book(&mut self, state: &Rc<Contacts>) {
+    /// Present the book the parts add up to again when it moved.
+    fn follow_book(&mut self) {
+        let Some(book) = &self.book else {
+            return;
+        };
+        let now = book.get();
+        if self
+            .presented
+            .as_ref()
+            .is_some_and(|shown| Rc::ptr_eq(shown, &now))
+        {
+            return;
+        }
+        self.presented = Some(Rc::clone(&now));
+        self.present_book(&now);
+        self.project_identities(&now);
+    }
+
+    pub(crate) fn present_book(&mut self, state: &Rc<Book>) {
         // A refused save re-presents the book too; keep its form for the
         // announcement that follows.
         if !self
@@ -431,23 +476,32 @@ impl ContactsApp {
     /// What the workspace answered: a change it kept is said done, one it refused,
     /// which the record withdrew, says why.
     fn announce_answers(&mut self) {
-        let Some(dispatcher) = &self.dispatcher else {
+        let Some(effects) = self.dispatcher.clone() else {
             return;
         };
-        let said = dispatcher.said();
+        if let Some(writing) = self.writing.clone() {
+            let said = writing.said();
+            if let Some(text) = said.with(Clone::clone) {
+                said.set(None);
+                self.show_toast(text);
+            }
+        }
+        let said = effects.said();
         if let Some(text) = said.with(Clone::clone) {
             said.set(None);
             self.show_toast(text);
         }
-        let Some(dispatcher) = &self.dispatcher else {
-            return;
+        let writing = self.writing.clone();
+        let refused = match &writing {
+            Some(writing) if writing.refused().with(Option::is_some) => writing.refused(),
+            _ => effects.refused(),
         };
-        let refused = dispatcher.refused();
         let Some(refusal) = refused.with(Clone::clone) else {
             return;
         };
         refused.set(None);
         let Some(form) = self.unconfirmed_save.take() else {
+            self.refresh_book();
             self.show_toast(format!(
                 "Couldn't change the address book: {}",
                 refusal.reason
@@ -468,8 +522,8 @@ impl ContactsApp {
         self.show_toast(format!("Couldn't save contact: {}", refusal.reason));
     }
 
-    fn submit(&self, invoke: Invoke<Contacts>) -> Result<(), String> {
-        let Some(dispatcher) = &self.dispatcher else {
+    fn submit(&self, invoke: Invoke<ContactPart>) -> Result<(), String> {
+        let Some(dispatcher) = &self.writing else {
             return Err("the address book is not open".into());
         };
         if dispatcher.read_only() {
@@ -573,9 +627,11 @@ impl ContactsApp {
             scenario: None,
             file_work: Rc::default(),
             opened_cards: None,
-            document: None,
+            book: None,
             presented: None,
+            chain: None,
             dispatcher: None,
+            writing: None,
             jobs: None,
             account_editor: None,
             account_pane: None,
@@ -788,9 +844,9 @@ impl ContactsApp {
             let c = form.draft.clone();
             let id = c.id;
             let saved = if form.is_new {
-                self.try_perform_action(doc, Contacts::add(&c))
+                self.try_perform_action(doc, ContactPart::add(&c))
             } else {
-                match Contacts::save(&form.base, &c) {
+                match ContactPart::save(&form.base, &c) {
                     Some(invoke) => self.try_perform_action(doc, invoke),
                     None if self.store.contact(id).is_none() => Err(
                         ui::tilo_actions::ActionError::Refused("no such contact".into()),
@@ -839,7 +895,7 @@ impl ContactsApp {
         let Some(favorite) = self.store.contact(id).map(|contact| !contact.favorite) else {
             return false;
         };
-        let edit = Invoke::edit(&Contacts::favorite(id, favorite))
+        let edit = Invoke::edit(&ContactPart::favorite(id, favorite))
             .map_err(|error| ui::tilo_actions::ActionError::Refused(error.to_string()));
         match edit.and_then(|edit| self.try_perform_action(doc, edit)) {
             Ok(()) => {
@@ -879,7 +935,7 @@ impl ContactsApp {
         if import_as_new {
             let mut contact = conflict.incoming;
             contact.id = uuid::Uuid::new_v4();
-            self.try_perform_action(doc, Contacts::add(&contact))
+            self.try_perform_action(doc, ContactPart::add(&contact))
                 .map_err(|error| error.to_string())?;
             self.show_toast("Imported as a new contact");
         } else {
@@ -975,7 +1031,7 @@ impl ContactsApp {
     /// back. The palette, a script or an agent is asked first.
     fn delete_contact(&mut self, doc: &mut ui::widget::Edits<'_>, id: ContactId) {
         self.dirty = true;
-        let Some(dispatcher) = &self.dispatcher else {
+        let Some(dispatcher) = &self.writing else {
             self.show_toast("Couldn't delete contact: the address book is not open");
             return;
         };
@@ -984,7 +1040,8 @@ impl ContactsApp {
             return;
         }
         let name = self.store.contact(id).map(Contact::display_name);
-        if let Err(error) = dispatcher.submit_gesture(doc, Contacts::delete(id)) {
+        if let Err(error) = dispatcher.submit_gesture(doc, ContactPart::delete(id)) {
+            self.refresh_book();
             self.show_toast(format!("Couldn't change the address book: {error}"));
             return;
         }
@@ -1811,6 +1868,24 @@ impl Default for ContactsApp {
 
 /// A deletion notice's Undo goes through the host's undo, the same as
 /// Ctrl+Z.
+/// The window's Undo: what has a history of its own inside it (a field being
+/// typed in) first, then the person's last change to a contact, which lives in
+/// a part beside the book; the book's own changes after that.
+impl ui::undo::LocalUndo for ContactsApp {
+    fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
+        if ui::undo::handle_local_undo_request(&mut self.shell, request) {
+            return true;
+        }
+        let Some(chain) = &self.chain else {
+            return false;
+        };
+        match request {
+            ui::undo::UndoRequest::Undo => chain.undo_last(),
+            ui::undo::UndoRequest::Redo => chain.redo_last(),
+        }
+    }
+}
+
 impl ui::undo::UndoControl for ContactsApp {
     fn take_undo_request(&mut self) -> Option<ui::undo::UndoRequest> {
         self.shell.take_toast_action()?;
@@ -1823,7 +1898,7 @@ impl Widget for ContactsApp {
         cx.children();
     }
 
-    ui::provides!(dyn ui::undo::UndoControl);
+    ui::provides!(dyn ui::undo::UndoControl, dyn ui::undo::LocalUndo);
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -1834,7 +1909,7 @@ impl Widget for ContactsApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.follow_document();
+        self.follow_book();
         self.do_asks();
         if let Some(editor) = &self.account_editor {
             editor.sync_visibility();

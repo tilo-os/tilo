@@ -8,7 +8,7 @@ use std::sync::{LazyLock, Mutex};
 
 use ui::notify::PriorityContact;
 
-use crate::resource::Contacts;
+use crate::part::Book;
 
 use ui::apps::CONTACTS as PACKAGE_ID;
 
@@ -19,7 +19,7 @@ static ENABLED: LazyLock<bool> =
 /// on the next change.
 static ACCEPTED: Mutex<Vec<PriorityContact>> = Mutex::new(Vec::new());
 
-fn projection(store: &Contacts) -> Vec<PriorityContact> {
+fn projection(store: &Book) -> Vec<PriorityContact> {
     let mut projection: Vec<PriorityContact> = store
         .contacts
         .iter()
@@ -41,7 +41,7 @@ fn projection(store: &Contacts) -> Vec<PriorityContact> {
 
 /// Hand the favourites to the shell unless it already accepted exactly them.
 /// Publishing waits on the session bus, so it runs in the background.
-pub(crate) fn publish_if_changed(store: &Contacts) {
+pub(crate) fn publish_if_changed(store: &Book) {
     if !*ENABLED {
         return;
     }

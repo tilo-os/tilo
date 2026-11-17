@@ -59,6 +59,20 @@ power (external, charging, unknown, battery), then load as a fraction of
 capacity, then latency, and finally the device key, so equal candidates
 always resolve alike; a passed-over device carries its reason.
 
+**Work is leased, not owned.** State merges by itself; a side effect does not.
+A piece of the workspace's work that must happen once — a bot's scheduled
+trigger, an automation only one device should run — is taken under a lease kept
+in the workspace's own state, so a group of desktops with no server has it. A
+participant that wants the work writes its own claim with a deadline it pushes
+out while it works; claims rank by placement and the best live one of the
+latest term holds. Two participants that claim after a partition keep both
+claims until the merge, then agree on one winner on every device; the loser
+withdraws its claim and stops. A claim is over only a minute past its deadline,
+so devices whose clocks differ by less than that never disagree about whether
+the lease is free. What the work got to is workspace state too: a bot's
+schedule keeps the fire time it answered, so whichever participant holds the
+lease carries on from it and a time missed while none ran is caught up once.
+
 A host is not a different kind of node. "Workspace hosting" is a device with
 a large appetite, usually always on. Anyone can run it, with the same
 software and the same protocol as every other device.
@@ -759,9 +773,11 @@ app writes none of them:
   order), so the verb itself reads only its part and replays the same
   everywhere.
 - **Held whole or by the reader.** A chain whose views list all of it
-  (`Chained::HELD_WHOLE`: a tracker's issues) holds every part as soon as
-  it knows the head; one read back in time (a chat) holds the head and what
-  a reader scrolled to.
+  (`Chained::HELD_WHOLE`: a tracker's issues, a reader's articles) holds every
+  part as soon as it knows the head; one read back in time (a chat) holds the
+  head and what a reader scrolled to. What one step changes across many parts
+  (marking every subscription read) is written as a summary in the part it is
+  invoked on, so the step costs one part too.
 - **Read as it changes.** `ViewCx::chain_value` follows the record and the
   chain's parts the way `ViewCx::value` follows the record, and a part is a
   record a view part is built over (`Chain::part_record` with
@@ -774,6 +790,18 @@ app writes none of them:
   agent hands the record it mounts the newest part of each of its chains and
   every part the chain then asks for, from what the workspace holds, and
   keeps each current with the changes after it.
+- **Beside a person's own record.** An app that keeps one record per member
+  (Mail) keeps the parts beside that person's record
+  (`Chained::chain_beside`), never beside the workspace's, so a mailbox's
+  parts are as private as the mailbox.
+- **Places over everything the chain holds.** What the app derives from all
+  of it — a book's groups, its favorites, its likely duplicates — the chain
+  publishes as its own children (`Chained::places`), and what search finds
+  beyond the items (`Chained::search_over`), so derived resources do not
+  need the record to hold the items.
+- **A group as one step.** Several actions invoked as one (a saved form's
+  field edits) land as one change in each part they touch, so they stay one
+  undo step and one version.
 
 What one app record holds at the size of a small company's workspace (101 wiki
 pages, about 2,500 issues, a 19,513-file repository), and what a change costs
@@ -787,11 +815,13 @@ there before it moves into parts:
 | Files (folder) | (before) every file and folder node of the workspace | files | 28 MB at 19,513 files; whole record per change |
 | Files (folder) | (now) the tree's own record, listing chunks of up to 1,024 nodes each | chunks | one chunk's cost: about 1 ms and 755 bytes sent per file written at 20,000 files |
 | Mail | every message's state, held bodies, drafts, outboxes; the person's copies | messages | grows with the mailbox |
-| Feeds | every article with its full text | articles | grows until its feed is removed |
+| Feeds | (before) every article with its full text | articles | grows until its feed is removed |
+| Feeds | (now) folders and subscriptions; articles in parts of at most 300 articles or 1 MiB of their text | parts | one part's cost, the same bytes at 10× the articles |
 | Messages | every conversation with every message | messages | grows without bound |
 | Discord bridge | a mapping row per mirrored message | messages | grows without bound |
 | Calendar | every event with overrides and attendees | events | grows with the calendar |
-| Contacts, Snippets, Photos, Music | every item; Music playlist covers inline up to 256 KiB | items | grows with the library |
+| Contacts | (now) nothing; contacts in parts of at most 500 contacts or 512 KiB of text and portraits | parts | one part's cost: the same bytes and record size at 10× the contacts |
+| Snippets, Photos, Music | every item; Music playlist covers inline up to 256 KiB | items | grows with the library |
 | Chat | channels and people; messages in parts of 2,000 messages or 1 MiB | parts | one part |
 | Sheets, Slides, Word processor, Canvas | one record per file | the file | bounded by the document |
 | Desktop layout | strips and windows, and `effect_receipts` with no cap | receipts | grows with use |

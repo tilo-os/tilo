@@ -314,7 +314,7 @@ async fn assert_view_reader_refused(
 ) {
     assert!(
         workspaces
-            .resource_view_policy(workspace, caller, &source.app_id, &source.record)
+            .resource_view_policy(workspace, caller, &source.app_id, &source.document)
             .await
             .is_none()
     );
@@ -406,7 +406,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     let source = tilo_peer_state::document_frame::DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: created.workspace.clone(),
-        record: "@tilo:package-primary".into(),
+        document: "@tilo:package-primary".into(),
     };
     assert_eq!(
         workspaces
@@ -599,7 +599,7 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
     let source = tilo_peer_state::document_frame::DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: created.workspace.clone(),
-        record: String::new(),
+        document: String::new(),
     };
     let caller =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key);
@@ -1000,7 +1000,7 @@ async fn assert_canonical_chat_preparation(
     let source = tilo_peer_state::document_frame::DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.into(),
-        record: String::new(),
+        document: String::new(),
     };
     let workspace_id = source.workspace_id().unwrap();
     let retained = workspaces
@@ -1145,7 +1145,7 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
     let source = tilo_peer_state::document_frame::DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: created.workspace.clone(),
-        record: String::new(),
+        document: String::new(),
     };
     let caller =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key);

@@ -17,11 +17,11 @@ impl Task {
         route: DocumentRoute,
         client: Option<&RelayClient>,
     ) -> bool {
-        let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
+        let channel = neighbour_wire::app_document_channel(&route.app_id, &route.document);
         // A chain's head names a part and holds nothing of its own: the
         // part's keys are asked for as it arrives, like a replayed head's.
         if !matches!(
-            neighbour_wire::document_sync(&route.record),
+            neighbour_wire::document_sync(&route.document),
             neighbour_wire::DocumentSync::ChainHead { .. }
         ) {
             self.open_channel(&route);
@@ -48,10 +48,10 @@ impl Task {
         route: &DocumentRoute,
         client: Option<&RelayClient>,
     ) -> bool {
-        let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
+        let channel = neighbour_wire::app_document_channel(&route.app_id, &route.document);
         if self.opened_records.contains_key(&(workspace_id, channel))
             || (route.app_id == tilo_desktop_model::ownership::DESKTOP_APP
-                && route.record == tilo_desktop_model::ownership::DESKTOP_DOCUMENT)
+                && route.document == tilo_desktop_model::ownership::DESKTOP_DOCUMENT)
         {
             return true;
         }
@@ -87,7 +87,7 @@ impl Task {
     ) -> Option<tilo_relay_protocol::OwnedChannel> {
         tilo_relay_protocol::OwnedChannel::recognise(
             &route.app_id,
-            &route.record,
+            &route.document,
             self.config.cert.user_public_key,
         )
     }

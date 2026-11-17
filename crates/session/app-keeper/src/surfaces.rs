@@ -37,6 +37,10 @@ pub(crate) type Rect = (i32, i32, i32, i32);
 type Region = Vec<(bool, Rect)>;
 
 /// One surface of the app and everything the keeper holds of it.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a separate thing the app did or asked for on this surface"
+)]
 pub(crate) struct Kept {
     pub surface: WlSurface,
     /// Creation order, so a desktop recreates the oldest first.
@@ -57,6 +61,18 @@ pub(crate) struct Kept {
     pub wants_fractional_scale: bool,
     /// The scale the desktop last asked for, kept across a restart.
     pub preferred_scale: Option<f64>,
+    /// The app's xdg decoration object and what it last asked for.
+    pub xdg_decoration: Option<crate::decorations::Xdg>,
+    /// The app's KDE decoration object and what it last asked for.
+    pub kde_decoration: Option<crate::decorations::Kde>,
+    /// The app asked the desktop not to idle while this surface shows.
+    pub idle_inhibitor: bool,
+    /// The app asked the desktop to stop acting on its own shortcuts here.
+    pub shortcuts_inhibitor: Option<crate::keyboard_shortcuts_inhibit::Held>,
+    /// The app marked this window a modal dialog.
+    pub modal: bool,
+    /// The icon the app set on this toplevel, as its last commit left it.
+    pub icon: Option<std::sync::Arc<smithay::wayland::xdg_toplevel_icon::ToplevelIconData>>,
     pub role: Role,
     pub up: Option<UpSurface>,
 }
@@ -77,6 +93,12 @@ impl Kept {
             frames: Vec::new(),
             wants_fractional_scale: false,
             preferred_scale: None,
+            xdg_decoration: None,
+            kde_decoration: None,
+            idle_inhibitor: false,
+            shortcuts_inhibitor: None,
+            modal: false,
+            icon: None,
             role: Role::None,
             up: None,
         }
@@ -190,6 +212,26 @@ pub(crate) struct UpSurface {
     pub viewport: Option<wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport>,
     pub content_type: Option<wayland_protocols::wp::content_type::v1::client::wp_content_type_v1::WpContentTypeV1>,
     pub fractional_scale: Option<wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::WpFractionalScaleV1>,
+    /// The desktop's window decorations for this surface.
+    pub xdg_decoration: Option<
+        wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
+    >,
+    pub kde_decoration: Option<
+        wayland_protocols_misc::server_decoration::client::org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration,
+    >,
+    /// The desktop's inhibitors while it is attached.
+    pub idle_inhibitor: Option<
+        wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
+    >,
+    pub shortcuts_inhibitor: Option<
+        wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibitor_v1::ZwpKeyboardShortcutsInhibitorV1,
+    >,
+    /// The desktop's dialog object while it is attached, and whether the hint was set.
+    pub dialog: Option<wayland_protocols::xdg::dialog::v1::client::xdg_dialog_v1::XdgDialogV1>,
+    pub modal_sent: Option<bool>,
+    /// The desktop's icon object and whether one was sent.
+    pub icon: Option<crate::toplevel_icon::UpIcon>,
+    pub icon_pushed: bool,
 }
 
 pub(crate) enum UpRole {
@@ -215,6 +257,17 @@ pub(crate) struct UpXdg {
 pub(crate) enum UpXdgKind {
     Toplevel(cx::xdg_toplevel::XdgToplevel),
     Popup(cx::xdg_popup::XdgPopup),
+}
+
+/// The desktop's toplevel object of a surface, if its role is a toplevel.
+pub(crate) fn up_toplevel(role: &UpRole) -> Option<cx::xdg_toplevel::XdgToplevel> {
+    match role {
+        UpRole::Xdg(xdg) => match &xdg.kind {
+            UpXdgKind::Toplevel(toplevel) => Some(toplevel.clone()),
+            UpXdgKind::Popup(_) => None,
+        },
+        UpRole::Plain | UpRole::Sub(_) => None,
+    }
 }
 
 /// What was pushed to the current desktop; `None` is "nothing yet".
@@ -785,9 +838,22 @@ impl State {
             viewport: None,
             content_type: None,
             fractional_scale: None,
+            xdg_decoration: None,
+            kde_decoration: None,
+            idle_inhibitor: None,
+            shortcuts_inhibitor: None,
+            dialog: None,
+            modal_sent: None,
+            icon: None,
+            icon_pushed: false,
         });
         self.request_surface_feedback(id);
         self.request_fractional_scale(id);
+        self.ensure_decorations(id);
+        self.ensure_idle_inhibit(id);
+        self.ensure_shortcuts_inhibitor(id);
+        self.ensure_dialog(id);
+        self.push_icon(id);
         true
     }
 
@@ -839,6 +905,7 @@ impl State {
         }
         // A window's own requests (title, parent, size limits) go before its commit.
         self.push_toplevel_meta(id);
+        self.push_icon(id);
         self.push_attributes(id);
         self.push_content(id);
         self.stack_children(id);
@@ -1445,6 +1512,7 @@ impl State {
             us.surface.destroy();
         }
         self.surface_feedback.remove(id);
+        self.presentation_surface_gone(id);
         self.seat.surface_gone(id);
     }
 
@@ -1465,6 +1533,10 @@ impl State {
     /// its popups done.
     pub(crate) fn hold_all(&mut self) {
         self.buffers.detached();
+        self.hold_activation();
+        self.hold_presentation();
+        self.hold_cursor_shape();
+        self.hold_shortcuts_inhibit();
         for kept in self.surfaces.values_mut() {
             kept.up = None;
             match &mut kept.role {

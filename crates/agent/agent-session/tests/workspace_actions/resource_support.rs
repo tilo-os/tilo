@@ -145,6 +145,6 @@ pub(super) fn part_route(
     super::DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.to_owned(),
-        record: record.as_str().to_owned(),
+        document: record.as_str().to_owned(),
     }
 }

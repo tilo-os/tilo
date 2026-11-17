@@ -45,7 +45,7 @@ fn joining_route() -> RouteSpec {
     RouteSpec {
         app_id: "so.tilo.notes".into(),
         cluster_id: Uuid::new_v4(),
-        record: None,
+        document: None,
     }
 }
 
@@ -348,7 +348,7 @@ fn a_record_route_opening_on_the_apps_own_channel_wakes_its_owner() {
     let part = RouteSpec {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace,
-        record: Some("derived:part.0@derived:messages".into()),
+        document: Some("derived:part.0@derived:messages".into()),
     };
     manager.join_route(
         part.clone(),

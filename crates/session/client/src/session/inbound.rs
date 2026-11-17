@@ -46,7 +46,7 @@ impl Task {
         // refused. It lands when its first write does.
         if !self
             .engine
-            .holds_resource(&route.cluster_id, &route.app_id, &route.record)
+            .holds_resource(&route.cluster_id, &route.app_id, &route.document)
         {
             return;
         }
@@ -219,7 +219,7 @@ impl Task {
                 DocumentRoute {
                     app_id,
                     cluster_id,
-                    record,
+                    document: record,
                 },
             ),
             Envelope::WorkspacesReply { request_id, frame } => {
@@ -352,13 +352,6 @@ impl Task {
                 self.reports.change(|status| match names {
                     Some(names) => _ = status.workspace_names.insert(workspace.clone(), names),
                     None => _ = status.workspace_names.remove(&workspace),
-                });
-            }
-            let joined = self.replicas.member_joined(workspace_id);
-            if self.reports.status().workspace_joined.get(&workspace) != joined.as_ref() {
-                self.reports.change(|status| match joined {
-                    Some(joined) => _ = status.workspace_joined.insert(workspace.clone(), joined),
-                    None => _ = status.workspace_joined.remove(&workspace),
                 });
             }
         }
@@ -525,7 +518,7 @@ impl Task {
                 let route = DocumentRoute {
                     app_id: app_id.clone(),
                     cluster_id: cluster_id.clone(),
-                    record: document_id.clone(),
+                    document: document_id.clone(),
                 };
                 // A workspace the host resumes after it lagged can replay an entry
                 // its live deliveries already carried; the page takes it once.
@@ -673,7 +666,7 @@ impl Task {
                 self.let_go.insert(DocumentRoute {
                     app_id: dropped.app.clone(),
                     cluster_id: cluster.to_owned(),
-                    record: dropped.record.clone(),
+                    document: dropped.record.clone(),
                 });
             }
         }
@@ -763,7 +756,7 @@ impl Task {
             let Ok(workspace_id) = route.workspace_id() else {
                 continue;
             };
-            let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
+            let channel = neighbour_wire::app_document_channel(&route.app_id, &route.document);
             if client
                 .send(Envelope::OpenDocument {
                     workspace_id,

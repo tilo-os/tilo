@@ -605,9 +605,9 @@ mod tests {
                 "height": 3,
             });
             for (author, submission) in [
-                ("visitor:one", file("a", Some(with_picture))),
-                ("visitor:two", file("b", None)),
-                ("visitor:three", file("c", None)),
+                ("visitor-one", file("a", Some(with_picture))),
+                ("visitor-two", file("b", None)),
+                ("visitor-three", file("c", None)),
             ] {
                 chat::demo::apply_as(
                     &mut doc,
@@ -626,12 +626,12 @@ mod tests {
                 [
                     Referenced {
                         hash: picture,
-                        member: MemberId::person("visitor:one"),
+                        member: MemberId::person("visitor-one"),
                         size: None,
                     },
                     Referenced {
                         hash: recording,
-                        member: MemberId::person("visitor:three"),
+                        member: MemberId::person("visitor-three"),
                         size: Some(4_096),
                     },
                 ]

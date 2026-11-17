@@ -128,7 +128,7 @@ fn json(value: &serde_json::Value) -> InvokeArgument {
 /// refuses what came before it.
 fn opened_sheets(member: &Browser, route: &DocumentRoute) -> Option<Vec<String>> {
     let changes = member.documents.get(route)?;
-    let record = ui::resource::DocumentId::parse(&route.record)?;
+    let record = ui::resource::DocumentId::parse(&route.document)?;
     let replica = tilo_agent_session::Replica::open(
         &crate::common::catalogue(),
         &route.app_id,
@@ -223,7 +223,7 @@ async fn retained_sealed(
                     document_id,
                     envelope,
                     ..
-                }) if app_id == route.app_id && document_id == route.record => {
+                }) if app_id == route.app_id && document_id == route.document => {
                     Some(envelope.encryption.as_ref().is_some())
                 }
                 _ => None,

@@ -29,6 +29,7 @@ __all__ = [
     "Person",
     "Projected",
     "Book",
+    "Contacts",
     "Identities",
     "NewContactArgs",
     "AddContactsArgs",
@@ -123,6 +124,7 @@ MergeContactsArgs = TypedDict("MergeContactsArgs", {
     "contact": "str",
     "source": "str",
     "take_from_source": "list[MergeField]",
+    "merged": NotRequired["Contact | None"],
 })
 """The arguments of `merge-contacts`."""
 
@@ -201,7 +203,28 @@ ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
 
 class Book(Resource):
     """Contacts — `contacts.book`."""
-    __surface__ = "so.tilo.contacts@df7802e5d648a10e"
+    __surface__ = "so.tilo.contacts@ad4d4c1b4ade24ee"
+    def export_vcard_content(self,
+        *,
+        contact: str | None = None,
+        name: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        if contact is not None:
+            args["contact"] = contact
+        if name is not None:
+            args["name"] = name
+        return self.action("export-vcard-content", **args)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"export_vcard_content"})
+
+
+class Contacts(Resource):
+    """Contacts — `contacts.contacts`."""
+    __surface__ = "so.tilo.contacts@ad4d4c1b4ade24ee"
     contacts: list[Entry[Contact]]
     @property
     def removed(self) -> list[str]:
@@ -237,35 +260,29 @@ class Book(Resource):
         contact: str,
         source: str,
         take_from_source: list[MergeField],
+        merged: Contact | None = None,
     ) -> None:
         """Runs the app's action."""
-        return self.action("merge-contacts", contact=contact, source=source, take_from_source=take_from_source)
+        args: dict[str, Any] = {}
+        args["contact"] = contact
+        args["source"] = source
+        args["take_from_source"] = take_from_source
+        if merged is not None:
+            args["merged"] = merged
+        return self.action("merge-contacts", **args)
 
     def merge_contacts_many(self, items: list[MergeContactsArgs]) -> list[dict[str, Any]]:
         """Runs `merge-contacts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("merge-contacts", items)
 
-    def export_vcard_content(self,
-        *,
-        contact: str | None = None,
-        name: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        if contact is not None:
-            args["contact"] = contact
-        if name is not None:
-            args["name"] = name
-        return self.action("export-vcard-content", **args)
-
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_contact", "new_contact_many", "add_contacts", "add_contacts_many", "delete_contact", "delete_contact_many", "merge_contacts", "merge_contacts_many", "export_vcard_content"})
+    __actions__ = frozenset({"new_contact", "new_contact_many", "add_contacts", "add_contacts_many", "delete_contact", "delete_contact_many", "merge_contacts", "merge_contacts_many"})
 
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.contacts@df7802e5d648a10e"
+    __surface__ = "so.tilo.contacts@ad4d4c1b4ade24ee"
     people: list[Entry[Person]]
 
     def project_contact(self,

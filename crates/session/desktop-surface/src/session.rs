@@ -189,7 +189,8 @@ pub struct DesktopSession {
     /// answers for them.
     api_invocations: std::sync::Mutex<HashMap<InvocationId, Arc<dyn ActionHost + Send + Sync>>>,
     /// The host actions a window asked the shell to choose for the person
-    /// ([`session_actions::SHOW_CONNECT`]), for the desktop to take.
+    /// ([`session_actions::SHOW_CONNECT`], [`session_actions::SHOW_PAIR_DEVICE`]), for the
+    /// desktop to take.
     chosen: Chosen,
     woken: Arc<AtomicBool>,
 }
@@ -369,20 +370,21 @@ impl DesktopSession {
 }
 
 impl DesktopSession {
-    /// Show the person how an agent or a computer connects as them: the host action their own card
-    /// chooses ([`session_actions::CONNECT_AGENT`]), which the desktop's host carries out.
-    fn show_connect(
+    /// Show the person what a window asked the shell to show them: how an agent or a computer
+    /// connects as them ([`session_actions::CONNECT_AGENT`]), or the link another of their own
+    /// devices joins with ([`session_actions::PAIR_DEVICE`]). Each is the host action their own
+    /// card or search chooses, which the desktop's host carries out.
+    fn choose_for_person(
         &self,
         caller: &Caller,
         request: &InvokeRequest,
+        host_action: &str,
     ) -> Result<InvocationReceipt, ActionHostError> {
         // Shown to the person on their own screen, as their card shows it: never an agent's.
         if !(caller.acting().is_person() && caller.acting().app().is_none()) {
             return Err(ActionHostError::UnknownAction);
         }
-        self.chosen
-            .lock_recover()
-            .push(session_actions::CONNECT_AGENT.to_owned());
+        self.chosen.lock_recover().push(host_action.to_owned());
         self.woken.store(true, Ordering::Release);
         Ok(InvocationReceipt {
             invocation: request.invocation,
@@ -421,8 +423,19 @@ impl ActionHost for DesktopSession {
         if PERSON_PROVIDERS.contains(&request.target.provider.as_str()) {
             return self.ask_person_api(caller, request);
         }
-        if request.target == session_actions::target(session_actions::SHOW_CONNECT) {
-            return Pending::ready(self.show_connect(caller, &request));
+        for (shown, host_action) in [
+            (
+                session_actions::SHOW_CONNECT,
+                session_actions::CONNECT_AGENT,
+            ),
+            (
+                session_actions::SHOW_PAIR_DEVICE,
+                session_actions::PAIR_DEVICE,
+            ),
+        ] {
+            if request.target == session_actions::target(shown) {
+                return Pending::ready(self.choose_for_person(caller, &request, host_action));
+            }
         }
         if let Some(node) = request
             .target

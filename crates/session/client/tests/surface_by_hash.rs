@@ -72,7 +72,7 @@ impl WorkspaceContent for Keeps {
 /// Whether the page says it holds something for the note, and why.
 fn held(peer: &Link) -> Option<String> {
     let note = crate::support::route();
-    let held = format!("held {}/{}:", note.app_id, note.record);
+    let held = format!("held {}/{}:", note.app_id, note.document);
     peer.status()
         .key_state
         .lines()
@@ -112,7 +112,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     // writes the record's history, sealed and naming the other version's
     // surface.
     let note = route();
-    let artifact = document_artifact_id(&note.app_id, &note.cluster_id, &note.record);
+    let artifact = document_artifact_id(&note.app_id, &note.cluster_id, &note.document);
     let laptop_device = laptop.key.verifying_key().to_bytes();
     crate::support::place(&host.relay, &laptop.cert).await;
     let mut laptop = NativeDevice::start(
@@ -149,7 +149,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
             sealed,
             artifact,
             Ed25519PublicKey::from_bytes(laptop_device),
-            document_attestation_id(&note.app_id, &note.cluster_id, &note.record),
+            document_attestation_id(&note.app_id, &note.cluster_id, &note.document),
             OpKind::Change,
             SystemTime::now(),
             seq,

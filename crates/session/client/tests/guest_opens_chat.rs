@@ -156,7 +156,7 @@ async fn chat_read_by_guest(
     chat: &DocumentRoute,
 ) -> Duration {
     let head = DocumentRoute {
-        record: neighbour_wire::chain_head(CHAT_CHAIN),
+        document: neighbour_wire::chain_head(CHAT_CHAIN),
         ..chat.clone()
     };
     let opened = Instant::now();
@@ -175,7 +175,7 @@ async fn chat_read_by_guest(
                     quiet_since = Instant::now();
                     match page
                         .engine()
-                        .record(&chat.cluster_id, &chat.app_id, &chat.record)
+                        .record(&chat.cluster_id, &chat.app_id, &chat.document)
                     {
                         Ok(Some(bytes)) => shown = holds_every_message(&bytes),
                         // Still arriving (its keys): it lands again.
@@ -245,7 +245,7 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
     let chat = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: lounge.workspace.clone(),
-        record: neighbour_wire::document_part(CHAT_CHAIN, 0),
+        document: neighbour_wire::document_part(CHAT_CHAIN, 0),
     };
 
     // The first member writes the chat; the rest of the crowd came through

@@ -30,8 +30,8 @@ fn operation() -> ExternalModerationOperation {
 #[tokio::test]
 async fn external_moderation_bridge_preserves_exact_record_invocation_operation_and_reply() {
     let workspace = uuid::Uuid::new_v4();
-    let first_route = RouteSpec::record("so.tilo.store", workspace, "first");
-    let second_route = RouteSpec::record("so.tilo.store", workspace, "second");
+    let first_route = RouteSpec::document("so.tilo.store", workspace, "first");
+    let second_route = RouteSpec::document("so.tilo.store", workspace, "second");
     let (first, mut first_receive) = admit_for_test(first_route.channel_id()).unwrap();
     let (_second, mut second_receive) = admit_for_test(second_route.channel_id()).unwrap();
     let operation = operation();
@@ -157,7 +157,7 @@ async fn external_moderation_bridge_scoped_custody_rejects_changed_parameters_an
 
 #[test]
 fn external_moderation_bridge_refuses_wrong_action_foreign_full_invalid_and_retired_routes() {
-    let route = RouteSpec::record("so.tilo.store", uuid::Uuid::new_v4(), "bounded");
+    let route = RouteSpec::document("so.tilo.store", uuid::Uuid::new_v4(), "bounded");
     let (endpoint, mut receive) = admit_for_test(route.channel_id()).unwrap();
     assert!(admit_for_test(route.channel_id()).is_err());
     let invocation = tilo_actions::InvocationId::new();

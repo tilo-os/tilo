@@ -27,7 +27,8 @@ const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 #[test]
 fn a_confined_record_kept_at_an_older_storage_version_sends_its_migration() {
     use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
-    let app = "so.tilo.chat";
+    // Sheets keeps its workbook at a version it migrates up to.
+    let app = "so.tilo.sheets";
     let mut page = crate::common::open(
         app,
         &MemberId::person("ada"),

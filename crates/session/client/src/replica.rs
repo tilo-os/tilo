@@ -397,19 +397,6 @@ impl Replicas {
         .ok()
     }
 
-    /// When `workspace_id`'s governance admitted each of its people, by person (root key, hex),
-    /// Unix milliseconds: the order people who share a name are numbered in on every surface.
-    pub(crate) fn member_joined(&self, workspace_id: WorkspaceId) -> Option<BTreeMap<String, u64>> {
-        self.with_workspace(workspace_id, |view| {
-            let policy = view.peer().governance().governed_policy()?;
-            Ok(policy
-                .admitted()
-                .map(|(person, at)| (person.to_owned(), at))
-                .collect())
-        })?
-        .ok()
-    }
-
     /// What `workspace_id`'s governance calls each of its people, by person (root key, hex): the
     /// name its member list shows, also for someone it removed, whose changes still read as
     /// theirs. Everything that names a person here who is not here now names them by this.
@@ -583,10 +570,17 @@ mod tests {
         if members.map(|people| people.len()) != Some(1) {
             return Err(format!("{name} does not list its one person").into());
         }
-        let joined = reopened
-            .member_joined(workspace)
-            .ok_or("its admissions do not read")?;
-        if joined.len() != 1 {
+        let admitted = reopened
+            .with_workspace(workspace, |view| {
+                Ok(view
+                    .peer()
+                    .governance()
+                    .governed_policy()?
+                    .admitted()
+                    .count())
+            })
+            .ok_or("its admissions do not read")??;
+        if admitted != 1 {
             return Err("the founder's admission is not held".into());
         }
         Ok(())

@@ -48,11 +48,15 @@ impl Mount {
             return;
         };
         // When the workspace admitted each of its people numbers the namesakes among them: the
-        // same numbers the workspace's roster gives, never the order their ids sort in.
-        let numbered = desktop
-            .here
-            .borrow_mut()
-            .set_joined(&desktop.shared.joined.borrow());
+        // governance's times, projected onto the shell, which the roster numbers them by too.
+        let joined = desktop.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .find(|held| held.id().to_string() == desktop.workspace)
+                .map(|held| held.policy.joined.clone())
+                .unwrap_or_default()
+        });
+        let numbered = desktop.here.borrow_mut().set_joined(&joined);
         let renamed = *desktop.shared.names.borrow() != self.presence.named;
         if !std::mem::take(&mut self.here_stale) && !numbered && !renamed {
             return;

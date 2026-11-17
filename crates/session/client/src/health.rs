@@ -402,7 +402,7 @@ fn record_health(
             record: RecordRef {
                 app_id: route.app_id.clone(),
                 workspace: route.cluster_id.clone(),
-                document_id: route.record.clone(),
+                document_id: route.document.clone(),
             },
             editing: if blocked {
                 "blocked"

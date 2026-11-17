@@ -302,20 +302,22 @@ fn agents_and_members_never_open_the_device_shell() {
     assert!(err.contains("agents"), "{err}");
     assert_eq!(recorded(&app), before, "a refused target is not recorded");
 
-    let operate = |app: &mut App, actor: &str, target: &str| {
-        let _scope = ui::invocation_scope::InvokerScope::enter(
-            ui::tilo_actions::ActionInvoker::person(actor),
-        );
+    let operate = |app: &mut App, actor: ui::tilo_actions::ActionInvoker, target: &str| {
+        let _scope = ui::invocation_scope::InvokerScope::enter(actor);
         on_tab(app, |tab| {
             tab.perform(crate::resource::TerminalEffect::OpenIn {
                 target: target.into(),
             })
         })
     };
-    for actor in ["agent:helper", "0123abcd"] {
+    for actor in [
+        ui::tilo_actions::ActionInvoker::agent("helper"),
+        ui::tilo_actions::ActionInvoker::person("0123abcd"),
+    ] {
+        let who = format!("{actor:?}");
         assert!(
             operate(&mut app, actor, "host").is_err(),
-            "{actor} must not open the device's own shell"
+            "{who} must not open the device's own shell"
         );
     }
     assert!(
@@ -323,7 +325,12 @@ fn agents_and_members_never_open_the_device_shell() {
         "nothing was ever opened on the host"
     );
 
-    operate(&mut app, "agent:helper", "environment:work").unwrap();
+    operate(
+        &mut app,
+        ui::tilo_actions::ActionInvoker::agent("helper"),
+        "environment:work",
+    )
+    .unwrap();
     assert_eq!(recorded(&app), Some(SessionTarget::environment("work")));
     assert_eq!(
         opened.borrow().last(),
@@ -382,8 +389,8 @@ tilo_test_env::scenario! {
         let doc = AutoCommit::new();
         widget.sync(&doc, &ROOT);
 
-        let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::person(
-            "agent:helper",
+        let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::agent(
+            "helper",
         ));
         widget
             .perform(crate::resource::TerminalEffect::OpenIn {

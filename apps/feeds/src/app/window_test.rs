@@ -70,7 +70,7 @@ fn a_compact_window_with_an_article_open_shows_no_slice_of_the_list() {
     // The library lands on the compact window's stack before the person
     // chooses an article, as the framework presents it.
     let mut mounted = settled_at(app, viewport);
-    let id = mounted.core().store.articles_for(&Filter::All)[1]
+    let id = mounted.core().articles().articles_for(&Filter::All)[1]
         .id
         .clone();
     {
@@ -98,7 +98,7 @@ fn a_compact_window_keeps_the_article_whole_while_the_library_changes() {
     let mut mounted = settled_at(app, viewport);
     let (id, feed) = {
         let core = mounted.core();
-        let article = &core.store.articles_for(&Filter::All)[1];
+        let article = &core.articles().articles_for(&Filter::All)[1];
         (article.id.clone(), article.feed_id.clone())
     };
     {

@@ -1053,7 +1053,7 @@ impl LoungeHost {
         let route = DocumentRoute {
             app_id: CHAT.to_owned(),
             cluster_id: self.workspace.clone(),
-            record: CHAT_RECORD.to_owned(),
+            document: CHAT_RECORD.to_owned(),
         };
         let page = {
             let _entered = runtime.enter();
@@ -1282,7 +1282,7 @@ impl Lounge {
             DocumentRoute {
                 app_id: DESKTOP_APP.to_owned(),
                 cluster_id: self.workspace.clone(),
-                record: DESKTOP_DOCUMENT.to_owned(),
+                document: DESKTOP_DOCUMENT.to_owned(),
             },
             &mutation,
         )
@@ -1861,7 +1861,7 @@ fn the_lounge_writes_past_the_removal(session: &mut Session, lounge: &Lounge) {
     let route = DocumentRoute {
         app_id: CHAT.to_owned(),
         cluster_id: lounge.workspace.clone(),
-        record: CHAT_RECORD.to_owned(),
+        document: CHAT_RECORD.to_owned(),
     };
     let mut after = automerge::AutoCommit::load(
         &block_on_within(

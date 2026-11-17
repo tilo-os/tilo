@@ -469,9 +469,8 @@ def select(root: Path, push: Push, files: set[str]) -> Selection | None:
     if WORKSPACE_MANIFEST in files:
         reached = manifest_seeds(root, push, metadata)
         if reached is None:
-            say(f"pre-push: {WORKSPACE_MANIFEST}'s change decides how every member is built; "
-                "lint the workspace (`t cargo clippy --workspace`) or push past the gate "
-                "deliberately")
+            say(f"pre-push: {WORKSPACE_MANIFEST}'s change decides how every member is built, which "
+                "only a workspace-wide lint speaks for (`t cargo clippy --workspace`)")
             return None
         seeds |= reached
     names = changed_names(root, push.comparisons, files)
@@ -616,8 +615,16 @@ class Passes:
             return
         self.directory.mkdir(parents=True, exist_ok=True)
         (self.directory / key).write_text(label + "\n")
-        entries = sorted(self.directory.iterdir(), key=lambda entry: entry.stat().st_mtime)
-        for stale in entries[:-KEPT_PASSES]:
+        # Every worktree of the clone records here, and pushes run at the same time: an entry
+        # another of them pruned between the listing and its stat is not one to keep or to fail on.
+        entries = []
+        for entry in self.directory.iterdir():
+            try:
+                entries.append((entry.stat().st_mtime, entry))
+            except FileNotFoundError:
+                continue
+        entries.sort(key=lambda modified: modified[0])
+        for _modified, stale in entries[:-KEPT_PASSES]:
             stale.unlink(missing_ok=True)
 
 

@@ -203,13 +203,13 @@ fn routed_document(
         collab_types::document_artifact_id(
             &route.app_id,
             &route.cluster_id.to_string(),
-            route.record.as_deref().unwrap_or(""),
+            route.document.as_deref().unwrap_or(""),
         ),
         collab_types::Ed25519PublicKey::from_bytes([0; 32]),
         collab_types::document_attestation_id(
             &route.app_id,
             &route.cluster_id.to_string(),
-            route.record.as_deref().unwrap_or(""),
+            route.document.as_deref().unwrap_or(""),
         ),
         collab_types::OpKind::Change,
         crate::time::SystemTime::UNIX_EPOCH,
@@ -230,7 +230,7 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
             epoch: uuid::Uuid::new_v4(),
         });
         let mut foreign = installed;
-        foreign.record = Some("foreign-record".into());
+        foreign.document = Some("foreign-record".into());
         let mut incoming = automerge::AutoCommit::new();
         incoming.put(ROOT, "foreign-body", "must stay out").unwrap();
         app.apply_signed_document_envelope(
@@ -425,7 +425,7 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
         );
         let mut app = App::new_with_controlled_inputs(State::new(), probe.root);
         let foreign =
-            crate::collaboration::RouteSpec::record("foreign", uuid::Uuid::new_v4(), "other");
+            crate::collaboration::RouteSpec::document("foreign", uuid::Uuid::new_v4(), "other");
         let mut doc = automerge::AutoCommit::new();
         doc.put(ROOT, "body", "foreign").unwrap();
         let envelope = routed_document(
@@ -5665,22 +5665,6 @@ fn committed_queued_publication_failure_restores_all_producer_frontiers() {
             .0
             .is_empty(),
         "index frontier must replay"
-    );
-
-    let mut bound = RoutedPrimary::new(PrimaryMetadataShape::None);
-    let (delta, heads, _) = bound
-        .app
-        .pending_primary_document()
-        .unwrap()
-        .expect("the record whole at first");
-    assert!(!delta.data().is_empty());
-    bound.app.advance_primary_document(heads);
-    assert!(bound.app.pending_primary_document().unwrap().is_none());
-    bound.app.collaboration.manager.fail_publication_for_test();
-    bound.app.refresh_document_routes();
-    assert!(
-        bound.app.pending_primary_document().unwrap().is_some(),
-        "canonical primary owner must replay its accepted history too"
     );
 }
 

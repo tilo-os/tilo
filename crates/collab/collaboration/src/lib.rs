@@ -274,7 +274,7 @@ pub use runtime_collab::{
     NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget, NetworkWakeStatus,
     PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
 };
-pub use runtime_collab::{file_clipboard, write_attribution};
+pub use runtime_collab::{file_clipboard, recall, write_attribution};
 
 pub use collab_types::MemberId;
 use collab_types::presence::PresenceKey;
@@ -956,7 +956,7 @@ impl CollaborationManager {
         checkout: &collab_types::document::DocumentCheckout,
     ) -> Option<CommittedDocument> {
         let primary = self.primary_route.accepted.as_ref()?;
-        let route = RouteSpec::record(
+        let route = RouteSpec::document(
             primary.route.app_id.clone(),
             primary.route.cluster_id,
             checkout.id.as_str(),
@@ -1145,7 +1145,7 @@ impl CollaborationManager {
             .cloned()
             .ok_or("native primary route unavailable")?;
         let record = (!checkout.id.is_package_primary()).then(|| checkout.id.as_str().to_owned());
-        if pending.record == record {
+        if pending.document == record {
             return Ok(());
         }
         if !self.send(CollabRequest::Hello {
@@ -1183,7 +1183,7 @@ impl CollaborationManager {
         }
         let instance = witness
             .route
-            .record
+            .document
             .as_deref()?
             .strip_prefix("continuation:")?;
         match instance.parse::<u64>() {
@@ -1300,7 +1300,7 @@ impl CollaborationManager {
         self.primary_route.announce(RouteSpec {
             app_id: app_id.clone(),
             cluster_id: *cluster_id,
-            record: record.clone(),
+            document: record.clone(),
         });
         self.action_directory = DirectoryOffer::Unoffered;
         self.submit(TransportCommand::Primary(req))?;
@@ -1755,7 +1755,7 @@ impl CollaborationManager {
             snapshot.valid()
                 && snapshot.app_id == route.app_id
                 && snapshot.workspace == route.cluster_id.to_string()
-                && snapshot.document == route.record.as_deref().unwrap_or("")
+                && snapshot.document == route.document.as_deref().unwrap_or("")
         })
     }
 
@@ -1960,8 +1960,8 @@ mod task4_route_tests {
     use super::{PrimaryRouteState, RouteSpec};
     #[test]
     fn task4_primary_witness_requires_latest_success_and_current_health() {
-        let a = RouteSpec::record("a", uuid::Uuid::nil(), "record-a");
-        let b = RouteSpec::record("b", uuid::Uuid::nil(), "record-b");
+        let a = RouteSpec::document("a", uuid::Uuid::nil(), "record-a");
+        let b = RouteSpec::document("b", uuid::Uuid::nil(), "record-b");
         let mut state = PrimaryRouteState::default();
         assert!(state.current(true).is_none());
         state.announce(a.clone());
@@ -2065,8 +2065,8 @@ mod local_document_report_tests {
             let mut manager =
                 CollaborationManager::with_transport(Box::new(CaptureTransport(reports.clone())));
             let captured = capture();
-            let shared = RouteSpec::record("app", uuid::Uuid::from_bytes([3; 16]), "shared");
-            let local = RouteSpec::record("app", uuid::Uuid::from_bytes([4; 16]), "local");
+            let shared = RouteSpec::document("app", uuid::Uuid::from_bytes([3; 16]), "shared");
+            let local = RouteSpec::document("app", uuid::Uuid::from_bytes([4; 16]), "local");
             for (request_id, route) in [(11, shared.clone()), (12, local.clone())] {
                 manager
                     .report_local_document_action_to_route(route, request_id, captured.clone())
@@ -2106,7 +2106,7 @@ mod local_document_report_tests {
 
         phase unavailable_transport_and_missing_published_invocation_refuse;
         {
-            let route = RouteSpec::record("app", uuid::Uuid::from_bytes([3; 16]), "shared");
+            let route = RouteSpec::document("app", uuid::Uuid::from_bytes([3; 16]), "shared");
             assert!(
                 CollaborationManager::disabled()
                     .report_local_document_action_to_route(route.clone(), 1, capture())
@@ -2267,7 +2267,7 @@ mod late_primary_route_tests {
         RouteSpec {
             app_id: "so.tilo.notes".into(),
             cluster_id: uuid::Uuid::from_bytes([7; 16]),
-            record: None,
+            document: None,
         }
     }
 

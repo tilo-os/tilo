@@ -1427,6 +1427,7 @@ impl BrowserShell {
         if workspace.to_string() != shared.workspace {
             return;
         }
+        shared.asked_name.replace(Some(name.trim().to_owned()));
         let workspace = shared.workspace.clone();
         let notifications = self.chrome.notifications.clone();
         let woken = Arc::clone(&shared.woken);
@@ -1569,7 +1570,10 @@ impl BrowserShell {
             .own_label()
             .map_or_else(tilo_desktop::here::guest_label, str::to_owned);
         ProfileModel {
-            identity: ui::collaboration::local_user_id().key(),
+            identity: ui::collaboration::local_user_id()
+                .person_id()
+                .unwrap_or_default()
+                .to_owned(),
             name,
             colour: rgb.map(|(r, g, b)| ui::vello::peniko::Color::from_rgb8(r, g, b)),
             can_rename: self.handle.offers_host_action(RENAME_ACTION),

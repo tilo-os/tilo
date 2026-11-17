@@ -116,7 +116,7 @@ impl MediaLane {
                         app: route.app_id.clone(),
                         instance: binding.instance_id.to_string(),
                         workspace: route.cluster_id.to_string(),
-                        record: route.record.clone().unwrap_or_default(),
+                        record: route.document.clone().unwrap_or_default(),
                         command,
                     };
                     self.owners

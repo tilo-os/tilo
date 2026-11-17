@@ -340,6 +340,22 @@ pub(crate) fn not_by_app<P: Resource>(action: &P::Action) -> Result<(), String> 
 /// person over the broker), else `me`, the person at this window. Every write
 /// path reads it, so an agent's change is the agent's in whichever record
 /// it lands, and names the person it acts for.
+/// Whether `invoker` is the person `me` themselves, or a device of theirs,
+/// rather than software acting on their behalf: whose step the window's Undo
+/// takes back.
+pub(crate) fn acts_for(invoker: &ActionInvoker, me: &tilo_resource::MemberId) -> bool {
+    let by_agent = invoker
+        .acting
+        .by
+        .member_id()
+        .is_some_and(tilo_resource::MemberId::is_agent);
+    !by_agent
+        && (invoker.acting.by.member_id() == Some(me)
+            || me
+                .person_id()
+                .is_some_and(|person| invoker.acting.acted_for_person() == Some(person)))
+}
+
 pub(crate) fn acting(me: &tilo_resource::MemberId) -> ActionInvoker {
     ui_core::invocation_scope::current_invoker()
         .unwrap_or_else(|| ActionInvoker::member(me.clone()))
@@ -432,6 +448,10 @@ pub struct Records<'a> {
     /// The API of the app's own record, as the `Dispatcher` of its
     /// resource: what a container of children it lists writes it through.
     dispatch: Option<Rc<dyn std::any::Any>>,
+    /// The record the window shows: the app's own record of the workspace,
+    /// or the one per member where the app keeps those, which a chain hangs
+    /// off ([`Chained::chain_beside`](super::Chained::chain_beside)).
+    record: Option<ui_core::resource::DocumentId>,
     /// The resource types of the chains declared, while declaring.
     chains: Vec<tilo_resource::ResourceKind>,
     /// Where a host without a window keeps the settings sections declared,
@@ -465,6 +485,7 @@ impl<'a> Records<'a> {
             storage: Some(storage),
             base: None,
             dispatch: None,
+            record: None,
             chains: Vec::new(),
             sections: None,
             provider: None,
@@ -480,6 +501,7 @@ impl<'a> Records<'a> {
             storage: None,
             base: None,
             dispatch: None,
+            record: None,
             chains: Vec::new(),
             sections: None,
             provider: None,
@@ -494,6 +516,7 @@ impl<'a> Records<'a> {
             storage: None,
             base: None,
             dispatch: None,
+            record: None,
             chains: Vec::new(),
             sections: Some(sections),
             provider: None,
@@ -541,6 +564,15 @@ impl<'a> Records<'a> {
         self
     }
 
+    /// The record the window shows, which a chain hangs off
+    /// ([`Chained::chain_beside`](super::Chained::chain_beside)): the app's
+    /// own record of the workspace, or the one per member where the app
+    /// keeps those.
+    pub(crate) fn at(mut self, record: Option<&ui_core::resource::DocumentId>) -> Self {
+        self.record = record.cloned();
+        self
+    }
+
     /// The chain of `P` the app keeps beside its record
     /// ([`Chain`](super::Chain)): its head is held and it is published
     /// with the window.
@@ -560,7 +592,7 @@ impl<'a> Records<'a> {
             );
             return self;
         };
-        let _ = storage.chain::<P>(move || base.get());
+        let _ = storage.chain::<P>(self.record.as_ref(), move || base.get());
         self
     }
 

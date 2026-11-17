@@ -319,17 +319,17 @@ mod tests {
         {
             use ui::tilo_resource::Resource as _;
             let (mut doc, submission) = seeded();
-            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
+            apply_as(&mut doc, "visitor-one", action(&submission)).unwrap();
             let saved = doc.save();
             let mut restored = Doc::load(&saved).unwrap();
-            apply_as(&mut restored, "visitor:one", action(&submission)).unwrap();
+            apply_as(&mut restored, "visitor-one", action(&submission)).unwrap();
             let messages = messages(&restored, &submission.destination.channel);
             let matching: Vec<_> = messages
                 .iter()
                 .filter(|message| message.id == message_id(&submission.id))
                 .collect();
             assert_eq!(matching.len(), 1);
-            assert_eq!(matching[0].author, MemberId::person("visitor:one"));
+            assert_eq!(matching[0].author, MemberId::person("visitor-one"));
             assert_eq!(
                 report(&restored, &submission.id)
                     .unwrap()
@@ -360,8 +360,8 @@ mod tests {
             let mut peer = doc.fork();
             let mut other = submission.clone();
             other.id = "fedcba9876543210fedcba9876543210".into();
-            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
-            apply_as(&mut peer, "visitor:two", action(&other)).unwrap();
+            apply_as(&mut doc, "visitor-one", action(&submission)).unwrap();
+            apply_as(&mut peer, "visitor-two", action(&other)).unwrap();
             doc.merge_incoming(&mut peer).unwrap();
             assert_eq!(reports(&doc).unwrap().len(), 2);
             assert!(report(&doc, &submission.id).unwrap().is_some());
@@ -371,16 +371,16 @@ mod tests {
         phase triage_is_attributed_and_preserves_the_issue;
         {
             let (mut doc, submission) = seeded();
-            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
+            apply_as(&mut doc, "visitor-one", action(&submission)).unwrap();
             apply_as(
                 &mut doc,
-                "maintainer:one",
+                "maintainer-one",
                 triage(&submission, &TriageUpdate::Investigating),
             )
             .unwrap();
             apply_as(
                 &mut doc,
-                "maintainer:two",
+                "maintainer-two",
                 triage(
                     &submission,
                     &TriageUpdate::Duplicate {
@@ -391,20 +391,20 @@ mod tests {
             .unwrap();
             let report = report(&doc, &submission.id).unwrap().unwrap();
             assert_eq!(report.submission, submission);
-            assert_eq!(report.author, MemberId::person("visitor:one"));
+            assert_eq!(report.author, MemberId::person("visitor-one"));
             assert_eq!(
                 report
                     .triage
                     .iter()
                     .map(|entry| entry.author.id())
                     .collect::<Vec<_>>(),
-                ["maintainer:one", "maintainer:two"]
+                ["maintainer-one", "maintainer-two"]
             );
             assert_eq!(report.triage[0].update, TriageUpdate::Investigating);
             assert!(
                 apply_as(
                     &mut doc,
-                    "maintainer:one",
+                    "maintainer-one",
                     Chat::TRIAGE.with(chat::Triage {
                         report: Id::from_raw(submission.id),
                         update: serde_json::json!({"status": "lost"}),
@@ -418,8 +418,8 @@ mod tests {
         {
             let (mut doc, submission) = seeded();
             let mut peer = doc.fork();
-            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
-            apply_as(&mut peer, "visitor:one", action(&submission)).unwrap();
+            apply_as(&mut doc, "visitor-one", action(&submission)).unwrap();
+            apply_as(&mut peer, "visitor-one", action(&submission)).unwrap();
             doc.merge_incoming(&mut peer).unwrap();
             assert_eq!(reports(&doc).unwrap().len(), 1);
             assert_eq!(
@@ -437,19 +437,19 @@ mod tests {
             let mut unauthored = ui::tilo_resource::Replica::<Chat>::from_doc(doc.fork());
             assert!(unauthored.apply(action(&submission)).is_err());
             assert!(reports(unauthored.doc()).unwrap().is_empty());
-            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
+            apply_as(&mut doc, "visitor-one", action(&submission)).unwrap();
             let before = doc.get_heads();
-            assert!(apply_as(&mut doc, "visitor:other", action(&submission)).is_err());
+            assert!(apply_as(&mut doc, "visitor-other", action(&submission)).is_err());
             let mut changed = submission.clone();
             changed.feedback.text = "different".into();
-            assert!(apply_as(&mut doc, "visitor:one", action(&changed)).is_err());
+            assert!(apply_as(&mut doc, "visitor-one", action(&changed)).is_err());
             let mut elsewhere = submission;
             elsewhere.id = "fedcba9876543210fedcba9876543210".into();
             elsewhere.destination.channel = "c_random".into();
             assert!(
                 apply_as(
                     &mut doc,
-                    "visitor:one",
+                    "visitor-one",
                     Chat::SUBMIT_FEEDBACK.with(chat::SubmitFeedback {
                         channel: Id::from_raw("c_general"),
                         submission: serde_json::to_value(&elsewhere).unwrap(),
@@ -462,10 +462,10 @@ mod tests {
         }
     }
 
-    /// Seed the demo and file `submission` as `visitor:one` in `doc`.
+    /// Seed the demo and file `submission` as `visitor-one` in `doc`.
     fn filed(doc: &mut Doc, submission: &Submission) {
         crate::demo::seed(doc).unwrap();
-        apply_as(doc, "visitor:one", action(submission)).unwrap();
+        apply_as(doc, "visitor-one", action(submission)).unwrap();
     }
 
     /// The record the reporter's window showed: a chat whose channels they
@@ -476,7 +476,7 @@ mod tests {
         for name in ["plans", "ideas"] {
             apply_as(
                 &mut shown,
-                "visitor:one",
+                "visitor-one",
                 Chat::CREATE_CHANNEL.with(chat::CreateChannel {
                     name: name.parse().unwrap(),
                     category: None,
@@ -492,7 +492,7 @@ mod tests {
             .unwrap();
         apply_as(
             &mut shown,
-            "visitor:one",
+            "visitor-one",
             Chat::RENAME_CHANNEL.with(chat::RenameChannel {
                 channel: Id::from_raw(general.id),
                 name: "roadmap".parse().unwrap(),
@@ -522,7 +522,7 @@ mod tests {
                 ui::feedback::Recorded::new("so.tilo.chat", "Chat", "chat.workspace", &cut).unwrap();
             let (mut destination, mut submission) = seeded();
             submission.feedback.recording = Some(recorded.reference().clone());
-            apply_as(&mut destination, "visitor:one", action(&submission)).unwrap();
+            apply_as(&mut destination, "visitor-one", action(&submission)).unwrap();
 
             // Another member: their replica of the destination's chat, and the
             // recording's bytes as the record's route hands them over.
@@ -746,7 +746,7 @@ mod tests {
         {
             use ui::resource::ResourceSaveStatus;
             let (mut doc, submission) = seeded();
-            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
+            apply_as(&mut doc, "visitor-one", action(&submission)).unwrap();
             for status in [
                 ResourceSaveStatus::Saving,
                 ResourceSaveStatus::MemoryOnly,

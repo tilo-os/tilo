@@ -1087,8 +1087,8 @@ impl DesktopChrome {
     fn edit_workspace(&self, command: &DesktopCommand) -> Result<Option<StripId>, String> {
         let made = self.handle.apply_command(command)?;
         if let DesktopCommand::RenameWorkspace { name } = command {
-            // The workspace's name is the workspace's, which every device and list of it reads
-            // from its governance: the shell keeps it at once, and the host writes it there.
+            // The workspace's name is its governance's, which every device and list of it reads:
+            // the host writes it there, and it is projected back onto this shell.
             let workspace = self.handle.read(|tree| {
                 tree.active_workspace()
                     .map(tilo_desktop_model::Workspace::id)

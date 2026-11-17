@@ -27,6 +27,9 @@ Sources/ShellWeb     the web view that holds the page, notifications, dictation,
 Sources/TiloMac      the Mac app: one window, the menu-bar item, settings
 Sources/TiloPhone    the iPhone app
 Sources/TiloShare    the share extension of both
+Sources/TiloLive     Tilo inside a native app: Tilo's page as the client behind a Swift
+                     interface, and the view that shows one live Tilo thing
+Sources/TiloLiveProbe  the same with nothing on screen, for a check to drive
 Bundle/              what the bundles carry, with room for an app's name and identifier:
                      Info.plists, entitlements, the English sentences, the phone's page in
                      Settings, the icon's one drawing
@@ -197,6 +200,44 @@ on.
   straight away) needs an action of the page the script can call.
 - **Notices while the window is in view but the app is not in front.** The page tells the
   system only while it is hidden.
+
+## Tilo inside a native app
+
+`TiloLive` is for an app whose own views are native and that is still a device of its person.
+It draws nothing of Tilo a second time and speaks to no API with a key.
+
+**The engine** (`TiloEngine`) holds Tilo's page in a web view that shows nothing: the page
+that shows Chat alone, which has no desktop and writes nothing into a workspace's layout. The
+page is the device: its key, its pairing, its connection, its records. The engine gives the app
+what a resource reads as (`read`), word that something changed (`changes`), and the typed
+actions with their answers (`invoke`), through the page's own mount: the entry its palette,
+agents and assistive technology use, under the person's own standing. It pairs from a link
+"Pair a new device" made (`pair`), and says where it stands (`standings`): the code to compare,
+in, or the site's own refusal. It hands the app no key. It opens its one site and nothing else,
+and hears only that site's page in the main frame.
+
+A web view in no window calls its page hidden and asks it for no frame, and Tilo's page is in
+only once it drew one. So while nobody sees the page a clock asks for its frames, slowly; while
+someone does, the screen asks (`EngineScript`). On an iPhone a web view runs its page only in a
+window: the app puts `EngineRoom` into its root view, which takes no room.
+
+**A live thing** (`TiloLiveView`) is one app on one record, drawn by Tilo's own runtime inside a
+native view. It is one more mount in the engine's own document, through the page's own
+connection, so it is the same device: a second web view of the same store would take a device
+key of its own, which a paired device cannot certify. The engine's one web view is what the
+native view shows. So one thing is live at a time: the others show the picture taken as they
+left the front, and wake when they come to it (`LiveStage`). In a message it is looked at and
+takes no touch, so the conversation scrolls over it; when the person hops in it fills its room
+and the keyboard is its own, on the same mount.
+
+What it leans on, until Tilo's page offers each: the page's accessibility tree changing is the
+word that something changed, where the page has no `tiloChanges`; and a second mount is made
+through the page's own `host.mjs` and `peer.mjs`, where the page has no `tiloOpen`.
+
+`TiloLiveProbe` is the engine with no window, driven over its standard input: it pairs, prints
+Chat's messages as they arrive, sends through Chat's own send, and shows a document in a
+window that is never put on a screen, with real key presses. A store it keeps holds a device
+key that only the very program that made it reads again.
 
 ## Limits
 

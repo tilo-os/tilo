@@ -239,6 +239,7 @@ async fn answer(
         ),
         Begun::Conflict(why) => refusal(&ApiError::new("idempotency_conflict", why)),
         Begun::Fresh => {
+            let running = idempotency::Running::new(&server.v1.remembered, &holder, key);
             let answered = caller.with_idempotency(key).handle(operation).await;
             // A pending answer is asked about again by a retry, and a refusal
             // the host may not repeat (busy, unreachable) is not kept. Nor is
@@ -268,7 +269,7 @@ async fn answer(
                 }
                 _ => None,
             };
-            server.v1.remembered.finish(&holder, key, kept);
+            running.finish(kept);
             reply(answered)
         }
     }
@@ -735,16 +736,33 @@ impl<'a> Caller<'a> {
             }
             "runProgram" => {
                 let program: answers::Program = self.json_body()?;
-                let answer = self
+                let arguments = json!({
+                    "program": program.program,
+                    "confirm": program.confirm.unwrap_or(false),
+                });
+                let (answer, session) = self
                     .session
-                    .call(Call {
-                        workspace: Some(ws),
-                        tool: "tilo",
-                        arguments: serde_json::to_value(program).unwrap_or_default(),
-                        group: self.group.clone(),
-                    })
+                    .run_program(
+                        &ws,
+                        program.session.as_deref(),
+                        arguments,
+                        self.group.clone(),
+                    )
                     .await?;
-                shaped::<answers::ProgramAnswer>(typed_answer(&answer)?).map(Answer::ok)
+                let mut typed = typed_answer(&answer)?;
+                if let Some(fields) = typed.as_object_mut() {
+                    // A program refused before it ran says why in the words a person reads.
+                    if !fields.contains_key("text")
+                        && let Some(why) = fields
+                            .get("error")
+                            .and_then(|error| error.get("message"))
+                            .cloned()
+                    {
+                        fields.insert("text".into(), why);
+                    }
+                    fields.insert("session".into(), json!(session));
+                }
+                shaped::<answers::ProgramAnswer>(typed).map(Answer::ok)
             }
             "upload" => {
                 let content = crate::content::put(&self.session, &ws, self.body)

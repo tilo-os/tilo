@@ -210,7 +210,7 @@ async fn an_apps_record_written_on_one_device_is_read_on_another() {
     a.publish(|store, key, now| {
         store.publish(
             NOTES,
-            route.record.as_deref().unwrap(),
+            route.document.as_deref().unwrap(),
             &collab_types::DocumentMutation::Snapshot(written),
             key,
             now,
@@ -233,7 +233,7 @@ async fn an_apps_record_written_on_one_device_is_read_on_another() {
         async move { b.connect(&b_endpoint, a_addr).await }
     });
     until(&b, |store| {
-        store.holds_document(NOTES, route.record.as_deref().unwrap())
+        store.holds_document(NOTES, route.document.as_deref().unwrap())
     })
     .await;
 
@@ -241,7 +241,7 @@ async fn an_apps_record_written_on_one_device_is_read_on_another() {
     // device's document of the record, and reads what the laptop wrote.
     let held = b
         .store()
-        .document(NOTES, route.record.as_deref().unwrap())
+        .document(NOTES, route.document.as_deref().unwrap())
         .unwrap();
     assert!(on_b.merge_peer_document(held).unwrap());
     assert_eq!(chapter(&on_b).as_deref(), Some("three"));
@@ -253,7 +253,7 @@ async fn an_apps_record_written_on_one_device_is_read_on_another() {
     b.publish(|store, key, now| {
         store.publish(
             NOTES,
-            route.record.as_deref().unwrap(),
+            route.document.as_deref().unwrap(),
             &collab_types::DocumentMutation::Snapshot(written),
             key,
             now,
@@ -262,13 +262,13 @@ async fn an_apps_record_written_on_one_device_is_read_on_another() {
     .unwrap();
     until(&a, |store| {
         store
-            .document(NOTES, route.record.as_deref().unwrap())
+            .document(NOTES, route.document.as_deref().unwrap())
             .is_some_and(|doc| field(&doc, "chapter").as_deref() == Some("four"))
     })
     .await;
     let held = a
         .store()
-        .document(NOTES, route.record.as_deref().unwrap())
+        .document(NOTES, route.document.as_deref().unwrap())
         .unwrap();
     assert!(on_a.merge_peer_document(held).unwrap());
     assert_eq!(chapter(&on_a).as_deref(), Some("four"));

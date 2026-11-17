@@ -71,6 +71,33 @@ pub struct State {
     pub(crate) fractional_scale:
         Option<smithay::wayland::fractional_scale::FractionalScaleManagerState>,
     pub(crate) content_type: Option<smithay::wayland::content_type::ContentTypeState>,
+    /// The app-facing decoration managers, once a desktop offered them.
+    pub(crate) xdg_decorations:
+        Option<smithay::wayland::shell::xdg::decoration::XdgDecorationState>,
+    pub(crate) kde_decorations:
+        std::sync::OnceLock<smithay::wayland::shell::kde::decoration::KdeDecorationState>,
+    /// The app-facing activation global, and the tokens the desktop still owes.
+    pub(crate) activation_global: Option<smithay::reexports::wayland_server::backend::GlobalId>,
+    pub(crate) activation_pending: crate::activation::PendingTokens,
+    /// The app-facing presentation global, its clock, and the feedback the desktop owes.
+    pub(crate) presentation_global: Option<smithay::reexports::wayland_server::backend::GlobalId>,
+    pub(crate) presentation_clock: Option<u32>,
+    pub(crate) presentation_pending: crate::presentation::Pending,
+    pub(crate) presentation_flight: crate::presentation::Flights,
+    /// The app-facing cursor-shape manager, the shape each app pointer named, and the desktop's
+    /// device for each while attached.
+    pub(crate) cursor_shape_global: Option<crate::cursor_shape::Global>,
+    pub(crate) cursor_shapes: crate::cursor_shape::Shapes,
+    pub(crate) cursor_shape_devices: crate::cursor_shape::Devices,
+    /// The app-facing inhibitor globals, once a desktop offered them.
+    pub(crate) idle_inhibit: Option<smithay::wayland::idle_inhibit::IdleInhibitManagerState>,
+    pub(crate) shortcuts_inhibit_global:
+        Option<smithay::reexports::wayland_server::backend::GlobalId>,
+    /// The app-facing dialog global, once a desktop offered it.
+    pub(crate) dialog: Option<smithay::wayland::shell::xdg::dialog::XdgDialogState>,
+    /// The app-facing window-icon manager, whose sizes the desktop asked for.
+    pub(crate) icons: Option<smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager>,
+    pub(crate) icon_sizes: Vec<i32>,
     /// What the desktop answered each surface's own feedback request, kept while it is away.
     pub(crate) surface_feedback: crate::dmabuf::SurfaceFeedbacks,
     /// Every live surface of the app, by its id.
@@ -123,6 +150,22 @@ impl State {
             viewporter: None,
             fractional_scale: None,
             content_type: None,
+            xdg_decorations: None,
+            kde_decorations: std::sync::OnceLock::new(),
+            activation_global: None,
+            activation_pending: HashMap::new(),
+            presentation_global: None,
+            presentation_clock: None,
+            presentation_pending: HashMap::new(),
+            presentation_flight: crate::presentation::Flights::default(),
+            cursor_shape_global: None,
+            cursor_shapes: HashMap::new(),
+            cursor_shape_devices: HashMap::new(),
+            idle_inhibit: None,
+            shortcuts_inhibit_global: None,
+            dialog: None,
+            icons: None,
+            icon_sizes: Vec::new(),
             surface_feedback: crate::dmabuf::SurfaceFeedbacks::default(),
             surfaces: HashMap::new(),
             next_seq: 0,
@@ -158,7 +201,11 @@ impl State {
                 self.content_type =
                     Some(smithay::wayland::content_type::ContentTypeState::new::<Self>(&self.dh));
             }
-            _ => {}
+            "xdg_activation_v1" => self.offer_activation(),
+            "zwp_idle_inhibit_manager_v1" => self.offer_idle_inhibit(),
+            "zwp_keyboard_shortcuts_inhibit_manager_v1" => self.offer_shortcuts_inhibit(),
+            "xdg_wm_dialog_v1" => self.offer_dialog(),
+            _ => self.offer_decorations(interface),
         }
     }
 
@@ -244,7 +291,9 @@ impl CompositorHandler for State {
 
     fn commit(&mut self, surface: &WlSurface) {
         self.absorb(surface);
+        self.absorb_icon(surface);
         self.first_configure_while_away(surface);
+        self.presentation_committed(surface);
         self.push(&surface.id());
     }
 

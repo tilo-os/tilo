@@ -305,9 +305,16 @@ export class Workspace {
     return page(options.cursor ?? null);
   }
 
-  /** Run a tilolang program as one step. */
-  async program(source: string, confirm: boolean | null = null): Promise<ProgramAnswer> {
-    return (await this.endpoint()).program(source, confirm);
+  /**
+   * Run a tilolang program as one step, in the program session `session` names (an earlier
+   * answer's `session`), or a new one.
+   */
+  async program(
+    source: string,
+    confirm: boolean | null = null,
+    session: string | null = null,
+  ): Promise<ProgramAnswer> {
+    return (await this.endpoint()).program(source, confirm, session);
   }
 
   /** Each change, invocation event and presence change, the cursor kept. */

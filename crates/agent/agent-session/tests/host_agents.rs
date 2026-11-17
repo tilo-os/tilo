@@ -119,7 +119,7 @@ impl Browser {
                     &MemberId::person("ada"),
                     ReplicaActor::Owner,
                     Seed::Existing {
-                        record: route_document(&route.record),
+                        record: route_document(&route.document),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                     },
                 ) {
@@ -144,7 +144,7 @@ impl Browser {
                 let received: Vec<_> = self
                     .documents
                     .iter()
-                    .map(|(route, changes)| (route.record.clone(), changes.len()))
+                    .map(|(route, changes)| (route.document.clone(), changes.len()))
                     .collect();
                 let bodies = self.bodies(app, author);
                 let status = self.status().await;
@@ -447,7 +447,7 @@ impl Page {
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: WORKSPACE.into(),
-            record: page.wire_document().to_owned(),
+            document: page.wire_document().to_owned(),
         };
         browser
             .peer
@@ -477,7 +477,7 @@ impl Page {
                     &MemberId::person("bea"),
                     ReplicaActor::Owner,
                     Seed::Existing {
-                        record: route_document(&creator.route.record),
+                        record: route_document(&creator.route.document),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                     },
                 )
@@ -594,7 +594,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         browser.layout().is_some_and(|desktop| !desktop
             .records
             .iter()
-            .any(|(_, record)| *record == page.route.record)),
+            .any(|(_, record)| *record == page.route.document)),
         "a task that only read opened nothing"
     );
 
@@ -647,7 +647,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
                 &MemberId::person("ada"),
                 ReplicaActor::Owner,
                 Seed::Existing {
-                    record: route_document(&page.route.record),
+                    record: route_document(&page.route.document),
                     changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                 },
             );
@@ -673,7 +673,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         let windows: Vec<u64> = desktop
             .iter()
             .flat_map(|desktop| &desktop.records)
-            .filter(|(_, record)| *record == page.route.record)
+            .filter(|(_, record)| *record == page.route.document)
             .map(|(tab, _)| *tab)
             .collect();
         if let (Some(desktop), [tab]) = (&desktop, windows.as_slice()) {

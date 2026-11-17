@@ -404,8 +404,10 @@ pub(crate) fn direct_page(
     (me, peer): (&PersonId, &PersonId),
     readings: &serde_json::Value,
 ) -> HistoryPage {
-    let channel =
-        chat::Chat::direct_id([MemberId::Person(me.clone()), MemberId::Person(peer.clone())]);
+    let channel = MemberId::direct_conversation([
+        MemberId::Person(me.clone()),
+        MemberId::Person(peer.clone()),
+    ]);
     let peer = MemberId::Person(peer.clone());
     let field = |value: &serde_json::Value, at: &str| value.pointer(at).cloned();
     let mut messages = Vec::new();

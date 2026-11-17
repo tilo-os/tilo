@@ -15,7 +15,34 @@ pub enum MemberId {
     Bot(String),
 }
 
+/// The prefix of a direct conversation's id: the members it is with follow
+/// it, sorted, as JSON.
+pub const DIRECT_CONVERSATION_PREFIX: &str = "direct:";
+
 impl MemberId {
+    /// The id of the one direct conversation with exactly `members`, as every
+    /// app that reads or writes conversations spells it: derived from the
+    /// set, so two devices that open the same conversation at once make one,
+    /// and neither has to create it first.
+    #[must_use]
+    pub fn direct_conversation(members: impl IntoIterator<Item = Self>) -> String {
+        let mut members: Vec<Self> = members.into_iter().collect();
+        members.sort();
+        members.dedup();
+        let members = serde_json::to_string(&members).unwrap_or_default();
+        format!("{DIRECT_CONVERSATION_PREFIX}{members}")
+    }
+
+    /// The members the direct conversation `id` is with, or none when `id`
+    /// names no direct conversation.
+    #[must_use]
+    pub fn direct_conversation_members(id: &str) -> Option<Vec<Self>> {
+        let members = id.strip_prefix(DIRECT_CONVERSATION_PREFIX)?;
+        serde_json::from_str::<Vec<Self>>(members)
+            .ok()
+            .filter(|members| !members.is_empty())
+    }
+
     #[track_caller]
     #[must_use]
     pub fn person(id: impl Into<PersonId>) -> Self {
@@ -98,36 +125,19 @@ impl MemberId {
         }
     }
 
-    /// The spelling a stored id uses: a person's root key as it is, an agent's
-    /// `agent:<id>`, a bot's `bot:<id>`.
+    /// The member whose changes a document names by `bytes` ([`Self::actor_bytes`]); `None` for
+    /// bytes no member writes as.
     #[must_use]
-    pub fn key(&self) -> String {
-        match self {
-            Self::Person(id) => id.as_str().to_owned(),
-            Self::Agent(id) => format!("agent:{id}"),
-            Self::Bot(id) => format!("bot:{id}"),
-        }
-    }
-
-    /// The member [`Self::key`] spells.
-    ///
-    /// `None` for a key carrying a prefix this workspace does not know: a
-    /// person's id has none, so `person:<root>` names nobody.
-    #[must_use]
-    pub fn parse(key: &str) -> Option<Self> {
-        fn nonempty(id: &str) -> Option<String> {
-            (!id.is_empty()).then(|| id.to_owned())
-        }
-        if let Some(id) = key.strip_prefix("agent:") {
+    pub fn of_actor_bytes(bytes: &[u8]) -> Option<Self> {
+        let text = std::str::from_utf8(bytes).ok()?;
+        let nonempty = |id: &str| (!id.is_empty()).then(|| id.to_owned());
+        if let Some(id) = text.strip_prefix("agent:") {
             return nonempty(id).map(Self::Agent);
         }
-        if let Some(id) = key.strip_prefix("bot:") {
+        if let Some(id) = text.strip_prefix("bot:") {
             return nonempty(id).map(Self::Bot);
         }
-        if key.is_empty() {
-            return None;
-        }
-        PersonId::parse(key).ok().map(Self::Person)
+        nonempty(text).and_then(|id| PersonId::parse(&id).ok().map(Self::Person))
     }
 }
 
@@ -250,17 +260,6 @@ impl Actor {
         }
     }
 
-    /// The spelling a stored id uses: a member's [`MemberId::key`], an
-    /// automation's `automation:<id>`, an app's `app:<id>`.
-    #[must_use]
-    pub fn key(&self) -> String {
-        match self {
-            Self::Member(member) => member.key(),
-            Self::Automation(id) => format!("automation:{}", id.as_str()),
-            Self::App(app) => format!("app:{app}"),
-        }
-    }
-
     /// The app, when the actor is one acting by itself.
     #[must_use]
     pub fn app(&self) -> Option<&AppId> {
@@ -362,29 +361,6 @@ impl Acting {
     #[must_use]
     pub fn person(id: impl Into<PersonId>) -> Self {
         Self::member(MemberId::person(id))
-    }
-
-    /// The actor an [`Actor::key`] spells, acting for itself. A key that names
-    /// nobody — one carrying a prefix this code does not know, such as the old
-    /// `person:<root>` — acts for nobody: it holds no one's authority.
-    #[must_use]
-    pub fn of_key(key: &str) -> Self {
-        if let Some(id) = key.strip_prefix("automation:") {
-            return Self::automation(id);
-        }
-        if let Some(id) = key.strip_prefix("agent:") {
-            return Self::agent(id);
-        }
-        if let Some(id) = key.strip_prefix("bot:") {
-            return Self::bot(id);
-        }
-        if let Some(id) = key.strip_prefix("app:") {
-            return Self::by_app(id);
-        }
-        match PersonId::parse(key) {
-            Ok(person) => Self::person(person),
-            Err(_) => Self::person(""),
-        }
     }
 
     /// An app acting by itself: a trigger it declares, or a migration of its
@@ -594,29 +570,21 @@ mod tests {
             assert!(Acting::person("q").on_foreign_device(true).delegated());
         }
 
-        phase a_persons_key_is_their_bare_root_and_a_prefixed_one_names_nobody;
+        phase a_member_is_read_back_from_the_bytes_a_document_names_it_by;
         {
-            let root = PersonId::from_root([5; 32]);
-            assert_eq!(
-                MemberId::parse(&root),
-                Some(MemberId::person(&root)),
-                "a person's stored key is their bare root key"
-            );
-            assert_eq!(
-                MemberId::person(&root).key(),
-                root.as_str(),
-                "a person is written bare"
-            );
-            assert_eq!(
-                MemberId::parse(&format!("person:{root}")),
-                None,
-                "the prefixed spelling names no member"
-            );
-            assert_eq!(
-                MemberId::parse("agent:helper"),
-                Some(MemberId::agent("helper")),
-                "software keeps the prefix that says what it is"
-            );
+            for member in [
+                MemberId::person(PersonId::from_root([5; 32])),
+                MemberId::agent("helper"),
+                MemberId::bot("mod"),
+            ] {
+                assert_eq!(
+                    MemberId::of_actor_bytes(&member.actor_bytes()),
+                    Some(member)
+                );
+            }
+            assert_eq!(MemberId::of_actor_bytes(b"automation:1"), None);
+            assert_eq!(MemberId::of_actor_bytes(b"agent:"), None);
+            assert_eq!(MemberId::of_actor_bytes(b""), None);
         }
 
         phase the_tree_is_written_as_it_is_read;

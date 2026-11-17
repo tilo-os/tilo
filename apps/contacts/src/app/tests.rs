@@ -4,7 +4,7 @@ use crate::form::{Slot, TYPE_OPTIONS, TypeTarget};
 use crate::model::normalize_text;
 use crate::model::sample_contacts;
 use crate::model::{Address, Birthday};
-use crate::resource::Contacts;
+use crate::part::{Book, ContactPart};
 use crate::vcard;
 use crate::view::DialogChoice;
 use automerge::AutoCommit;
@@ -136,9 +136,9 @@ fn form_slots(form: &EditForm) -> Vec<Slot> {
 
 fn sampled() -> ContactsApp {
     let mut app = ContactsApp::new();
-    app.present_book(&std::rc::Rc::new(Contacts {
+    app.present_book(&std::rc::Rc::new(Book {
         contacts: crate::resource::sample_book().into(),
-        ..Contacts::default()
+        ..Book::default()
     }));
     app.stage_capture(None);
     app
@@ -416,7 +416,7 @@ fn sidebar_destinations_narrow_the_list() {
         let mut contact = app.store.contact(id).cloned().unwrap();
         let before = contact.clone();
         contact.groups.clear();
-        app.invoke(Contacts::save(&before, &contact).unwrap());
+        app.invoke(&ContactPart::save(&before, &contact).unwrap());
     }
     app.list_stale = true;
     app.publish();
@@ -671,8 +671,7 @@ fn the_contact_menu_runs_the_canonical_actions() {
     assert!(app.store.contact(grace).is_none());
     assert!(!app.book().iter().any(|c| c.id == grace));
     assert!(
-        app.app
-            .state()
+        app.held()
             .contacts
             .iter()
             .all(|contact| contact.id != grace),
@@ -832,10 +831,11 @@ fn search_and_open_operations_reveal_their_target() {
             .expect("Grace is seeded")
             .id;
         app.selected = None;
-        let entries = <Contacts as ui::tilo_resource::Resource>::search(&Contacts {
+        let part = ContactPart {
             contacts: app.book().into(),
-            ..Contacts::default()
-        });
+            removed: ui::tilo_resource::Set::default(),
+        };
+        let entries = ContactPart::search(&part);
         let hits: Vec<_> = entries
             .iter()
             .filter(|entry| entry.text.to_lowercase().contains("navy"))
@@ -843,7 +843,7 @@ fn search_and_open_operations_reveal_their_target() {
         assert_eq!(hits.len(), 1, "the organisation finds one contact");
         assert_eq!(hits[0].title, "Grace Hopper");
         let anchor = hits[0].anchor.clone().expect("the hit opens a contact");
-        assert_eq!(anchor, crate::resource::contact_resource_id(id));
+        assert_eq!(anchor, crate::part::contact_resource_id(id));
         app.app
             .call("open", serde_json::json!({ "anchor": anchor }))
             .expect("the open operation succeeds");
@@ -874,7 +874,7 @@ fn search_and_open_operations_reveal_their_target() {
         app.app
             .call(
                 "open",
-                serde_json::json!({ "anchor": crate::resource::contact_resource_id(id) }),
+                serde_json::json!({ "anchor": crate::part::contact_resource_id(id) }),
             )
             .expect("the addressed open succeeds");
         app.settle();
@@ -1117,7 +1117,8 @@ fn saves_persist_and_refusals_never_claim_success() {
         set_title(&app, "Unsaved draft");
         // A member deletes the record while it is being edited.
         app.app
-            .merge_peer_edit(|doc| peer_applies(doc, Contacts::delete(contact.id)));
+            .chain_invoke(&ContactPart::delete(contact.id))
+            .unwrap();
         app.settle();
         app.save_edit();
         app.settle();
@@ -1151,7 +1152,8 @@ fn saves_persist_and_refusals_never_claim_success() {
             .cloned()
             .unwrap();
         app.app
-            .merge_peer_edit(|doc| peer_applies(doc, Contacts::delete(contact.id)));
+            .chain_invoke(&ContactPart::delete(contact.id))
+            .unwrap();
         app.settle();
         std::rc::Rc::make_mut(&mut app.store)
             .contacts
@@ -1159,8 +1161,10 @@ fn saves_persist_and_refusals_never_claim_success() {
         app.selected = Some(contact.id);
 
         assert!(
-            app.submit(Invoke::edit(&Contacts::favorite(contact.id, !contact.favorite)).unwrap())
-                .is_ok(),
+            app.submit(
+                Invoke::edit(&ContactPart::favorite(contact.id, !contact.favorite)).unwrap()
+            )
+            .is_ok(),
             "the stale control submits the typed favorite action"
         );
         app.settle();
@@ -1844,7 +1848,7 @@ fn deleting_your_contact_is_the_palette_action_and_undo_takes_it_back() {
     let mut h = Harness::new(1280, 800);
     let id = h.app.selected.unwrap();
     let before = h.book();
-    let expected = h.app.book_after(Contacts::delete(id));
+    let expected = h.app.book_after(&ContactPart::delete(id));
     assert!(h.press_named(NamedKey::Delete));
     h.app.settle();
     assert!(!host_confirmation_is_up(&mut h.app), "nothing is asked");
@@ -1880,7 +1884,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         let before = h.app.store.contact(id).unwrap().favorite;
         let expected = h
             .app
-            .book_after(Invoke::edit(&Contacts::favorite(id, !before)).unwrap());
+            .book_after(&Invoke::edit(&ContactPart::favorite(id, !before)).unwrap());
 
         assert!(h.press_right(row));
         let rows = menu_rows(&h.app);
@@ -1906,7 +1910,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         h.app
             .app
             .call_on(
-                &crate::resource::contact_resource_id(id),
+                &crate::part::contact_resource_id(id),
                 "delete-contact",
                 serde_json::json!({}),
             )
@@ -2457,7 +2461,7 @@ fn search_field_focus_and_typing_narrow_the_list() {
     let grace = id_named(&h.app, "Grace Hopper");
     assert_eq!(
         people[0].action_id,
-        crate::resource::contact_resource_id(grace),
+        crate::part::contact_resource_id(grace),
         "the hit opens the contact"
     );
     assert!(providers[0].search("definitely no contact").is_empty());
@@ -3229,7 +3233,7 @@ fn saved_book_persists_across_restarts_and_imports() {
         let mut app = Live::sample(1280, 800);
         let before = app.store.len();
         let removed = app.store.contacts[0].id;
-        app.invoke(Contacts::delete(removed));
+        app.invoke(&ContactPart::delete(removed));
         app.settle();
 
         // Relaunch: the deletion stuck.
@@ -3432,7 +3436,7 @@ fn check_duplicate_resource_and_compact_header() {
         .expect("a shared email/name identifies a candidate");
     let published = app.app.agent_surface().to_string();
     assert!(
-        published.contains("contacts.book/derived/duplicate:"),
+        published.contains("contacts.contacts/derived/duplicate:"),
         "the exact duplicate resource is published"
     );
     app.choose_more(MoreAction::ReviewDuplicate);
@@ -3675,6 +3679,13 @@ fn form_choice_semantics() {
 /// The contacts app as every host runs it — the framework root over the
 /// address book, its edits through the book's api — with its surface at hand
 /// for assertions about view state.
+/// A peer's copies of the parts the app holds, and their states as the
+/// chain reads them.
+type PartReplicas = (
+    Vec<(u64, Replica<ContactPart>)>,
+    Vec<(u64, Rc<ContactPart>)>,
+);
+
 struct Live {
     app: ui::framework::testing::TestApp<crate::ContactsShell>,
     /// The surface inside `app`'s widget tree, which owns it for as long as
@@ -3704,8 +3715,9 @@ impl Live {
 
     fn fixture(scenario: Option<&str>, w: u32, h: u32) -> Self {
         let mut app = ui::framework::testing::TestApp::<crate::ContactsShell>::new().unwrap();
-        for invoke in <crate::ContactsShell as ui::framework::ResourceApp>::scenario(scenario) {
-            app.invoke(invoke).unwrap();
+        let contacts = crate::resource::Scene::of(scenario).contacts();
+        if !contacts.is_empty() {
+            app.chain_invoke(&ContactPart::add_all(contacts)).unwrap();
         }
         app.settle();
         app.with_widget(|surface: &mut ContactsApp| surface.stage_capture(scenario))
@@ -3735,11 +3747,15 @@ impl Live {
         let surface = app
             .with_widget(|surface: &mut ContactsApp| std::ptr::from_mut(surface))
             .expect("the contacts surface is hosted");
-        Self {
+        let mut live = Self {
             app,
             surface,
             viewport,
-        }
+        };
+        // The window asked for the newest part of the book's chain as it
+        // opened: this host answers before anything is written to it.
+        live.settle();
+        live
     }
 
     fn harness_mut(&mut self) -> &mut ui::headless::FrameHarness {
@@ -3748,6 +3764,33 @@ impl Live {
 
     fn settle(&mut self) {
         self.app.settle();
+        self.answer_the_book();
+    }
+
+    /// The window asks its workspace for records it does not hold, a chain's
+    /// part among them; this host holds them all, so it answers that it has
+    /// none to send, as a session with no other replica does.
+    fn answer_the_book(&mut self) {
+        let chain = crate::part::chain();
+        loop {
+            let asked: Vec<_> = self
+                .app
+                .wanted_resources()
+                .into_iter()
+                .filter(|record| {
+                    record.is_chain_head()
+                        || record.chain_part().is_some_and(|(held, _)| held == chain)
+                })
+                .collect();
+            if asked.is_empty() {
+                return;
+            }
+            for record in asked {
+                self.app
+                    .workspace_answered(record, ui::resource::WorkspaceAnswer::HoldsNone);
+            }
+            self.app.settle();
+        }
     }
 
     fn recompose(&mut self) {
@@ -3770,9 +3813,14 @@ impl Live {
             .dispatch_to_root_with(event, &mods.into())
     }
 
+    /// The book the app's parts add up to.
+    fn held(&self) -> Book {
+        Book::of(&self.app.chain_parts::<ContactPart>())
+    }
+
     fn book(&mut self) -> Vec<Contact> {
         self.settle();
-        self.app.state().contacts.to_vec()
+        self.held().contacts.to_vec()
     }
 
     fn reopen(self) -> Self {
@@ -3784,8 +3832,8 @@ impl Live {
         self.shared.borrow_mut().push(request);
         self.app.settle();
     }
-    fn invoke(&mut self, invoke: Invoke<Contacts>) {
-        self.app.invoke_confirmed(invoke).unwrap();
+    fn invoke(&mut self, invoke: &Invoke<ContactPart>) {
+        self.app.chain_invoke(invoke).unwrap();
         self.settle();
     }
     fn choose_menu(&mut self, index: usize) {
@@ -3805,11 +3853,51 @@ impl Live {
     fn save_edit(&mut self) {
         self.request(Request::Save);
     }
-    fn book_after(&self, invoke: Invoke<Contacts>) -> Vec<Contact> {
-        let mut peer = Replica::<Contacts>::from_doc(self.app.peer_document());
-        peer.apply_confirmed(invoke)
-            .expect("the palette's action applies");
-        peer.state().unwrap().contacts.to_vec()
+    /// The book as it would read were `invoke` applied through the chain,
+    /// on a peer's copies of the parts: what a palette entry would leave
+    /// behind, without the window's own write.
+    fn book_after(&self, invoke: &Invoke<ContactPart>) -> Vec<Contact> {
+        let (mut replicas, mut states) = self.part_replicas();
+        let mut action = invoke.build(1_000).expect("the action builds");
+        crate::part::prepare(&mut action, &states).expect("the action reads the book");
+        let index = crate::part::part_for(&action, &states).expect("a part holds it");
+        if let Some((_, replica)) = replicas.iter_mut().find(|(held, _)| *held == index) {
+            replica
+                .apply_action(&action)
+                .expect("the palette's action applies");
+        }
+        states = replicas
+            .iter()
+            .map(|(index, replica)| (*index, Rc::new(replica.state().unwrap())))
+            .collect();
+        Book::of(&states).contacts.to_vec()
+    }
+
+    /// A peer's copies of the parts the app holds, and their states as the
+    /// chain reads them.
+    fn part_replicas(&self) -> PartReplicas {
+        let replicas: Vec<(u64, Replica<ContactPart>)> = self
+            .app
+            .chain_parts::<ContactPart>()
+            .iter()
+            .map(|(index, _)| {
+                let bytes = self
+                    .app
+                    .resource_document(&crate::part::chain().part(*index))
+                    .expect("the part is kept here");
+                (
+                    *index,
+                    Replica::<ContactPart>::from_doc(
+                        automerge::AutoCommit::load(&bytes).expect("the part reads"),
+                    ),
+                )
+            })
+            .collect();
+        let states = replicas
+            .iter()
+            .map(|(index, replica)| (*index, Rc::new(replica.state().unwrap())))
+            .collect();
+        (replicas, states)
     }
 }
 
@@ -3843,7 +3931,7 @@ fn duplicates_are_reviewed_field_by_field_before_merging() {
     let mut copy = ada.clone();
     copy.id = uuid::Uuid::from_u128(ada.id.as_u128() + 0x100);
     copy.org = "Babbage & Co.".into();
-    app.invoke(Contacts::add(&copy));
+    app.invoke(&ContactPart::add(&copy));
     app.settle();
     assert!(
         app.duplicate_candidate.is_some(),
@@ -3989,7 +4077,8 @@ fn check_refused_save_reconciles_and_announces_an_error_without_claiming_success
     let mut app = synced();
     let contact = selected_contact(&app);
     app.app
-        .merge_peer_edit(|doc| peer_applies(doc, Contacts::delete(contact.id)));
+        .chain_invoke(&ContactPart::delete(contact.id))
+        .unwrap();
     app.settle();
     app.begin_edit(contact.clone(), false);
     app.save_edit();
@@ -4012,7 +4101,8 @@ fn check_refused_favorite_and_delete_reconcile_without_false_success() {
     let mut app = synced();
     let contact = selected_contact(&app);
     app.app
-        .merge_peer_edit(|doc| peer_applies(doc, Contacts::delete(contact.id)));
+        .chain_invoke(&ContactPart::delete(contact.id))
+        .unwrap();
     app.settle();
     // A control can still have the last rendered contact when the peer's
     // tombstone reaches the API. Submit that real stale view request;
@@ -4325,15 +4415,13 @@ fn check_large_books_virtualize_rows_and_keep_keyboard_selection_in_view() {
             ..Contact::default()
         })
         .collect();
-    h.app.app.merge_peer_edit(|doc| {
-        let book = Replica::<Contacts>::from_doc(doc.fork()).state().unwrap();
-        let invokes = book
-            .contacts
-            .iter()
-            .map(|contact| Contacts::delete(contact.id))
-            .chain([Contacts::add_all(directory.clone())]);
-        peer_applies(doc, Invoke::group(invokes));
-    });
+    for contact in h.app.book() {
+        let _ = h.app.app.chain_invoke(&ContactPart::delete(contact.id));
+    }
+    h.app
+        .app
+        .chain_invoke(&ContactPart::add_all(directory.clone()))
+        .unwrap();
     h.app.settle();
     h.app.selected = Some(directory[0].id);
     h.relayout();
@@ -4426,14 +4514,14 @@ fn check_reimporting_the_same_uidless_card_is_idempotent() {
 
 fn check_disconnected_uidless_imports_converge_on_one_contact_and_stable_rows() {
     let card = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;TYPE=work:+1 202 555 0143\r\nEMAIL:grace@example.com\r\nCATEGORIES:Pioneers\r\nEND:VCARD\r\n";
-    let mut left = Replica::<Contacts>::new();
+    let mut left = Replica::<ContactPart>::new();
     let mut right = left.fork();
     let left_contact = vcard::parse_vcards(card).pop().unwrap();
     let right_contact = vcard::parse_vcards(card).pop().unwrap();
     assert_eq!(left_contact, right_contact);
 
-    left.apply(Contacts::add(&left_contact)).unwrap();
-    right.apply(Contacts::add(&right_contact)).unwrap();
+    left.apply(ContactPart::add(&left_contact)).unwrap();
+    right.apply(ContactPart::add(&right_contact)).unwrap();
     left.sync_with(&mut right).unwrap();
 
     let merged = left.state().unwrap().contacts.to_vec();
@@ -4548,14 +4636,6 @@ fn narrow_sort_row_has_full_aligned_control_without_extra_gutters() {
     }
 }
 
-fn peer_applies(doc: &mut ui::tilo_resource::Doc, invoke: Invoke<Contacts>) {
-    let mut peer = Replica::<Contacts>::from_doc(doc.fork());
-    peer.apply_confirmed(invoke)
-        .expect("the peer's change applies");
-    tilo_automerge::ApplyIncoming::merge_incoming(doc, peer.doc_mut())
-        .expect("the peer's change merges");
-}
-
 fn host_confirmation_is_up(app: &mut Live) -> bool {
     app.settle();
     app.harness_mut().asking().is_some()
@@ -4579,8 +4659,11 @@ fn closing_a_dialog_while_the_host_asks_to_confirm_is_safe() {
     let mut source = survivor.clone();
     source.id = uuid::Uuid::from_u128(2);
     source.org = "Analytical Engines".into();
-    app.invoke(Contacts::add_all(vec![survivor.clone(), source.clone()]))
-        .unwrap();
+    app.chain_invoke(&ContactPart::add_all(vec![
+        survivor.clone(),
+        source.clone(),
+    ]))
+    .unwrap();
     app.effect_on(
         &crate::resource::place_resource_id(&crate::resource::duplicate_place(
             survivor.id,

@@ -123,7 +123,13 @@ pub(crate) fn refused(error: &RelayError) -> Outcome {
             "tilo_do account/workspaces#list names your workspaces",
         ),
         // The host's own reason stays in the log: the person reads what they
-        // would do about it.
+        // would do about it. A key its workspace records as revoked is told
+        // that, so the caller asks the person for another.
+        RelayError::Refused(reason) if reason.contains("key_revoked") => failed(
+            "key_revoked",
+            "this key was revoked",
+            "ask the person for a new key",
+        ),
         RelayError::Refused(_) | RelayError::RefusedWorkspace(_) => failed(
             "refused",
             error.to_string(),
@@ -499,7 +505,7 @@ impl Server {
                 Outcome::Ok(listed) => ("account.workspaces", listed),
                 other => return answer(structured, path, other),
             },
-            "account/keys" => match self.account_keys(grant) {
+            "account/keys" => match self.account_keys(grant, key).await {
                 Outcome::Ok(listed) => ("account.keys", listed),
                 other => return answer(structured, path, other),
             },
@@ -614,7 +620,7 @@ impl Server {
                 let revoked = self.revoke_keys_for(&grant.person, workspace).await;
                 Outcome::Ok(json!({"deleted": workspace, "revoked_keys": revoked}))
             }
-            "account/keys#list" => self.account_keys(grant),
+            "account/keys#list" => self.account_keys(grant, key).await,
             "account/keys#create" => {
                 let asked = crate::keys::expires_in_of(args.get("expires_in"))
                     .and_then(|expires_in| {
@@ -659,8 +665,35 @@ impl Server {
                         "account/keys#list names them",
                     );
                 }
+                // Where the key is recorded: the workspace it reaches, or the
+                // workspace the calling key itself reaches.
+                let mine = self
+                    .store
+                    .grant(id)
+                    .map(|found| Some(found.scope))
+                    .unwrap_or_else(|| Some(grant.scope.clone()));
+                let workspace = mine.and_then(|scope| match scope {
+                    Scope::Workspace(workspace) => Some(workspace),
+                    Scope::Account => None,
+                });
                 match self.revoke_grant(&grant.person, id).await {
-                    Ok(_) => Outcome::Ok(json!({"revoked": id})),
+                    Ok(_) => {
+                        // The workspace records the revocation, so every
+                        // holder and front door refuses the key, not only this
+                        // one.
+                        if let Some(workspace) = workspace
+                            && let Err(outcome) =
+                                crate::session::keys::revoke_in(key, &workspace, id).await
+                        {
+                            tracing::warn!(
+                                workspace,
+                                grant = id,
+                                "the workspace did not record a key's revocation"
+                            );
+                            return outcome;
+                        }
+                        Outcome::Ok(json!({"revoked": id}))
+                    }
                     Err(_) => failed(
                         "unavailable",
                         "revocation is unavailable",
@@ -793,9 +826,34 @@ impl Server {
         }
     }
 
-    fn account_keys(&self, grant: &Grant) -> Outcome {
-        let mut keys = vec![grant_row(grant)];
-        keys.extend(self.store.minted_by(&grant.id).iter().map(grant_row));
+    /// The keys this one holds and the keys it minted. One reaching a
+    /// workspace reads them from the workspace's own record, which every
+    /// holder keeps and every front door reads. One reaching all of them
+    /// reads the keys minted through this front door.
+    async fn account_keys(&self, grant: &Grant, key: &Connection) -> Outcome {
+        let mine = grant.id.clone();
+        let Scope::Workspace(workspace) = grant.scope.clone() else {
+            let mut keys = vec![grant_row(grant)];
+            keys.extend(self.store.minted_by(&grant.id).iter().map(grant_row));
+            return Outcome::Ok(json!({"keys": keys}));
+        };
+        let grants = match crate::session::keys::grants_in(key, &workspace).await {
+            Ok(grants) => grants,
+            Err(outcome) => return outcome,
+        };
+        let mut keys: Vec<Value> = grants
+            .iter()
+            .filter(|held| {
+                held.revoked_ms.is_none()
+                    && (held.id == mine || held.parent.as_deref() == Some(mine.as_str()))
+            })
+            .map(workspace_grant_row)
+            .collect();
+        // A workspace that has yet to record the key that asks still lists it,
+        // from the grant its token carries.
+        if !keys.iter().any(|row| row["grant"] == json!(mine)) {
+            keys.insert(0, grant_row(grant));
+        }
         Outcome::Ok(json!({"keys": keys}))
     }
 
@@ -915,6 +973,21 @@ impl Server {
             ),
         }
     }
+}
+
+/// A key as the workspace's own governance records it, in the shape
+/// `GET /v1/keys` answers every other.
+fn workspace_grant_row(grant: &tilo_peer_state::WorkspaceGrant) -> Value {
+    json!({
+        "grant": grant.id,
+        "name": grant.name,
+        "scope": grant.scope.clone().unwrap_or_else(|| "all".to_owned()),
+        "kind": if grant.parent.is_some() { "minted" } else { "key" },
+        "created_at_ms": grant.created_ms,
+        "created_by": Value::Null,
+        "browser_pages": false,
+        "expires_at_ms": grant.expires_ms,
+    })
 }
 
 /// Whether `workspace` is labelled with every one of `labels`.

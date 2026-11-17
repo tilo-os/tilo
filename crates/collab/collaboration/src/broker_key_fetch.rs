@@ -78,7 +78,7 @@ impl KeyQuery {
             route: route.spec.channel_id(),
             workspace_id: route.spec.cluster_id.to_string(),
             app_id: route.spec.app_id.clone(),
-            document_id: route.spec.record.clone().unwrap_or_default(),
+            document_id: route.spec.document.clone().unwrap_or_default(),
             generation,
         }
     }

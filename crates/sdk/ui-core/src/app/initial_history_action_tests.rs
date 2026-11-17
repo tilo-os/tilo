@@ -284,7 +284,7 @@ tilo_test_env::scenario! {
             .unwrap()
             .route
             .clone();
-        let unrelated = crate::collaboration::RouteSpec::record(
+        let unrelated = crate::collaboration::RouteSpec::document(
             &route.app_id,
             route.cluster_id,
             "unrelated-record",
@@ -773,7 +773,7 @@ tilo_test_env::scenario! {
             .unwrap()
             .route
             .clone();
-        let unowned = crate::collaboration::RouteSpec::record(
+        let unowned = crate::collaboration::RouteSpec::document(
             &original.app_id,
             original.cluster_id,
             "retained-unowned",

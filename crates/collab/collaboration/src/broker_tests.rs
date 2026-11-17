@@ -1496,7 +1496,7 @@ tilo_test_env::scenario! {
         let expected = RouteSpec {
             app_id: "so.tilo.notes".into(),
             cluster_id,
-            record: Some("note".into()),
+            document: Some("note".into()),
         };
         let connector = HostSessionConnector::new(move |route| async move {
             seen.fetch_add(1, Ordering::SeqCst);
@@ -1856,7 +1856,7 @@ fn a_primary_join_waits_for_a_late_broker_answer() {
         let _ = result_tx.send(result.map(|manager| {
             manager
                 .primary_route()
-                .map(|witness| witness.route.record.clone())
+                .map(|witness| witness.route.document.clone())
         }));
     });
     assert_eq!(
@@ -2127,8 +2127,8 @@ fn session_owner_commit_sdk_failure_stops_queued_terminal() {
 #[cfg(unix)]
 fn a_refused_route_join_says_why() {
     let workspace = Uuid::new_v4();
-    let primary = RouteSpec::record("so.tilo.notes", workspace, "tab:0000000000000001");
-    let beside = RouteSpec::record(
+    let primary = RouteSpec::document("so.tilo.notes", workspace, "tab:0000000000000001");
+    let beside = RouteSpec::document(
         "so.tilo.chat",
         workspace,
         collab_types::workspace_document_id("tilo.workspace.emoji"),
@@ -2336,7 +2336,7 @@ fn document_publication_receipt_waits_for_primary_and_routed_rpc_completion() {
     let secondary = RouteSpec {
         app_id: "other".into(),
         cluster_id,
-        record: Some("second".into()),
+        document: Some("second".into()),
     };
     manager.join_route(
         secondary.clone(),
@@ -3590,7 +3590,7 @@ fn a_record_route_not_open_in_time_holds_back_only_that_record() {
     let drafts = RouteSpec {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace,
-        record: Some(
+        document: Some(
             collab_types::OwnResource::new("chat.drafts", [0xad; 32])
                 .unwrap()
                 .document_id(),
@@ -3695,7 +3695,7 @@ tilo_test_env::scenario! {
         let route = |record: &str| RouteSpec {
             app_id: "so.tilo.notes".into(),
             cluster_id: uuid::Uuid::from_bytes([7; 16]),
-            record: Some(record.into()),
+            document: Some(record.into()),
         };
         let state = BridgeState::new();
         state.note_refused_change(&route("full"), "document commit RPC", "history is full");
@@ -4354,7 +4354,7 @@ tilo_test_env::scenario! {
         let route = RouteSpec {
             app_id: "silent-broker-test".into(),
             cluster_id: Uuid::new_v4(),
-            record: None,
+            document: None,
         };
 
         // The broker stays silent for as long as `theirs` lives, so a
@@ -4412,7 +4412,7 @@ tilo_test_env::scenario! {
         let route = RouteSpec {
             app_id: "background-connect-test".into(),
             cluster_id: Uuid::new_v4(),
-            record: None,
+            document: None,
         };
         let mut mgr = background_manager(fd, route.clone());
         drop(entry);
@@ -4485,7 +4485,7 @@ pub(super) fn connecting_manager() -> (
             RouteSpec {
                 app_id: "lifecycle-test".into(),
                 cluster_id: Uuid::new_v4(),
-                record: None,
+                document: None,
             },
         )
     };
@@ -5004,7 +5004,7 @@ tilo_test_env::scenario! {
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
         let workspace = Uuid::new_v4();
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "shell", workspace);
-        let route = RouteSpec::record("actual-owner", workspace, "tab:qualified");
+        let route = RouteSpec::document("actual-owner", workspace, "tab:qualified");
         let mut document = automerge::AutoCommit::new();
         document.put(automerge::ROOT, "body", "before").unwrap();
         document.commit();
@@ -5474,7 +5474,7 @@ tilo_test_env::scenario! {
             RouteSpec {
                 app_id: app_id.to_owned(),
                 cluster_id: cluster,
-                record: None,
+                document: None,
             },
             carol,
         )

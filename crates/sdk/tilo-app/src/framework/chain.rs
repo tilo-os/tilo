@@ -111,12 +111,38 @@ pub trait Chained: Resource {
     fn chain() -> DocumentId;
 
     /// The chain that belongs beside `base` rather than beside the app's own
-    /// record: the messages of one conversation, kept beside its record
-    /// ([`DocumentId::of_direct`]). [`Self::chain`] for every chain there is
-    /// only one of.
+    /// record of the workspace: the messages of one conversation, kept beside
+    /// its record ([`DocumentId::of_direct`]), and the parts of an app that
+    /// keeps a record per member, kept beside the member's own
+    /// ([`DocumentId::of_member`]). The default is [`Self::chain`], for every
+    /// chain there is only one of.
     fn chain_beside(base: &DocumentId) -> DocumentId {
         let _ = base;
         Self::chain()
+    }
+
+    /// The places the app derives from everything the chain holds — a book's
+    /// groups, its favorites, its likely duplicates — computed where the
+    /// chain is published from the app's record and the parts held, and
+    /// published as the chain's own children beside its items.
+    fn places(
+        base: &<Self::Base as Resource>::State,
+        parts: &[(u64, Rc<Self::State>)],
+    ) -> Vec<tilo_resource::Derived<Self>> {
+        let _ = (base, parts);
+        Vec::new()
+    }
+
+    /// What search finds beyond the parts themselves, over everything the
+    /// chain holds: the places [`Self::places`] publishes that a person finds
+    /// by name (a book's groups). Built where search runs, from the app's
+    /// record and the parts held.
+    fn search_over(
+        base: &<Self::Base as Resource>::State,
+        parts: &[(u64, Rc<Self::State>)],
+    ) -> Vec<tilo_resource::SearchEntry> {
+        let _ = (base, parts);
+        Vec::new()
     }
 
     /// The part `action` changes, given the parts this device holds, oldest
@@ -569,7 +595,7 @@ impl<P: Chained> ChainState<P> {
                 Write::Done(index, created) => {
                     // Only what the window's person did themselves: an
                     // agent's step is its own to take back.
-                    if invoker.acting.by.member_id() == Some(&self.workspace.me) {
+                    if super::record::acts_for(invoker, &self.workspace.me) {
                         self.written.borrow_mut().push(index);
                         self.undone.borrow_mut().clear();
                     }
@@ -685,7 +711,7 @@ impl<P: Chained> ChainState<P> {
                 false
             }
             Err(error) => {
-                tracing::warn!(kind = P::KIND, %error, "the record of waiting writes cannot be opened");
+                    tracing::warn!(kind = P::KIND, %error, "the record of waiting writes cannot be opened");
                 false
             }
         }
@@ -1139,6 +1165,7 @@ impl<P: Chained> ChainState<P> {
         // Which part is the newest is on its way: a part started now would be
         // an old one, or a second first one.
         if self.head_arriving() {
+            tracing::warn!(kind = P::KIND, "a write waits for the chain head");
             return Ok(Write::Arriving);
         }
         let mut action = action.clone();
@@ -1199,6 +1226,118 @@ impl<P: Chained> ChainState<P> {
         let encoded = tilo_resource::encode::<P>(&action)?;
         let created = self.write(index, &action, encoded, invoker, place)?;
         Ok(Write::Done(index, created))
+    }
+
+    /// Apply `group` — several actions invoked as one — as the part (or
+    /// parts) it changes: one change per part, each carrying that part's
+    /// members as one group. Nothing is written while a part a member changes
+    /// is on its way.
+    fn try_apply_group(
+        &self,
+        group: &tilo_resource::group::ActionGroup<P::Action>,
+        invoker: &ActionInvoker,
+    ) -> Result<Write, ActionError> {
+        if group.actions.is_empty() {
+            return Ok(Write::Done(self.head().unwrap_or(0), Vec::new()));
+        }
+        if self.head_arriving() {
+            return Ok(Write::Arriving);
+        }
+        let base = (self.base)();
+        let parts = self.parts();
+        let mut prepared = Vec::with_capacity(group.actions.len());
+        let mut places = Vec::with_capacity(group.actions.len());
+        let mut per_part: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+        for action in &group.actions {
+            let mut action = action.clone();
+            P::prepare(&mut action, &base, &parts).map_err(ActionError::Refused)?;
+            places.push(P::place(&action, &base));
+            self.may(&action)?;
+            let index = P::part_for(&action, &parts).map_err(ActionError::Refused)?;
+            per_part.entry(index).or_default().push(prepared.len());
+            prepared.push(action);
+        }
+        drop(base);
+        drop(parts);
+        // Every part a member changes must be here: the group is one step, so
+        // none of it is written while a part is on its way.
+        let mut opened = Vec::with_capacity(per_part.len());
+        for index in per_part.keys() {
+            match self
+                .open_or_start(*index)
+                .map_err(|error| self.refused(error))?
+            {
+                Opened::Held | Opened::Started => opened.push(*index),
+                Opened::Asked => return Ok(Write::Arriving),
+            }
+        }
+        let head = self.parts.borrow().keys().next_back().copied();
+        let mut written = None;
+        let mut created = Vec::new();
+        for index in opened {
+            if let Some(previous) = head.filter(|head| head.checked_add(1) == Some(index)) {
+                self.carry(previous, index, invoker)?;
+            }
+            let members: Vec<P::Action> = per_part
+                .get(&index)
+                .map(|members| {
+                    members
+                        .iter()
+                        .filter_map(|at| prepared.get(*at).cloned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let place = per_part
+                .get(&index)
+                .and_then(|members| members.first())
+                .and_then(|at| places.get(*at).cloned().flatten());
+            let group = tilo_resource::group::ActionGroup { actions: members };
+            let encoded = tilo_actions::EncodedAction::encode(
+                tilo_resource::group::group_type::<P>(),
+                &group,
+            )?;
+            created = self.write(index, &group, encoded, invoker, place)?;
+            written = Some(index);
+        }
+        Ok(Write::Done(written.unwrap_or(0), created))
+    }
+
+    /// Whether `invoker` may change this chain by `action`, refused as the
+    /// API refuses it where the chain publishes the action: a grant on the
+    /// app, the parts' kind or the verb covers it.
+    fn may(&self, action: &P::Action) -> Result<(), ActionError> {
+        let Some(permissions) = &self.workspace.permissions else {
+            return Ok(());
+        };
+        let need = tilo_resource::need_of::<P>(action);
+        let node = if let Some(verb) = super::workspace::verb_of::<P>(action) {
+            tilo_actions::action_node(
+                &TreePath::root(),
+                self.workspace.app_id,
+                P::KIND,
+                &self.id,
+                need.field.as_deref(),
+                &verb,
+            )
+        } else {
+            TreePath::root()
+                .app(self.workspace.app_id)
+                .kind(P::KIND)
+                .resource(self.id.clone())
+                .field(need.field.as_deref().unwrap_or_default())
+                .action(tilo_resource::FIELD_EDIT)
+        };
+        if permissions.check(&PermissionScope::Action {
+            node,
+            kind: need.kind,
+        }) {
+            Ok(())
+        } else {
+            Err(ActionError::Refused(format!(
+                "you may not do this to these {}",
+                P::LABEL.to_lowercase()
+            )))
+        }
     }
 
     /// Write into part `index`, just started after part `previous`, what it
@@ -1281,7 +1420,7 @@ impl<P: Chained> ChainState<P> {
         let mut context = ActionContext::for_resource(&self.id, P::KIND, P::LABEL)
             .with_app(self.workspace.app_id, self.workspace.app_title)
             .with_invoker(invoker.clone())
-            .with_change(action.change_kind());
+            .with_change(tilo_actions::Action::change_kind(action));
         if let Some(place) = place.filter(|place| !place.trim().is_empty()) {
             context = context.with_facet(tilo_actions::ActionFacet::new(
                 tilo_actions::PLACE_FACET,
@@ -1350,6 +1489,15 @@ impl<P: Chained> ChainState<P> {
                     .filter(|child| seen.insert(child.id.clone())),
             );
         }
+        // The places the app derives from everything the chain holds, at the
+        // address each is published under.
+        for place in
+            tilo_resource::derived::published::<P>(P::places(&(self.base)(), &parts)).to_resources()
+        {
+            if seen.insert(place.id.clone()) {
+                resource.children.push(place);
+            }
+        }
         // Parts no longer held are forgotten with their publication.
         self.part_published
             .borrow_mut()
@@ -1400,7 +1548,7 @@ impl<P: Chained> ChainState<P> {
         let parts = self.parts();
         let mut kept = self.part_search.borrow_mut();
         kept.retain(|index, _| parts.iter().any(|(held, _)| held == index));
-        let mut entries = Vec::new();
+        let mut entries = P::search_over(&(self.base)(), &parts);
         for (index, state) in &parts {
             let fresh = kept
                 .get(index)
@@ -1758,6 +1906,17 @@ impl<P: Chained> ResourceApi for ChainState<P> {
                 .map(drop)
                 .map_err(|error| error.to_string());
         }
+        if action.type_id == tilo_resource::group::group_type::<P>() {
+            let group: tilo_resource::group::ActionGroup<P::Action> =
+                tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
+            for member in &group.actions {
+                super::record::not_by_app::<P>(member)?;
+            }
+            return self
+                .try_apply_group(&group, invoker)
+                .map(drop)
+                .map_err(|error| error.to_string());
+        }
         if action.type_id != P::ACTION_TYPE {
             return Err(format!("{} take no `{}` action", P::LABEL, action.type_id));
         }
@@ -1783,6 +1942,24 @@ impl<P: Chained> ResourceApi for ChainState<P> {
             return Ok(tilo_actions::ActionOutput {
                 value: Some(value),
                 resources: Vec::new(),
+            });
+        }
+        if action.type_id == tilo_resource::group::group_type::<P>() {
+            let group: tilo_resource::group::ActionGroup<P::Action> =
+                tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
+            for member in &group.actions {
+                super::record::not_by_app::<P>(member)?;
+            }
+            let resources = match self
+                .try_apply_group(&group, invoker)
+                .map_err(|error| error.to_string())?
+            {
+                Write::Done(_, created) => created,
+                Write::Arriving => Vec::new(),
+            };
+            return Ok(tilo_actions::ActionOutput {
+                value: None,
+                resources,
             });
         }
         if action.type_id != P::ACTION_TYPE {
@@ -1998,6 +2175,24 @@ impl<P: Chained> Chain<P> {
     /// # Errors
     /// As [`Self::apply`], or the arguments do not build the action.
     pub fn invoke(&self, invoke: &Invoke<P>) -> Result<Option<u64>, ActionError> {
+        if invoke.is_group() {
+            let group = tilo_resource::group::build_group::<P>(
+                &invoke.arguments,
+                tilo_resource::origin_now_ms(),
+            )
+            .map_err(ActionError::Refused)?;
+            for member in &group.actions {
+                super::record::not_by_app::<P>(member).map_err(ActionError::Refused)?;
+            }
+            let me = self.dispatch.me().unwrap_or(&self.state.workspace.me);
+            return self
+                .state
+                .try_apply_group(&group, &super::record::acting(me))
+                .map(|written| match written {
+                    Write::Done(index, _) => Some(index),
+                    Write::Arriving => None,
+                });
+        }
         let action = invoke
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
@@ -2240,6 +2435,20 @@ impl<P: Chained> Chain<P> {
         me: &tilo_resource::MemberId,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Self> {
+        Self::detached_beside_in(store, app_id, None, me, base)
+    }
+
+    /// [`Self::detached_in`] of the chain beside the record `record` rather
+    /// than beside the app's record of the workspace
+    /// ([`Chained::chain_beside`]): the parts of an app that keeps a record
+    /// per member, the person's record being `record`.
+    pub fn detached_beside_in(
+        store: ResourceStore,
+        app_id: &'static str,
+        record: Option<&DocumentId>,
+        me: &tilo_resource::MemberId,
+        base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
+    ) -> Option<Self> {
         let workspace = WorkspaceResources {
             store,
             me: me.clone(),
@@ -2247,7 +2456,8 @@ impl<P: Chained> Chain<P> {
             app_id,
             app_title: app_id,
         };
-        let state = Rc::new(ChainState::<P>::open(workspace, Rc::new(base))?);
+        let chain = record.map_or_else(P::chain, P::chain_beside);
+        let state = Rc::new(ChainState::<P>::open_at(workspace, Rc::new(base), chain)?);
         let dispatch = detached_dispatch(app_id, &state, me);
         Some(Self { state, dispatch })
     }
@@ -2418,9 +2628,12 @@ impl Chains {
     pub(crate) fn open<P: Chained>(
         &self,
         workspace: Option<&WorkspaceResources>,
+        record: Option<&DocumentId>,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Rc<ChainState<P>>> {
-        let chain = P::chain();
+        // Beside the record the window shows: the app's own record of the
+        // workspace, or the one per member where the app keeps those.
+        let chain = record.map_or_else(P::chain, P::chain_beside);
         if let Some(held) = self.opened::<P>(&chain) {
             return Some(held);
         }

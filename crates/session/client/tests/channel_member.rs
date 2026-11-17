@@ -82,8 +82,9 @@ impl Laptop {
     /// unless `clear`.
     fn write(&mut self, text: &str, clear: bool) {
         let route = route();
-        let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
-        let attestation = document_attestation_id(&route.app_id, &route.cluster_id, &route.record);
+        let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.document);
+        let attestation =
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.document);
         let mutation = say(&mut self.note, text);
         // A sealed change names its action; one in the clear is the whole note instead.
         let mutation = if clear {

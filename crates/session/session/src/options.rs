@@ -156,10 +156,10 @@ pub struct Options {
     /// login asks on to work in a workspace as an agent, and the person admits it. `None` : this
     /// session serves no agents (a test, or a session in a window of another desktop).
     pub mcp_server: Option<std::path::PathBuf>,
-    /// The programs the person admits, as they start the session, to act as them at the MCP server
-    /// (`--admit-repl PATH`): their decision, made ahead of time, so a REPL they start is let in
-    /// without the sheet. Only a connection whose executable is one of these and that asks to act
-    /// as the person is; any other is asked about as before.
+    /// The programs admitted ahead of time to act as the person at the MCP server, without the
+    /// sheet: a test that drives the session as its person names its own executable. Only a
+    /// connection whose executable is one of these and that asks to act as the person is; any
+    /// other is asked about as before.
     pub admit_repl: Vec<std::path::PathBuf>,
     /// The agent key the person starts the session with (`--agent-key FILE`): the session keeps
     /// a secret key in FILE (made there when FILE is empty or absent), and the person's root

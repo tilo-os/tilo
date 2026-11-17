@@ -976,8 +976,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(reply)
     }
 
-    /// A program's answer, typed: what it printed, what it changed, and the
-    /// steps of this session's `history task`.
+    /// A program's answer, typed: what it printed, what it changed, the
+    /// steps of this session's `history task`, and the words a person reads.
     fn program_answer(&self, answer: Option<&Value>, reply: &Reply) -> Value {
         let steps = self.programs.lock_recover().steps_json();
         let Some(answer) = answer else {
@@ -987,6 +987,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 "status": if reply.failed {"failed"} else {"ok"},
                 "output": reply.text.lines().collect::<Vec<&str>>(),
                 "steps": steps,
+                "text": reply.text,
             });
         };
         let status = match answer.get("state").and_then(Value::as_str) {
@@ -1004,6 +1005,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             "changed": answer.get("changed").cloned().unwrap_or_else(|| json!(0)),
             "apps": answer.get("apps").cloned().unwrap_or_else(|| json!([])),
             "steps": steps,
+            // What a person reads: the answer's lines, each resource by its reference.
+            "text": reply.text,
         });
         if let Some(fields) = typed.as_object_mut() {
             for key in ["detail", "error"] {

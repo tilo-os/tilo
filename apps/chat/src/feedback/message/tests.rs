@@ -53,7 +53,7 @@ fn interaction(at: i64, action: &str, resource: &str, outcome: Outcome) -> Inter
     }
 }
 
-/// A report of two picks filed as `visitor:one`, with no summary, the
+/// A report of two picks filed as `visitor-one`, with no summary, the
 /// reporter's last actions, its frame timings and, with `picture`, its
 /// masked picture.
 fn picked(picture: bool) -> (Doc, Submission) {
@@ -109,7 +109,7 @@ fn picked(picture: bool) -> (Doc, Submission) {
             recording: None,
         },
     };
-    apply_as(&mut doc, "visitor:one", submit_feedback(&submission)).unwrap();
+    apply_as(&mut doc, "visitor-one", submit_feedback(&submission)).unwrap();
     (doc, submission)
 }
 
@@ -137,7 +137,7 @@ tilo_test_env::scenario! {
         let rows = rows(&doc, &submission);
         assert_eq!(rows.len(), 1, "one message for the report");
         let row = &rows[0];
-        assert_eq!(row.author, MemberId::person("visitor:one"));
+        assert_eq!(row.author, MemberId::person("visitor-one"));
         let lines: Vec<&str> = row.text.lines().collect();
         assert_eq!(
             lines,
@@ -190,8 +190,8 @@ tilo_test_env::scenario! {
                 .react("\u{1F44D}")
                 .into()
         };
-        apply_as(&mut doc, "visitor:two", react()).unwrap();
-        apply_as(&mut doc, "visitor:three", react()).unwrap();
+        apply_as(&mut doc, "visitor-two", react()).unwrap();
+        apply_as(&mut doc, "visitor-three", react()).unwrap();
         let rows = rows(&doc, &submission);
         assert_eq!(rows.len(), 1, "reacting adds no second message");
         assert_eq!(rows[0].reactions.len(), 1);

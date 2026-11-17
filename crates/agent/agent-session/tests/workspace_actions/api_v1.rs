@@ -359,7 +359,62 @@ async fn a_backend_key_works_through_the_api_on_a_relay_host() {
         .await;
     assert!(status >= 400, "a minted key mints none: {minting}");
 
+    // The workspace records the key it admitted, so a front door that never
+    // saw the approval lists it from the workspace itself.
+    let second = Server::new(
+        &tilo_api::Config {
+            issuer: ISSUER.into(),
+            web_entry: on_relay.web_entry.clone(),
+            hosts: vec![on_relay.relay.clone()],
+        },
+        tilo_api::store::Store::in_memory(),
+    )
+    .unwrap();
+    let elsewhere = V1 {
+        api: &second,
+        token: minted["token"].as_str().unwrap().to_owned(),
+    };
+    let (status, listed) = elsewhere.get("/v1/keys").await;
+    assert_eq!(status, 200, "{listed}");
+    assert_eq!(
+        listed["keys"][0]["grant"], minted["grant"],
+        "the workspace lists the key it admitted: {listed}"
+    );
+
+    // Revoking it writes the workspace's own record, so the front door that
+    // never saw the approval refuses it too.
+    let (status, revoked) = json_of(
+        backend
+            .send(
+                hyper::Method::DELETE,
+                &format!("/v1/keys/{}", minted["grant"]),
+                b"",
+                &[("idempotency-key", "revoke-jane")],
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(status, 200, "{revoked}");
+    let (status, refused) = elsewhere.get("/v1/keys").await;
+    assert_eq!(
+        (status, &refused["error"]["code"]),
+        (401, &json!("key_revoked")),
+        "{refused}"
+    );
+
     // Deleting the workspace revokes the key that reached only it.
+    let (status, minted) = backend
+        .post(
+            "/v1/keys",
+            &json!({"workspace": workspace, "name": "Jane's second agent"}),
+            &[],
+        )
+        .await;
+    assert_eq!(status, 201, "{minted}");
+    let agent = V1 {
+        api: &api,
+        token: minted["token"].as_str().unwrap().to_owned(),
+    };
     let deleted = backend
         .send(
             hyper::Method::DELETE,

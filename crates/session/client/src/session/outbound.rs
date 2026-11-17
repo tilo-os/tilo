@@ -96,6 +96,27 @@ impl Task {
     /// committed or refused for good, and why. Writes its record cannot take yet (its keys went
     /// away, its history is full, or the signer did not sign) stay held. What this device writes, its readers read at once, and custody keeps however long
     /// its host is away.
+    /// A change needs the record it changes. The keys of a record this device opened can come
+    /// before the record does, and a change drafted then would be refused and let go, while the
+    /// next change, which builds on it, is taken once the record is here: the record would
+    /// hold a change whose base no device ever sends, and every reader is refused it as
+    /// incomplete. The writes wait for the record as they wait for its keys, and go as it
+    /// lands ([`Self::landed`]); a write that founds the record needs none.
+    fn waits_for_its_document(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+        route: &DocumentRoute,
+        frames: &[Vec<u8>],
+    ) -> bool {
+        let changes_first = frames.first().is_some_and(|frame| {
+            collab_types::ContentRetention::of_frame(frame) == collab_types::ContentRetention::Delta
+        });
+        changes_first
+            && self.replicas.owner().with_current(workspace, |view| {
+                Ok(view.peer().holds_document(&route.app_id, &route.document))
+            }) == Ok(false)
+    }
+
     pub(super) async fn commit_frames(
         &mut self,
         route: &DocumentRoute,
@@ -108,25 +129,13 @@ impl Task {
             return Some(Err(INVALID.to_owned()));
         };
         let keys = self.keys_of(route)?;
-        // A change needs the record it changes. The keys of a record this device opened can come
-        // before the record does, and a change drafted then would be refused and let go, while the
-        // next change, which builds on it, is taken once the record is here: the record would
-        // hold a change whose base no device ever sends, and every reader is refused it as
-        // incomplete. The writes wait for the record as they wait for its keys, and go as it
-        // lands ([`Self::landed`]); a write that founds the record needs none.
-        let changes_first = frames.first().is_some_and(|frame| {
-            collab_types::ContentRetention::of_frame(frame) == collab_types::ContentRetention::Delta
-        });
-        if changes_first
-            && owner.with_current(workspace, |view| {
-                Ok(view.peer().holds_document(&route.app_id, &route.record))
-            }) == Ok(false)
-        {
+        if self.waits_for_its_document(workspace, route, &frames) {
             return None;
         }
         let artifact = route.artifact();
         let author = self.signer.device_public_key();
         let now = crate::clock::system_time(tilo_clock::unix_now_ns());
+        let written = (route.app_id.as_str(), route.document.as_str());
         // Drafted in the owner's turn, signed by this device's custody outside it.
         let draft = |view: &tilo_peer_state::owner::NativeCommittedView| {
             frames
@@ -142,7 +151,7 @@ impl Task {
                         .map_err(|error| error.to_string())
                     };
                     let op = view.peer().draft_write(
-                        (&route.app_id, &route.record),
+                        written,
                         frame,
                         Some(&mut seal),
                         author,
@@ -153,9 +162,9 @@ impl Task {
                         workspace: route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: route.app_id.clone(),
-                            record: route.record.clone(),
+                            record: route.document.clone(),
                             envelope: Box::new(op),
-                            own: view.peer().own_write(&route.app_id, &route.record, &author),
+                            own: view.peer().own_write(written.0, written.1, &author),
                         },
                     })
                 })
@@ -183,12 +192,12 @@ impl Task {
                 return None;
             }
             Err(WriteRefusal::Waiting(prerequisite)) => {
-                tracing::debug!(app = %route.app_id, record = %route.record, %prerequisite,
+                tracing::debug!(app = %route.app_id, record = %route.document, %prerequisite,
                     "writes wait for what the workspace has not admitted here yet");
                 return None;
             }
             Err(WriteRefusal::Refused(error)) => {
-                tracing::warn!(app = %route.app_id, record = %route.record, %error,
+                tracing::warn!(app = %route.app_id, record = %route.document, %error,
                     "the workspace refused a write of this device for good");
                 self.fail("write-refused", error.clone());
                 return Some(Err(error));

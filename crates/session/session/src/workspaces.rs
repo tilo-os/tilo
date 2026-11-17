@@ -1037,6 +1037,16 @@ impl crate::Shared {
             engine.name_own_hosts(endpoint);
         }
         self.project_governance();
+        // Who is here is numbered in the order the workspace admitted them, as its governance,
+        // projected onto the shell, records it: the order the roster numbers them in too.
+        if let Some(sync) = &self.sync {
+            let joined = self.handle.read(|tree| {
+                tree.active_workspace()
+                    .map(|workspace| workspace.policy.joined.clone())
+                    .unwrap_or_default()
+            });
+            sync.here().borrow_mut().set_joined(&joined);
+        }
     }
 
     /// Who the governance of a workspace names as its owner: its own, when this device holds it,

@@ -322,7 +322,7 @@ fn broker_admits(
     let surface = PublishedSurface {
         peer_id: 1,
         app_id: route.app_id.clone(),
-        route: CrdtRoute::record(&route.app_id, WORKSPACE, &route.record),
+        route: CrdtRoute::record(&route.app_id, WORKSPACE, &route.document),
         actions: vec![action.clone()],
         live: true,
     };

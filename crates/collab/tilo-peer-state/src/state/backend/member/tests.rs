@@ -330,6 +330,98 @@ tilo_test_env::scenario! {
             ) == tilo_action_policy::Answer::Allow
         );
     }
+
+    phase what_a_persons_agents_learned_about_them_is_theirs_alone;
+    // What a person's agents learned about them is that person's own record of the workspace
+    // (Chat's `chat.learned`): the person reads and changes it and so does software acting for
+    // them, while another member's list is refused to them, the workspace's owner included, and
+    // with it to every agent that acts for them.
+    {
+        let (mut peer, source, now) = fixture();
+        let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
+        let workspace = peer.core.workspace_doc.as_mut().unwrap();
+        workspace.put(ROOT, "owner", person.as_str()).unwrap();
+        workspace.commit();
+        let workspace_id = peer.workspace_id().to_owned();
+        let other = "ad".repeat(32);
+        let theirs_own = collab_types::OwnResource::of_person(&other, "chat.learned").unwrap();
+        peer.keep_own_document("so.tilo.chat", &theirs_own);
+        let theirs = theirs_own.document_id();
+        let mine_own = collab_types::OwnResource::of_person(&person, "chat.learned").unwrap();
+        peer.keep_own_document("so.tilo.chat", &mine_own);
+        let mine = mine_own.document_id();
+        assert_ne!(mine, theirs, "each person's list is a record of its own");
+        assert!(
+            peer.check_document_read(source, "so.tilo.chat", &mine, now)
+                .is_ok(),
+            "a person reads what was learned about them"
+        );
+        assert!(
+            peer.check_document_read(source, "so.tilo.chat", &theirs, now)
+                .is_err(),
+            "nobody else does, the workspace's owner included"
+        );
+        let mine_node = collab_types::document_node(&workspace_id, "so.tilo.chat", &mine);
+        let theirs_node = collab_types::document_node(&workspace_id, "so.tilo.chat", &theirs);
+        let me = peer.permissions(source, now).unwrap();
+        for kind in [ActionKind::Read, ActionKind::Undoable] {
+            assert!(
+                me.answer(
+                    &mine_node,
+                    kind,
+                    &tilo_action_policy::Context::at_time(now).with_own_resource(&mine, &person)
+                ) == Answer::Allow,
+                "the person, on their own list"
+            );
+            assert!(
+                me.answer(
+                    &theirs_node,
+                    kind,
+                    &tilo_action_policy::Context::at_time(now).with_own_resource(&theirs, &other)
+                ) == Answer::Deny,
+                "the person, on another member's list"
+            );
+        }
+        // An agent acting for the person reaches the person's list and never another member's:
+        // what it may do is what its person may, narrowed, never widened. It is the agent the
+        // workspace admits, with the grants every agent of it has; one nobody granted anything
+        // reaches no record at all, its person's own included.
+        let granted = roles::agent_grants(&workspace_id, "assistant", &person, &[]);
+        let agent = peer.permissions(source, now).unwrap().acting_as(
+            tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::agent("assistant")),
+            granted,
+        );
+        let ungranted = peer.permissions(source, now).unwrap().acting_as(
+            tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::agent("stranger")),
+            [],
+        );
+        assert!(
+            ungranted.answer(
+                &mine_node,
+                ActionKind::Read,
+                &tilo_action_policy::Context::at_time(now).with_own_resource(&mine, &person)
+            ) == Answer::Deny,
+            "an agent nobody granted anything, on the list of the person it claims to act for"
+        );
+        for kind in [ActionKind::Read, ActionKind::Undoable] {
+            assert!(
+                agent.answer(
+                    &mine_node,
+                    kind,
+                    &tilo_action_policy::Context::at_time(now).with_own_resource(&mine, &person)
+                ) != Answer::Deny,
+                "the person's agent, on its person's list"
+            );
+            assert!(
+                agent.answer(
+                    &theirs_node,
+                    kind,
+                    &tilo_action_policy::Context::at_time(now).with_own_resource(&theirs, &other)
+                ) == Answer::Deny,
+                "the person's agent, on another member's list"
+            );
+        }
+    }
 }
 fn row(peer: &StatePeer, source: &[u8; 32]) -> GovernedIdentity {
     let workspace = peer.admitted_workspace().unwrap();

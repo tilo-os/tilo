@@ -563,18 +563,25 @@ fn one_of(mut each: Vec<Pred<String>>) -> Pred<String> {
 }
 
 /// A person filter's value: `me` is whoever is looking, so a filter that names it reads
-/// differently for each of the people a workspace is shared with; anything else is a member by
-/// their key (a person's root key, an agent's `agent:<id>`).
+/// differently for each of the people a workspace is shared with; a person's id names that
+/// person (`assignee:<id>` as a search is typed), and an actor's text form
+/// ([`tilolang::pred::Lit::member_text`]) any other member, as a program writes it.
 fn person_lit(value: &str, viewer: Option<&Actor>) -> Result<Lit, String> {
     let who = if value == "me" {
         viewer
             .ok_or("`me` is only known where someone is looking")?
             .clone()
     } else {
-        Actor::Member(
-            crate::ids::MemberId::parse(value)
-                .ok_or_else(|| format!("`{value}` names no member of the workspace"))?,
-        )
+        serde_json::from_str::<Actor>(value)
+            .ok()
+            .or_else(|| {
+                tilo_actions::policy::PersonId::parse(value)
+                    .ok()
+                    .filter(|_| !value.is_empty())
+                    .map(|person| Actor::Member(crate::ids::MemberId::Person(person)))
+            })
+            .filter(|actor| actor.member_id().is_some())
+            .ok_or_else(|| format!("`{value}` names no member of the workspace"))?
     };
     Ok(Lit::Actor(who))
 }

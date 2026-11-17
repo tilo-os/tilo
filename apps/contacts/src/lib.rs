@@ -24,6 +24,7 @@ mod form;
 mod handoff;
 mod import_inbox;
 pub mod model;
+pub mod part;
 mod priority_contacts;
 pub mod resource;
 pub mod vcard;

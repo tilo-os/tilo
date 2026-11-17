@@ -5,7 +5,7 @@ format = 2
 [[resources]]
 kind = "feeds.library"
 label = "Feeds"
-version = 2
+version = 3
 fields = [
   { path = "folders", type = { collection = { named = "Folder" } }, stored = "collection" },
   { path = "folders.*.name", type = "text", label = true },
@@ -17,17 +17,6 @@ fields = [
   { path = "feeds.*.folder", type = { option = "text" } },
   { path = "feeds.*.kind", type = { named = "FeedKind" }, readonly = true },
   { path = "feeds.*.certificate_pin", type = { option = "text" }, readonly = true },
-  { path = "articles", type = { collection = { named = "Article" } }, stored = "collection" },
-  { path = "articles.*.feed_id", type = "text", readonly = true },
-  { path = "articles.*.title", type = "text", label = true, readonly = true },
-  { path = "articles.*.author", type = "text", readonly = true },
-  { path = "articles.*.url", type = "text", readonly = true },
-  { path = "articles.*.published", type = "int", readonly = true },
-  { path = "articles.*.summary", type = "text", readonly = true },
-  { path = "articles.*.blocks", type = { list = { named = "ContentBlock" } }, readonly = true },
-  { path = "articles.*.read", type = "bool" },
-  { path = "articles.*.starred", type = "bool" },
-  { path = "articles.*.tags", type = { set = "text" } },
 ]
 
 [[resources.verbs]]
@@ -45,17 +34,6 @@ kind = "undoable"
 params = [
   { name = "feed", type = "text", required = true, schema = { type = "string" } },
 ]
-
-[[resources.verbs]]
-id = "mark-feed-read"
-kind = "undoable"
-params = [
-  { name = "feed", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "mark-everything-read"
-kind = "undoable"
 
 [[resources.verbs]]
 id = "new-folder"
@@ -80,10 +58,9 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "refreshed"
+id = "note-feed"
 kind = "undoable"
 params = [
-  { name = "articles", type = { list = { named = "Fetched" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { author = { type = "string" }, blocks = { type = "array", items = { type = "object", additionalProperties = false, properties = { href = { type = ["string", "null"] }, kind = { type = "string", enum = ["Heading1", "Heading2", "Heading3", "Paragraph", "Bullet", "Quote", "Code", "Link", "Divider"] }, text = { type = "string" } }, required = ["kind", "text"] } }, published = { type = "integer" }, summary = { type = "string" }, title = { type = "string" }, url = { type = "string" } }, required = ["title"] } } },
   { name = "feed", type = "text", required = true, schema = { type = "string" } },
   { name = "title", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "certificate_pin", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
@@ -113,6 +90,116 @@ id = "reader-paper"
 kind = "read"
 params = [
   { name = "paper", type = "text", required = true },
+]
+
+[[resources.types]]
+name = "Feed"
+fields = [
+  { name = "title", type = "text" },
+  { name = "url", type = "text" },
+  { name = "site_url", type = "text" },
+  { name = "folder", type = { option = "text" } },
+  { name = "kind", type = { named = "FeedKind" } },
+  { name = "certificate_pin", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "FeedKind"
+cases = [
+  { name = "rss" },
+  { name = "atom" },
+  { name = "json" },
+  { name = "gemini" },
+]
+
+[[resources.types]]
+name = "Folder"
+fields = [
+  { name = "name", type = "text" },
+  { name = "collapsed", type = "bool" },
+]
+
+[[resources.types]]
+name = "Outline"
+fields = [
+  { name = "title", type = "text" },
+  { name = "url", type = "text" },
+  { name = "site_url", type = "text" },
+  { name = "folder", type = { option = "text" } },
+]
+
+[[resources]]
+kind = "feeds.articles"
+label = "Articles"
+version = 1
+fields = [
+  { path = "articles", type = { collection = { named = "Article" } }, stored = "collection", unit = true },
+  { path = "articles.*.feed_id", type = "text", readonly = true },
+  { path = "articles.*.title", type = "text", label = true, readonly = true },
+  { path = "articles.*.author", type = "text", readonly = true },
+  { path = "articles.*.url", type = "text", readonly = true },
+  { path = "articles.*.published", type = "int", readonly = true },
+  { path = "articles.*.summary", type = "text", readonly = true },
+  { path = "articles.*.blocks", type = { list = { named = "ContentBlock" } }, readonly = true },
+  { path = "articles.*.read", type = "bool" },
+  { path = "articles.*.starred", type = "bool" },
+  { path = "articles.*.tags", type = { set = "text" } },
+  { path = "read_through", type = { map = "int" }, readonly = true },
+]
+
+[[resources.verbs]]
+id = "receive"
+kind = "undoable"
+writes = ["record", "articles.*"]
+params = [
+  { name = "feed", type = "text", required = true, schema = { type = "string" } },
+  { name = "articles", type = { list = { named = "Fetched" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { author = { type = "string" }, blocks = { type = "array", items = { type = "object", additionalProperties = false, properties = { href = { type = ["string", "null"] }, kind = { type = "string", enum = ["Heading1", "Heading2", "Heading3", "Paragraph", "Bullet", "Quote", "Code", "Link", "Divider"] }, text = { type = "string" } }, required = ["kind", "text"] } }, published = { type = "integer" }, summary = { type = "string" }, title = { type = "string" }, url = { type = "string" } }, required = ["title"] } } },
+]
+
+[[resources.verbs]]
+id = "mark-read"
+kind = "undoable"
+writes = ["record", "read_through"]
+params = [
+  { name = "feed", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "set-read"
+field = "read"
+kind = "undoable"
+writes = ["record", "articles.*"]
+params = [
+  { name = "article", type = "text", required = true, schema = { type = "string" } },
+  { name = "read", type = "bool", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "set-starred"
+field = "starred"
+kind = "undoable"
+writes = ["record", "articles.*"]
+params = [
+  { name = "article", type = "text", required = true, schema = { type = "string" } },
+  { name = "starred", type = "bool", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "set-tags"
+kind = "undoable"
+writes = ["record", "articles.*"]
+params = [
+  { name = "article", type = "text", required = true, schema = { type = "string" } },
+  { name = "tags", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "forget-feed"
+destructive = true
+kind = "undoable"
+writes = ["record", "articles.*"]
+params = [
+  { name = "feed", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.types]]
@@ -153,26 +240,6 @@ fields = [
 ]
 
 [[resources.types]]
-name = "Feed"
-fields = [
-  { name = "title", type = "text" },
-  { name = "url", type = "text" },
-  { name = "site_url", type = "text" },
-  { name = "folder", type = { option = "text" } },
-  { name = "kind", type = { named = "FeedKind" } },
-  { name = "certificate_pin", type = { option = "text" } },
-]
-
-[[resources.types]]
-name = "FeedKind"
-cases = [
-  { name = "rss" },
-  { name = "atom" },
-  { name = "json" },
-  { name = "gemini" },
-]
-
-[[resources.types]]
 name = "Fetched"
 fields = [
   { name = "title", type = "text" },
@@ -181,21 +248,5 @@ fields = [
   { name = "published", type = "int" },
   { name = "summary", type = "text" },
   { name = "blocks", type = { list = { named = "ContentBlock" } } },
-]
-
-[[resources.types]]
-name = "Folder"
-fields = [
-  { name = "name", type = "text" },
-  { name = "collapsed", type = "bool" },
-]
-
-[[resources.types]]
-name = "Outline"
-fields = [
-  { name = "title", type = "text" },
-  { name = "url", type = "text" },
-  { name = "site_url", type = "text" },
-  { name = "folder", type = { option = "text" } },
 ]
 

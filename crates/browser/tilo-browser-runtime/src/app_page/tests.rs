@@ -5,7 +5,8 @@
 use std::rc::Rc;
 
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
-use ui::application::{AppComponent, HostContext, RestoreInput};
+use ui::application::{AppComponent, HostContext, HostContextInputs, RestoreInput};
+use ui::application_view::SavedInstanceView;
 use ui::automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use ui::launch::LaunchError;
 use ui::permissions::MemberId;
@@ -348,5 +349,160 @@ tilo_test_env::scenario! {
             written_elsewhere(&saved, "theirs"),
         );
         assert!(prepare(&store).is_ok(), "it opens once it is here");
+    }
+}
+
+/// The device the page's windows keep their views for.
+const VIEWS_DEVICE: &str = "D";
+
+/// The views the page's windows saved, in the storage its records are in.
+fn page_views(memory: &Rc<MemoryStore>) -> Rc<InstanceViewStore> {
+    Rc::new(
+        InstanceViewStore::with_store(
+            Rc::clone(memory) as Rc<dyn durable_store::DurableStore>,
+            VIEWS_DEVICE,
+            WORKSPACE,
+        )
+        .unwrap(),
+    )
+}
+
+/// The view a window of `app` on `record` saved under [`INSTANCE`].
+fn view_saved_by(app: &str, record: &DocumentCheckout) -> SavedInstanceView {
+    SavedInstanceView {
+        version: SavedInstanceView::VERSION,
+        app_id: app.into(),
+        device_id: VIEWS_DEVICE.into(),
+        workspace_id: WORKSPACE.into(),
+        instance_id: INSTANCE,
+        document_id: record.id.as_str().into(),
+        resource_type: record.kind.as_str().into(),
+        view: ui::view::View::default(),
+        application: None,
+        shows: None,
+    }
+}
+
+/// A definition whose factory says that it ran: a launch that reaches it passed every check a
+/// launch makes before it builds anything.
+fn reaching_its_factory() -> ApplicationDefinition {
+    fn factory_ran(
+        _: HostContext,
+        _: LaunchTarget,
+        _: RestoreInput,
+    ) -> Result<AppComponent, LaunchError> {
+        Err(LaunchError::Operation("the factory ran".into()))
+    }
+    ApplicationDefinition {
+        create: factory_ran,
+        ..definition(false)
+    }
+}
+
+/// Window [`INSTANCE`] of `definition` launched on `record` as a page launches it, with the saved
+/// view the page hands it: what the launch answered.
+fn launch_window(
+    definition: &ApplicationDefinition,
+    memory: &Rc<MemoryStore>,
+    store: &ResourceStore,
+    record: &DocumentCheckout,
+) -> String {
+    let target = LaunchTarget::Record {
+        checkout: record.clone(),
+        reveal: None,
+    };
+    let views = page_views(memory);
+    let restore = saved_view(&views, INSTANCE, definition, &target, None).unwrap();
+    let inputs = HostContextInputs {
+        records: store.clone(),
+        views,
+        device_id: VIEWS_DEVICE.into(),
+        instance_id: INSTANCE,
+        permissions: ui::permissions::SharedPermissions::new(
+            ui::permissions::PermissionContext::permissive(),
+        ),
+        author: author(),
+        action_context: tilo_actions::ActionContext::default(),
+    };
+    let context = HostContext::prepare(definition, inputs, &target).unwrap();
+    match definition.instantiate(context, target, restore) {
+        Ok(_) => "built".to_owned(),
+        Err(error) => error.to_string(),
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_window_takes_the_saved_view_under_its_id_only_when_it_is_its_own;
+
+    phase a_closed_windows_leftover_of_another_app_does_not_stop_the_window;
+    // A window id comes round again: a desktop mints ids from just above the highest its layout
+    // still holds, so after a reload a new window takes the id a closed one had, and every page
+    // showing one app alone is the same window. The view the earlier window saved is still under
+    // that id. Handed to the new window, the launch refused it ("application binding does not
+    // match": a saved view of another device, workspace or record), on every load, so the app
+    // never opened in that window again.
+    {
+        let definition = reaching_its_factory();
+        let (memory, store) = page(&definition);
+        let want = default_resource(&definition);
+        arrives(&memory, &store, &want.id, written_elsewhere(&want, "kept"));
+        page_views(&memory).save(&view_saved_by("so.tilo.other", &want)).unwrap();
+
+        let said = launch_window(&definition, &memory, &store, &want);
+        assert!(
+            said.contains("the factory ran"),
+            "the launch stopped before the app was built: {said}"
+        );
+        // The leftover is not the window's to take, and nothing took it away.
+        let target = LaunchTarget::Record { checkout: want, reveal: None };
+        assert!(matches!(
+            saved_view(&page_views(&memory), INSTANCE, &definition, &target, None),
+            Ok(RestoreInput::None)
+        ));
+        assert_eq!(
+            page_views(&memory).load(INSTANCE).unwrap().unwrap().app_id,
+            "so.tilo.other"
+        );
+    }
+
+    phase a_leftover_of_another_record_does_not_stop_the_window;
+    // The same app's window on another record had the id: its view is not this record's.
+    {
+        let definition = reaching_its_factory();
+        let (memory, store) = page(&definition);
+        let want = default_resource(&definition);
+        arrives(&memory, &store, &want.id, written_elsewhere(&want, "kept"));
+        let other = DocumentCheckout::new(
+            DocumentId::derived("default", &DocumentId::for_tab(INSTANCE + 1)),
+            definition.resource_type.clone(),
+        );
+        page_views(&memory).save(&view_saved_by(PACKAGE, &other)).unwrap();
+
+        let said = launch_window(&definition, &memory, &store, &want);
+        assert!(
+            said.contains("the factory ran"),
+            "the launch stopped before the app was built: {said}"
+        );
+    }
+
+    phase the_windows_own_saved_view_is_handed_to_it;
+    // What the window itself saved, for this app on this record, is what it comes back with.
+    {
+        let definition = reaching_its_factory();
+        let (memory, store) = page(&definition);
+        let want = default_resource(&definition);
+        arrives(&memory, &store, &want.id, written_elsewhere(&want, "kept"));
+        page_views(&memory).save(&view_saved_by(PACKAGE, &want)).unwrap();
+
+        let target = LaunchTarget::Record { checkout: want.clone(), reveal: None };
+        assert!(matches!(
+            saved_view(&page_views(&memory), INSTANCE, &definition, &target, None),
+            Ok(RestoreInput::Local(own)) if own.document_id == want.id.as_str()
+        ));
+        let said = launch_window(&definition, &memory, &store, &want);
+        assert!(
+            said.contains("the factory ran"),
+            "the launch refused the window's own view: {said}"
+        );
     }
 }

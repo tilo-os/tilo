@@ -16,6 +16,14 @@
 //!   `account/workspaces#create`, `account/keys#mint` and the rest
 //!   ([`crate::account`]).
 //!
+//! A program the API runs (`POST …/programs`) runs in a program session of
+//! its own: the `tilo` tool's session (its `let`s, the references its answers
+//! showed, the preview `confirm` applies, the steps `undo` takes back) on a
+//! lane of the workspace's session that only that program session's calls
+//! take. The caller names the program session each later program continues;
+//! at most [`MAX_PROGRAM_SESSIONS`] are kept, the least recently used ending
+//! first.
+//!
 //! The session's name is the person's: the client's name and a number of
 //! their own sessions ("Claude Code #2"), which History groups the session's
 //! actions under, and which the workspace's host shows present, doing what it
@@ -23,6 +31,7 @@
 //! server says nothing of it itself.
 
 pub mod invocations;
+pub mod keys;
 pub mod members;
 pub mod unattended;
 
@@ -43,6 +52,8 @@ pub const SESSION_HEADER: &str = "mcp-session-id";
 pub const WORKSPACE_ARGUMENT: &str = "workspace";
 const PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
 const MAX_NAME_CHARS: usize = 80;
+/// How many program sessions one run keeps.
+pub const MAX_PROGRAM_SESSIONS: usize = 16;
 
 /// What a request to a session answers: JSON-RPC messages, the last of them
 /// the reply. More than one only when the server tells the client something
@@ -96,11 +107,13 @@ pub struct Session {
     connection: Arc<Connection>,
     /// The server, which answers the account's own actions.
     server: std::sync::Weak<crate::Server>,
-    /// The sessions in workspaces the relay hosts, by workspace, each entered
+    /// The sessions in workspaces the relay hosts, by [`lane`], each entered
     /// under its own lock.
     served: tokio::sync::Mutex<HashMap<String, Entered<Served>>>,
-    /// The sessions in workspaces the person's devices host, by workspace.
+    /// The sessions in workspaces the person's devices host, by [`lane`].
     on_devices: tokio::sync::Mutex<HashMap<String, Entered<OnDevice>>>,
+    /// The program sessions, `(workspace, id)`, the most recently used last.
+    programs: tokio::sync::Mutex<Vec<(String, String)>>,
     /// The workspace tools, once a workspace served them.
     tools: Mutex<Option<Vec<Value>>>,
     pub(crate) last_used: Mutex<Instant>,
@@ -217,6 +230,13 @@ pub fn agent_session_label(registered: &str, initialize: &Value, number: u64) ->
 }
 
 impl Session {
+    /// Who the session's requests are by: the key's person at the key, as its certificate names
+    /// them, which the host reads as that person or as their agent. Never a label.
+    pub(crate) fn caller(&self) -> tilo_actions::remote::Caller {
+        let cert = self.connection.key.cert();
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+    }
+
     pub(crate) fn new(
         grant: String,
         scope: Scope,
@@ -234,6 +254,7 @@ impl Session {
             server,
             served: tokio::sync::Mutex::default(),
             on_devices: tokio::sync::Mutex::default(),
+            programs: tokio::sync::Mutex::default(),
             tools: Mutex::default(),
             last_used: Mutex::new(Instant::now()),
         }
@@ -261,10 +282,14 @@ impl Session {
     /// The session in `workspace`, entering it the first time. Each workspace's
     /// entry has a lock of its own, so entering one does not hold another's
     /// answers.
-    async fn served(&self, workspace: &str) -> Result<Arc<Served>, RelayError> {
+    async fn served(
+        &self,
+        workspace: &str,
+        program: Option<&str>,
+    ) -> Result<Arc<Served>, RelayError> {
         let slot = {
             let mut runs = self.served.lock().await;
-            let slot = Arc::clone(runs.entry(workspace.to_owned()).or_default());
+            let slot = Arc::clone(runs.entry(lane(workspace, program)).or_default());
             drop(runs);
             slot
         };
@@ -279,14 +304,8 @@ impl Session {
             .await?;
         let device = &self.connection.device;
         let actions = device.actions(id);
-        let cert = self.connection.key.cert();
-        let catalogue = tilo_mcp::task_hosts::WorkspaceCatalogue::new(
-            actions.clone(),
-            tilo_actions::remote::Caller::authenticated(
-                cert.user_public_key,
-                cert.device_public_key,
-            ),
-        );
+        let catalogue =
+            tilo_mcp::task_hosts::WorkspaceCatalogue::new(actions.clone(), self.caller());
         let server = McpServer::new(actions, workspace.to_owned(), self.person.clone())
             .with_surface(Surface::Agent)
             .with_agent_session(&self.id, self.label.clone())
@@ -304,8 +323,14 @@ impl Session {
     /// tool call did beside the agent. The workspace's people
     /// (`workspace/members`) are answered here ([`members`]).
     async fn serve(&self, workspace: &str, request: Value) -> Reply {
+        self.serve_in(workspace, None, request).await
+    }
+
+    /// [`Self::serve`], on the lane of the program session `program` when it
+    /// names one.
+    async fn serve_in(&self, workspace: &str, program: Option<&str>, request: Value) -> Reply {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
-        match self.on_device(workspace).await {
+        match self.on_device(workspace, program).await {
             Ok(Some(held)) => {
                 return held
                     .0
@@ -349,7 +374,7 @@ impl Session {
                 return Reply::one(result(&id, &answered));
             }
         }
-        let run = match self.served(workspace).await {
+        let run = match self.served(workspace, program).await {
             Ok(held) => held,
             Err(RelayError::NotFound) => {
                 return Reply::one(error(&id, -32602, "no such workspace"));
@@ -369,14 +394,19 @@ impl Session {
     /// time (and again once the device closed it); `None` for a workspace the
     /// relay keeps. As [`Self::served`], each workspace's entry has a lock of
     /// its own.
-    async fn on_device(&self, workspace: &str) -> Result<Option<Arc<OnDevice>>, String> {
+    async fn on_device(
+        &self,
+        workspace: &str,
+        program: Option<&str>,
+    ) -> Result<Option<Arc<OnDevice>>, String> {
+        let lane = lane(workspace, program);
         // A workspace the session already works in on the relay is the relay's.
-        if self.served.lock().await.contains_key(workspace) {
+        if self.served.lock().await.contains_key(&lane) {
             return Ok(None);
         }
         let slot = {
             let mut runs = self.on_devices.lock().await;
-            let slot = Arc::clone(runs.entry(workspace.to_owned()).or_default());
+            let slot = Arc::clone(runs.entry(lane).or_default());
             drop(runs);
             slot
         };
@@ -650,6 +680,81 @@ impl Session {
         Ok(message.get("result").cloned().unwrap_or_default())
     }
 
+    /// Run `arguments` (the `tilo` tool's: `{program, confirm}`) in
+    /// `workspace`, in the program session `session` names, or a new one
+    /// when it names none: the tool's result, and the session it ran in.
+    ///
+    /// # Errors
+    /// The run reaches no such workspace, or `session` names a session that
+    /// ended.
+    pub async fn run_program(
+        &self,
+        workspace: &str,
+        session: Option<&str>,
+        arguments: Value,
+        group: Option<Value>,
+    ) -> Result<(Value, String), CallError> {
+        if self.pinned().is_some_and(|pinned| pinned != workspace) {
+            return Err(CallError::beyond_scope());
+        }
+        self.touch();
+        let session = self.program_session(workspace, session).await?;
+        let mut meta = Map::new();
+        meta.insert("structured".into(), json!(true));
+        if let Some(group) = group {
+            meta.insert("invocation".into(), group);
+        }
+        let request = json!({"jsonrpc": "2.0", "id": "api", "method": "tools/call",
+            "params": {"name": "tilo", "arguments": arguments, "_meta": {"so.tilo.mcp": meta}}});
+        let reply = Box::pin(self.serve_in(workspace, Some(&session), request)).await;
+        let Some(message) = reply.messages.into_iter().last() else {
+            return Err(CallError::unanswered());
+        };
+        if let Some(error) = message.get("error") {
+            return Err(CallError::of(error));
+        }
+        Ok((message.get("result").cloned().unwrap_or_default(), session))
+    }
+
+    /// The program session `asked` names in `workspace`, now the most
+    /// recently used, or a new one when it names none. A new one beyond
+    /// [`MAX_PROGRAM_SESSIONS`] ends the least recently used.
+    async fn program_session(
+        &self,
+        workspace: &str,
+        asked: Option<&str>,
+    ) -> Result<String, CallError> {
+        let mut sessions = self.programs.lock().await;
+        let id = match asked {
+            Some(asked) => {
+                let at = sessions
+                    .iter()
+                    .position(|(known, id)| known == workspace && id == asked)
+                    .ok_or_else(|| CallError {
+                        code: "not_found",
+                        message: "that program session ended: its lets and references are gone; \
+                                  leave `session` out to start a new one"
+                            .into(),
+                        retry_after_ms: None,
+                    })?;
+                sessions.remove(at).1
+            }
+            None => uuid::Uuid::new_v4().simple().to_string(),
+        };
+        sessions.push((workspace.to_owned(), id.clone()));
+        let over = sessions.len().saturating_sub(MAX_PROGRAM_SESSIONS);
+        let ended: Vec<String> = sessions
+            .drain(..over)
+            .map(|(workspace, id)| lane(&workspace, Some(&id)))
+            .collect();
+        drop(sessions);
+        for lane in &ended {
+            self.served.lock().await.remove(lane);
+            self.on_devices.lock().await.remove(lane);
+        }
+        Ok(id)
+    }
+
     /// Call the workspace tool `name` with `arguments` in `workspace`, in
     /// this session: the tool's result, or why there is none.
     pub(crate) async fn call_in(
@@ -687,6 +792,12 @@ impl Session {
         self.served.lock().await.clear();
         self.on_devices.lock().await.clear();
     }
+}
+
+/// The key a workspace's run is kept under: the workspace, or the lane of
+/// one program session there.
+fn lane(workspace: &str, program: Option<&str>) -> String {
+    program.map_or_else(|| workspace.to_owned(), |id| format!("{workspace} {id}"))
 }
 
 /// What an account session is told first: how to reach the account and its

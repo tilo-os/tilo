@@ -220,7 +220,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
         .health
         .records
         .into_iter()
-        .find(|record| record.record.document_id == route.record)
+        .find(|record| record.record.document_id == route.document)
         .expect("the board's health");
     assert_eq!(note.outgoing.refused_operations, 1);
     assert_eq!(

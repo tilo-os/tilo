@@ -5,7 +5,7 @@
 #[cfg(unix)]
 fn an_absent_on_demand_record_is_said_once_and_waited_on() {
     let workspace = Uuid::new_v4();
-    let part = RouteSpec::record(
+    let part = RouteSpec::document(
         "so.tilo.chat",
         workspace,
         "derived:part.3@derived:messages@workspace",

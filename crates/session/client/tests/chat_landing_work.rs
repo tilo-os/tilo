@@ -158,7 +158,7 @@ async fn guest_takes_in(
     part: &DocumentRoute,
 ) -> Work {
     let head = DocumentRoute {
-        record: neighbour_wire::chain_head(CHAT_CHAIN),
+        document: neighbour_wire::chain_head(CHAT_CHAIN),
         ..part.clone()
     };
     let landed_before = *page.engine().arrivals().watching().borrow();
@@ -180,26 +180,26 @@ async fn guest_takes_in(
         for event in events.drain() {
             match event {
                 Event::Landed { route, .. } if route == *chat || route == *part => {
-                    landed.insert(route.record.clone());
+                    landed.insert(route.document.clone());
                 }
                 Event::DocumentOpened {
                     route: Some(route),
                     answer: tilo_session_client::DocumentAnswer::Sent { frames },
                     ..
                 } if route == *chat || route == head => {
-                    work.sent.insert(route.record.clone(), frames);
+                    work.sent.insert(route.document.clone(), frames);
                 }
                 _ => {}
             }
         }
         for record in landed {
-            let route = if record == chat.record { chat } else { part };
+            let route = if record == chat.document { chat } else { part };
             let heads = read_so_far.get(&record).map(|(heads, _)| heads.clone());
             work.reads += 1;
             let read = page.engine().record_update(
                 &route.cluster_id,
                 &route.app_id,
-                &route.record,
+                &route.document,
                 heads.as_deref(),
             );
             // A read refused while the record is still arriving (a write that builds on one
@@ -210,7 +210,7 @@ async fn guest_takes_in(
             };
             match read {
                 ResourceReading::Captured { bytes, heads, .. } => {
-                    if record == part.record {
+                    if record == part.document {
                         work.whole_read = bytes.len();
                     }
                     read_so_far.insert(record, (heads, AutoCommit::load(&bytes).unwrap()));
@@ -228,7 +228,7 @@ async fn guest_takes_in(
                 .get(record)
                 .is_some_and(|(_, doc)| doc.keys(automerge::ROOT).count() >= keys)
         };
-        if read_whole(&part.record, POSTS) && read_whole(&chat.record, INTRODUCED) {
+        if read_whole(&part.document, POSTS) && read_whole(&chat.document, INTRODUCED) {
             work.took = opened.elapsed();
             work.taken_in = page
                 .engine()
@@ -275,10 +275,10 @@ async fn a_guest_takes_in_a_crowded_chat_as_a_snapshot_and_the_writes_since() {
     let chat = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: lounge.workspace.clone(),
-        record: String::new(),
+        document: String::new(),
     };
     let part = DocumentRoute {
-        record: neighbour_wire::document_part(CHAT_CHAIN, 0),
+        document: neighbour_wire::document_part(CHAT_CHAIN, 0),
         ..chat.clone()
     };
 

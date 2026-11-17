@@ -191,7 +191,7 @@ async fn an_agent_finds_a_conversation_by_its_name() {
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: browser.cluster_id.clone(),
-        record: chat.wire_document().into(),
+        document: chat.wire_document().into(),
     };
     browser
         .peer

@@ -17,7 +17,7 @@ impl AgentMember {
         let route = DocumentRoute {
             app_id: app.to_owned(),
             cluster_id: self.workspace.clone(),
-            record: record.to_owned(),
+            document: record.to_owned(),
         };
         let Some(genesis) = self.genesis_changes(app) else {
             return false;
@@ -138,14 +138,14 @@ impl AgentMember {
             let mut known: Vec<DocumentRoute> = Vec::new();
             for route in self.unopened.routes() {
                 if route.app_id == step.app
-                    && !super::parts::is_part(&route.record)
+                    && !super::parts::is_part(&route.document)
                     && !self.others_document(&route, &request)
                 {
                     known.push(route);
                 }
             }
             if let Some(written) = self.only_written(known) {
-                return self.open(&step.app, Some(&written.record)).map(Some);
+                return self.open(&step.app, Some(&written.document)).map(Some);
             }
         }
         Ok(found)

@@ -63,6 +63,8 @@ fn ask(f: &Fixture) {
                 message: "chat.workspace/channels/c_tide/messages/m1".into(),
                 title: "Tide".into(),
                 instruction: "Add the release date to the notes".into(),
+                agent_instruction: None,
+                fold: None,
                 subject: None,
                 spend: None,
             },

@@ -78,7 +78,7 @@ fn notes(lounge: &str, record: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: "so.tilo.notes".into(),
         cluster_id: lounge.to_owned(),
-        record: record.to_owned(),
+        document: record.to_owned(),
     }
 }
 
@@ -121,7 +121,7 @@ impl Reader {
     fn holds(page: &Link, record: &DocumentRoute) -> Vec<String> {
         let Ok(Some(bytes)) =
             page.engine()
-                .record(&record.cluster_id, &record.app_id, &record.record)
+                .record(&record.cluster_id, &record.app_id, &record.document)
         else {
             return Vec::new();
         };
@@ -146,7 +146,7 @@ impl Reader {
             } = event
             {
                 if self.watched.contains(&route) {
-                    self.opened.insert(route.record, frames);
+                    self.opened.insert(route.document, frames);
                 }
                 continue;
             }
@@ -156,14 +156,16 @@ impl Reader {
             if !self.watched.contains(&route) {
                 continue;
             }
-            match page
-                .engine()
-                .record_update(&route.cluster_id, &route.app_id, &route.record, None)
-            {
-                Ok(_) => *self.reads.entry(route.record.clone()).or_default() += 1,
+            match page.engine().record_update(
+                &route.cluster_id,
+                &route.app_id,
+                &route.document,
+                None,
+            ) {
+                Ok(_) => *self.reads.entry(route.document.clone()).or_default() += 1,
                 Err(error) => self
                     .refusals
-                    .push(format!("{}/{}: {error}", route.app_id, route.record)),
+                    .push(format!("{}/{}: {error}", route.app_id, route.document)),
             }
         }
     }
@@ -252,11 +254,11 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
         "opened the record nobody wrote",
         &mut reader,
         &page,
-        |reader, _| reader.opened.get(&fresh_record.record) == Some(&0),
+        |reader, _| reader.opened.get(&fresh_record.document) == Some(&0),
     )
     .await;
     assert!(
-        !reader.reads.contains_key(&fresh_record.record),
+        !reader.reads.contains_key(&fresh_record.document),
         "a record nobody wrote never landed"
     );
     assert!(

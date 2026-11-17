@@ -4,7 +4,7 @@
 
 #[cfg(test)]
 use super::file_metadata;
-use crate::resource::Contacts;
+use crate::part::{Book, ContactPart};
 use std::cell::Cell;
 #[cfg(test)]
 use std::path::PathBuf;
@@ -435,12 +435,12 @@ impl ContactsApp {
 /// whose id names a contact already is unchanged or waits in `conflicts`, and
 /// one whose contact was deleted is not brought back.
 pub(super) fn absorb(
-    book: &Contacts,
+    book: &Book,
     conflicts: &mut Vec<ImportConflict>,
     cards: impl IntoIterator<Item = Contact>,
     summary: &mut ImportSummary,
     first_new: &mut Option<ContactId>,
-    submit: impl FnOnce(Invoke<Contacts>) -> Result<(), String>,
+    submit: impl FnOnce(Invoke<ContactPart>) -> Result<(), String>,
 ) {
     let mut added = Vec::new();
     for c in cards {
@@ -481,7 +481,7 @@ pub(super) fn absorb(
     }
     let count = added.len();
     let first = added.first().map(|contact| contact.id);
-    match submit(Contacts::add_all(added)) {
+    match submit(ContactPart::add_all(added)) {
         Ok(()) => {
             if first_new.is_none() {
                 *first_new = first;
@@ -501,7 +501,8 @@ pub(super) fn import_chosen(
     files: Vec<ChosenFile>,
     work: FileWorkGuard,
     asked: Asked,
-    cx: &mut EffectCx<Contacts>,
+    chain: Option<ui::framework::Chain<ContactPart>>,
+    cx: &mut EffectCx<crate::resource::Contacts>,
 ) -> EffectAnswer {
     if files.is_empty() {
         return Ok(Effected::done());
@@ -522,9 +523,12 @@ pub(super) fn import_chosen(
     }
     Ok(cx.thread(
         move |_| parse_chosen(files),
-        move |(), parsed, cx| {
+        move |(), parsed, _cx| {
             drop(work);
-            let book = cx.live().get();
+            let Some(chain) = chain else {
+                return Err("the address book is not open".to_owned());
+            };
+            let book = Rc::new(Book::of(&chain.parts()));
             let mut summary = ImportSummary {
                 errors: parsed.errors,
                 ..ImportSummary::default()
@@ -537,11 +541,15 @@ pub(super) fn import_chosen(
                 parsed.contacts,
                 &mut summary,
                 &mut first_new,
+                // Queued as the window's own change, and written after the
+                // frame: a part cannot be opened while the frame reads the
+                // store.
                 |invoke| {
-                    if cx.dispatcher().read_only() {
+                    let dispatcher = chain.dispatcher();
+                    if dispatcher.read_only() {
                         return Err("you can only view this address book".into());
                     }
-                    cx.submit(invoke);
+                    dispatcher.submit(invoke);
                     Ok(())
                 },
             );
@@ -568,7 +576,7 @@ pub(super) fn begin_file_work(
 }
 
 pub(super) fn export_bytes(
-    book: &Contacts,
+    book: &Book,
     ids: &[ContactId],
     version: VCardVersion,
 ) -> Result<(Vec<u8>, usize), String> {
@@ -593,7 +601,7 @@ pub(super) fn save_export(
     version: VCardVersion,
     work: FileWorkGuard,
     asked: Asked,
-    cx: &mut EffectCx<Contacts>,
+    cx: &mut EffectCx<crate::resource::Contacts>,
 ) -> Effected {
     cx.save_file(
         contacts_export_request(EXPORT_FILE_NAME),

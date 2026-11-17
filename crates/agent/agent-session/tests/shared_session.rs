@@ -302,7 +302,7 @@ async fn receive_until(
             && let Ok(Some(bytes)) =
                 browser
                     .engine()
-                    .record(&route.cluster_id, &route.app_id, &route.record)
+                    .record(&route.cluster_id, &route.app_id, &route.document)
         {
             page.apply(&collab_types::DocumentMutation::Snapshot(bytes))
                 .unwrap();
@@ -414,7 +414,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let route = DocumentRoute {
         app_id: SCRATCHPAD.into(),
         cluster_id: WORKSPACE.into(),
-        record: page.wire_document().to_owned(),
+        document: page.wire_document().to_owned(),
     };
     browser
         .write(route.clone(), &page.take_mutation().unwrap().unwrap())
@@ -431,7 +431,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let (note, arguments) = crate::common::scratchpad_body("Drafted by the agent");
     let task = serde_json::json!([{
         "app": SCRATCHPAD,
-        "record": route.record,
+        "record": route.document,
         "resource": "scratchpad.note",
         "action": note.action,
         "arguments": arguments,
@@ -538,7 +538,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let (note, arguments) = crate::common::scratchpad_body("Second draft");
     let second = serde_json::json!({
         "app": SCRATCHPAD,
-        "record": route.record,
+        "record": route.document,
         "resource": "scratchpad.note",
         "action": note.action,
         "arguments": arguments,
@@ -605,7 +605,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             let (note, arguments) = crate::common::scratchpad_body(&format!("Step {n} of ten"));
             serde_json::json!({
                 "app": SCRATCHPAD,
-                "record": route.record,
+                "record": route.document,
                 "resource": "scratchpad.note",
                 "action": note.action,
                 "arguments": arguments,
@@ -652,7 +652,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let (note, arguments) = crate::common::scratchpad_body("Planned beside the loop");
     let planned_steps = serde_json::json!([{
         "app": SCRATCHPAD,
-        "record": route.record,
+        "record": route.document,
         "resource": "scratchpad.note",
         "action": note.action,
         "arguments": arguments,
@@ -717,7 +717,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         let (note, arguments) = crate::common::scratchpad_body(text);
         serde_json::json!([{
             "app": SCRATCHPAD,
-            "record": route.record,
+            "record": route.document,
             "resource": "scratchpad.note",
             "action": note.action,
             "arguments": arguments,

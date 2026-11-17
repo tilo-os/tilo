@@ -181,16 +181,11 @@ async fn a_session_beside_the_devices_own_dials_from_the_devices_endpoint() {
     let mut dial = Dial::for_page(&[0; 32]);
     dial.lend(Arc::clone(&own));
 
-    // Before the device's endpoint is bound the host is not reached, and nothing is bound in the
-    // endpoint's place.
+    // Before the device's endpoint is bound the host is not reached.
     let early = connect(&config, &device, &mut dial).await;
     assert!(
         matches!(early, Err(LinkError::Unavailable(_))),
         "a dial before the device's endpoint is bound is one to make again"
-    );
-    assert!(
-        dial.plane().is_none(),
-        "no dialer is made, and so no endpoint bound, in place of the device's"
     );
 
     let bound = Endpoint::builder(Minimal)
@@ -230,10 +225,11 @@ async fn a_session_beside_the_devices_own_dials_from_the_devices_endpoint() {
         sockets.iter().any(|socket| socket.port() == from.port()),
         "the host hears the dial from the device's own endpoint: {from} is none of {sockets:?}"
     );
-    let (_, delegation) = dial.plane().expect("the dialer is kept");
+    // The device's own session runs its live plane: a second one under the same key would shadow
+    // the broadcast it publishes its presence on.
     assert!(
-        delegation.is_empty(),
-        "an endpoint of the device's key speaks for itself"
+        dial.plane().is_none(),
+        "a session beside the device's own joins no plane of its own"
     );
 
     // The session ending leaves the device's endpoint open: it is the device's.

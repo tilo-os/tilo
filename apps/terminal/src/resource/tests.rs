@@ -136,7 +136,7 @@ tilo_test_env::scenario! {
     phase history_reads_a_requested_run_from_the_stored_record;
     {
         use ui::tilo_resource::Settled;
-        let mut session = Replica::<Terminal>::new().as_author("agent:claude-code");
+        let mut session = Replica::<Terminal>::new().as_member(ui::permissions::MemberId::agent("claude-code"));
         session
             .apply(Terminal::CLAIM_PANE.with((uuid::Uuid::new_v4().to_string(), None::<String>)))
             .unwrap();
@@ -196,7 +196,7 @@ tilo_test_env::scenario! {
             Some(&serde_json::json!(request.as_str()))
         );
         let run =
-            tilo_automerge::items::collection_item_json(doc, &heads, "runs", request.as_str()).unwrap();
+            tilo_automerge::items::collection_item_json(doc, &heads, "commands", request.as_str()).unwrap();
         assert_eq!(run["command"], "cargo test -p signup");
         assert_eq!(run["cwd"], "/home/ada/signup");
         assert_eq!(run["exit"], 101);

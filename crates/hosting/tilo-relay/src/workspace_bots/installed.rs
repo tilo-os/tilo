@@ -24,7 +24,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use automerge::AutoCommit;
 use chrono::{DateTime, FixedOffset, Offset as _, TimeZone as _, Utc};
@@ -40,7 +40,7 @@ use tilo_agent_session::{AppCatalogue, ReplicaActor};
 use tilo_automation::dispatch::queue::{DeadLetter, Finished, FiringQueue};
 use tilo_automation::dispatch::{Armed, ConnectorEvent, Event, Firer, Firing, ScheduleEvent};
 use tilo_automation::invocation::{AskRequest, ConfirmationRequest, InvocationHooks};
-use tilo_automation::schedule::Timed;
+use tilo_automation::schedule::{SchedulePlan, Timed, plan};
 use tilo_automation::{
     InvocationMode, InvocationRequest, InvocationTrigger, Shortcut, TriggerSpec,
 };
@@ -58,6 +58,13 @@ use tilo_automation::grant::OUTBOX_FIELD;
 use tilo_lock::MutexRecover as _;
 /// How long the runner waits with nothing to do before it looks again.
 const IDLE: Duration = Duration::from_secs(30);
+/// How long a participant holds a bot schedule's lease before another may
+/// take it: three idle looks, so a runner that is alive keeps it.
+const SCHEDULE_LEASE: Duration = Duration::from_secs(90);
+/// How little of that deadline is left when a live holder pushes it out
+/// again: it renews every minute rather than writing the workspace on every
+/// lookup.
+const SCHEDULE_RENEW_NS: u64 = 30_000_000_000;
 /// The input a program declares to be told the workspace's members and roles.
 const WORKSPACE_INPUT: &str = "workspace";
 /// The input a program declares to be told the workspace's own emoji: each
@@ -126,10 +133,6 @@ struct Progress {
     /// Event log sequence read up to, by connector app id.
     connectors: BTreeMap<String, u64>,
     queue: FiringQueue,
-    /// The next fire time of each trigger on the clock (a schedule, a
-    /// moment), by its index.
-    #[serde(default)]
-    schedules: BTreeMap<usize, Scheduled>,
     /// Firings that will not run again on their own, newest last.
     #[serde(default)]
     dead_letters: VecDeque<DeadLetter>,
@@ -137,18 +140,6 @@ struct Progress {
     /// workspace's governance.
     #[serde(default)]
     members: Option<BTreeMap<String, MemberMark>>,
-}
-
-/// One of the bot's triggers on the clock, as the host answered its fire
-/// times.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct Scheduled {
-    /// The trigger as installed. A program updated to another schedule or
-    /// moment starts its own times rather than inheriting the old one's.
-    trigger: TriggerSpec,
-    /// The first fire time the host has not answered, ms since the epoch:
-    /// none once the trigger has no more, as a moment the host answered.
-    next_fire_ms: Option<i64>,
 }
 
 impl Progress {
@@ -217,6 +208,11 @@ enum Fired {
     Refused(String),
 }
 
+/// The lease one trigger of an installation's schedule is fired under.
+fn schedule_lease(installation: &str, trigger: usize) -> String {
+    format!("bot.{installation}.trigger.{trigger}")
+}
+
 pub struct BotRunner {
     workspaces: Workspaces,
     workspace: String,
@@ -237,6 +233,9 @@ pub struct BotRunner {
     state_file: PathBuf,
     /// Where the runner reads the time, for its schedules' fire times.
     clock: Arc<dyn tilo_clock::Clock>,
+    /// The next fire time of the schedules this participant holds, ms since
+    /// the epoch, so its idle wait ends at it.
+    next_schedule_ms: Option<i64>,
     /// The emoji pictures already kept for the connectors, by address.
     kept: Mutex<BTreeSet<String>>,
     /// Records of the workspace the bot follows that this host could not read
@@ -336,6 +335,7 @@ impl BotRunner {
             progress,
             state_file,
             clock: Arc::new(tilo_clock::SystemClock),
+            next_schedule_ms: None,
             kept: Mutex::new(BTreeSet::new()),
             unreadable: Mutex::new(BTreeSet::new()),
             #[cfg(test)]
@@ -429,12 +429,7 @@ impl BotRunner {
                 .queue
                 .wake_at_ms()
                 .into_iter()
-                .chain(
-                    self.progress
-                        .schedules
-                        .values()
-                        .filter_map(|kept| kept.next_fire_ms),
-                )
+                .chain(self.next_schedule_ms)
                 .min()
                 .map_or(IDLE, |at| {
                     Duration::from_millis(
@@ -520,7 +515,7 @@ impl BotRunner {
     /// the cursors, which move past them, and by every fire time of a
     /// trigger on the clock that has come.
     async fn take_in(&mut self, now_ms: i64) -> Result<Vec<Firing>, String> {
-        let mut firings = self.schedule_firings(now_ms);
+        let mut firings = self.schedule_firings(now_ms).await;
         let armed = [Armed {
             firer: Firer::Bot {
                 installation: &self.bot.installation,
@@ -618,13 +613,16 @@ impl BotRunner {
     }
 
     /// The firings of the bot's triggers on the clock whose fire time has
-    /// come by `now_ms`, each fire time answered once. The ledger keeps each
-    /// trigger's next fire time. A restarted host so answers a schedule's
-    /// time it missed only when the trigger asks to catch up, once for
-    /// however many periods passed, never once per period; and it answers a
-    /// moment that passed while it was down once, however late, and never
-    /// again.
-    fn schedule_firings(&mut self, now_ms: i64) -> Vec<Firing> {
+    /// come by `now_ms`, each fire time answered once. The progress is the
+    /// workspace's, not this host's: every participant reads the latest fire
+    /// time any of them answered, so a schedule carries on across a restart
+    /// and from one participant to the next, and a time missed while none ran
+    /// is caught up once when the trigger asks to and never once per period; a
+    /// moment that passed while every participant was down fires once, however
+    /// late, and never again. This device fires a trigger only while it holds
+    /// that trigger's lease in the workspace; another participant takes the
+    /// lease over once this one stops renewing it.
+    async fn schedule_firings(&mut self, now_ms: i64) -> Vec<Firing> {
         let installation = self.bot.installation.clone();
         let shortcut = Arc::clone(&self.shortcut);
         let workspace = self.workspace.clone();
@@ -634,56 +632,127 @@ impl BotRunner {
             },
             shortcut: &shortcut,
         }];
-        let now = DateTime::from_timestamp_millis(now_ms).unwrap_or_default();
+        let now = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_millis(
+                u64::try_from(now_ms).unwrap_or_default(),
+            ))
+            .unwrap_or(SystemTime::UNIX_EPOCH);
         let zone = |at: DateTime<Utc>| local_offset(at);
         let mut firings = Vec::new();
-        let mut live = BTreeSet::new();
+        let mut next: Option<i64> = None;
         for (index, trigger) in shortcut.triggers.iter().enumerate() {
             let Some(timed) = Timed::of(trigger) else {
                 continue;
             };
-            live.insert(index);
-            // A trigger first seen starts at its first fire time: a
-            // schedule's next one; a moment itself, answered in this same
-            // pass when it has passed already.
-            let due = match self
-                .progress
-                .schedules
-                .get(&index)
-                .filter(|kept| kept.trigger == *trigger)
-            {
-                Some(kept) => kept.next_fire_ms,
-                None => timed.first_ms(now, &zone),
+            let mark = tilo_peer_state::trigger_mark(trigger);
+            let lease = schedule_lease(&installation, index);
+            // Fires only while this device holds the trigger's lease.
+            if !self.hold_schedule_lease(&lease, now).await {
+                continue;
+            }
+            // Read the merged state once more: a participant that claimed the
+            // same term is visible now, and only its ranking's winner fires.
+            let Some(state) = self.workspaces.state(&workspace).await else {
+                continue;
             };
-            let next_fire_ms = match due {
-                Some(due) if due <= now_ms => {
-                    if timed.runs(now_ms.saturating_sub(due)) {
-                        let event = ScheduleEvent {
-                            workspace: workspace.clone(),
-                            trigger: index,
-                            due_ms: due,
-                        };
-                        firings.extend(
-                            tilo_automation::dispatch::dispatch(&armed, Event::Schedule(&event))
-                                .firings,
-                        );
-                    }
-                    timed.following_ms(now, &zone)
+            let held = state
+                .workspace()
+                .lease(&lease, now)
+                .holder
+                .is_some_and(|holder| holder.device == self.host.device_public_key);
+            if !held {
+                continue;
+            }
+            let answered = state
+                .workspace()
+                .bot_schedule_answered(&installation, index, &mark);
+            let step = plan(timed, answered, now_ms, &zone);
+            let answered_ms = match step {
+                SchedulePlan::Waiting { answered_ms } => answered_ms,
+                SchedulePlan::Fire {
+                    due_ms,
+                    answered_ms,
+                    ..
+                } => {
+                    let event = ScheduleEvent {
+                        workspace: workspace.clone(),
+                        trigger: index,
+                        due_ms,
+                    };
+                    firings.extend(
+                        tilo_automation::dispatch::dispatch(&armed, Event::Schedule(&event))
+                            .firings,
+                    );
+                    answered_ms
                 }
-                waiting => waiting,
             };
-            self.progress.schedules.insert(
-                index,
-                Scheduled {
-                    trigger: trigger.clone(),
-                    next_fire_ms,
-                },
-            );
+            self.answer_schedule(index, &mark, answered_ms, now).await;
+            if let Some(at) = timed.waiting_ms(answered_ms, &zone) {
+                next = Some(next.map_or(at, |kept| kept.min(at)));
+            }
         }
-        self.progress
-            .schedules
-            .retain(|index, _| live.contains(index));
+        self.next_schedule_ms = next;
         firings
+    }
+
+    /// Whether this device holds the schedule's `lease`, taking it or
+    /// pushing its deadline out when it does not yet or the deadline is close.
+    /// A live holder renews once its deadline is within
+    /// [`SCHEDULE_RENEW_NS`], not on every pass: the workspace is written only
+    /// when its state changes.
+    async fn hold_schedule_lease(&self, lease: &str, now: SystemTime) -> bool {
+        let Some(state) = self.workspaces.state(&self.workspace).await else {
+            return false;
+        };
+        let now_ns = u64::try_from(
+            now.duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+        )
+        .unwrap_or(u64::MAX);
+        if let Some(holder) = state.workspace().lease(lease, now).holder
+            && holder.device == self.host.device_public_key
+            && holder.expires_at_ns.saturating_sub(now_ns) > SCHEDULE_RENEW_NS
+        {
+            return true;
+        }
+        let claimed = self
+            .workspaces
+            .author_own_workspace_state(&self.workspace, &self.host, |peer| {
+                peer.workspace_mut().take_lease(
+                    &self.host,
+                    lease,
+                    SCHEDULE_LEASE,
+                    tilo_peer_state::unranked(),
+                    now,
+                )
+            })
+            .await;
+        matches!(claimed, Ok(Some(_)))
+    }
+
+    /// Record that this device answered through `answered_ms` for the bot's
+    /// schedule at `trigger`, in the workspace.
+    async fn answer_schedule(&self, trigger: usize, mark: &str, answered_ms: i64, now: SystemTime) {
+        let installation = self.bot.installation.clone();
+        let host = &self.host;
+        let workspace = &self.workspace;
+        if let Err(error) = self
+            .workspaces
+            .author_own_workspace_state(workspace, host, |peer| {
+                peer.workspace_mut().answer_bot_schedule(
+                    host,
+                    &installation,
+                    trigger,
+                    mark,
+                    answered_ms,
+                    now,
+                )
+            })
+            .await
+        {
+            tracing::warn!(%installation, %error, "a bot schedule's progress was not kept");
+        }
     }
 
     /// Whether the runner already follows records of `app`.
@@ -736,7 +805,7 @@ impl BotRunner {
                 let route = DocumentRoute {
                     app_id: app.clone(),
                     cluster_id: self.workspace.clone(),
-                    record,
+                    document: record,
                 };
                 let held = Arc::clone(&self.held);
                 let holding = route.clone();
@@ -745,7 +814,7 @@ impl BotRunner {
                         .await
                         .map_err(|error| error.to_string())?;
                 if let Err(error) = held {
-                    tracing::warn!(installation = %self.bot.installation, app = %route.app_id, record = %route.record, %error, "bot run leaves out a record it could not hold");
+                    tracing::warn!(installation = %self.bot.installation, app = %route.app_id, record = %route.document, %error, "bot run leaves out a record it could not hold");
                 }
             }
         }
@@ -811,13 +880,13 @@ impl BotRunner {
                 self.api.forget_steps();
                 let reason = format!(
                     "the workspace refused the bot's change to {}/{}: {refusal}",
-                    route.app_id, route.record
+                    route.app_id, route.document
                 );
                 tracing::warn!(
                     installation = %self.bot.installation,
                     run = %firing.invocation.0,
                     app = %route.app_id,
-                    record = %route.record,
+                    record = %route.document,
                     change = index.saturating_add(1),
                     of = count,
                     %refusal,
@@ -970,7 +1039,7 @@ impl BotRunner {
                 &self.bot_key,
                 &self.catalogue,
                 &route.app_id,
-                &route.record,
+                &route.document,
                 &bytes,
             )
             .await

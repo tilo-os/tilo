@@ -48,6 +48,9 @@ pub(crate) fn receive(local: &Layout, incoming: Layout, local_tabs: &[TabId]) ->
         else {
             continue; // A removed workspace must not retain access to its streams.
         };
+        // The name is the workspace's governance's, projected here; what the workspace sends of
+        // its layout carries none.
+        target.name.clone_from(&workspace.name);
         // A close is this device's own history, so the workspace it happened in keeps it: a peer's
         // change is no reason for the person's last close to stop being undoable here.
         target.keep_closed_tabs(workspace);

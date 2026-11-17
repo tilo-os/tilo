@@ -73,7 +73,7 @@ async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
         .health
         .records
         .into_iter()
-        .find(|record| record.record.document_id == route().record)
+        .find(|record| record.record.document_id == route().document)
         .map_or(0, |note| note.outgoing.durable_operations);
     assert_eq!(
         durable, 1,

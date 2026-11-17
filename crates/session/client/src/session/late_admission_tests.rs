@@ -56,7 +56,7 @@ fn relayed(
 /// Whether `events` heard that `app`'s record `""` landed.
 fn heard_landed(events: &crate::Events) -> bool {
     events.drain().into_iter().any(|event| {
-        matches!(event, crate::Event::Landed { route, .. } if route.app_id == APP && route.record.is_empty())
+        matches!(event, crate::Event::Landed { route, .. } if route.app_id == APP && route.document.is_empty())
     })
 }
 

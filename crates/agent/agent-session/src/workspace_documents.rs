@@ -20,7 +20,7 @@ pub(crate) fn desktop_route(workspace: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: tilo_desktop_model::ownership::DESKTOP_APP.to_owned(),
         cluster_id: workspace.to_owned(),
-        record: tilo_desktop_model::ownership::DESKTOP_DOCUMENT.to_owned(),
+        document: tilo_desktop_model::ownership::DESKTOP_DOCUMENT.to_owned(),
     }
 }
 
@@ -47,7 +47,7 @@ fn people_first(
 ) -> Vec<DocumentRoute> {
     known.sort_by_key(|route| {
         (
-            !on_desktop.contains(&route.record),
+            !on_desktop.contains(&route.document),
             std::cmp::Reverse(arrived.get(route).copied().unwrap_or(0)),
         )
     });
@@ -147,7 +147,7 @@ impl WorkspaceDocuments {
                 .map(|(app_id, record)| DocumentRoute {
                     app_id,
                     cluster_id: self.workspace.clone(),
-                    record,
+                    document: record,
                 })
                 .filter(|route| !self.opened.contains(route))
                 .collect(),
@@ -197,11 +197,11 @@ impl WorkspaceDocuments {
     pub(crate) fn document(&self, route: &DocumentRoute) -> Option<Vec<u8>> {
         match self
             .engine
-            .record(&route.cluster_id, &route.app_id, &route.record)
+            .record(&route.cluster_id, &route.app_id, &route.document)
         {
             Ok(bytes) => bytes,
             Err(error) => {
-                tracing::debug!(%error, record = %route.record, "agent: a record does not read");
+                tracing::debug!(%error, record = %route.document, "agent: a record does not read");
                 None
             }
         }
@@ -217,7 +217,7 @@ impl WorkspaceDocuments {
         self.routes().contains(route).then(|| {
             Err(crate::apps::AppError::Merge(format!(
                 "the keys to record {} have not arrived yet",
-                route.record
+                route.document
             ))
             .to_string())
         })
@@ -235,7 +235,7 @@ impl WorkspaceDocuments {
         let known = slot(self).get(route).map(|(revision, _)| *revision);
         match self
             .engine
-            .record_since(&route.cluster_id, &route.app_id, &route.record, known)
+            .record_since(&route.cluster_id, &route.app_id, &route.document, known)
         {
             Ok(Some((bytes, revision))) => {
                 let value = read(bytes);
@@ -244,7 +244,7 @@ impl WorkspaceDocuments {
             }
             Ok(None) => slot(self).get(route).map(|(_, value)| value.clone()),
             Err(error) => {
-                tracing::debug!(%error, record = %route.record, "agent: a record does not read");
+                tracing::debug!(%error, record = %route.document, "agent: a record does not read");
                 None
             }
         }
@@ -309,7 +309,7 @@ impl WorkspaceDocuments {
         };
         match self
             .engine
-            .record_since(&route.cluster_id, &route.app_id, &route.record, known)
+            .record_since(&route.cluster_id, &route.app_id, &route.document, known)
         {
             Ok(Some((bytes, revision))) => {
                 let text = reading.read(&load(&bytes)?);
@@ -319,7 +319,7 @@ impl WorkspaceDocuments {
             }
             Ok(None) => known.and(held).map(|(_, text)| text),
             Err(error) => {
-                tracing::debug!(%error, record = %route.record, "agent: a record does not read");
+                tracing::debug!(%error, record = %route.document, "agent: a record does not read");
                 None
             }
         }
@@ -367,7 +367,7 @@ impl WorkspaceDocuments {
         holder: &crate::worker::ConfinedReplica,
         reading: Reading,
     ) -> Option<Arc<str>> {
-        let record = ui::resource::DocumentId::parse(&route.record)?;
+        let record = ui::resource::DocumentId::parse(&route.document)?;
         holder.read_resource(&record, |doc| self.held_text(route, doc, reading))
     }
 
@@ -434,7 +434,7 @@ mod tests {
         DocumentRoute {
             app_id: app.into(),
             cluster_id: "workspace".into(),
-            record: record.into(),
+            document: record.into(),
         }
     }
 
@@ -451,7 +451,7 @@ mod tests {
             .collect();
         let ordered: Vec<String> = people_first(known, &on_desktop, &arrived)
             .into_iter()
-            .map(|route| route.record)
+            .map(|route| route.document)
             .collect();
         assert_eq!(ordered, ["c", "b", "a"]);
     }

@@ -563,7 +563,7 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
                 app: app.clone(),
                 broker_peer_id: None,
                 broker_provider: None,
-                descriptor: open_document_descriptor(app, &route.record, title.as_deref()),
+                descriptor: open_document_descriptor(app, &route.document, title.as_deref()),
             };
             targets.insert(offer.id(), Target::OpenDocument(route.clone()));
             offers.push(offer);
@@ -1313,8 +1313,8 @@ fn answer_steps(
         match targets.get(*id) {
             Some(Target::Record(route)) => steps.push(Step {
                 app: route.app_id.clone(),
-                record: Some(route.record.clone()),
-                carries: context.content_param(&route.app_id, Some(&route.record), &address),
+                record: Some(route.document.clone()),
+                carries: context.content_param(&route.app_id, Some(&route.document), &address),
                 serves: tag,
                 action: StepAction::Invoke { address, arguments },
             }),
@@ -1334,7 +1334,7 @@ fn answer_steps(
             }),
             Some(Target::OpenDocument(route)) => steps.push(Step {
                 app: route.app_id.clone(),
-                record: Some(route.record.clone()),
+                record: Some(route.document.clone()),
                 action: StepAction::Open,
                 carries: None,
                 serves: tag,

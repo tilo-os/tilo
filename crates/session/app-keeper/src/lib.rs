@@ -43,21 +43,29 @@
 
 #![cfg(target_os = "linux")]
 
+mod activation;
 mod child;
 mod control;
+mod cursor_shape;
 mod data_device;
+mod decorations;
+mod dialog;
 mod dmabuf;
 mod fractional;
+mod idle_inhibit;
+mod keyboard_shortcuts_inhibit;
 mod outputs;
 mod pings;
 mod pointer_constraints;
 mod pointer_gestures;
 mod primary_selection;
 mod relative_pointer;
+mod presentation;
 mod seat;
 mod state;
 mod surfaces;
 mod text_input;
+mod toplevel_icon;
 mod upstream;
 mod viewporter;
 pub mod wire;

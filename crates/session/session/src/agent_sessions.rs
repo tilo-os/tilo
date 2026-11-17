@@ -848,6 +848,8 @@ mod tests {
                 message: "chat.workspace/channels/c_tide/messages/m1".into(),
                 title: "Tide".into(),
                 instruction: "add the revenue curve".into(),
+                agent_instruction: None,
+                fold: None,
                 subject: None,
                 spend: None,
             },

@@ -198,7 +198,7 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
         SdkCommand::BrowserServiceSession { route, command, .. } => {
             let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
             meter.string_capacity(&route.app_id);
-            if let Some(record) = &route.record {
+            if let Some(record) = &route.document {
                 meter.string_capacity(record);
             }
             serialized_bytes(command, &mut meter);
@@ -208,7 +208,7 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
         SdkCommand::Hello(hello) => {
             let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
             meter.string_capacity(&hello.route.app_id);
-            if let Some(record) = &hello.route.record {
+            if let Some(record) = &hello.route.document {
                 meter.string_capacity(record);
             }
             if let Some(kind) = &hello.resource_type {
@@ -223,7 +223,7 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
         SdkCommand::ToRoute(route, request) => {
             let mut meter = ByteMeter(request_bytes(request));
             meter.string_capacity(&route.app_id);
-            if let Some(record) = &route.record {
+            if let Some(record) = &route.document {
                 meter.string_capacity(record);
             }
             meter.finish()
@@ -231,7 +231,7 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
         SdkCommand::Join(route, resource_type) => {
             let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
             meter.string_capacity(&route.app_id);
-            if let Some(record) = &route.record {
+            if let Some(record) = &route.document {
                 meter.string_capacity(record);
             }
             if let Some(kind) = resource_type {
@@ -253,7 +253,7 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
         SdkCommand::InstallEncryption { spec, .. } => {
             let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
             meter.string_capacity(&spec.app_id);
-            if let Some(record) = &spec.record {
+            if let Some(record) = &spec.document {
                 meter.string_capacity(record);
             }
             meter.finish()
@@ -420,7 +420,7 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
         CollabEvent::CommittedDocument { route, .. } => {
             // Capture bytes retain their own process-wide preallocation permit.
             meter.string_capacity(&route.app_id);
-            if let Some(record) = &route.record {
+            if let Some(record) = &route.document {
                 meter.string_capacity(record);
             }
             "CommittedDocument"
@@ -472,21 +472,21 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
         }
         CollabEvent::ResourceUnavailable { route } => {
             meter.string_capacity(&route.app_id);
-            if let Some(record) = &route.record {
+            if let Some(record) = &route.document {
                 meter.string_capacity(record);
             }
             "ResourceUnavailable"
         }
         CollabEvent::DocumentSnapshotRequested { route } => {
             meter.string_capacity(&route.app_id);
-            if let Some(record) = &route.record {
+            if let Some(record) = &route.document {
                 meter.string_capacity(record);
             }
             "DocumentSnapshotRequested"
         }
         CollabEvent::KeyAccess { route, .. } => {
             meter.string_capacity(&route.app_id);
-            if let Some(record) = &route.record {
+            if let Some(record) = &route.document {
                 meter.string_capacity(record);
             }
             "KeyAccess"
@@ -597,7 +597,7 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
         }
         CollabEvent::DocumentContent { route, hash, bytes } => {
             meter.string_capacity(&route.app_id);
-            if let Some(record) = &route.record {
+            if let Some(record) = &route.document {
                 meter.string_capacity(record);
             }
             meter.string_capacity(hash);
@@ -606,7 +606,7 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
         }
         CollabEvent::DocumentContentState { route, hash, .. } => {
             meter.string_capacity(&route.app_id);
-            if let Some(record) = &route.record {
+            if let Some(record) = &route.document {
                 meter.string_capacity(record);
             }
             meter.string_capacity(hash);

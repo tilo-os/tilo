@@ -693,7 +693,7 @@ tilo_test_env::scenario! {
         // The person's one action wrote both units, as a run does: each record holds the change
         // the action's invocation names. The endpoint restarted since, so no log remembers it.
         let invocation = tilo_actions::InvocationId::new();
-        let first_route = RouteSpec::record(APP, cluster, "a");
+        let first_route = RouteSpec::document(APP, cluster, "a");
         let (mut first, first_sent, _) = instance_on(
             &mut host,
             spec(1, "ada", &first_route),
@@ -703,7 +703,7 @@ tilo_test_env::scenario! {
             Rc::clone(&actions),
             seeded("ada", invocation),
         );
-        let second_route = RouteSpec::record(APP, cluster, "b");
+        let second_route = RouteSpec::document(APP, cluster, "b");
         let (mut second, second_sent, _) = instance_on(
             &mut host,
             spec(2, "ada", &second_route),

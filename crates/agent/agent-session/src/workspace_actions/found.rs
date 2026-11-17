@@ -94,7 +94,7 @@ impl Worker {
                 (records.entries(route, read), records.changed(route))
             } else {
                 let bytes = engine
-                    .record(&route.cluster_id, &route.app_id, &route.record)
+                    .record(&route.cluster_id, &route.app_id, &route.document)
                     .ok()
                     .flatten();
                 let entries = bytes.and_then(|bytes| read(bytes).ok()).map(Into::into);
@@ -125,7 +125,7 @@ impl Worker {
                 records.text(route, Reading::Plain)
             } else {
                 engine
-                    .record(&route.cluster_id, &route.app_id, &route.record)
+                    .record(&route.cluster_id, &route.app_id, &route.document)
                     .ok()
                     .flatten()
                     .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
@@ -233,7 +233,7 @@ impl Worker {
         };
         let records: Vec<DocumentKey> = routes
             .iter()
-            .map(|route| (route.app_id.clone(), route.record.clone()))
+            .map(|route| (route.app_id.clone(), route.document.clone()))
             .collect();
         let cluster_id = state.workspace.clone().unwrap_or_default();
         let engine = std::sync::Arc::clone(&state.engine);

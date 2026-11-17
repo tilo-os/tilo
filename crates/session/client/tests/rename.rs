@@ -74,9 +74,9 @@ async fn a_page_renames_the_workspace_for_every_list_of_it() {
     );
 }
 
-/// A page's shell reads the workspace's one name from its governance, not only from the layout
-/// it landed with: a page that landed before anything named it takes the name there, so its bar,
-/// its overview and search call the workspace what it is called.
+/// A page's shell reads the workspace's one name from its governance, the only place it is kept:
+/// a rename made on one device reaches every device showing the workspace, so each bar, overview
+/// and search calls the workspace what it is called.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pages_shell_reads_the_name_the_governance_keeps() {
     let (root, _) = UserIdentity::generate("Ada", 1);
@@ -97,7 +97,11 @@ async fn a_pages_shell_reads_the_name_the_governance_keeps() {
         browser.key,
     );
     page.join_placed(WORKSPACE, "Workspace").unwrap();
-    ready(&[&page]).await;
+    // Another device of the person, showing the same workspace.
+    let phone = enrol(&root, "phone", DeviceCapabilities::member());
+    let phone = start_peer(host.iroh(), phone.cert, host_device.cert.clone(), phone.key);
+    phone.join_placed(WORKSPACE, "Workspace").unwrap();
+    ready(&[&page, &phone]).await;
     let workspace = tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap();
     tilo_test_env::within(
         "the page reads the name its workspace was made with",
@@ -127,6 +131,15 @@ async fn a_pages_shell_reads_the_name_the_governance_keeps() {
         })
         .await;
         assert_eq!(named, "Tilo");
+    })
+    .await;
+    // Every device showing the workspace reads the one name, not one it kept.
+    tilo_test_env::within("the other device reads the renamed name", async {
+        wait_for("the other device reading the renamed workspace", || {
+            let named = phone.engine().workspace_name(workspace);
+            async move { named.filter(|name| name == "Tilo") }
+        })
+        .await;
     })
     .await;
 }

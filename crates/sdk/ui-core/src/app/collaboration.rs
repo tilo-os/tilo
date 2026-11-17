@@ -1092,41 +1092,37 @@ impl App {
         }
     }
 
-    /// Answer a request for the whole document on `route`: a record kept
-    /// beside the shown one ([`Widget::resource_owners`](crate::widget::Widget::resource_owners))
-    /// is published whole on its own route with the next publication; any
-    /// other request is the primary document's.
+    /// Answer a request for the whole document on `route`: a record an
+    /// owner holds on that route is published whole on it with the next
+    /// publication; any other request is the window's own document's.
     fn respond_document_snapshot(&mut self, route: &crate::collaboration::RouteSpec) {
         if let Some(entry) = self
             .document_routes
             .owners
             .iter_mut()
-            .find(|entry| entry.answers_snapshots && entry.route == *route)
+            .find(|entry| entry.route == *route)
         {
             entry.needs_snapshot = true;
             return;
         }
-        self.respond_primary_document_snapshot();
-    }
-
-    fn respond_primary_document_snapshot(&mut self) {
-        match self.primary_document_snapshot() {
-            Ok(data) => {
-                let result = self
-                    .collaboration
-                    .manager
-                    .try_send(crate::collaboration::CollabRequest::document_snapshot(data));
-                if let Err(error) = &result {
-                    // The requester keeps asking while no holder answers, so
-                    // a busy transport delays onboarding rather than losing it.
-                    tracing::warn!(%error, "collab: primary snapshot not sent");
-                }
-                self.note_document_send(&result);
-            }
+        let data = match self.primary_document_snapshot() {
+            Ok(Some(data)) => data,
+            Ok(None) => return,
             Err(error) => {
                 tracing::warn!(%error, "collab: primary snapshot refused");
+                return;
             }
+        };
+        let result = self
+            .collaboration
+            .manager
+            .try_send(crate::collaboration::CollabRequest::document_snapshot(data));
+        if let Err(error) = &result {
+            // The requester keeps asking while no holder answers, so
+            // a busy transport delays onboarding rather than losing it.
+            tracing::warn!(%error, "collab: primary snapshot not sent");
         }
+        self.note_document_send(&result);
     }
 
     /// Route an answer from the session action host to the local request

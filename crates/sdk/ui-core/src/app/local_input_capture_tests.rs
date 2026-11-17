@@ -37,7 +37,7 @@ fn capture_custody(
         agent: None,
         app_id: route.app_id.clone(),
         workspace: route.cluster_id.to_string(),
-        document: route.record.clone().unwrap_or_default(),
+        document: route.document.clone().unwrap_or_default(),
     }
 }
 impl crate::collaboration::PeerTransport for CapturePeer {

@@ -645,7 +645,7 @@ pub async fn admitted(peer: &Link) {
 
 /// Whether a member of the workspace admitted `peer` to `route`'s channel: it holds its keys.
 pub fn keyed(peer: &Link, route: &DocumentRoute) -> bool {
-    let prefix = format!("route {}/{}:", route.app_id, route.record);
+    let prefix = format!("route {}/{}:", route.app_id, route.document);
     peer.status()
         .key_state
         .lines()
@@ -675,7 +675,7 @@ pub fn route() -> DocumentRoute {
     DocumentRoute {
         app_id: "so.tilo.notes".into(),
         cluster_id: WORKSPACE.into(),
-        record: "note-1".into(),
+        document: "note-1".into(),
     }
 }
 
@@ -696,7 +696,7 @@ pub fn say(doc: &mut AutoCommit, text: &str) -> DocumentMutation {
 pub fn resource_of(peer: &Link, route: &DocumentRoute) -> Option<AutoCommit> {
     let bytes = peer
         .engine()
-        .record(&route.cluster_id, &route.app_id, &route.record)
+        .record(&route.cluster_id, &route.app_id, &route.document)
         .ok()??;
     AutoCommit::load(&bytes).ok()
 }
@@ -733,7 +733,7 @@ async fn in_replica<T>(
             std::time::Instant::now() < deadline,
             "timed out waiting for {what}; the replica reads {:?}; channels:\n{}\nfailures: {:?}",
             peer.engine()
-                .record(&route.cluster_id, &route.app_id, &route.record)
+                .record(&route.cluster_id, &route.app_id, &route.document)
                 .map(|bytes| bytes.map(|bytes| bytes.len())),
             peer.status().key_state,
             peer.status().failures

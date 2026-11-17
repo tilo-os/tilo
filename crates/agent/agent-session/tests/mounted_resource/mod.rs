@@ -211,14 +211,14 @@ pub async fn run() {
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
-        record: source.wire_document().into(),
+        document: source.wire_document().into(),
     };
     let part = chat::parts::part(0);
     let messages_route = part_route(&workspace.workspace, &part);
     let provider = record_provider(&messages_route);
     let attached = serde_json::json!({
         "app": messages_route.app_id,
-        "record": messages_route.record,
+        "record": messages_route.document,
         "kind": reference["kind"],
         "id": reference["id"],
         "label": reference["label"],
@@ -314,7 +314,7 @@ pub async fn run() {
                 [40; 16],
                 tilo_relay_protocol::voice::CallOperation::Start {
                     app_id: route.app_id.clone(),
-                    document_id: route.record.clone(),
+                    document_id: route.document.clone(),
                     channel_id: voice_channel.id.clone(),
                     allowed: tilo_relay_protocol::voice::Directions {
                         publish: true,
@@ -368,7 +368,7 @@ pub async fn run() {
                 .any(|body| body.author == publisher.cert.device_public_key
                     && matches!(postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body),
                 Ok(neighbour_wire::NeighbourMsg::AppDocument {app_id, document_id, envelope, ..})
-                if app_id == route.app_id && document_id == route.record &&
+                if app_id == route.app_id && document_id == route.document &&
                     envelope.encryption.as_ref().is_some())),
             "the compiled cold journey requires the foreign writer's actual retained ciphertext"
         );
@@ -385,7 +385,7 @@ pub async fn run() {
     let bootstrap = serde_json::json!({
         "origin": hosted.web.origin, "workspace": workspace.workspace,
         "hostDevice": hex::encode(host.cert.device_public_key), "provider": provider,
-        "record": route.record, "messages": ui::resource::chain_resource_id(&chat::parts::chain()),
+        "record": route.document, "messages": ui::resource::chain_resource_id(&chat::parts::chain()),
         "channelId": channel.id,
         "channel": chat::projection::item_id("channels", &channel.id),
         "disconnectRetry": disconnect_retry, "voiceJourney": voice_journey, "encryptedRestart": encrypted_restart, "sourceAuthor": source_author,

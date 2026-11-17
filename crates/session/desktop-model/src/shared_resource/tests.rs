@@ -160,13 +160,9 @@ tilo_test_env::scenario! {
             merge(&mut document, &mut blind);
         }
         let desktop = read(&document, None).unwrap();
-        let names: Vec<&str> = desktop
-            .tree
-            .workspaces
-            .iter()
-            .map(|w| w.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["Lounge", "Side"]);
+        let ids: Vec<WorkspaceId> = desktop.tree.workspaces.iter().map(Workspace::id).collect();
+        assert_eq!(ids.len(), 2, "the workspace's and the side one: {ids:?}");
+        assert_eq!(ids[1], WorkspaceId::from_u128(55));
         let lounge = &desktop.tree.workspaces[0];
         let strips: Vec<&str> = lounge.strips.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
@@ -267,10 +263,10 @@ tilo_test_env::scenario! {
         document.commit();
         let mut ada = fork(&document, 1);
         let mut ben = fork(&document, 2);
-        // Ada renames the workspace while Ben, who cannot see that, gives it a
-        // shortcut: both are fields of the same workspace.
+        // Ada switches the workspace to its canvas while Ben, who cannot see that,
+        // gives it a shortcut: both are fields of the same workspace.
         let mut renamed = base.clone();
-        renamed.tree.workspaces[0].name = "Ada's lounge".into();
+        renamed.tree.workspaces[0].layout.kind = crate::layout::LayoutKind::Canvas;
         write(&mut ada, &renamed).unwrap();
         ada.commit();
         let mut furnished = base;
@@ -283,7 +279,7 @@ tilo_test_env::scenario! {
         merge(&mut document, &mut ben);
         let back = read(&document, None).unwrap();
         let workspace = &back.tree.workspaces[0];
-        assert_eq!(workspace.name, "Ada's lounge");
+        assert_eq!(workspace.layout.kind, crate::layout::LayoutKind::Canvas);
         let shortcuts: Vec<&str> = workspace
             .shortcuts
             .iter()

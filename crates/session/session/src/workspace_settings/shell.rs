@@ -1030,12 +1030,7 @@ fn own_name() -> Option<String> {
 
 /// The People tab: who shares the workspace and their roles.
 fn people(ws: &Workspace, names: &PeopleNames, person: &UserId) -> sheet::People {
-    crate::workspace_people::tab(domain::people::content(
-        ws,
-        names,
-        person,
-        ws.is_owner(person),
-    ))
+    crate::workspace_people::tab(domain::people::content(ws, names, person, ws.owns(person)))
 }
 
 /// The Privacy & Security tab: the permissions the workspace gives, who holds each, and the

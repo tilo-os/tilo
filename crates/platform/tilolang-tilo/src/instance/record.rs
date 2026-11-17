@@ -217,7 +217,7 @@ fn copy_document(
     if chunk == FIRST {
         return None;
     }
-    let base = DocumentId::from_route(route.record.as_deref().unwrap_or(""))?;
+    let base = DocumentId::from_route(route.document.as_deref().unwrap_or(""))?;
     let key = base.chunk(chunk).storage_key();
     resource_document(
         documents,
@@ -235,7 +235,7 @@ fn route_document(
     route: &RouteSpec,
 ) -> Result<DocStore, RecordError> {
     let workspace = route.cluster_id.to_string();
-    match &route.record {
+    match &route.document {
         None => {
             collaboration::document::save::workspace_document(documents, &route.app_id, &workspace)
         }
@@ -522,7 +522,7 @@ impl InstanceRecord {
             Some(read) => read.and_then(|(_, read)| open_with_committed_read(store, &read)),
             // A member's own record of an app that kept the workspace's record before starts
             // from what that record held on this device (`open_stored_adopting`).
-            None => Ok(match route.record.as_deref() {
+            None => Ok(match route.document.as_deref() {
                 Some(record) if !record.is_empty() && crate::keeps_own_records(&route.app_id) => {
                     open_stored_adopting(
                         store,
@@ -1386,7 +1386,7 @@ impl InstanceRecord {
     /// The record id chunk `chunk` travels on: the record's own for [`FIRST`], the chunk's
     /// record's above it ([`chunk::record_id`]).
     fn chunk_record(&self, chunk: ChunkNo) -> String {
-        let base = self.route.record.as_deref().unwrap_or("");
+        let base = self.route.document.as_deref().unwrap_or("");
         if chunk == FIRST {
             base.to_owned()
         } else {
@@ -1979,10 +1979,10 @@ fn chunk_route(route: &RouteSpec, chunk: ChunkNo) -> RouteSpec {
     if chunk == FIRST {
         return route.clone();
     }
-    RouteSpec::record(
+    RouteSpec::document(
         route.app_id.clone(),
         route.cluster_id,
-        chunk::record_id(route.record.as_deref().unwrap_or(""), chunk),
+        chunk::record_id(route.document.as_deref().unwrap_or(""), chunk),
     )
 }
 

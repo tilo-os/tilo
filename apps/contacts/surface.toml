@@ -6,6 +6,19 @@ format = 2
 kind = "contacts.book"
 label = "Contacts"
 version = 1
+
+[[resources.verbs]]
+id = "export-vcard-content"
+kind = "read"
+params = [
+  { name = "contact", type = { option = "text" }, required = false },
+  { name = "name", type = { option = "text" }, required = false },
+]
+
+[[resources]]
+kind = "contacts.contacts"
+label = "Contacts"
+version = 1
 fields = [
   { path = "contacts", type = { collection = { named = "Contact" } }, stored = "keyed" },
   { path = "contacts.*.id", type = "text", readonly = true },
@@ -70,14 +83,7 @@ params = [
   { name = "contact", type = "text", required = true, schema = { type = "string" } },
   { name = "source", type = "text", required = true, schema = { type = "string", format = "uuid" } },
   { name = "take_from_source", type = { list = { named = "MergeField" } }, required = true, schema = { type = "array", items = { type = "string", enum = ["First", "Last", "Organization", "Title", "Website", "Birthday", "Notes"] } } },
-]
-
-[[resources.verbs]]
-id = "export-vcard-content"
-kind = "read"
-params = [
-  { name = "contact", type = { option = "text" }, required = false },
-  { name = "name", type = { option = "text" }, required = false },
+  { name = "merged", type = { option = { named = "Contact" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { addresses = { type = "array", items = { type = "object", additionalProperties = false, properties = { city = { type = "string" }, country = { type = "string" }, id = { type = "string", format = "uuid" }, label = { type = "string" }, postal = { type = "string" }, region = { type = "string" }, street = { type = "string" } }, required = ["id", "label", "street", "city", "region", "postal", "country"] } }, birthday = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { Full = { type = "object", additionalProperties = false, properties = { day = { type = "integer", maximum = 4294967295, minimum = 0 }, month = { type = "integer", maximum = 4294967295, minimum = 0 }, year = { type = "integer", maximum = 2147483647, minimum = -2147483648 } }, required = ["year", "month", "day"] } }, required = ["Full"] }, { type = "object", additionalProperties = false, properties = { MonthDay = { type = "object", additionalProperties = false, properties = { day = { type = "integer", maximum = 4294967295, minimum = 0 }, month = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["month", "day"] } }, required = ["MonthDay"] }] }] }, emails = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, label = { type = "string" }, value = { type = "string" } }, required = ["id", "label", "value"] } }, favorite = { type = "boolean" }, first = { type = "string" }, groups = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, value = { type = "string" } }, required = ["id", "value"] } }, id = { type = "string", format = "uuid" }, last = { type = "string" }, notes = { type = "string" }, org = { type = "string" }, phones = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, label = { type = "string" }, value = { type = "string" } }, required = ["id", "label", "value"] } }, photo = { type = "string" }, title = { type = "string" }, website = { type = "string" } }, required = ["id", "first", "last", "org", "title", "website", "notes", "phones", "emails", "addresses", "groups", "favorite"] } },
 ]
 
 [[resources.types]]

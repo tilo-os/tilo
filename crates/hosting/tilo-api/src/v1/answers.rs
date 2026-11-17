@@ -606,6 +606,12 @@ pub struct Program {
     /// it such a program answers `preview`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirm: Option<bool>,
+    /// The program session it continues, as an earlier answer named it: the
+    /// `let`s its programs bound, the references its answers showed (`n3`),
+    /// and the steps `undo` and `history task` take back and list. Without
+    /// it the program starts a new session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -620,6 +626,14 @@ pub struct ProgramAnswer {
     /// Every step of the run that changed something, oldest first.
     #[serde(default)]
     pub steps: Vec<Value>,
+    /// What a person reads: the answer's lines, each resource by its
+    /// reference (`n3`), and what a preview would apply.
+    #[serde(default)]
+    pub text: String,
+    /// The program session it ran in: send it with the next program to
+    /// continue it.
+    #[serde(default)]
+    pub session: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

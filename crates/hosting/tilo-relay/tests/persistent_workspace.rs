@@ -727,7 +727,7 @@ async fn assert_page_reads_the_chat(
                         if let Ok(Some(bytes)) = visiting.engine().record(
                             &route.cluster_id,
                             &route.app_id,
-                            &route.record,
+                            &route.document,
                         ) {
                             doc = automerge::AutoCommit::load(&bytes).unwrap();
                         }
@@ -812,7 +812,7 @@ async fn chat_route(
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: cluster.into(),
-        record: tilo_relay::workspace_bots::workspace_resource(&catalogue, CHAT),
+        document: tilo_relay::workspace_bots::workspace_resource(&catalogue, CHAT),
     };
     (host, host_cert, route)
 }
@@ -1323,7 +1323,7 @@ fn a_persistent_workspace_reopens_after_hard_stops() {
         let route = tilo_peer_state::document_frame::DocumentRoute {
             app_id: CHAT.into(),
             cluster_id: id.clone(),
-            record: tilo_relay::workspace_bots::workspace_resource(&catalogue, CHAT),
+            document: tilo_relay::workspace_bots::workspace_resource(&catalogue, CHAT),
         };
         let visiting = page(host, key, cert, &host_cert);
         let visiting_heard = visiting.events();

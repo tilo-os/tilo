@@ -469,9 +469,7 @@ impl Device {
         arguments: Map<String, Value>,
     ) -> Result<Value, HostRefusal> {
         let actions = self.actions(workspace_id);
-        let caller = Caller::local_person(tilo_actions::policy::PersonId::from_root(
-            self.cert.user_public_key,
-        ));
+        let caller = self.caller();
         let receipt = actions
             .invoke(
                 &caller,
@@ -522,6 +520,14 @@ impl Device {
                 }
             }
         }
+    }
+
+    /// Who this session asks as: the person whose device it is.
+    #[must_use]
+    pub fn caller(&self) -> Caller {
+        Caller::local_person(tilo_actions::policy::PersonId::from_root(
+            self.cert.user_public_key,
+        ))
     }
 
     /// This device's actions in `workspace_id`, asked of the workspace's host.

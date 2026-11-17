@@ -115,7 +115,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         .acted()
         .expect("the call names the record it worked in");
     assert_eq!(acted.app, SHEETS);
-    assert_eq!(acted.record, sheets.record);
+    assert_eq!(acted.record, sheets.document);
     // And it writes in the document the other device made.
     let (wrote, failed) = tool(
         &server,
@@ -156,7 +156,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
                 .filter(|(record, work)| {
                     work.action.id == "new-sheet"
                         && (record.app.as_str(), record.record.as_str())
-                            == (SHEETS, sheets.record.as_str())
+                            == (SHEETS, sheets.document.as_str())
                 })
                 .map(|(_, work)| work.phase.clone())
                 .collect();
@@ -186,7 +186,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
             }
             // The workbook it works in is open on the workspace's layout, as a
             // window of the person's, for every page to draw.
-            shown = shown || layout_windows(&mut browser, &sheets.record) > 0;
+            shown = shown || layout_windows(&mut browser, &sheets.document) > 0;
             // What it does reads as the catalogue's own line for such a step, in
             // the app as a person reads its name, not as an English verb glued to
             // an id.
@@ -245,7 +245,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     );
     let wrote_in = tilo_relay_protocol::live::LiveResource {
         app: WRITER.into(),
-        record: writer.record.clone(),
+        record: writer.document.clone(),
     };
     assert_eq!(
         view.focus
@@ -266,7 +266,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     assert_eq!(again["result"]["isError"], false, "{again}");
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     assert_eq!(
-        layout_windows(&mut browser, &sheets.record),
+        layout_windows(&mut browser, &sheets.document),
         1,
         "one window shows the workbook"
     );

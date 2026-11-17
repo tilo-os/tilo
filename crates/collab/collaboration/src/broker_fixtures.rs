@@ -74,7 +74,7 @@ impl CollaborationManager {
         assert!(manager.send(CollabRequest::Hello {
             app_id: route.app_id,
             cluster_id: route.cluster_id,
-            record: route.record,
+            record: route.document,
             resource_type: None,
             handle: None,
         }));
@@ -112,7 +112,7 @@ impl CollaborationManager {
         assert!(manager.send(CollabRequest::Hello {
             app_id: route.app_id,
             cluster_id: route.cluster_id,
-            record: route.record,
+            record: route.document,
             resource_type: None,
             handle: None,
         }));

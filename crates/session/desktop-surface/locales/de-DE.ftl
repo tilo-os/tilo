@@ -889,7 +889,7 @@ workspace-notice-agent-finished-in = { $agent } ist fertig: { $count ->
     [one] 1 Änderung
    *[other] { $count } Änderungen
 } in { $workspace }
-workspace-notice-renamed = { $name } hat den Arbeitsbereich in { $workspace } umbenannt
+workspace-notice-renamed = Der Arbeitsbereich heißt jetzt { $workspace }
 # Was der Schreibtisch sagt, wenn etwas nicht geschehen ist, worum jemand
 # gebeten hat: wonach gefragt wurde, warum, und die Taste, die es erneut versucht.
 answer-app-not-opened = { $app } konnte nicht geöffnet werden
@@ -902,6 +902,7 @@ answer-try-again = Erneut versuchen
 answer-reopen = Wieder öffnen
 answer-why-unknown-app = Es gibt keine App, die das öffnet.
 answer-why-not-opened = Es wurde beendet, bevor ein Fenster erschien.
+answer-why-not-built = Beim Öffnen ist ein Problem aufgetreten. Versuche es erneut. Wenn es sich weiterhin nicht öffnet, schließe dieses Fenster und öffne { $app } erneut.
 answer-why-cannot-start = Apps können gerade nicht gestartet werden.
 # Ein Kürzel des Desktops, für das eine Browserseite keine Oberfläche hat: sie
 # sagt das, statt nichts zu tun.

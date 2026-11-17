@@ -883,7 +883,7 @@ pub fn author_for_identity(name: impl Into<String>, identity: &str) -> HistoryAu
 /// agent's change wears what the agent is, never the slot its `agent:<id>`
 /// spelling would hash to.
 fn identity_colour(identity: &str) -> (u8, u8, u8) {
-    match tilo_actions::MemberId::parse(identity) {
+    match tilo_actions::MemberId::of_actor_bytes(identity.as_bytes()) {
         Some(member) => crate::presence::member_color(&member),
         None => crate::presence::user_color(identity),
     }
@@ -1047,7 +1047,7 @@ mod tests {
             // change wears the colour of who it is, as its face does, never one a spelling of
             // the same agent would hash to.
             let agent = "agent:scribe";
-            let member = MemberId::parse(agent).expect("an agent's key");
+            let member = MemberId::of_actor_bytes(agent.as_bytes()).expect("an agent's actor");
             let hex = automerge::ActorId::from(agent.as_bytes()).to_hex_string();
             let history = AuthorDirectory::new().resolve(&hex);
             assert_eq!(

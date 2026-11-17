@@ -22,7 +22,7 @@ fn application_action_handoff_requires_workspace_admission_and_routes_exact_dest
                 self.joined = Some(RouteSpec {
                     app_id: app_id.clone(),
                     cluster_id: *cluster_id,
-                    record: record.clone(),
+                    document: record.clone(),
                 });
             }
             self.sent.borrow_mut().push(request);

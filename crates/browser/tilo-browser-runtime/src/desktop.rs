@@ -370,9 +370,15 @@ pub(crate) struct Shared {
     /// The agent run that opened each window an agent opened, by tab, as the
     /// workspace's shell last said.
     pub opened_by: Rc<RefCell<BTreeMap<TabId, tilo_desktop_model::ownership::OpenedBy>>>,
-    /// The workspace renamed since the mount last looked, for a notice when
-    /// someone else did it.
-    pub renames: Rc<RefCell<Vec<tilo_desktop_surface::history_log::WorkspaceRename>>>,
+    /// The name this page last asked its host to give the workspace, until the workspace's
+    /// governance takes it: a rename it asked for is no news to it.
+    pub asked_name: Rc<RefCell<Option<String>>>,
+    /// The name the workspace's governance recorded when this page last projected it onto the
+    /// shell: a different one since is a rename.
+    pub projected_name: Rc<RefCell<Option<String>>>,
+    /// The governance's revision and the shell's when the page last projected the governance onto
+    /// it: a projection is due when either moved.
+    pub projected_at: Rc<std::cell::Cell<Option<(u64, u64)>>>,
     /// Whether the workspace lets this desktop's person close and move what
     /// others made, as it last answered ([`crate::replication`] asks).
     pub moderates: Arc<AtomicBool>,
@@ -397,9 +403,6 @@ pub(crate) struct Shared {
     /// What the workspace's governance calls each of its people, by their person (root key,
     /// hex): whoever is not here now is named by it, never by their key.
     pub names: Rc<RefCell<std::collections::BTreeMap<String, String>>>,
-    /// When the workspace admitted each of its people, once heard, by their person (root key,
-    /// hex): who shares a name is numbered in this order here, as in the workspace's roster.
-    pub joined: Rc<RefCell<std::collections::BTreeMap<String, u64>>>,
     /// The person's accounts with the services this workspace is connected to,
     /// read from the connectors' workspace records by the workspace's host
     /// ([`RecordActions`]).
@@ -996,12 +999,15 @@ impl Tiles {
         if !own && (named_new.is_some() || matches!(target, LaunchTarget::PrimaryNew)) {
             self.may_start_record(tab)?;
         }
-        let restore = self
-            .inputs
-            .views
-            .load(tab.id)
-            .map_err(|error| error.to_string())?
-            .map_or(RestoreInput::None, RestoreInput::Local);
+        // The view this window saved, never one a closed window left under the same id.
+        let restore = crate::app_page::saved_view(
+            &self.inputs.views,
+            tab.id,
+            definition,
+            &target,
+            named_new.as_ref(),
+        )
+        .map_err(|error| error.to_string())?;
         let component = self
             .instantiate(
                 definition,
@@ -1017,7 +1023,7 @@ impl Tiles {
                     self.shared.waiting.borrow_mut().insert(tab.id);
                     Unready::Arriving
                 }
-                Unbuilt::Failed(detail) => Unready::Notice(detail),
+                Unbuilt::Failed(detail) => Unready::Failed(detail),
             })?;
         let record = component.record().clone();
         let previous = self
@@ -1193,6 +1199,8 @@ enum Unready {
     Arriving,
     /// What the window says instead.
     Notice(String),
+    /// The app could not be built on the record the window shows; what the launch answered.
+    Failed(String),
 }
 
 impl From<String> for Unready {
@@ -1436,6 +1444,28 @@ impl TileSource for Tiles {
                     title: tab.title.clone(),
                     detail,
                 })
+            }
+            // The app was not built: the window says that it could not open and what to do, in
+            // the person's words, and tries again on their word. What the launch answered is for
+            // whoever looks into it: behind the card's Details, and in the console.
+            Err(Unready::Failed(detail)) => {
+                self.shared
+                    .unopened
+                    .borrow_mut()
+                    .insert(tab.id, detail.clone());
+                self.shared.landed.borrow_mut().remove(&tab.id);
+                if self.shared.records.borrow().contains_key(&tab.id) {
+                    self.shared.waiting.borrow_mut().insert(tab.id);
+                }
+                web_sys::console::warn_1(&format!("{} could not open: {detail}", tab.title).into());
+                let outcome = tilo_desktop_surface::outcome::Outcome::not_built(&tab.title, detail);
+                let shared = self.shared.clone();
+                let id = tab.id;
+                TileHost::new(ui::widget::TileContent::App(Box::new(
+                    tilo_desktop_surface::outcome::OutcomeCard::new(&outcome, move || {
+                        shared.reopen(id);
+                    }),
+                )))
             }
         }
     }

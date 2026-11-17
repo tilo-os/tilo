@@ -180,7 +180,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
     let chat = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
-        record: String::new(),
+        document: String::new(),
     };
     let provider = record_provider(&chat);
     let messages = ActionAddress::new(
@@ -243,7 +243,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
             DocumentRoute {
                 app_id: "so.tilo.chat".into(),
                 cluster_id: workspace.workspace.clone(),
-                record: chat::parts::part(0).route().to_owned(),
+                document: chat::parts::part(0).route().to_owned(),
             },
             &collab_types::DocumentMutation::Snapshot(written),
         )

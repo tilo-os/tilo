@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.contacts@df7802e5d648a10e";
+export const SURFACE = "so.tilo.contacts@ad4d4c1b4ade24ee";
 
 export interface Address {
   id: string;
@@ -110,6 +110,7 @@ export interface MergeContactsArgs {
   contact: string;
   source: string;
   take_from_source: MergeField[];
+  merged?: Contact;
 }
 
 /** The arguments of `project-contact`. */
@@ -187,6 +188,23 @@ export interface ForgetEndpointArgs {
 
 /** Contacts — `contacts.book`. */
 export interface Book extends tilo.Resource {
+  exportVcardContent(args?: {
+    contact?: string;
+    name?: string;
+  }): Promise<void>;
+}
+
+/** The actions `Book` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const BOOK_ACTIONS = ["exportVcardContent"] as const;
+
+/** The `contacts.book` kind at `path`. */
+export function book(ws: tilo.Workspace, path: string): Book {
+  return resourceProxy(ws, path, SURFACE, BOOK_ACTIONS) as unknown as Book;
+}
+
+/** Contacts — `contacts.contacts`. */
+export interface Contacts extends tilo.Resource {
   contacts: Array<tilo.Entry<Contact>>;
   readonly removed: string[];
   newContact(args: {
@@ -208,22 +226,19 @@ export interface Book extends tilo.Resource {
     contact: string;
     source: string;
     take_from_source: MergeField[];
+    merged?: Contact;
   }): Promise<void>;
   /** Runs `merge-contacts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   mergeContactsMany(items: MergeContactsArgs[]): Promise<tilo.ActionAnswer[]>;
-  exportVcardContent(args?: {
-    contact?: string;
-    name?: string;
-  }): Promise<void>;
 }
 
-/** The actions `Book` reaches before it is read: `ws` calls them without a
+/** The actions `Contacts` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const BOOK_ACTIONS = ["newContact", "newContactMany", "addContacts", "addContactsMany", "deleteContact", "deleteContactMany", "mergeContacts", "mergeContactsMany", "exportVcardContent"] as const;
+export const CONTACTS_ACTIONS = ["newContact", "newContactMany", "addContacts", "addContactsMany", "deleteContact", "deleteContactMany", "mergeContacts", "mergeContactsMany"] as const;
 
-/** The `contacts.book` kind at `path`. */
-export function book(ws: tilo.Workspace, path: string): Book {
-  return resourceProxy(ws, path, SURFACE, BOOK_ACTIONS) as unknown as Book;
+/** The `contacts.contacts` kind at `path`. */
+export function contacts(ws: tilo.Workspace, path: string): Contacts {
+  return resourceProxy(ws, path, SURFACE, CONTACTS_ACTIONS) as unknown as Contacts;
 }
 
 /** Contact identities — `tilo.contacts.identities`. */

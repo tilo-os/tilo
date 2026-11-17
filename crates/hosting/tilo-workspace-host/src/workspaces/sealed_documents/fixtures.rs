@@ -110,7 +110,7 @@ impl SealingMember {
         let route = tilo_peer_state::document_frame::DocumentRoute {
             app_id: app.into(),
             cluster_id: workspace.into(),
-            record: record.into(),
+            document: record.into(),
         };
         let keys = workspaces
             .own_route_keys(&route, true)
@@ -145,7 +145,7 @@ impl SealingMember {
         let route = tilo_peer_state::document_frame::DocumentRoute {
             app_id: self.route.0.clone(),
             cluster_id: workspace.into(),
-            record: record.into(),
+            document: record.into(),
         };
         let keys = workspaces
             .own_route_keys(&route, true)

@@ -794,7 +794,7 @@ impl Engine {
         let route = DocumentRoute {
             app_id: app.to_owned(),
             cluster_id: workspace.to_owned(),
-            record: record.to_owned(),
+            document: record.to_owned(),
         };
         self.held
             .lock()
@@ -1137,7 +1137,7 @@ impl Engine {
             .with_current(id, |view| Ok(view.peer().records()))?;
         // A record this device wrote that its replica holds nothing of yet is one of them too.
         for route in self.held.lock().keys() {
-            let named = (route.app_id.clone(), route.record.clone());
+            let named = (route.app_id.clone(), route.document.clone());
             if route.cluster_id == workspace && !records.contains(&named) {
                 records.push(named);
             }

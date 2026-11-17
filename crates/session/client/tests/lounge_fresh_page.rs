@@ -469,7 +469,7 @@ fn chat_messages(page: &Link, workspace: &str, channel: &str) -> Vec<chat::model
     let record = DocumentRoute {
         app_id: CHAT_APP.to_owned(),
         cluster_id: workspace.to_owned(),
-        record: String::new(),
+        document: String::new(),
     };
     let Some(chat_doc) = crate::support::resource_of(page, &record) else {
         println!("the page holds none of Chat's record");
@@ -490,7 +490,7 @@ fn chat_messages(page: &Link, workspace: &str, channel: &str) -> Vec<chat::model
         let part = DocumentRoute {
             app_id: CHAT_APP.to_owned(),
             cluster_id: workspace.to_owned(),
-            record: chat::parts::part(index).route().to_owned(),
+            document: chat::parts::part(index).route().to_owned(),
         };
         let Some(document) = crate::support::resource_of(page, &part) else {
             continue;
@@ -526,12 +526,12 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     let desktop = DocumentRoute {
         app_id: DESKTOP_APP.to_owned(),
         cluster_id: lounge.workspace.clone(),
-        record: DESKTOP_DOCUMENT.to_owned(),
+        document: DESKTOP_DOCUMENT.to_owned(),
     };
     let chat = DocumentRoute {
         app_id: CHAT_APP.to_owned(),
         cluster_id: lounge.workspace.clone(),
-        record: String::new(),
+        document: String::new(),
     };
     page.send(Cmd::OpenRoute(chat.clone())).unwrap();
     page.send(Cmd::OpenRoute(desktop.clone())).unwrap();
@@ -574,7 +574,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     let part = DocumentRoute {
         app_id: CHAT_APP.to_owned(),
         cluster_id: lounge.workspace.clone(),
-        record: chat::parts::part(0).route().to_owned(),
+        document: chat::parts::part(0).route().to_owned(),
     };
     let started = std::time::Instant::now();
     let wait = tokio::time::Instant::now() + Duration::from_secs(300);

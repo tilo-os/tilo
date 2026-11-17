@@ -123,14 +123,14 @@ impl Worker {
         DocumentRoute {
             app_id: FILES_APP.to_owned(),
             cluster_id: workspace.to_owned(),
-            record: tree_document(),
+            document: tree_document(),
         }
     }
 
     /// The record of chunk `chunk` of `workspace`'s files.
     pub(super) fn tree_chunk_route(workspace: &str, chunk: TreeChunk) -> DocumentRoute {
         DocumentRoute {
-            record: tree::chunk_document_id(chunk),
+            document: tree::chunk_document_id(chunk),
             ..Self::tree_route(workspace)
         }
     }

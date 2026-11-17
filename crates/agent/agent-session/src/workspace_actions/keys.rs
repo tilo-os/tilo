@@ -68,7 +68,7 @@ pub(super) fn catalogue_keys(query: &CatalogueQuery) -> Keys {
     {
         Some(route) => Keys::Record {
             app_id: route.app_id,
-            record: route.record,
+            record: route.document,
             act: false,
         },
         None => Keys::Workspace,
@@ -81,7 +81,7 @@ pub(super) fn invoke_keys(request: &InvokeRequest) -> Keys {
     match resource_of(&request.target.provider, "") {
         Some(route) => Keys::Record {
             app_id: route.app_id,
-            record: route.record,
+            record: route.document,
             act: true,
         },
         None => Keys::Joined,

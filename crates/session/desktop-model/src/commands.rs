@@ -870,7 +870,11 @@ pub fn apply_command(
         }
         DesktopCommand::RemoveStrip { strip } => remove_strip(workspace, *strip)?,
         DesktopCommand::MoveStrip { strip, before } => move_strip(workspace, *strip, *before)?,
-        DesktopCommand::RenameWorkspace { name: label } => workspace.name = name(label)?,
+        // The name is the workspace's governance's: the shell only checks it here, and the
+        // device writes it there, from where it is projected onto every shell showing it.
+        DesktopCommand::RenameWorkspace { name: label } => {
+            name(label)?;
+        }
         DesktopCommand::ClaimNamespace { .. } => {
             return Err(
                 "a namespace claim changes the workspace's registry, not another workspace".into(),

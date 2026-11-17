@@ -254,18 +254,35 @@ if (passkey) {
   // remembering them.
   await tab.send('Storage.clearDataForOrigin', {origin: new URL(site).origin, storageTypes: 'all'});
   await tab.navigate(site);
-  // The site is invite-only, so a visitor it does not know meets the
-  // invite-only page; someone who has been here signs in from it with their
-  // passkey, as a person would.
-  await until(`!!document.querySelector('#arrival-sign-in-button')?.offsetParent`, 'the invite-only page offering a passkey');
+  // A site that lets people in by invitation (production's) shows a visitor
+  // it does not know the invite-only page, and someone who has been here
+  // signs in from it with their passkey, as a person would. A stack whose
+  // entry is open to anyone (TILO_SH_ADMISSION=open, as the e2e gate brings
+  // it up) lets the stranger in as a fresh guest instead; they sign in with
+  // the passkey from there, through the page's own sign-in.
+  const met = await until(`(() => {
+    if (document.querySelector('#arrival-sign-in-button')?.offsetParent) return 'invite-only';
+    return document.documentElement.dataset.arrival === 'done' ? 'open' : false;
+  })()`, 'the invite-only page offering a passkey, or the page arriving as a fresh guest');
   const before = await tab.evaluate(`(async () => (${identityModule}).currentIdentity()?.userPublicKey ?? null)()`);
-  await tab.evaluate(`document.querySelector('#arrival-sign-in-button').click(); 1`);
-  await until(`document.documentElement.dataset.arrival === 'done' || !!document.querySelector('#arrival-sign-in-note')?.textContent`, 'the page arriving after the passkey');
-  const back = await tab.evaluate(`(async () => {
-    const note = document.querySelector('#arrival-sign-in-note')?.textContent;
-    if (note && document.documentElement.dataset.arrival !== 'done') return JSON.stringify({before: ${JSON.stringify(before)}, error: note});
-    return JSON.stringify({before: ${JSON.stringify(before)}, person: (${identityModule}).currentIdentity()?.userPublicKey ?? null});
-  })()`).then(JSON.parse);
+  let back;
+  if (met === 'invite-only') {
+    await tab.evaluate(`document.querySelector('#arrival-sign-in-button').click(); 1`);
+    await until(`document.documentElement.dataset.arrival === 'done' || !!document.querySelector('#arrival-sign-in-note')?.textContent`, 'the page arriving after the passkey');
+    back = await tab.evaluate(`(async () => {
+      const note = document.querySelector('#arrival-sign-in-note')?.textContent;
+      if (note && document.documentElement.dataset.arrival !== 'done') return JSON.stringify({before: ${JSON.stringify(before)}, error: note});
+      return JSON.stringify({before: ${JSON.stringify(before)}, person: (${identityModule}).currentIdentity()?.userPublicKey ?? null});
+    })()`).then(JSON.parse);
+  } else {
+    back = await tab.evaluate(`(async () => {
+      const id = ${identityModule};
+      try {
+        const person = await id.signInWithPasskey({fetchEnvelope: root => id.fetchEnvelope(root, [${JSON.stringify(new URL(relay).origin)}])});
+        return JSON.stringify({before: ${JSON.stringify(before)}, person: person.userPublicKey});
+      } catch (error) { return JSON.stringify({before: ${JSON.stringify(before)}, error: String(error?.message ?? error)}); }
+    })()`).then(JSON.parse);
+  }
   if (back.error) await finish(1, `signing in with the passkey failed: ${back.error}`);
   if (back.before === kept.person) await finish(1, 'the browser still held the person after it forgot the site');
   if (back.person !== kept.person) await finish(1, `the passkey signed in ${back.person}, not ${kept.person}`);

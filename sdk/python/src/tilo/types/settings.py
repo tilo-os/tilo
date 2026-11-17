@@ -508,7 +508,7 @@ SetActionChordsArgs = TypedDict("SetActionChordsArgs", {
 """The arguments of `set-action-chords`."""
 
 BindArgs = TypedDict("BindArgs", {
-    "part": "str",
+    "slot": "str",
     "app": "str",
     "view": "str",
     "on": NotRequired["str | None"],
@@ -516,7 +516,7 @@ BindArgs = TypedDict("BindArgs", {
 """The arguments of `bind`."""
 
 ShellViewsResetArgs = TypedDict("ShellViewsResetArgs", {
-    "part": "str",
+    "slot": "str",
     "on": NotRequired["str | None"],
 })
 """The arguments of `reset`."""
@@ -1511,14 +1511,14 @@ class ShellViews(Resource):
 
     def bind(self,
         *,
-        part: str,
+        slot: str,
         app: str,
         view: str,
         on: str | None = None,
     ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
-        args["part"] = part
+        args["slot"] = slot
         args["app"] = app
         args["view"] = view
         if on is not None:
@@ -1531,12 +1531,12 @@ class ShellViews(Resource):
 
     def reset(self,
         *,
-        part: str,
+        slot: str,
         on: str | None = None,
     ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
-        args["part"] = part
+        args["slot"] = slot
         if on is not None:
             args["on"] = on
         return self.action("reset", **args)

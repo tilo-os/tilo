@@ -13,7 +13,7 @@ pub fn validated_route_payload(
     collab_types::validate_whole_document_payload_route(
         &route.app_id,
         &route.cluster_id.to_string(),
-        route.record.as_deref().unwrap_or(""),
+        route.document.as_deref().unwrap_or(""),
         envelope,
     )
     .ok()
@@ -36,7 +36,7 @@ pub fn validated_route_payload_with(
     let segment = collab_types::validate_document_payload_route(
         &route.app_id,
         &route.cluster_id.to_string(),
-        route.record.as_deref().unwrap_or(""),
+        route.document.as_deref().unwrap_or(""),
         envelope,
     )
     .ok()?;

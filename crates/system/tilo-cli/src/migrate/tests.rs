@@ -211,7 +211,7 @@ fn one_thunderbird_account_of_two_comes_over_once() {
     // Contacts and calendars were not chosen.
     assert!(
         workspace
-            .of("contacts/contacts.book#add-contacts")
+            .of("contacts/contacts.contacts#add-contacts")
             .is_empty()
     );
     assert!(
@@ -297,7 +297,7 @@ fn an_address_book_and_calendar_chosen_later_come_over_alone() {
     let journal = run_once(&home, &place, &mut more).unwrap();
     assert!(more.of("mail/mail.mailbox#deliver-message").is_empty());
     let contacts = more
-        .of("contacts/contacts.book#add-contacts")
+        .of("contacts/contacts.contacts#add-contacts")
         .into_iter()
         .flat_map(|args| args["contacts"].as_array().unwrap())
         .count();

@@ -181,13 +181,13 @@ impl Workspaces {
         // This guard is under the same lock as key access and replay. Revocation
         // cannot slip between a prior policy lookup and the first key access.
         runtime
-            .view_read_policy(caller, &source.app_id, &source.record)
+            .view_read_policy(caller, &source.app_id, &source.document)
             .ok_or("resource read not permitted")?;
         let keys = match runtime.route_keys().await {
             Some(Ok(keys)) => Some(keys),
             _ => None,
         };
-        let primary_governor = (source.record.is_empty()
+        let primary_governor = (source.document.is_empty()
             && runtime.peer().holds_document(&source.app_id, ""))
         .then_some(runtime.record.authority.device_public_key);
         if keys.is_none() && primary_governor.is_none() {
@@ -203,13 +203,13 @@ impl Workspaces {
             .records
             .view_channel(
                 runtime.workspace_id(),
-                neighbour_wire::app_document_channel(&source.app_id, &source.record),
+                neighbour_wire::app_document_channel(&source.app_id, &source.document),
                 MAX_VIEW_DOCUMENT_BYTES,
             )
             .await?;
         let bytes = replay_source(source, keys.as_ref(), primary_governor, retained)?;
         runtime
-            .view_read_policy(caller, &source.app_id, &source.record)
+            .view_read_policy(caller, &source.app_id, &source.document)
             .ok_or("resource read not permitted")?;
         drop(runtime);
         drop(state);
@@ -246,7 +246,7 @@ fn replay_source(
         };
         if app_id != source.app_id
             || cluster_id != source.cluster_id
-            || document_id != source.record
+            || document_id != source.document
         {
             continue;
         }

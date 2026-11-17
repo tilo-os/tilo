@@ -672,7 +672,7 @@ pub(crate) fn route(app: &str, record: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: app.into(),
         cluster_id: "workspace".into(),
-        record: record.into(),
+        document: record.into(),
     }
 }
 
@@ -2355,7 +2355,7 @@ fn search_workspace_finds_a_record_and_the_plan_opens_it() {
         steps[0],
         Step {
             app: found.app_id,
-            record: Some(found.record),
+            record: Some(found.document),
             action: StepAction::Open,
             carries: None,
             serves: None,

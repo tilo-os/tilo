@@ -251,7 +251,7 @@ fn layout() -> DocumentRoute {
     DocumentRoute {
         app_id: DESKTOP_APP.into(),
         cluster_id: crate::support::WORKSPACE.into(),
-        record: DESKTOP_DOCUMENT.into(),
+        document: DESKTOP_DOCUMENT.into(),
     }
 }
 

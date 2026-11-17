@@ -161,6 +161,9 @@ impl Work {
     }
 }
 
+/// The person a staged window opens as.
+pub const ME: &str = "ada";
+
 impl Staged {
     /// The app `app` of `packages` as the window's bar names it: its icon and its title, as the
     /// launcher and the desktop's bar wear them.
@@ -235,7 +238,7 @@ impl Staged {
     ) -> Result<Self, String> {
         theme.reduce_motion = true;
         let (app_end, window_end) = pair();
-        let me = "ada".to_owned();
+        let me = ME.to_owned();
         let names = Rc::new(tilolang_tilo::names::Told::new(
             &me,
             Rc::new(tilolang_tilo::names::Unnamed),

@@ -110,13 +110,13 @@ impl Worker {
                     provider: record_provider(route),
                     app_id: route.app_id.clone(),
                     workspace: cluster_id.clone(),
-                    document_id: route.record.clone(),
+                    document_id: route.document.clone(),
                     // A part of a chain is held with the record that keeps
                     // it, never opened as one of its own: offered as one, it
                     // was the app's newest record, which an agent's call
                     // acted on and opened a window of (one that cannot open
                     // it as the app's record), and whose link it answered.
-                    browsable: !is_part(&route.record),
+                    browsable: !is_part(&route.document),
                 })
                 .chain(std::iter::once(CatalogueProvider {
                     provider: own_provider,
@@ -158,7 +158,7 @@ impl Worker {
                 Err(error) => tracing::warn!(
                     %error,
                     app = %route.app_id,
-                    record = %route.record,
+                    record = %route.document,
                     "workspace actions: {} did not mount",
                     super::named(route)
                 ),

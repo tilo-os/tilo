@@ -27,6 +27,10 @@ use collab_types::Member;
 #[serde(from = "StoredWorkspace")]
 pub struct Workspace {
     id: WorkspaceId,
+    /// The workspace's name, as its governance records it: projected onto the shell by the
+    /// device showing it ([`Self::named_as`]), never stored or sent with the layout, so the
+    /// workspace has one name, the one every device and list of it reads.
+    #[serde(skip)]
     pub name: String,
     pub strips: Vec<Strip>,
     /// Whether the workspace shows its strips or its canvas, and where each
@@ -104,7 +108,6 @@ pub struct Workspace {
 #[derive(Deserialize)]
 struct StoredWorkspace {
     id: WorkspaceId,
-    name: String,
     strips: Vec<Strip>,
     #[serde(default)]
     layout: WorkspaceLayout,
@@ -140,7 +143,7 @@ impl From<StoredWorkspace> for Workspace {
         };
         Self {
             id: identity,
-            name: stored.name,
+            name: String::new(),
             strips: stored.strips,
             layout: stored.layout,
             members: stored.members,
@@ -486,17 +489,25 @@ impl Workspace {
         self.policy.is_owner(user)
     }
 
+    /// Whether the workspace is theirs: its structural owner, or the person a
+    /// host keeps it for when it runs the workspace for them
+    /// ([`WorkspacePolicy::is_keeper`]). They are its owner as every surface
+    /// shows one, and may change who is in it and what each may do.
+    #[must_use]
+    pub fn owns(&self, user: &str) -> bool {
+        self.policy.is_owner(user) || self.policy.is_keeper(user)
+    }
+
     /// The workspace this workspace is, given when it was made and never changed.
     #[must_use]
     pub fn id(&self) -> WorkspaceId {
         self.id
     }
 
-    /// Take the name the workspace's governance records, `name`, onto this shell: the workspace's
-    /// one name, which every device and every list of it reads. A shell that landed in the
-    /// workspace before anything named it — served no name, or in one made on another device —
-    /// holds none, and a shell whose copy is older holds the old one; both take the name here.
-    /// Naming it what it is already called changes nothing. Whether the shell changed.
+    /// Project the name the workspace's governance records, `name`, onto this shell: the
+    /// workspace's one name, which the layout keeps none of, so the device showing the workspace
+    /// projects it here from the governance it holds. Naming it what it is already called changes
+    /// nothing. Whether the shell changed.
     pub fn named_as(&mut self, name: &str) -> bool {
         let name = name.trim();
         if name.is_empty() || self.name == name {
@@ -1080,5 +1091,32 @@ mod tests {
             "the name as written is trimmed"
         );
         assert_eq!(workspace.name, "Tilo");
+    }
+
+    #[test]
+    fn a_workspace_kept_for_a_person_is_theirs() {
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(2), "Lounge");
+        let host = "22".repeat(32);
+        let person = "11".repeat(32);
+        workspace.set_owner(host.clone());
+        workspace.policy.grants.push(roles::keeper_grant(
+            &workspace.id.to_string(),
+            &person,
+            Grantee::person(host.clone()),
+        ));
+        assert!(
+            workspace.is_owner(&host),
+            "the structural owner is the host"
+        );
+        assert!(
+            !workspace.is_owner(&person),
+            "nobody but the host owns it structurally"
+        );
+        assert!(
+            workspace.owns(&person),
+            "the person the host keeps the workspace for is its owner to every surface"
+        );
+        assert!(workspace.owns(&host));
+        assert!(!workspace.owns(&"33".repeat(32)), "a member owns nothing");
     }
 }

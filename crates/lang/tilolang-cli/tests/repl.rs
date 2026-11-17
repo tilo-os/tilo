@@ -1,230 +1,38 @@
-//! `tilolang repl` against a session's MCP server.
-//!
-//! The first tests need nothing running: a session that serves the agent tools but no `tilo` (a
-//! session from before programs on its API), which the REPL refuses cleanly, and asks the person
-//! to admit it on the way there. The last drives
-//! a running nested session with Notes, Todo, Chat and Board (`TILOLANG_REPL_SESSION`: its
-//! --ready file), doing real work there: queries, a bulk change shown as a preview and applied
-//! on confirm, and undo of it.
+//! `tilolang repl` with nothing to reach: a computer nobody signed in to Tilo on. The REPL
+//! against a workspace is proven where a workspace's host runs in process
+//! (`crates/agent/agent-session/tests/workspace_actions/api_programs.rs`).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
-use std::io::{BufRead as _, BufReader, Write as _};
-use std::os::unix::net::UnixListener;
 use std::process::{Command, Stdio};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use serde_json::{Value, json};
-
-/// Answer one API connection as a session that serves the agent tools but runs no programs.
-fn old_api(listener: &UnixListener) {
-    let (stream, _) = listener.accept().unwrap();
-    let mut writer = stream.try_clone().unwrap();
-    for line in BufReader::new(stream).lines() {
-        let Ok(line) = line else { return };
-        let request: Value = serde_json::from_str(&line).unwrap();
-        let Some(id) = request.get("id").cloned() else {
-            continue;
-        };
-        let result = match request["method"].as_str() {
-            Some("initialize") => json!({"protocolVersion": "2025-06-18", "capabilities": {},
-                "serverInfo": {"name": "tilo-runtime", "version": "0"}}),
-            Some("tools/list") => {
-                let tools: Vec<Value> = [
-                    "tilo_ls",
-                    "tilo_read",
-                    "tilo_do",
-                    "tilo_find",
-                    "tilo_status",
-                ]
-                .map(|name| json!({"name": name}))
-                .into();
-                json!({ "tools": tools })
-            }
-            _ => json!({"content": [{"type": "text", "text": "apps"}]}),
-        };
-        let reply = json!({"jsonrpc": "2.0", "id": id, "result": result});
-        writeln!(writer, "{reply}").unwrap();
-    }
-}
-
-fn repl(args: &[&str], input: &str) -> std::process::Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tilolang"))
-        .arg("repl")
-        .args(args)
-        .args(["--color", "never"])
-        .env(
-            "XDG_STATE_HOME",
-            std::env::temp_dir().join("tilolang-repl-test"),
-        )
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn_locked()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
-    child.wait_with_output().unwrap()
-}
-
 tilo_test_env::scenario! {
-    fn an_api_that_runs_no_programs_refuses_the_repl;
+    fn a_computer_nobody_signed_in_on_says_how_to_sign_in;
 
-    phase a_session_whose_api_runs_no_programs_is_refused_with_why;
+    phase the_person_reads_what_to_do_and_nothing_runs;
     {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("agent.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let api = std::thread::spawn(move || old_api(&listener));
-        let output = repl(
-            &["--api", socket.to_str().unwrap()],
-            "notes.notebook.notes\n",
-        );
+        let state = tempfile::tempdir().unwrap();
+        let child = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+            .args(["repl", "--color", "never"])
+            .env("XDG_STATE_HOME", state.path())
+            .env("TILO_DEVICE_DIR", state.path().join("device"))
+            .env_remove("TILO_API_KEY")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn_locked()
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{stderr}");
         assert!(
-            stderr.contains("has no `tilo` tool") && stderr.contains("tilo_ls"),
-            "says what the API lacks and what it serves: {stderr}"
+            stderr.contains(tilolang_cli::repl::NOT_SIGNED_IN),
+            "the person reads how to sign in: {stderr}"
         );
+        for word in ["MCP", "socket", "api"] {
+            assert!(!stderr.contains(word), "no {word} in what a person reads: {stderr}");
+        }
         assert!(output.stdout.is_empty(), "nothing was evaluated");
-        api.join().unwrap();
-    }
-
-    phase the_repl_asks_the_person_and_never_answers_its_own_admission;
-    // A REPL started on a nested session (`--session`) tells the person at the shell that it asks to
-    // act as them, and gives itself no answer: the admission stays theirs, on the sheet, or their
-    // `--admit-repl` made as they started the session.
-    {
-        let runtime = tempfile::tempdir().unwrap();
-        std::fs::create_dir(runtime.path().join("tilo-session")).unwrap();
-        let api = UnixListener::bind(runtime.path().join("tilo-session/agent.sock")).unwrap();
-        let control = UnixListener::bind(runtime.path().join("control.sock")).unwrap();
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let person = std::thread::spawn({
-            let (seen, stop) = (seen.clone(), stop.clone());
-            move || person_at_control(&control, &seen, &stop)
-        });
-        let api = std::thread::spawn(move || old_api(&api));
-        let output = repl(&["--session", runtime.path().to_str().unwrap()], "");
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        person.join().unwrap();
-        api.join().unwrap();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("asking to act as you") && stderr.contains("--admit-repl"),
-            "the person is told what waits for them: {stderr}"
-        );
-        assert!(
-            stderr.contains("has no `tilo` tool"),
-            "the API's answer came back: {stderr}"
-        );
-        let seen = std::mem::take(&mut *seen.lock().unwrap());
-        assert!(
-            seen.is_empty(),
-            "the REPL gives itself no answers: {seen:?}"
-        );
-    }
-}
-
-/// The lines of `out` that a run printed after the entry `entry` and before the next prompt.
-fn after<'a>(out: &'a str, entry: &str) -> Vec<&'a str> {
-    out.lines()
-        .skip_while(|line| !line.ends_with(entry))
-        .skip(1)
-        .take_while(|line| !line.contains("> "))
-        .collect()
-}
-
-#[test]
-#[ignore = "drives a running nested session: TILOLANG_REPL_SESSION names its --ready file"]
-fn the_repl_queries_changes_in_bulk_with_a_preview_and_undoes_on_a_nested_session() {
-    let session = std::env::var("TILOLANG_REPL_SESSION").expect("TILOLANG_REPL_SESSION");
-    let script = "\
-todo.tasks.items.len()
-for t in [\"Take the bins out\", \"Buy oat milk and eggs\", \"Water the plants\", \"Return the library books\", \"Book a haircut\"] { todo.add(todo.tasks, t) }
-confirm
-todo.tasks.items.len()
-todo.tasks.items.filter(t -> not t.done).len()
-undo
-todo.tasks.items.len()
-history task
-";
-    let output = repl(&["--session", &session], script);
-    let out = String::from_utf8_lossy(&output.stdout);
-    let err = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{out}\n{err}");
-    let before: usize = after(&out, "todo.tasks.items.len()")[0]
-        .trim()
-        .parse()
-        .unwrap();
-    let previewed = after(&out, "todo.add(todo.tasks, t) }").join("\n");
-    assert!(previewed.contains("preview: 5 actions"), "{out}");
-    assert!(previewed.contains("add ×5"), "{out}");
-    let applied = after(&out, "confirm").join("\n");
-    assert!(applied.contains("step 1: 5 changes in todo"), "{out}");
-    let counts: Vec<usize> = out
-        .lines()
-        .filter_map(|line| line.trim().parse().ok())
-        .collect();
-    assert_eq!(counts.first(), Some(&before), "{out}");
-    assert!(counts.contains(&(before + 5)), "the five were added: {out}");
-    assert!(
-        after(&out, "undo")
-            .join("\n")
-            .contains("undone: step 1 in todo"),
-        "{out}"
-    );
-    assert_eq!(
-        counts.last(),
-        Some(&before),
-        "undo took all five back: {out}"
-    );
-    assert!(
-        after(&out, "history task").join("\n").contains("(undone)"),
-        "{out}"
-    );
-}
-
-/// Answer a nested session's control socket as the person there would: every request recorded in
-/// `seen`, and refused, so a REPL that asked its own way in would be told so, until `stop` is set.
-fn person_at_control(
-    listener: &UnixListener,
-    seen: &std::sync::Mutex<Vec<Value>>,
-    stop: &std::sync::atomic::AtomicBool,
-) {
-    listener.set_nonblocking(true).unwrap();
-    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-        let stream = match listener.accept() {
-            Ok((stream, _)) => stream,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                continue;
-            }
-            Err(error) => panic!("{error}"),
-        };
-        stream.set_nonblocking(false).unwrap();
-        let mut writer = stream.try_clone().unwrap();
-        let mut line = String::new();
-        BufReader::new(stream).read_line(&mut line).unwrap();
-        seen.lock()
-            .unwrap()
-            .push(serde_json::from_str(&line).unwrap());
-        writeln!(
-            writer,
-            "{}",
-            json!({"err": {"code": "refused", "message": "no"}})
-        )
-        .unwrap();
     }
 }

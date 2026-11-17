@@ -44,6 +44,7 @@ mod list_pane;
 pub mod modal;
 pub mod model;
 pub mod opml;
+pub mod part;
 mod reader_pane;
 pub mod reader_theme;
 pub mod resource;

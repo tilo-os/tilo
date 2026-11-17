@@ -108,39 +108,6 @@ fn place_at(session: &mut Session, resource: &str, width: i64, height: i64) -> u
     place
 }
 
-/// Place `resource` on the canvas far from the origin, so it stands clear of a conversation
-/// placed there: through the layout's published `place`, as an agent puts it there.
-fn place_far(session: &mut Session, resource: &str) -> u64 {
-    let (workspace, row, strip, place) = {
-        let tree = session.handle().read(Clone::clone);
-        let workspace = tree.active_workspace().expect("a workspace is in front");
-        (
-            workspace.id().to_string(),
-            workspace.strips.first().expect("a row").id.0,
-            session.handle().mint_id(),
-            session.handle().mint_id(),
-        )
-    };
-    let arguments: Map<String, Value> = json!({
-        "workspace": workspace,
-        "row": row,
-        "strip": strip,
-        "place": place,
-        "resource": resource,
-        "x": 900,
-        "y": 540,
-        "width": 320,
-        "height": 220,
-    })
-    .as_object()
-    .unwrap()
-    .clone();
-    session
-        .invoke("shell:layout", "place", &arguments)
-        .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
-    place
-}
-
 /// Choose the appearance `option` (`light`, `dark`), as Settings does: the shell follows it at
 /// once, the same page in another theme.
 fn choose_appearance(session: &mut Session, option: &str) {
@@ -479,13 +446,13 @@ fn pressing_an_attachment_places_the_resource_it_holds() {
 /// chip holds is placed at the point it was let go, not left unplaced or placed at the origin.
 #[test]
 fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_canvas() {
-    let _settled = ui::motion::testing::settled();
-    let root = crate::common::private_home();
-    let mut session = session(root.path());
     // The small demo channel whose whole transcript fits: its shared video's row is what the
     // page draws for the attachment, in reach of a pointer.
     const SHARED: &str = "I rewrote my window compositor in Rust and it changed EVERYTHING!!!";
     const DROPPED: &str = "tube.video:vid_rust_async";
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let mut session = session(root.path());
     place(&mut session, "chat.workspace.channels:c_general");
     // The Frames canvas snaps a place let go to the style's grid by default, so it lands on the
     // cell nearest the pointer rather than exactly where it was let go (`snap_x`/`snap_y`,

@@ -668,7 +668,7 @@ impl InitialReadBridge {
     ) -> bool {
         !checkout.id.is_package_primary()
             && self.state.document_reads.answered_by_own_channel(
-                &RouteSpec::record(
+                &RouteSpec::document(
                     self.route.app_id.clone(),
                     self.route.cluster_id,
                     checkout.id.as_str(),
@@ -693,7 +693,7 @@ impl InitialReadBridge {
         let route = checkout.map_or_else(
             || self.route.clone(),
             |checkout| {
-                RouteSpec::record(
+                RouteSpec::document(
                     self.route.app_id.clone(),
                     self.route.cluster_id,
                     checkout.id.as_str(),
@@ -743,7 +743,7 @@ impl InitialReadBridge {
         checkout: &collab_types::document::DocumentCheckout,
     ) -> Result<Option<CommittedDocument>, String> {
         self.check()?;
-        let route = RouteSpec::record(
+        let route = RouteSpec::document(
             self.route.app_id.clone(),
             self.route.cluster_id,
             checkout.id.as_str(),
@@ -854,7 +854,7 @@ mod tests {
             .expect("a record id"),
             collab_types::document::ResourceType::new("chat.part"),
         );
-        let route = RouteSpec::record("so.tilo.chat", workspace, checkout.id.as_str());
+        let route = RouteSpec::document("so.tilo.chat", workspace, checkout.id.as_str());
         let state = BridgeState::new();
         state.document_reads.legacy_for_test(&route.channel_id());
         let (sender, _receiver) = tokio::sync::mpsc::channel(4);
@@ -887,7 +887,7 @@ mod tests {
                 .expect("a record id"),
             collab_types::document::ResourceType::new("chat.part"),
         );
-        let route = RouteSpec::record("so.tilo.chat", workspace, checkout.id.as_str());
+        let route = RouteSpec::document("so.tilo.chat", workspace, checkout.id.as_str());
         let state = BridgeState::new();
         let reads = state.document_reads.clone();
         let (sender, mut receiver) = tokio::sync::mpsc::channel::<super::QueuedSdkCommand>(4);

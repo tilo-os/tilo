@@ -126,7 +126,7 @@ async fn make_agent(
     let route = DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: workspace.into(),
-        record: record.clone(),
+        document: record.clone(),
     };
     let bytes = std::mem::take(made.doc_mut()).save();
     page.peer
@@ -173,7 +173,7 @@ async fn file_issue(
     let route = DocumentRoute {
         app_id: TASKS.into(),
         cluster_id: workspace.into(),
-        record: tracker,
+        document: tracker,
     };
     let arguments =
         serde_json::json!({"title": "Plan the launch", "assignee": format!("agent:{SCOUT}")});
@@ -627,7 +627,7 @@ async fn write_to_agent(
     let route = DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: workspace.into(),
-        record: String::new(),
+        document: String::new(),
     };
     let conversation = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
     let arguments = serde_json::json!({"channel": conversation.as_str(), "text": text});
@@ -782,5 +782,344 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
         newest.to_string(),
         "the newest message is the one asked"
     );
+    page.peer.close();
+}
+
+/// A model that answers a turn in words, and a question asked without tools with `summary`.
+struct Summarising {
+    summary: &'static str,
+    asked: Arc<Mutex<Vec<ModelRequest>>>,
+}
+
+impl tilo_agent_session::model::PlanTurns for Summarising {
+    fn turn(
+        &mut self,
+        request: &ModelRequest,
+        _: &str,
+        _: std::time::Instant,
+        _: bool,
+    ) -> Result<ModelResponse, ModelError> {
+        self.asked.lock().unwrap().push(request.clone());
+        let text = if request.tools.is_empty() {
+            self.summary
+        } else {
+            "Nothing needs doing today."
+        };
+        Ok(answer(
+            vec![Content::Text { text: text.into() }],
+            StopReason::EndTurn,
+            5,
+        ))
+    }
+
+    fn model(&self) -> &'static str {
+        "scripted"
+    }
+}
+
+/// Everything `request` says, in the order it says it.
+fn said_in(request: &ModelRequest) -> String {
+    request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|content| match content {
+            Content::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The person writes nine long notes to the agent, each its own message, and a second passes: what
+/// is written next is the newest by the clock a message carries.
+async fn long_notes(
+    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+    workspaces: &tilo_relay::workspaces::Workspaces,
+    workspace: &str,
+    written: (&SigningKey, &crate::support::Device),
+    about: &str,
+) {
+    for index in 0..9 {
+        let note = format!(
+            "{about} {index}: {}",
+            "the crossing went as planned and nothing needs doing. ".repeat(22)
+        );
+        write_to_agent(actions, workspaces, workspace, written, &note).await;
+    }
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+}
+
+/// A conversation that outgrew what a turn is told as written. The turn carries what its agent is
+/// to take into the conversation's summary; once the answer has its words the host asks a model
+/// once for it and Chat keeps it, so the next turn is told what was said long ago and asks for
+/// nothing more. When the conversation outgrows it again the summary is extended from where it
+/// stood. The question goes to the keeper's own model once they linked one, and is counted on
+/// the agent's day as its turns are.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
+    use tilo_relay::workspaces::person_model::ProviderProtocol;
+    use tilo_relay::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let (relay, actions) = crate::harness::hosted::serving_records_with_actions(
+        &root,
+        &host,
+        state.path(),
+        crate::common::catalogue,
+    )
+    .await;
+    let workspaces = relay.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let page = Browser::open_at(&relay, &browser, &host, &workspace).await;
+    let keeper = root.verifying_key().to_bytes();
+    let person = hex::encode(keeper);
+    let agents_record = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
+    make_agent(&page, &workspaces, &workspace, &person, None).await;
+    let catalogue = crate::common::catalogue();
+    let governor = workspaces.governor().clone();
+    workspaces
+        .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
+        .await
+        .unwrap();
+    workspaces
+        .author_application(&workspace, &governor, &catalogue, CHAT, "", |doc| {
+            chat::demo::introduce(doc, &person, "Ada", "A").map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap();
+
+    // Something said at the start, then much more than a turn is told as written.
+    let written = (&root, &browser);
+    write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        written,
+        "Remember this: the boat is called Aurelia.",
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    long_notes(&actions, &workspaces, &workspace, written, "Note").await;
+    let first = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        written,
+        "anything to do today?",
+    )
+    .await;
+
+    // The keeper linked nothing yet, so the host's model answers the turn, and the summary's
+    // question is asked as the turn was.
+    let hosts = Arc::new(Mutex::new(Vec::new()));
+    let asked = Arc::clone(&hosts);
+    let agents = HostAgents::new(
+        workspaces.clone(),
+        actions.clone(),
+        Some(Arc::new(move || {
+            Some(Box::new(Summarising {
+                summary: "The boat is called Aurelia. The crossings went as planned.",
+                asked: Arc::clone(&asked),
+            })
+                as Box<dyn tilo_agent_session::model::PlanTurns>)
+        })),
+    );
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "the newest message is the one turn");
+    assert_eq!(turns[0].cause, first.to_string());
+    assert!(
+        turns[0].request.len() <= ui::collaboration::recall::INSTRUCTION_BYTES,
+        "a turn stays inside its budget: {} bytes",
+        turns[0].request.len()
+    );
+    let fold = turns[0]
+        .fold
+        .clone()
+        .expect("more stands outside the summary than a turn carries as written");
+    assert!(fold.summary.is_empty(), "nothing is summarised yet");
+    assert!(
+        fold.lines.contains("the boat is called Aurelia"),
+        "the oldest is what the summary takes in: {}",
+        fold.lines
+    );
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        agents.answer(&workspace, &turns[0]),
+    )
+    .await
+    .expect("the turn ends")
+    .unwrap();
+
+    // The answer is the person's as any turn's is, with its work ended.
+    let part = conversation_part(&workspaces, &workspace).await;
+    let reply = part
+        .messages
+        .get(&chat::record::reply_id(&first, &MemberId::agent(SCOUT)))
+        .expect("the agent's reply is in the conversation");
+    assert!(
+        reply.text.contains("Nothing needs doing today"),
+        "{}",
+        reply.text
+    );
+    assert!(
+        !chat::summons::unanswered(Some(reply)),
+        "its work ended: {:?}",
+        reply.work
+    );
+    {
+        let calls = hosts.lock().unwrap();
+        assert_eq!(calls.len(), 2, "one call answers, one summarises");
+        assert!(calls[1].tools.is_empty(), "a summary is words, no tools");
+        assert!(
+            said_in(&calls[1]).contains("the boat is called Aurelia"),
+            "the question holds the oldest messages: {}",
+            said_in(&calls[1])
+        );
+    }
+
+    // What was said long ago reaches the next turn as the summary, no longer as it was written,
+    // and the turn asks for nothing more.
+    let second = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        written,
+        "what is the boat called?",
+    )
+    .await;
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "one turn in the conversation: {turns:?}");
+    assert_eq!(turns[0].cause, second.to_string());
+    assert!(
+        turns[0]
+            .request
+            .contains("What came before, as you summarised it"),
+        "the next turn is told the summary: {}",
+        turns[0].request
+    );
+    assert!(
+        turns[0].request.contains("The boat is called Aurelia."),
+        "{}",
+        turns[0].request
+    );
+    assert!(
+        !turns[0].request.contains("Remember this"),
+        "what the summary took in is not told again as written"
+    );
+    assert_eq!(
+        turns[0].fold, None,
+        "what is left outside the summary is carried as written"
+    );
+
+    // The keeper links a model of their own, and the conversation outgrows its summary again:
+    // their model is asked, once, for what the new messages add to it.
+    let theirs = ScriptedProvider::answering([
+        Reply::text("Still nothing.").costing(300),
+        Reply::text("The later crossings were quiet too.").costing(40),
+    ]);
+    workspaces.answer_models_with(theirs.clone());
+    workspaces
+        .link_model_for(
+            &keeper,
+            &Linking {
+                name: "Google",
+                protocol: ProviderProtocol::OpenAiCompatible,
+                endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
+                key: Some("sk-the-keepers-own"),
+                models: &["gemini-main"],
+            },
+            true,
+        )
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    long_notes(&actions, &workspaces, &workspace, written, "Later note").await;
+    let third = write_to_agent(&actions, &workspaces, &workspace, written, "and now?").await;
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "one turn in the conversation: {turns:?}");
+    assert_eq!(turns[0].cause, third.to_string());
+    let fold = turns[0]
+        .fold
+        .clone()
+        .expect("the conversation outgrew its summary again");
+    assert!(
+        fold.summary.contains("The boat is called Aurelia."),
+        "the summary is extended from where it stood: {}",
+        fold.summary
+    );
+    assert!(
+        !fold.lines.contains("Remember this"),
+        "nothing is read from the conversation's start again: {}",
+        fold.lines
+    );
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        agents.answer(&workspace, &turns[0]),
+    )
+    .await
+    .expect("the turn ends")
+    .unwrap();
+    let calls = theirs.asked();
+    assert_eq!(
+        calls.len(),
+        2,
+        "their model answers and summarises, once each"
+    );
+    assert!(
+        calls[1].request.tools.is_empty(),
+        "a summary is words, no tools"
+    );
+    assert_eq!(
+        hosts.lock().unwrap().len(),
+        2,
+        "the host's model is not asked once the keeper linked their own"
+    );
+
+    // The summary holds both: what it held, and what the new messages added.
+    write_to_agent(&actions, &workspaces, &workspace, written, "thanks").await;
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "one turn in the conversation: {turns:?}");
+    for kept in [
+        "The boat is called Aurelia.",
+        "The later crossings were quiet too.",
+    ] {
+        assert!(
+            turns[0].request.contains(kept),
+            "{kept:?} is in the summary the turn is told: {}",
+            turns[0].request
+        );
+    }
+
+    // Every call is counted on the agent's day: two of the host's model, two of the keeper's.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let bytes = workspaces
+            .resource_document(&workspace, CHAT, &agents_record)
+            .await
+            .unwrap()
+            .unwrap();
+        let record = WorkspaceAgents::read(&automerge::AutoCommit::load(&bytes).unwrap()).unwrap();
+        let scout = record
+            .agents
+            .iter()
+            .find(|agent| agent.id.0 == SCOUT)
+            .unwrap();
+        if scout
+            .spent
+            .as_ref()
+            .is_some_and(|spent| spent.cost_micros == 350)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "its spend is counted: {:?}",
+            scout.spent
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     page.peer.close();
 }

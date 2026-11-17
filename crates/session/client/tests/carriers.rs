@@ -308,7 +308,7 @@ fn plane_route() -> DocumentRoute {
     DocumentRoute {
         app_id: collab_types::scope::MEDIA_APP.to_owned(),
         cluster_id: WORKSPACE.to_owned(),
-        record: collab_types::scope::WORKSPACE_RESOURCE.to_owned(),
+        document: collab_types::scope::WORKSPACE_RESOURCE.to_owned(),
     }
 }
 

@@ -26,7 +26,10 @@ use crate::support::{
 };
 
 fn record(record: String) -> DocumentRoute {
-    DocumentRoute { record, ..route() }
+    DocumentRoute {
+        document: record,
+        ..route()
+    }
 }
 
 fn part(index: u64) -> DocumentRoute {
@@ -39,12 +42,12 @@ struct Author(BTreeMap<String, AutoCommit>);
 
 impl Author {
     fn change(&mut self, route: &DocumentRoute, text: &str) -> DocumentMutation {
-        say(self.0.entry(route.record.clone()).or_default(), text)
+        say(self.0.entry(route.document.clone()).or_default(), text)
     }
 
     /// A record's first publication, which the host keeps as its checkpoint.
     fn first(&mut self, route: &DocumentRoute, text: &str) -> DocumentMutation {
-        let doc = self.0.entry(route.record.clone()).or_default();
+        let doc = self.0.entry(route.document.clone()).or_default();
         say(doc, text);
         DocumentMutation::Snapshot(doc.save())
     }
@@ -75,7 +78,7 @@ impl Received {
                     route,
                     author: Some(_),
                 } => {
-                    let landed = self.documents.entry(route.record).or_default();
+                    let landed = self.documents.entry(route.document).or_default();
                     *landed = landed.saturating_add(1);
                 }
                 Event::DocumentOpened {
@@ -83,7 +86,7 @@ impl Received {
                     answer: tilo_session_client::DocumentAnswer::Sent { frames },
                     ..
                 } => {
-                    self.opened.push((route.record, frames));
+                    self.opened.push((route.document, frames));
                 }
                 _ => {}
             }
@@ -91,7 +94,7 @@ impl Received {
     }
 
     fn of(&self, route: &DocumentRoute) -> usize {
-        self.documents.get(&route.record).copied().unwrap_or(0)
+        self.documents.get(&route.document).copied().unwrap_or(0)
     }
 }
 
@@ -195,7 +198,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     .await;
     hears(&reader, &part(0), "part 0").await;
     hears(&reader, &archive, "archive").await;
-    assert!(at_reader.opened.contains(&(part(0).record, 1)));
+    assert!(at_reader.opened.contains(&(part(0).document, 1)));
 
     author
         .write(part(0), &writes.change(&part(0), "an edit"))

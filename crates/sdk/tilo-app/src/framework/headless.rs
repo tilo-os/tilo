@@ -1920,7 +1920,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// The parts of the chain of `P` the app's store holds, oldest first,
     /// each read as it is stored: what the app keeps beside its record.
     pub fn chain_parts<P: super::Chained>(&self) -> Vec<(u64, std::rc::Rc<P::State>)> {
-        let chain = P::chain();
+        let chain = P::chain_beside(&self.checkout().id);
         self.records
             .held_parts(&chain)
             .into_iter()
@@ -1932,6 +1932,32 @@ impl<A: ResourceApp> HeadlessApp<A> {
                 Some((index, std::rc::Rc::new(state)))
             })
             .collect()
+    }
+
+    /// Apply `invoke` to the chain of `P` beside the record the app shows,
+    /// as the window does when a person, an agent or the palette asks: what a
+    /// test changes of what the app keeps in parts.
+    ///
+    /// # Errors
+    /// Why the chain cannot be opened here, or why the action was refused.
+    pub fn chain_invoke<P: super::Chained<Base = A::Resource>>(
+        &mut self,
+        invoke: &Invoke<P>,
+    ) -> Result<(), String> {
+        let me = tilo_resource::MemberId::person(&self.author);
+        let base = Rc::new(self.state());
+        let chain = super::Chain::<P>::detached_beside_in(
+            self.records.clone(),
+            <A as super::ResourceApp>::ID,
+            Some(&self.checkout().id),
+            &me,
+            move || Rc::clone(&base),
+        )
+        .ok_or_else(|| format!("the {} cannot be opened", P::LABEL))?;
+        chain
+            .invoke(invoke)
+            .map(drop)
+            .map_err(|error| error.to_string())
     }
 
     #[allow(
@@ -2021,6 +2047,24 @@ impl<A: ResourceApp> HeadlessApp<A> {
                 tilo_resource::history::versions(&mut doc.clone())
             })
             .unwrap_or_default()
+    }
+
+    /// What each version of the newest part of the chain of `P` did through
+    /// an action, oldest first: what the parts' history says, as
+    /// [`Self::history`] says it of the record.
+    pub fn chain_history<P: super::Chained>(&self) -> Vec<tilo_actions::ActionContext> {
+        let chain = P::chain_beside(&self.checkout().id);
+        let Some(head) = self.records.held_parts(&chain).last().copied() else {
+            return Vec::new();
+        };
+        self.records
+            .read(&chain.part(head), |doc| {
+                tilo_resource::history::versions(&mut doc.clone())
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .collect()
     }
 
     /// What each version did through an action, oldest first.

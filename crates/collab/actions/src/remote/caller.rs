@@ -125,6 +125,16 @@ impl Caller {
         }
     }
 
+    /// An installed bot on a connection the host admitted itself, by its
+    /// installation: software, never a person, whatever its id spells.
+    #[must_use]
+    pub fn local_bot(installation: impl Into<String>) -> Self {
+        Self {
+            acting: Acting::bot(installation.into()),
+            ..Self::local_agent(String::new())
+        }
+    }
+
     /// An application on a connection the host admitted itself, by the
     /// package id that admission established. It acts as the person whose
     /// session runs it ([`Self::acting_for`]), in that app; with nobody

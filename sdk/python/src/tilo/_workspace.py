@@ -306,12 +306,17 @@ class Workspace:
             answer, self.client, lambda next_cursor: self._invocations(limit, next_cursor)
         )
 
-    def program(self, source: str, confirm: bool | None = None) -> Any:
-        """Run a tilolang program as this group's task."""
-        return self.client.handoff(self._program(source, confirm))
+    def program(
+        self, source: str, confirm: bool | None = None, session: str | None = None
+    ) -> Any:
+        """Run a tilolang program as this group's task, in the program session `session` names
+        (an earlier answer's `session`), or a new one."""
+        return self.client.handoff(self._program(source, confirm, session))
 
-    async def _program(self, source: str, confirm: bool | None) -> ProgramAnswer:
-        return await (await self._endpoint()).program(source, confirm)
+    async def _program(
+        self, source: str, confirm: bool | None, session: str | None
+    ) -> ProgramAnswer:
+        return await (await self._endpoint()).program(source, confirm, session)
 
     def watch(self, path: str | None = None) -> Any:
         """Each change, invocation event and presence change, from now on."""

@@ -6,9 +6,9 @@
 //! on the sheet the question opens ([`Questions`]); and the broker then serves it as the person's
 //! agent member for that client. Each connection is one agent session
 //! ([`crate::agent_sessions`]): its own presence, its own run in history, and its own Stop. Acting
-//! as the person is a request, never authority: the person decides it on the sheet, or ahead of
-//! time by naming the program when they start the session (`--admit-repl PATH`). "Always allow"
-//! is kept in this account's private state.
+//! as the person is a request, never authority: the person decides it on the sheet ([`crate::Options`]'s
+//! `admit_repl` decides it ahead of time for a test's own program). "Always allow" is kept in
+//! this account's private state.
 //!
 //! A confined environment (a `ush` guest) has a server of its own, which its `ush` asks for here
 //! ([`environments`]): a program there works in the environment's workspace, and the person's

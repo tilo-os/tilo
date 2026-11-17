@@ -103,6 +103,21 @@ impl<'a> Timed<'a> {
         }
     }
 
+    /// The fire time to wait for while `answered_ms` is the last fire time
+    /// any keeper answered, ms since the epoch: a schedule's first time after
+    /// it, and a moment's own time while it has not been answered yet. `None`
+    /// when there is nothing more to wait for.
+    #[must_use]
+    pub fn waiting_ms(&self, answered_ms: i64, zone: &Zone<'_>) -> Option<i64> {
+        match self {
+            Self::Repeating { schedule, .. } => {
+                let from = DateTime::from_timestamp_millis(answered_ms)?;
+                next_fire_time(schedule, from, zone).map(|at| at.timestamp_millis())
+            }
+            Self::Once { at_ms } => (answered_ms < *at_ms).then_some(*at_ms),
+        }
+    }
+
     /// Whether a fire time answered `late_ms` after it came still runs. A
     /// schedule's does when it is on time or the trigger catches up; a
     /// moment's always does, since it comes once.
@@ -113,6 +128,93 @@ impl<'a> Timed<'a> {
                 late_ms <= MISSED_AFTER_MS || matches!(catch_up, CatchUp::RunOnce)
             }
             Self::Once { .. } => true,
+        }
+    }
+}
+
+/// What one participant should do about a trigger on the clock now, given
+/// the last fire time any participant answered: the progress kept in the
+/// workspace, not in one host's file, so whichever participant takes the
+/// trigger up next carries on where the last one stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedulePlan {
+    /// No fire time has come: keep `answered_ms` as the progress. A trigger
+    /// seen for the first time stores the moment it was seen.
+    Waiting { answered_ms: i64 },
+    /// `due_ms` has come: fire it once — on time, once for however many were
+    /// missed by a trigger that catches up, or a moment however late — then
+    /// keep `answered_ms` as the progress.
+    Fire {
+        due_ms: i64,
+        answered_ms: i64,
+        missed: bool,
+    },
+}
+
+/// What `timed` asks of a participant at `now_ms`, `answered_due_ms` being the
+/// last fire time any participant answered, or `None` if none has.
+///
+/// A fire time missed while every participant was down runs once when the
+/// trigger catches up and not at all when it skips, never once per period: the
+/// progress moves to `now_ms`, so the next fire time is the first after it
+/// however many periods passed. A moment that passed while every participant
+/// was down fires once, however late, and never again.
+#[must_use]
+pub fn plan(
+    timed: Timed<'_>,
+    answered_due_ms: Option<i64>,
+    now_ms: i64,
+    zone: &Zone<'_>,
+) -> SchedulePlan {
+    match timed {
+        Timed::Once { at_ms } => {
+            // An answer at or past the moment is the moment spent. Seen
+            // before it comes, none fires; seen for the first time after it
+            // passed, it fires in this same pass.
+            let spent = answered_due_ms.is_some_and(|answered| answered >= at_ms);
+            if spent {
+                return SchedulePlan::Waiting { answered_ms: at_ms };
+            }
+            if at_ms > now_ms {
+                return SchedulePlan::Waiting {
+                    answered_ms: answered_due_ms.unwrap_or(now_ms),
+                };
+            }
+            SchedulePlan::Fire {
+                due_ms: at_ms,
+                answered_ms: at_ms,
+                missed: now_ms.saturating_sub(at_ms) > MISSED_AFTER_MS,
+            }
+        }
+        Timed::Repeating { schedule, catch_up } => {
+            let Some(answered) = answered_due_ms else {
+                return SchedulePlan::Waiting {
+                    answered_ms: now_ms,
+                };
+            };
+            let from = DateTime::from_timestamp_millis(answered).unwrap_or_default();
+            let Some(due) = next_fire_time(schedule, from, zone) else {
+                return SchedulePlan::Waiting {
+                    answered_ms: answered,
+                };
+            };
+            let due_ms = due.timestamp_millis();
+            if due_ms > now_ms {
+                return SchedulePlan::Waiting {
+                    answered_ms: answered,
+                };
+            }
+            let missed = now_ms.saturating_sub(due_ms) > MISSED_AFTER_MS;
+            if missed && catch_up != CatchUp::RunOnce {
+                return SchedulePlan::Waiting {
+                    answered_ms: now_ms,
+                };
+            }
+            SchedulePlan::Fire {
+                due_ms,
+                answered_ms: now_ms.max(due_ms),
+                missed,
+            }
         }
     }
 }
@@ -208,3 +310,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod plan_tests;

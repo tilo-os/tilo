@@ -1,16 +1,19 @@
 //! The library's verbs, the places derived from it, and the app.
 //!
-//! Plain fields change through the built-in field edits every path offers
-//! (`Library::paths().articles.item(&id).starred.set(true)`): reading,
-//! starring, tagging, renaming a feed or a folder, moving a feed and folding
-//! a folder. The methods below are the operations that are more than
-//! setting a field. Tags are derived from the articles and are published as
-//! places that reveal what they label.
+//! What navigates the library — its folders and subscriptions — is this
+//! record: plain fields change through the built-in field edits every path
+//! offers (renaming a feed or a folder, moving a feed, folding a folder), and
+//! the methods below are the operations that are more than setting a field.
+//! What a subscription brought in grows without bound and is kept in parts
+//! beside it ([`crate::part::ArticlePart`]): an article is read, starred and
+//! tagged through the chain's own actions, and the tags a part's articles
+//! carry are published there as places that reveal what they label.
 //!
 //! Refreshing and OPML import/export change nothing by themselves: they are
-//! the reader's [`FeedsEffect`]s, whose results reach the library as verbs
-//! (what a refresh fetched lands through [`Library::refreshed`]). How articles
-//! read (text size, face, paper) is the person's
+//! the reader's [`FeedsEffect`]s, whose results reach the records as verbs
+//! (what a refresh fetched lands through [`crate::part::ArticlePart::receive`]
+//! and the subscription it fed is noted by [`Library::note_feed`]). How
+//! articles read (text size, face, paper) is the person's
 //! [`ReadSettings`](crate::model::ReadSettings), a personal
 //! setting the reader's effects change.
 
@@ -18,17 +21,17 @@ use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 #[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
-use ui::tilo_resource::{self, ActionCx, Derived, Effect, Id, NonBlank, Refusal, resource};
+use ui::tilo_resource::{self, ActionCx, Effect, Id, NonBlank, Refusal, resource};
 use ui::widget::Element;
 
-use crate::model::{Article, Feed, Fetched, Filter, Folder, Library, Outline, tag_key};
+use crate::model::{Feed, Filter, Folder, Library, Outline};
+use crate::part::ArticlePart;
 
-/// How many tags the library publishes as places.
+/// How many tags a part of the articles publishes as places.
 pub const MAX_TAG_PLACES: usize = 32;
 
 impl Library {
-    /// What the record holds: the feeds, their folders and articles, and what was read, starred
-    /// or tagged.
+    /// What the record holds: the folders and the subscriptions.
     ///
     /// It answers through [`fields`](tilo_resource::read::fields): a caller
     /// with no window open reads the record as it reads any app's record, and
@@ -44,9 +47,8 @@ impl Library {
 
 #[resource(
     kind = "feeds.library",
-    children = Library::places,
     search = crate::search::entries,
-    version = 2,
+    version = 3,
     migrate = crate::model::upgrade,
     read_content = Library::read_document
 )]
@@ -75,30 +77,16 @@ impl Library {
 
     /// Unsubscribe.
     ///
-    /// Removes the subscription and every article it brought in.
+    /// Removes the subscription. What it brought in is not shown and does not
+    /// count from then on; the window takes the room back through the parts
+    /// it holds ([`ArticlePart::forget_feed`]), and an undo that brings the
+    /// subscription back shows them again.
     #[action(destructive, item = feeds)]
     pub fn unsubscribe(&mut self, feed: &Id) -> Result<(), Refusal> {
-        if !self.feeds.contains(feed) {
-            return Err(Refusal::new("no such subscription"));
-        }
-        self.remove_feed(feed);
+        self.feeds
+            .remove(feed)
+            .ok_or_else(|| Refusal::new("no such subscription"))?;
         Ok(())
-    }
-
-    /// Mark all of a subscription's articles as read.
-    #[action(housekeeping, item = feeds)]
-    pub fn mark_feed_read(&mut self, feed: &Id) -> Result<(), Refusal> {
-        if !self.feeds.contains(feed) {
-            return Err(Refusal::new("no such subscription"));
-        }
-        self.mark_all_read(&Filter::Feed(feed.clone()));
-        Ok(())
-    }
-
-    /// Mark all articles as read.
-    #[action(housekeeping)]
-    pub fn mark_everything_read(&mut self) {
-        self.mark_all_read(&Filter::All);
     }
 
     /// New folder.
@@ -138,36 +126,27 @@ impl Library {
         self.import(&outlines, || cx.id());
     }
 
-    /// Bring in what a refresh fetched for one subscription.
-    ///
-    /// The articles it does not hold yet, its title as the feed names
-    /// itself, and the certificate a Gemini server presented the first time.
-    /// Content from the feed, not anyone's edit: no undo takes it back.
-    /// How a refresh lands, never something a person picks from a list.
-    #[action(external, audience = "agents")]
-    pub fn refreshed(
+    /// Note what a refresh found out about one subscription: the title the
+    /// feed gives itself, and the certificate a Gemini server presented the
+    /// first time. Content from the feed, not anyone's edit: no undo takes it
+    /// back. The articles it brought land in the parts beside the library
+    /// ([`ArticlePart::receive`]).
+    #[action(external, audience = "agents", item = feeds)]
+    pub fn note_feed(
         &mut self,
-        cx: &mut ActionCx,
-        #[param("The articles it lists")] articles: Vec<Fetched>,
-        #[param("The subscription")] feed: Id,
+        #[param("The subscription")] feed: &Id,
         #[param("The title the feed gives itself")] title: Option<String>,
         #[param("The certificate a Gemini server presented")] certificate_pin: Option<String>,
     ) -> Result<(), Refusal> {
         let subscription = self
             .feeds
-            .get_mut(&feed)
+            .get_mut(feed)
             .ok_or_else(|| Refusal::new("no such subscription"))?;
         if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
             subscription.title = title;
         }
         if subscription.certificate_pin.is_none() {
             subscription.certificate_pin = certificate_pin;
-        }
-        for article in articles {
-            if !self.has_article(&feed, &article.url, &article.title) {
-                self.articles
-                    .push(cx.id(), Article::fetched(feed.clone(), article));
-            }
         }
         Ok(())
     }
@@ -209,23 +188,6 @@ impl Library {
             added += 1;
         }
         added
-    }
-
-    /// The places derived from the articles: each tag reveals the articles
-    /// it labels.
-    fn places(&self) -> Vec<Derived<Self>> {
-        self.tags_limited(MAX_TAG_PLACES)
-            .into_iter()
-            .map(Self::tag_place)
-            .collect()
-    }
-
-    /// The tag `tag` as a place.
-    pub fn tag_place(tag: String) -> Derived<Self> {
-        Derived::new(format!("#{tag}"))
-            .of_kind("tag")
-            .identified(format!("tag:{tag}"))
-            .with_effect(&FeedsEffect::RevealTag { tag })
     }
 }
 
@@ -304,6 +266,11 @@ impl ResourceApp for FeedsShell {
         Some(&crate::i18n::CATALOG)
     }
 
+    /// The articles, kept in parts beside the library.
+    fn records(records: &mut ui::framework::Records<'_>) {
+        records.chain::<ArticlePart>();
+    }
+
     #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         &[
@@ -329,13 +296,14 @@ impl ResourceApp for FeedsShell {
     }
 
     /// The bundled sample library, subscribed and fetched, under every
-    /// scenario but the first-run `empty` one.
+    /// scenario but the first-run `empty` one. Its articles are staged into
+    /// the parts as the window opens ([`Self::fixture`]).
     #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Library>> {
         if name == Some("empty") {
             return Vec::new();
         }
-        let library = crate::sample::store();
+        let (library, _) = crate::sample::store();
         let paths = Library::paths();
         let edits = whole(&library);
         let mut invokes: Vec<Invoke<Library>> = edits
@@ -366,10 +334,19 @@ impl ResourceApp for FeedsShell {
         }
         invokes
     }
+
+    /// The articles the bundled sample library brought in, staged into the
+    /// parts as the window opens.
+    #[cfg(feature = "samples")]
+    fn fixture(fixture: &mut ui::framework::Fixture<Library>) {
+        if fixture.scenario() != Some("empty") {
+            fixture.provide(crate::sample::Scene);
+        }
+    }
 }
 
-/// The field edits that put every folder, subscription and article of
-/// `library` into an empty one, under their ids.
+/// The field edits that put every folder and subscription of `library` into
+/// an empty one, under their ids.
 #[cfg(feature = "samples")]
 pub(crate) fn whole(library: &Library) -> Vec<tilo_resource::Edit<Library>> {
     let paths = Library::paths();
@@ -383,17 +360,12 @@ pub(crate) fn whole(library: &Library) -> Vec<tilo_resource::Edit<Library>> {
         .iter()
         .enumerate()
         .map(|(at, (id, feed))| paths.feeds.insert_as(id, at, feed));
-    let articles = library
-        .articles
-        .iter()
-        .enumerate()
-        .map(|(at, (id, article))| paths.articles.insert_as(id, at, article));
-    folders.chain(feeds).chain(articles).collect()
+    folders.chain(feeds).collect()
 }
 
 /// The filter that shows the articles tagged `tag`.
 pub(crate) fn tag_filter(tag: &str) -> Filter {
-    Filter::Tag(tag_key(tag))
+    Filter::Tag(crate::model::tag_key(tag))
 }
 
 #[cfg(test)]

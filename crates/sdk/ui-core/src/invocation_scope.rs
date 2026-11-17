@@ -542,7 +542,7 @@ impl ResourceInvocationScope {
             target.address.address.action.as_str(),
             target.binding.checkout.id.as_str(),
             self.lease.route.app_id.as_str(),
-            self.lease.route.record.as_deref().unwrap_or(""),
+            self.lease.route.document.as_deref().unwrap_or(""),
         ];
         let bytes = fields
             .iter()
@@ -1303,7 +1303,7 @@ impl From<&RouteSpec> for ResourceStamp {
         Self {
             workspace: Some(route.cluster_id),
             app_id: route.app_id.clone(),
-            document_id: route.record.clone().unwrap_or_default(),
+            document_id: route.document.clone().unwrap_or_default(),
         }
     }
 }

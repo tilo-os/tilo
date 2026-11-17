@@ -634,24 +634,25 @@ impl AgentMember {
     /// open it): news for a running task, and the record as the replica holds it merged into the
     /// app that holds it, held until opened when no app does yet.
     fn document_said(&mut self, route: DocumentRoute, author: Option<[u8; 32]>) {
-        let bytes = match self
-            .peer
-            .engine()
-            .record(&route.cluster_id, &route.app_id, &route.record)
-        {
-            Ok(Some(bytes)) => {
-                self.undecided.remove(&route);
-                bytes
-            }
-            Ok(None) => {
-                self.undecided.insert(route);
-                return;
-            }
-            Err(error) => {
-                tracing::warn!(%error, "agent: a record that landed does not read");
-                return;
-            }
-        };
+        let bytes =
+            match self
+                .peer
+                .engine()
+                .record(&route.cluster_id, &route.app_id, &route.document)
+            {
+                Ok(Some(bytes)) => {
+                    self.undecided.remove(&route);
+                    bytes
+                }
+                Ok(None) => {
+                    self.undecided.insert(route);
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "agent: a record that landed does not read");
+                    return;
+                }
+            };
         if author.is_some()
             && author != Some(self.identity.cert.device_public_key)
             && route.cluster_id == self.workspace
@@ -677,7 +678,7 @@ impl AgentMember {
             self.others_wrote.insert(route.clone());
         }
         let mutation = collab_types::DocumentMutation::Snapshot(bytes);
-        if parts::is_part(&route.record) && self.merge_part(&route, &mutation).is_some() {
+        if parts::is_part(&route.document) && self.merge_part(&route, &mutation).is_some() {
             self.generation = self.generation.wrapping_add(1);
             self.last_merge = Some(Instant::now());
         } else if let Some(app) = self.apps.get_mut(&route) {
@@ -1140,7 +1141,7 @@ impl AgentMember {
         for route in self.unopened.people_first() {
             if self.identity.delegation.permits_app(&route.app_id)
                 && !self.apps.contains_key(&route)
-                && !parts::is_part(&route.record)
+                && !parts::is_part(&route.document)
                 && !self.others_document(&route, text)
             {
                 routes.push(route);
@@ -1170,7 +1171,7 @@ impl AgentMember {
         }
         self.reopened_for = Some(task.to_owned());
         for route in routes {
-            if let Err(error) = self.open(&route.app_id, Some(&route.record)) {
+            if let Err(error) = self.open(&route.app_id, Some(&route.document)) {
                 tracing::debug!(%error, app = %route.app_id, "agent: a workspace document did not open");
             }
         }
@@ -1900,7 +1901,7 @@ impl AgentMember {
         );
         self.focus = Some(LiveResource {
             app: route.app_id.clone(),
-            record: route.record.clone(),
+            record: route.document.clone(),
         });
         self.control
             .set_activity(Some(format!("Waiting for confirmation: {label}")));
@@ -1946,7 +1947,7 @@ impl AgentMember {
         self.unopened
             .routes()
             .into_iter()
-            .filter(|route| !parts::is_part(&route.record))
+            .filter(|route| !parts::is_part(&route.document))
             .filter(|route| self.unopened.document(route).is_some())
             .collect()
     }
@@ -1962,7 +1963,7 @@ impl AgentMember {
         let route = |record: &str| DocumentRoute {
             app_id: app.clone(),
             cluster_id: workspace.clone(),
-            record: record.to_owned(),
+            document: record.to_owned(),
         };
         // An app that keeps one record per workspace (Chat) has one route, named
         // empty: asked for a new record, the agent joins the workspace's own once
@@ -2048,7 +2049,7 @@ impl AgentMember {
         }
         self.focus = Some(LiveResource {
             app: route.app_id.clone(),
-            record: route.record.clone(),
+            record: route.document.clone(),
         });
         self.place = None;
         self.publish_presence();
@@ -2182,7 +2183,7 @@ impl AgentMember {
         }
         self.focus = Some(LiveResource {
             app: route.app_id.clone(),
-            record: route.record.clone(),
+            record: route.document.clone(),
         });
         self.place = place;
         self.control.set_activity(label);
@@ -2232,7 +2233,7 @@ impl AgentMember {
             .map(|focus| DocumentRoute {
                 app_id: focus.app.clone(),
                 cluster_id: self.workspace.clone(),
-                record: focus.record.clone(),
+                document: focus.record.clone(),
             })
             .filter(|last| last != route)
             .and_then(|last| {

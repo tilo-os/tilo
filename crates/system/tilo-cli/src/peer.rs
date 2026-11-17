@@ -440,6 +440,15 @@ impl Peer {
     pub(crate) async fn close(&self) {
         self.held.lock().await.clear();
     }
+
+    /// Let go of the files' store, so the next holder opens it as soon as this process lets its
+    /// lock go rather than when this process ends: the databases the store holds are locked until
+    /// then, and that outlasts the holder's own lock.
+    pub(crate) async fn shutdown(&self) {
+        if let Err(error) = self.store.shutdown().await {
+            tracing::warn!(%error, "the workspaces' files did not close cleanly");
+        }
+    }
 }
 
 /// `n` bytes as a person reads them: one decimal in the largest unit that

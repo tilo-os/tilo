@@ -142,7 +142,7 @@ impl AgentMember {
             {
                 shown.push(format!(
                     "(document {}) since an earlier task exported it as {}: {}",
-                    route.record,
+                    route.document,
                     earlier.content,
                     changes_text(&earlier.facts, &facts)
                 ));
@@ -166,6 +166,6 @@ fn facts_line(route: &DocumentRoute, resource: &str, facts: &serde_json::Value) 
     };
     format!(
         "(document {}) {} {resource}#{FACTS} states it now: {text}",
-        route.record, route.app_id
+        route.document, route.app_id
     )
 }

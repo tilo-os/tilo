@@ -45,7 +45,7 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     let welcome = DocumentRoute {
         app_id: "so.tilo.notes".into(),
         cluster_id: lounge.workspace.clone(),
-        record: "welcome".into(),
+        document: "welcome".into(),
     };
 
     let mut pages = Vec::new();

@@ -145,7 +145,7 @@ impl PeerTransport for Routed {
                 let route = RouteSpec {
                     app_id,
                     cluster_id,
-                    record,
+                    document: record,
                 };
                 self.wire.join(&self.me, &route, &self.mine);
                 self.primary = Some(route.clone());
@@ -187,7 +187,7 @@ fn delivered(
     route: &RouteSpec,
     mutation: &collab_types::DocumentMutation,
 ) -> Result<CollabEvent, String> {
-    let record = route.record.as_deref().unwrap_or("");
+    let record = route.document.as_deref().unwrap_or("");
     let workspace = route.cluster_id.to_string();
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().map_err(|error| error.to_string())?,
@@ -265,7 +265,7 @@ fn window(
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
-        record: route.record.clone(),
+        record: route.document.clone(),
         resource_type: None,
         handle: Some(me.to_owned()),
     }));
@@ -1329,7 +1329,7 @@ fn opened_from_disk(
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
-        record: route.record.clone(),
+        record: route.document.clone(),
         resource_type: None,
         handle: Some(me.to_owned()),
     }));

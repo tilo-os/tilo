@@ -111,7 +111,7 @@ tilo_test_env::scenario! {
             "the record lives in the workspace the app is open in"
         );
         assert_eq!(
-            route.record.as_deref(),
+            route.document.as_deref(),
             Some(watched_resource_of(&ada()).as_str()),
             "it is Ada's own record there: no other member reads or writes it"
         );
@@ -171,7 +171,7 @@ tilo_test_env::scenario! {
             watched_elsewhere.record().route().unwrap(),
         );
         assert_eq!(
-            route_here.record, route_elsewhere.record,
+            route_here.document, route_elsewhere.document,
             "the same kind of record"
         );
         assert_ne!(
@@ -314,7 +314,7 @@ tilo_test_env::scenario! {
             "the route names the app keeping the record"
         );
         assert_ne!(
-            route.record.as_deref(),
+            route.document.as_deref(),
             None,
             "and the record, not the app's primary"
         );

@@ -27,6 +27,13 @@ use super::{Connection, Enter, Shared, answer};
 const REACHING: Duration = Duration::from_secs(10);
 /// How long a holder starting waits for one that is leaving to let go.
 const TAKING_OVER: Duration = Duration::from_secs(20);
+/// How long a holder that has the lock waits for the last one's stores to let go: the lock is
+/// let go before the process ends, and the databases it still holds are not.
+const OPENING: Duration = Duration::from_secs(30);
+/// How often it looks whether those stores let go.
+const OPENING_POLL: Duration = Duration::from_millis(100);
+/// How long a holder leaving waits for its stores to close before it lets the lock go.
+const RELEASING: Duration = Duration::from_secs(5);
 /// How often a connection looks for a holder that has not started listening.
 const POLL: Duration = Duration::from_millis(50);
 /// How long a holder's process waits for its runtime's threads once it ended. A step that walks
@@ -323,6 +330,18 @@ fn hold_for<E: Enter>(
     // its thread to its end and cannot be interrupted. The process ends now instead of waiting
     // for it: the socket is gone and the folders were unmounted (or given up on) above.
     runtime.shutdown_timeout(SHUTDOWN);
+    // The next holder opens the stores as soon as this process lets go of the lock, which is
+    // before this process ends: let go of them first, or it finds them still open.
+    if let Some(peer) = PEER.get() {
+        let releasing = bridge_runtime()?;
+        if releasing
+            .block_on(tokio::time::timeout(RELEASING, peer.shutdown()))
+            .is_err()
+        {
+            tracing::warn!("the workspaces' files did not close in time");
+        }
+        releasing.shutdown_timeout(SHUTDOWN);
+    }
     served?;
     Ok(ExitCode::SUCCESS)
 }
@@ -482,11 +501,44 @@ pub(crate) static NOT_IN: std::sync::Mutex<Option<String>> = std::sync::Mutex::n
 /// How often the peer looks whether its session is still the device's.
 const PEER_LOOK: Duration = Duration::from_secs(5);
 
+/// Open the peer's stores at `state`, waiting while another holder still has them open: the one
+/// that held the lock before this one let go of it before its process ended, and the databases it
+/// held are locked until then. redb's lock is the kernel's, dropped with the process, so a holder
+/// that died is never waited out.
+async fn open_peer(state: &Path, home: &Path) -> anyhow::Result<crate::peer::Peer> {
+    let deadline = Instant::now()
+        .checked_add(OPENING)
+        .unwrap_or_else(Instant::now);
+    let mut waiting = false;
+    loop {
+        match crate::peer::Peer::open(state, home, true).await {
+            Ok(peer) => return Ok(peer),
+            Err(error) if tilo_fs::ContentStore::held_elsewhere(&error) => {
+                if Instant::now() >= deadline {
+                    return Err(error.context(format!(
+                        "another Tilo still holds the workspaces' files open after {} seconds",
+                        OPENING.as_secs()
+                    )));
+                }
+                if !waiting {
+                    waiting = true;
+                    tracing::info!(
+                        %error,
+                        "another Tilo still has the workspaces' files open; this one waits"
+                    );
+                }
+                tokio::time::sleep(OPENING_POLL).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Run the peer: enter the workspace, and show the person's workspaces' folders
 /// over the session, mounted again whenever the session is a new one, and as
 /// `tilo folders` changes them.
 async fn keep_peer<E: Enter>(shared: Arc<Shared<E>>, home: PathBuf, state: PathBuf) {
-    let peer = match crate::peer::Peer::open(&state, &home, true).await {
+    let peer = match open_peer(&state, &home).await {
         Ok(peer) => Arc::new(peer),
         Err(error) => {
             tracing::error!(%error, "the workspaces' files cannot be kept here");
@@ -808,6 +860,96 @@ mod tests {
             "each login's connections reach its own holder"
         );
         assert_ne!(first.log, second.log);
+    }
+
+    /// Names the lock file a child process takes and then ends still holding.
+    const CHILD_LOCK: &str = "TILO_TEST_HOLDER_LOCK";
+
+    /// The body of [`a_holder_that_ended_holds_no_lock`]'s child, and a no-op in every other run:
+    /// it takes the holder's lock and ends without unlocking it, as an ended process does.
+    #[test]
+    fn a_child_takes_the_holders_lock() {
+        let Some(path) = std::env::var_os(CHILD_LOCK) else {
+            return;
+        };
+        let path = Path::new(&path);
+        let _held = advisory_lock::FileLock::try_open(path, advisory_lock::LockMode::Exclusive)
+            .expect("the child takes the lock");
+        std::fs::write(path.with_extension("held"), b"").expect("the child records the lock");
+        // End without running destructors: the kernel drops the lock with the process.
+        std::process::exit(0);
+    }
+
+    /// A holder that ended, however it ended, holds no lock a new one waits for: the lock is the
+    /// kernel's to drop with the process, and a process that is gone is not waited out.
+    #[test]
+    fn a_holder_that_ended_holds_no_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("holder.lock");
+        let held = take_lock(&lock, Duration::ZERO).unwrap();
+        assert!(held.is_some());
+        assert!(
+            take_lock(&lock, Duration::ZERO).unwrap().is_none(),
+            "a lock its owner holds keeps the next holder out"
+        );
+        drop(held);
+        let module = module_path!();
+        let name = format!(
+            "{}::a_child_takes_the_holders_lock",
+            module.split_once("::").map_or(module, |(_, within)| within)
+        );
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--nocapture", "--test-threads", "1"])
+            .env(CHILD_LOCK, &lock)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "the child that took the lock failed");
+        assert!(
+            lock.with_extension("held").exists(),
+            "the child never took the lock"
+        );
+        assert!(
+            take_lock(&lock, Duration::ZERO).unwrap().is_some(),
+            "the lock of a process that ended wedges the next holder"
+        );
+    }
+
+    /// A holder starting while the last one still has the workspaces' files open waits for them
+    /// and opens them then: it does not start without a peer.
+    #[test]
+    fn a_holder_waits_for_the_last_ones_files_to_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = bridge_runtime().unwrap();
+        let first = runtime
+            .block_on(crate::peer::Peer::open(dir.path(), dir.path(), false))
+            .expect("the first holder opens the files");
+        let (started, starting) = std::sync::mpsc::channel();
+        let (opened, opening) = std::sync::mpsc::channel();
+        let at = dir.path().to_path_buf();
+        let waiter = std::thread::spawn(move || {
+            let runtime = bridge_runtime().unwrap();
+            let result = runtime.block_on(async move {
+                started.send(()).unwrap();
+                open_peer(&at, &at)
+                    .await
+                    .map(drop)
+                    .map_err(|error| format!("{error:#}"))
+            });
+            opened.send(result).unwrap();
+        });
+        starting.recv().unwrap();
+        assert!(
+            opening.recv_timeout(Duration::from_millis(300)).is_err(),
+            "a second holder opened the files this one still holds"
+        );
+        runtime.block_on(first.shutdown());
+        opening
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the second holder opens the files once the first lets go")
+            .unwrap();
+        waiter.join().unwrap();
     }
 
     #[test]

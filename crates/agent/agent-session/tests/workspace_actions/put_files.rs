@@ -63,7 +63,7 @@ async fn publish(laptop: &Browser, folder: &mut tilo_fs::Namespace) {
         let route = DocumentRoute {
             app_id: FILES_APP.to_owned(),
             cluster_id: laptop.cluster_id.clone(),
-            record: fs_protocol::tree::chunk_document_id(write.chunk),
+            document: fs_protocol::tree::chunk_document_id(write.chunk),
         };
         laptop
             .peer
@@ -177,7 +177,10 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
         json!({"path": "files#open", "args": {"content": content, "name": "visa.pdf"}}),
     )
     .await;
-    let tree = tree_when(&hosted, WORKSPACE, |tree| file_at(tree, "", "visa.pdf").is_some()).await;
+    let tree = tree_when(&hosted, WORKSPACE, |tree| {
+        file_at(tree, "", "visa.pdf").is_some()
+    })
+    .await;
     let node = file_at(&tree, "", "visa.pdf").expect("the file is in the workspace's tree");
     assert_eq!(node.kind, FileNodeKind::File);
     assert_eq!(
@@ -405,8 +408,9 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
     publish(&laptop, &mut folder).await;
     assert!(
         file_at(
-            &tree_when(&hosted, WORKSPACE, |tree| file_at(tree, "", "contract.txt").is_some())
-                .await,
+            &tree_when(&hosted, WORKSPACE, |tree| file_at(tree, "", "contract.txt")
+                .is_some())
+            .await,
             "",
             "contract.txt"
         )
@@ -430,7 +434,11 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
     );
     assert!(
         workspaces
-            .resource_document(WORKSPACE, FILES_APP, &fs_protocol::tree::chunk_document_id(1))
+            .resource_document(
+                WORKSPACE,
+                FILES_APP,
+                &fs_protocol::tree::chunk_document_id(1)
+            )
             .await
             .unwrap()
             .is_some(),
@@ -458,7 +466,10 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
         json!({"path": "files#open", "args": {"content": content, "name": "notice.pdf"}}),
     )
     .await;
-    let tree = tree_when(&hosted, WORKSPACE, |tree| file_at(tree, "", "notice.pdf").is_some()).await;
+    let tree = tree_when(&hosted, WORKSPACE, |tree| {
+        file_at(tree, "", "notice.pdf").is_some()
+    })
+    .await;
     assert!(file_at(&tree, "", "notice.pdf").is_some(), "{said}");
     assert!(
         file_at(&tree, "", "contract.txt").is_some(),

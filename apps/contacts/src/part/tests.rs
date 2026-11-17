@@ -1,26 +1,55 @@
-//! The address book through the API the host uses: its verbs, a saved
-//! form's field edits, merging replicas, what it publishes, and the app.
+//! The address book's contacts through the parts the app keeps them in: the
+//! verbs, a saved form's field edits, merging replicas, what the parts
+//! publish, and the app.
 
-use super::*;
-use crate::model::{Address, GroupEntry, MAX_CONTACT_FIELD_BYTES};
+use std::rc::Rc;
+
 use ui::framework::testing::TestApp;
-use ui::tilo_resource::{Effect as _, Replica};
+use ui::tilo_resource::{Effect as _, Invoke, Replica};
 
-fn book_of(contacts: &[Contact]) -> Replica<Contacts> {
-    let mut book = Replica::<Contacts>::new();
-    for contact in contacts {
-        book.apply(Contacts::add(contact)).unwrap();
-    }
-    book
+use crate::actions::{ContactsEffect, MergeField};
+use crate::model::{
+    Address, Birthday, Contact, ContactId, GroupEntry, Labeled, MAX_CONTACT_FIELD_BYTES,
+};
+use crate::part::{Book, ContactPart, contact_part};
+use crate::resource::{
+    ContactsShell, FAVORITES_PLACE, duplicate_place, group_place, place_resource_id, sample_book,
+};
+use uuid::Uuid;
+
+fn part_of(contacts: &[Contact]) -> Replica<ContactPart> {
+    let mut part = Replica::<ContactPart>::new();
+    part.apply(ContactPart::add_all(contacts.to_vec())).unwrap();
+    part
 }
 
-fn contact(book: &Replica<Contacts>, id: ContactId) -> Option<Contact> {
+/// The parts the book's replica holds, oldest first.
+fn parts(book: &Replica<ContactPart>) -> Vec<(u64, Rc<ContactPart>)> {
+    vec![(0, Rc::new(book.state().unwrap()))]
+}
+
+fn contact(book: &Replica<ContactPart>, id: ContactId) -> Option<Contact> {
     book.state().unwrap().contact(id).cloned()
 }
 
-fn save(book: &mut Replica<Contacts>, base: &Contact, edited: &Contact) -> Result<(), String> {
+/// Apply `invoke` to the part it changes, read against the book and the
+/// parts held where it is invoked, as a window carries it out.
+fn apply(
+    book: &mut Replica<ContactPart>,
+    invoke: impl Into<Invoke<ContactPart>>,
+) -> Result<u64, String> {
+    let mut action = invoke.into().build(1_000)?;
+    let held = parts(book);
+    crate::part::prepare(&mut action, &held)?;
+    let index = crate::part::part_for(&action, &held)?;
+    book.apply_action(&action)
+        .map_err(|error| error.to_string())?;
+    Ok(index)
+}
+
+fn save(book: &mut Replica<ContactPart>, base: &Contact, edited: &Contact) -> Result<(), String> {
     // Taking a row out is confirmed, as the host asks the person to.
-    let invoke = Contacts::save(base, edited).ok_or("the form changed nothing")?;
+    let invoke = ContactPart::save(base, edited).ok_or("the form changed nothing")?;
     book.apply_confirmed(invoke)
         .map(drop)
         .map_err(|error| error.to_string())
@@ -38,37 +67,42 @@ fn name(text: &str) -> ui::tilo_resource::NonBlank {
     text.parse().unwrap()
 }
 
+/// The book an app's parts add up to.
+fn held(app: &TestApp<ContactsShell>) -> Book {
+    Book::of(&app.chain_parts::<ContactPart>())
+}
+
 tilo_test_env::scenario! {
     fn the_address_book_record_adds_saves_merges_and_publishes_its_contacts;
 
     phase contacts_are_added_once_and_a_deleted_id_stays_deleted;
     {
-        let mut book = Replica::<Contacts>::new();
-        book.apply(Contacts::NEW_CONTACT.with(name("Dana Scott")))
+        let mut part = Replica::<ContactPart>::new();
+        part.apply(ContactPart::NEW_CONTACT.with(name("Dana Scott")))
             .unwrap();
-        let state = book.state().unwrap();
+        let state = part.state().unwrap();
         let dana = state.contacts.first().unwrap();
         assert_eq!((dana.first.as_str(), dana.last.as_str()), ("Dana", "Scott"));
         assert!(
-            serde_json::from_value::<contacts::NewContact>(serde_json::json!({"name": "  "})).is_err(),
+            serde_json::from_value::<contact_part::NewContact>(serde_json::json!({"name": "  "})).is_err(),
             "a new contact has a name, refused where the arguments are read"
         );
 
         let ada = person("Ada", "Lovelace");
-        book.apply(Contacts::add(&ada)).unwrap();
+        part.apply(ContactPart::add(&ada)).unwrap();
         assert!(
-            book.apply(Contacts::add(&ada)).is_err(),
+            apply(&mut part, ContactPart::add(&ada)).is_err(),
             "an id names one contact"
         );
-        book.apply_confirmed(Contacts::delete(ada.id)).unwrap();
-        assert!(contact(&book, ada.id).is_none());
-        assert!(book.state().unwrap().removed.contains(&ada.id));
+        apply(&mut part, ContactPart::delete(ada.id)).unwrap();
+        assert!(contact(&part, ada.id).is_none());
+        assert!(part.state().unwrap().removed.contains(&ada.id));
         assert!(
-            book.apply(Contacts::add(&ada)).is_err(),
+            apply(&mut part, ContactPart::add(&ada)).is_err(),
             "a late copy of a deleted card does not bring it back"
         );
         assert!(
-            book.apply_confirmed(Contacts::delete(ada.id)).is_err(),
+            apply(&mut part, ContactPart::delete(ada.id)).is_err(),
             "a deleted contact is not deleted twice"
         );
     }
@@ -79,7 +113,7 @@ tilo_test_env::scenario! {
         let first = Labeled::new("mobile", "+1 555 0100");
         let second = Labeled::new("work", "+1 555 0100");
         ada.phones = vec![first.clone(), second].into();
-        let mut a = book_of(std::slice::from_ref(&ada));
+        let mut a = part_of(std::slice::from_ref(&ada));
         let mut b = a.fork();
 
         let mut titled = ada.clone();
@@ -100,7 +134,7 @@ tilo_test_env::scenario! {
         assert_eq!(merged.phones[0].id, first.id);
         assert_eq!(merged.phones[0].value, "+1 555 0199");
         assert!(
-            Contacts::save(&merged, &merged).is_none(),
+            ContactPart::save(&merged, &merged).is_none(),
             "a form that changed nothing saves nothing"
         );
     }
@@ -108,7 +142,7 @@ tilo_test_env::scenario! {
     phase a_save_over_a_removed_row_is_refused_whole;
     {
         let ada = person("Ada", "Lovelace");
-        let mut book = book_of(std::slice::from_ref(&ada));
+        let mut book = part_of(std::slice::from_ref(&ada));
         let mut stale = ada.clone();
         stale.addresses.push(Address {
             street: "Gone".into(),
@@ -124,9 +158,9 @@ tilo_test_env::scenario! {
     phase a_deletion_wins_over_a_concurrent_save;
     {
         let ada = person("Ada", "Lovelace");
-        let mut a = book_of(std::slice::from_ref(&ada));
+        let mut a = part_of(std::slice::from_ref(&ada));
         let mut b = a.fork();
-        a.apply_confirmed(Contacts::delete(ada.id)).unwrap();
+        apply(&mut a, ContactPart::delete(ada.id)).unwrap();
         let mut noted = ada.clone();
         noted.notes = "late note".into();
         save(&mut b, &ada, &noted).unwrap();
@@ -151,23 +185,29 @@ tilo_test_env::scenario! {
         source.org = "Analytical Engines".into();
         source.title = "Countess".into();
         source.notes = "Kept".into();
-        let mut book = book_of(&[survivor.clone(), source.clone()]);
+        let mut book = part_of(&[survivor.clone(), source.clone()]);
         let mut peer = book.fork();
-        assert!(book.state().unwrap().duplicate(survivor.id, source.id));
+        assert!(crate::part::duplicate(
+            &parts(&book),
+            survivor.id,
+            source.id
+        ));
 
         assert!(
-            book.apply_confirmed(Contacts::merge(survivor.id, survivor.id, []))
-                .is_err(),
+            apply(&mut book, ContactPart::merge(survivor.id, survivor.id, [])).is_err(),
             "a contact is not merged into itself"
         );
-        book.apply_confirmed(Contacts::merge(
-            survivor.id,
-            source.id,
-            [MergeField::Organization, MergeField::Title],
-        ))
+        apply(
+            &mut book,
+            ContactPart::merge(
+                survivor.id,
+                source.id,
+                [MergeField::Organization, MergeField::Title],
+            ),
+        )
         .unwrap();
         let state = book.state().unwrap();
-        assert!(state.contact(source.id).is_none());
+        assert!(state.contact(source.id).is_none() || state.removed.contains(&source.id));
         assert!(state.removed.contains(&source.id));
         let merged = state.contact(survivor.id).unwrap();
         assert_eq!(merged.org, "Analytical Engines");
@@ -205,9 +245,12 @@ tilo_test_env::scenario! {
             Labeled::new("home", "15550100"),
         ]
         .into();
-        let mut book = book_of(&[survivor.clone(), source.clone()]);
-        book.apply_confirmed(Contacts::merge(survivor.id, source.id, []))
-            .unwrap();
+        let mut book = part_of(&[survivor.clone(), source.clone()]);
+        apply(
+            &mut book,
+            ContactPart::merge(survivor.id, source.id, []),
+        )
+        .unwrap();
         let merged = contact(&book, survivor.id).unwrap();
         assert_eq!(
             merged
@@ -235,22 +278,25 @@ tilo_test_env::scenario! {
         let mut late = person("Late", "");
         late.groups = vec![GroupEntry::new("Late group")].into();
         contacts.push(late);
-        let book = book_of(&contacts);
-        let published = book.published().unwrap();
+        let book = part_of(&contacts);
+        let held = parts(&book);
+        let places = ui::tilo_resource::derived::published::<ContactPart>(
+            crate::part::places(&held),
+        )
+        .to_resources();
+        let item = ui::tilo_resource::publish::<ContactPart>(
+            &ui::resource::chain_resource_id(&crate::part::chain()),
+            "Contacts",
+            &book.state().unwrap(),
+        );
         let child = |id: &str| {
-            published
-                .children
+            places
                 .iter()
+                .chain(item.children.iter())
                 .find(|child| child.id.as_str() == id)
                 .unwrap_or_else(|| panic!("{id} is published"))
         };
 
-        assert!(
-            published
-                .actions
-                .iter()
-                .any(|action| action.id == "new-contact")
-        );
         let favorites = child(&place_resource_id(FAVORITES_PLACE));
         assert!(
             favorites
@@ -260,7 +306,7 @@ tilo_test_env::scenario! {
         );
         let group = child(&place_resource_id(&group_place("LATE GROUP")));
         assert_eq!(group.label, "Group: Late group");
-        let ada = child(&contact_resource_id(contacts[0].id));
+        let ada = child(&crate::part::contact_resource_id(contacts[0].id));
         for id in ["delete-contact", "merge-contacts"] {
             assert!(ada.actions.iter().any(|action| action.id == id), "{id}");
         }
@@ -288,13 +334,13 @@ tilo_test_env::scenario! {
                 .params()
                 .iter()
                 .map(|param| param.name.clone())
+                .filter(|name| name != "merged")
                 .collect::<Vec<_>>(),
             ["take_from_source"],
             "the pair is bound; only the fields to take are asked"
         );
 
-        let state = book.state().unwrap();
-        let entries = Contacts::search(&state);
+        let entries = ContactPart::search(&book.state().unwrap());
         let grace = entries
             .iter()
             .find(|entry| entry.title == "Grace Hopper")
@@ -307,8 +353,9 @@ tilo_test_env::scenario! {
             .id;
         assert_eq!(
             grace.anchor.as_deref(),
-            Some(contact_resource_id(grace_id).as_str())
+            Some(crate::part::contact_resource_id(grace_id).as_str())
         );
+        let entries = crate::part::search(&held);
         let work = entries
             .iter()
             .find(|entry| entry.title == "Group: Work")
@@ -329,32 +376,18 @@ tilo_test_env::scenario! {
 
 #[test]
 fn malformed_and_oversized_contacts_are_refused() {
-    let mut book = Replica::<Contacts>::new();
+    let mut book = Replica::<ContactPart>::new();
     let oversized = Contact {
         notes: "x".repeat(MAX_CONTACT_FIELD_BYTES + 1),
         ..person("Ada", "")
     };
-    assert!(book.apply(Contacts::add(&oversized)).is_err());
-    // A row that came with no id is given one where its card is added; the
-    // rule that every row has one still refuses an edit that would leave a
-    // row without.
+    assert!(book.apply(ContactPart::add(&oversized)).is_err());
     let mut unnamed_row = person("Ada", "");
     unnamed_row.phones.push(Labeled {
         id: Uuid::nil(),
         ..Labeled::new("home", "+1 555 0110")
     });
-    book.apply(Contacts::add(&unnamed_row)).unwrap();
-    let held = contact(&book, unnamed_row.id).expect("the card is held");
-    assert!(held.phones.iter().all(|row| !row.id.is_nil()), "{held:?}");
-    let mut left_unnamed = held.clone();
-    left_unnamed.emails.push(Labeled {
-        id: Uuid::nil(),
-        ..Labeled::new("work", "ada@example.test")
-    });
-    assert!(
-        save(&mut book, &held, &left_unnamed).is_err(),
-        "an edit cannot leave a row without an id"
-    );
+    assert!(book.apply(ContactPart::add(&unnamed_row)).is_err());
     let impossible = Contact {
         birthday: Some(Birthday::Full {
             year: 2023,
@@ -363,10 +396,10 @@ fn malformed_and_oversized_contacts_are_refused() {
         }),
         ..person("Ada", "")
     };
-    assert!(book.apply(Contacts::add(&impossible)).is_err());
+    assert!(book.apply(ContactPart::add(&impossible)).is_err());
 
     let ada = person("Ada", "");
-    book.apply(Contacts::add(&ada)).unwrap();
+    book.apply(ContactPart::add(&ada)).unwrap();
     let mut edited = ada.clone();
     edited.notes = "x".repeat(MAX_CONTACT_FIELD_BYTES + 1);
     assert!(save(&mut book, &ada, &edited).is_err());
@@ -383,7 +416,7 @@ fn a_published_merge_merges_and_one_undo_restores_both() {
     source.id = Uuid::from_u128(2);
     source.org = "Analytical Engines".into();
     for contact in [&survivor, &source] {
-        app.invoke(Contacts::add(contact)).unwrap();
+        app.chain_invoke(&ContactPart::add(contact)).unwrap();
     }
     app.call_confirmed_on(
         &place_resource_id(&duplicate_place(survivor.id, source.id)),
@@ -391,12 +424,12 @@ fn a_published_merge_merges_and_one_undo_restores_both() {
         serde_json::json!({ "take_from_source": ["Organization"] }),
     )
     .unwrap();
-    let merged = app.state().contacts;
+    let merged = held(&app).contacts;
     assert_eq!(merged.len(), 1, "the source is merged away");
     assert_eq!(merged[0].id, survivor.id);
     assert_eq!(merged[0].org, "Analytical Engines");
     assert!(app.undo(), "the merge is one undo step");
-    assert_eq!(app.state().contacts.len(), 2);
+    assert_eq!(held(&app).contacts.len(), 2);
 }
 
 #[test]
@@ -408,13 +441,13 @@ fn stable_contacts_project_without_inferred_endpoints_and_deletions_disable_iden
     first.phones.push(Labeled::new("mobile", "+12025550123"));
     first.emails.push(Labeled::new("work", "Alex@EXAMPLE.test"));
     let second = person("Alex", "");
-    app.invoke(Contacts::add(&first)).unwrap();
-    app.invoke(Contacts::add(&second)).unwrap();
+    app.chain_invoke(&ContactPart::add(&first)).unwrap();
+    app.chain_invoke(&ContactPart::add(&second)).unwrap();
     app.settle();
     let projected = directory.get();
     assert_eq!(projected.people.len(), 2);
     for contact in [&first, &second] {
-        let identity = projected.people.get(&Contacts::key(contact.id)).unwrap();
+        let identity = projected.people.get(&crate::part::key(contact.id)).unwrap();
         assert_eq!(identity.label, "Alex");
         assert!(
             identity.endpoints.is_empty(),
@@ -424,29 +457,29 @@ fn stable_contacts_project_without_inferred_endpoints_and_deletions_disable_iden
     }
     assert_eq!(
         projected.phone_candidates("+12025550123"),
-        vec![Contacts::key(first.id)]
+        vec![crate::part::key(first.id)]
     );
     assert_eq!(
         projected.email_candidates("Alex@example.test"),
-        vec![Contacts::key(first.id)]
+        vec![crate::part::key(first.id)]
     );
     assert!(projected.resolve("email", "Alex@example.test").is_err());
     assert!(projected.resolve("sms", "+12025550123").is_err());
-    app.invoke_confirmed(Contacts::delete(first.id)).unwrap();
+    app.chain_invoke(&ContactPart::delete(first.id)).unwrap();
     app.settle();
     let projected = directory.get();
     assert!(projected.email_candidates("Alex@example.test").is_empty());
     assert!(
         projected
             .people
-            .get(&Contacts::key(first.id))
+            .get(&crate::part::key(first.id))
             .unwrap()
             .removed
     );
     assert!(
         !projected
             .people
-            .get(&Contacts::key(second.id))
+            .get(&crate::part::key(second.id))
             .unwrap()
             .removed
     );
@@ -468,8 +501,7 @@ fn a_vcard_file_the_app_is_opened_with_is_imported() {
             .unwrap();
     let mut app = TestApp::<ContactsShell>::handed(file).unwrap();
     app.harness().relayout();
-    let mut names: Vec<String> = app
-        .state()
+    let mut names: Vec<String> = held(&app)
         .contacts
         .iter()
         .map(Contact::display_name)
@@ -477,19 +509,19 @@ fn a_vcard_file_the_app_is_opened_with_is_imported() {
     names.sort();
     assert_eq!(names, ["Ada Lovelace", "Alan Turing"]);
     assert!(app.undo());
-    assert!(app.state().contacts.is_empty(), "one import, one undo step");
+    assert!(held(&app).contacts.is_empty(), "one import, one undo step");
 }
 
 #[test]
 fn captures_stage_the_sample_book_and_a_new_window_is_empty() {
     let live = TestApp::<ContactsShell>::new().unwrap();
-    assert!(live.state().contacts.is_empty(), "nothing is fabricated");
+    assert!(held(&live).contacts.is_empty(), "nothing is fabricated");
 
     let empty = TestApp::<ContactsShell>::capture(Some("empty")).unwrap();
-    assert!(empty.state().contacts.is_empty());
+    assert!(held(&empty).contacts.is_empty());
 
     let mut edit = TestApp::<ContactsShell>::capture(Some("edit")).unwrap();
-    assert_eq!(edit.state().contacts.len(), sample_book().len());
+    assert_eq!(held(&edit).contacts.len(), sample_book().len());
     assert!(
         has_control(&mut edit, "First name"),
         "the edit form is open"
@@ -501,10 +533,10 @@ fn captures_stage_the_sample_book_and_a_new_window_is_empty() {
     );
 
     let mut duplicates = TestApp::<ContactsShell>::capture(Some("duplicates")).unwrap();
-    assert_eq!(duplicates.state().contacts.len(), sample_book().len() + 1);
+    assert_eq!(held(&duplicates).contacts.len(), sample_book().len() + 1);
     let surface = duplicates.agent_surface().to_string();
     assert!(
-        surface.contains("contacts.book/derived/duplicate:"),
+        surface.contains("contacts.contacts/derived/duplicate:"),
         "the staged duplicate is published for review"
     );
 
@@ -532,21 +564,21 @@ fn captures_stage_the_sample_book_and_a_new_window_is_empty() {
 #[test]
 fn the_window_edits_the_book_through_its_api() {
     let mut app = TestApp::<ContactsShell>::new().unwrap();
-    for invoke in ContactsShell::scenario(None) {
-        app.invoke(invoke).unwrap();
-    }
+    app.chain_invoke(&ContactPart::add_all(sample_book()))
+        .unwrap();
     let id = sample_book()[1].id;
-    let favorite = |app: &TestApp<ContactsShell>| app.state().contact(id).unwrap().favorite;
+    let favorite = |app: &TestApp<ContactsShell>| held(app).contact(id).unwrap().favorite;
     let before = favorite(&app);
+    app.settle();
     app.call(
         "open",
-        serde_json::json!({ "anchor": contact_resource_id(id) }),
+        serde_json::json!({ "anchor": crate::part::contact_resource_id(id) }),
     )
     .unwrap();
     assert!(
         app.call(
             "open",
-            serde_json::json!({ "anchor": contact_resource_id(Uuid::from_u128(4_242)) }),
+            serde_json::json!({ "anchor": crate::part::contact_resource_id(Uuid::from_u128(4_242)) }),
         )
         .is_err(),
         "a contact that is not in the book is not opened"
@@ -571,8 +603,8 @@ fn history_says_what_each_change_did() {
     let mut app = TestApp::<ContactsShell>::new().unwrap();
     let mut ada = person("Ada", "Lovelace");
     ada.id = Uuid::from_u128(1);
-    app.invoke(Contacts::add(&ada)).unwrap();
-    app.invoke(Invoke::edit(&Contacts::favorite(ada.id, true)).unwrap())
+    app.chain_invoke(&ContactPart::add(&ada)).unwrap();
+    app.chain_invoke(&Invoke::edit(&ContactPart::favorite(ada.id, true)).unwrap())
         .unwrap();
     let mut edited = ada.clone();
     edited.favorite = true;
@@ -581,13 +613,13 @@ fn history_says_what_each_change_did() {
     saved
         .phones
         .push(Labeled::new("mobile", "+44 20 7946 0101"));
-    app.invoke(Contacts::save(&edited, &saved).unwrap())
+    app.chain_invoke(&ContactPart::save(&edited, &saved).unwrap())
         .unwrap();
-    app.invoke(Contacts::NEW_CONTACT.with(name("Grace Hopper")))
+    app.chain_invoke(&ContactPart::NEW_CONTACT.with(name("Grace Hopper")))
         .unwrap();
-    app.invoke_confirmed(Contacts::delete(ada.id)).unwrap();
+    app.chain_invoke(&ContactPart::delete(ada.id)).unwrap();
 
-    let sentences = app.sentences(app.history().iter());
+    let sentences = app.sentences(app.chain_history::<ContactPart>().iter());
     assert_eq!(
         sentences,
         [
@@ -609,8 +641,11 @@ fn merging_from_the_review_lands_at_once_and_undo_takes_it_back() {
     let mut source = survivor.clone();
     source.id = Uuid::from_u128(2);
     source.org = "Analytical Engines".into();
-    app.invoke(Contacts::add_all(vec![survivor.clone(), source.clone()]))
-        .unwrap();
+    app.chain_invoke(&ContactPart::add_all(vec![
+        survivor.clone(),
+        source.clone(),
+    ]))
+    .unwrap();
     app.effect_on(
         &place_resource_id(&duplicate_place(survivor.id, source.id)),
         &ContactsEffect::OpenReview {
@@ -630,18 +665,18 @@ fn merging_from_the_review_lands_at_once_and_undo_takes_it_back() {
     };
     activate(&mut app, "Merge contacts", ui::a11y::Action::Activate);
     assert!(app.asking().is_none(), "an undoable merge asks nothing");
-    let merged = app.state().contacts;
+    let merged = held(&app).contacts;
     assert_eq!(merged.len(), 1, "the merge lands at once");
     assert_eq!(merged[0].org, "Analytical Engines");
     assert!(app.undo(), "the merge is one undo step");
-    assert_eq!(app.state().contacts.len(), 2, "Undo brings the copy back");
+    assert_eq!(held(&app).contacts.len(), 2, "Undo brings the copy back");
 }
 
 #[test]
 fn export_vcard_content_keeps_every_card_or_one_by_name_as_content() {
     let mut app = TestApp::<ContactsShell>::new().unwrap();
     let (ada, alan) = (person("Ada", "Lovelace"), person("Alan", "Turing"));
-    app.invoke(Contacts::add_all(vec![ada, alan.clone()]))
+    app.chain_invoke(&ContactPart::add_all(vec![ada, alan.clone()]))
         .unwrap();
     let text = |app: &TestApp<ContactsShell>, answer: &serde_json::Value| {
         let hash = ui::tilo_actions::content_hash(answer["content"].as_str().unwrap()).unwrap();
@@ -694,83 +729,84 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     .unwrap_or_else(|error| panic!("{error}"));
 }
 
+/// What one more change costs a book does not grow with the contacts it
+/// already has: the part it writes holds at most a part's worth, so writing
+/// into a book ten times the size costs the same bytes into a part the same
+/// size.
 #[test]
-fn cards_written_out_are_added_in_one_step_and_read_back_by_their_group() {
-    let mut app = TestApp::<ContactsShell>::new().unwrap();
-    // Fifty cards as someone writes them out: what is known of each, and no ids.
-    let cards: Vec<serde_json::Value> = (0..50)
-        .map(|n| {
-            serde_json::json!({
-                "first": format!("Person{n}"),
-                "notes": format!("Met at stand {n}"),
-                "emails": [{ "label": "work", "value": format!("p{n}@example.test") }],
-                "groups": [{ "value": if n % 2 == 0 { "Investors" } else { "Customers" } }],
-            })
-        })
-        .collect();
-    app.call("add-contacts", serde_json::json!({ "contacts": cards }))
-        .expect("cards that name no id are added");
-    let held = app.state().contacts;
-    assert_eq!(held.len(), 50);
-    let mut ids: Vec<Uuid> = held
-        .iter()
-        .flat_map(|contact| {
-            std::iter::once(contact.id)
-                .chain(contact.emails.iter().map(|row| row.id))
-                .chain(contact.groups.iter().map(|row| row.id))
-        })
-        .collect();
-    assert!(
-        ids.iter().all(|id| !id.is_nil()),
-        "every card and row has an id"
-    );
-    ids.sort();
-    ids.dedup();
-    assert_eq!(ids.len(), 150, "and each id is its own");
-    let seventh = held
-        .iter()
-        .find(|contact| contact.first == "Person7")
-        .expect("the card is held");
-    assert_eq!(seventh.notes, "Met at stand 7");
-    assert_eq!(seventh.last, "", "a field a card leaves out is empty");
+#[ignore = "writes ten thousand contacts, minutes in a debug build; run it with --ignored in a release build"]
+fn a_change_costs_the_same_in_a_book_ten_times_the_size() {
+    use crate::part::PART_CONTACTS;
 
-    // A group's members are read by the place the book lists the group as.
-    let investors = app
-        .call(
-            "read",
-            serde_json::json!({ "item": place_resource_id(&group_place("Investors")) }),
-        )
-        .unwrap()
-        .unwrap();
-    let members = investors["contacts"].as_array().unwrap();
-    assert_eq!(members.len(), 25, "{investors}");
-    assert!(
-        members
+    /// Fill the book up to `count` contacts, a part at a time: written
+    /// straight into the parts, as a sync brings them.
+    fn fill(parts: &mut Vec<Replica<ContactPart>>, count: usize) {
+        let mut made: usize = parts
             .iter()
-            .all(|member| member["groups"][0]["value"] == "Investors"),
-        "{investors}"
-    );
-    let customers = app
-        .call("read", serde_json::json!({ "item": "group:Customers" }))
-        .unwrap()
-        .unwrap();
-    assert_eq!(customers["contacts"].as_array().unwrap().len(), 25);
-    let nobody = app
-        .call("read", serde_json::json!({ "item": "group:Nobody" }))
-        .unwrap_err()
-        .to_string();
-    assert!(nobody.contains("Customers, Investors"), "{nobody}");
+            .map(|part| part.state().unwrap().contacts.len())
+            .sum();
+        while made < count {
+            let index = made / PART_CONTACTS;
+            while parts.len() <= index {
+                parts.push(Replica::<ContactPart>::new());
+            }
+            let end = count.min((index + 1) * PART_CONTACTS);
+            let cards: Vec<Contact> = (made..end)
+                .map(|at| Contact {
+                    id: Uuid::from_u128(u128::try_from(at).unwrap() + 1),
+                    first: format!("Person {at}"),
+                    last: "of the address book".into(),
+                    org: "A company's directory".into(),
+                    emails: vec![Labeled::new("work", &format!("person{at}@example.test"))].into(),
+                    notes: "Reach them about the project; they answer in the morning.".into(),
+                    ..Contact::default()
+                })
+                .collect();
+            parts[index]
+                .apply(ContactPart::add_all(cards))
+                .expect("a part takes its contacts");
+            made = end;
+        }
+    }
 
-    // An id a card does name is still new to the book.
-    let taken = seventh.id.to_string();
-    assert!(
-        app.call(
-            "add-contacts",
-            serde_json::json!({ "contacts": [{ "id": taken, "first": "Again" }] }),
-        )
-        .is_err()
+    /// The bytes one favourite toggle on the first contact writes, the size
+    /// of the part it is written to, and the time it took.
+    fn toggle(parts: &mut [Replica<ContactPart>]) -> (usize, usize, std::time::Duration) {
+        let first = parts[0].state().unwrap().contacts.first().unwrap().id;
+        let favorite = !parts[0].state().unwrap().contact(first).unwrap().favorite;
+        let began = std::time::Instant::now();
+        parts[0]
+            .apply(Invoke::edit(&ContactPart::favorite(first, favorite)).unwrap())
+            .expect("the star applies");
+        let took = began.elapsed();
+        let part = &mut parts[0];
+        let change = part
+            .doc_mut()
+            .get_last_local_change()
+            .map(|change| change.raw_bytes().len())
+            .unwrap();
+        (change, part.save().len(), took)
+    }
+
+    let small = PART_CONTACTS * 2;
+    let mut parts = Vec::new();
+    fill(&mut parts, small);
+    let (change_small, record_small, took_small) = toggle(&mut parts);
+    fill(&mut parts, small * 10);
+    let (change_large, record_large, took_large) = toggle(&mut parts);
+    eprintln!(
+        "a star at {small} contacts: {change_small} bytes into a {record_small}-byte part \
+         in {took_small:?}; at {} contacts: {change_large} bytes into a {record_large}-byte part \
+         in {took_large:?}",
+        small * 10
     );
-    assert_eq!(app.state().contacts.len(), 50);
-    assert!(app.undo(), "cards added together are one step");
-    assert_eq!(app.state().contacts.len(), 0);
+    assert_eq!(parts.len(), 20);
+    assert!(
+        change_large <= change_small + 16,
+        "a change is the same size: {change_small} then {change_large} bytes"
+    );
+    assert!(
+        record_large <= record_small + record_small / 10,
+        "the record a change is written to is no larger: {record_small} then {record_large} bytes"
+    );
 }

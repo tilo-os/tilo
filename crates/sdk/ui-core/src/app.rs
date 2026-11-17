@@ -2814,7 +2814,7 @@ mod private_continuity_route_tests {
                 self.acknowledged = Some(RouteSpec {
                     app_id: app_id.clone(),
                     cluster_id: *cluster_id,
-                    record: record.clone(),
+                    document: record.clone(),
                 });
             }
             self.requests.borrow_mut().push(request);
@@ -2840,7 +2840,7 @@ mod private_continuity_route_tests {
         assert!(manager.send(CollabRequest::Hello {
             app_id: route.app_id,
             cluster_id: route.cluster_id,
-            record: route.record,
+            record: route.document,
             resource_type: None,
             handle: None,
         }));
@@ -2858,8 +2858,8 @@ mod private_continuity_route_tests {
     #[serial_test::serial(process_env)]
     fn each_acknowledged_continuation_route_reports_once() {
         let routes = [
-            RouteSpec::record("dev.tilo.notes", uuid::Uuid::new_v4(), "continuation:7"),
-            RouteSpec::record("dev.tilo.browser", uuid::Uuid::new_v4(), "continuation:91"),
+            RouteSpec::document("dev.tilo.notes", uuid::Uuid::new_v4(), "continuation:7"),
+            RouteSpec::document("dev.tilo.browser", uuid::Uuid::new_v4(), "continuation:91"),
         ];
         for route in routes {
             let (_app, requests) = app_for_acknowledged_route(route);
@@ -2880,7 +2880,7 @@ mod private_continuity_route_tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn authenticated_document_route_emits_no_private_continuity_requests() {
-        let route = RouteSpec::record("so.tilo.calculator", uuid::Uuid::new_v4(), "tab:0013");
+        let route = RouteSpec::document("so.tilo.calculator", uuid::Uuid::new_v4(), "tab:0013");
         let (_app, requests) = app_for_acknowledged_route(route);
         assert!(requests.borrow().iter().all(|request| !matches!(
             request,
@@ -2904,11 +2904,11 @@ mod private_continuity_route_tests {
         );
         assert!(app.continuation.last_published.is_none());
 
-        let route = RouteSpec::record("dev.tilo.notes", uuid::Uuid::new_v4(), "continuation:42");
+        let route = RouteSpec::document("dev.tilo.notes", uuid::Uuid::new_v4(), "continuation:42");
         assert!(app.collaboration.manager.send(CollabRequest::Hello {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
-            record: route.record.clone(),
+            record: route.document.clone(),
             resource_type: None,
             handle: None,
         }));
@@ -2927,14 +2927,14 @@ mod private_continuity_route_tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn a_new_acknowledgement_epoch_republishes_unchanged_continuity() {
-        let route = RouteSpec::record("dev.tilo.notes", uuid::Uuid::new_v4(), "continuation:42");
+        let route = RouteSpec::document("dev.tilo.notes", uuid::Uuid::new_v4(), "continuation:42");
         let (mut app, requests) = app_for_acknowledged_route(route.clone());
         requests.borrow_mut().clear();
 
         assert!(app.collaboration.manager.send(CollabRequest::Hello {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
-            record: route.record.clone(),
+            record: route.document.clone(),
             resource_type: None,
             handle: None,
         }));

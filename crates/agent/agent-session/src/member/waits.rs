@@ -582,7 +582,7 @@ impl AgentMember {
         let naming = |held: &DocumentRoute| {
             held.app_id == route.app_id
                 && held.cluster_id == route.cluster_id
-                && !is_part(&held.record)
+                && !is_part(&held.document)
         };
         let mut names = HashMap::new();
         for (held, replica) in &self.apps {

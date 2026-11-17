@@ -56,6 +56,27 @@ fn sync_over(app: &mut FeedsApp, mut doc: AutoCommit) -> AutoCommit {
     doc
 }
 
+/// How many articles the window's parts hold.
+fn held_articles(a: &FeedsApp) -> usize {
+    a.core().chain().map_or(0, |chain| {
+        chain
+            .parts()
+            .iter()
+            .map(|(_, part)| part.articles.len())
+            .sum()
+    })
+}
+
+/// Whether the window's parts hold an article `kept`.
+fn holds(a: &FeedsApp, kept: impl Fn(&Article) -> bool) -> bool {
+    a.core().chain().is_some_and(|chain| {
+        chain
+            .parts()
+            .iter()
+            .any(|(_, part)| part.articles.values().any(&kept))
+    })
+}
+
 pub(super) fn loaded(doc: &AutoCommit) -> Library {
     Library::read(doc).unwrap()
 }
@@ -143,7 +164,7 @@ fn startup_is_empty_live_and_populated_only_in_demo() {
     let live = FeedsApp::new();
     {
         let core = live.core();
-        assert!(core.store.feeds.is_empty() && core.store.articles.is_empty());
+        assert!(core.store.feeds.is_empty() && core.articles().is_empty());
         assert!(core.selected.is_none());
     }
     assert_eq!(
@@ -175,7 +196,7 @@ fn startup_is_empty_live_and_populated_only_in_demo() {
     assert!(
         !demo
             .core()
-            .store
+            .articles()
             .article(&selected)
             .expect("the open article")
             .blocks
@@ -389,7 +410,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
 
         let feed_id = nth_feed(&a, 0);
         let fresh = fetched("Fresh from the worker", a.core().now, vec![]);
-        let before = a.core().store.articles.len();
+        let before = held_articles(&a);
         tx.send(FetchResult::Articles {
             feed_id: feed_id.clone(),
             title: None,
@@ -408,12 +429,10 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
             .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
         assert!(a.core().pending_landings.is_empty());
         present(&a, &doc);
-        assert_eq!(a.core().store.articles.len(), before + 1);
+        assert_eq!(held_articles(&a), before + 1);
         assert!(
-            loaded(&doc)
-                .articles
-                .values()
-                .any(|x| x.title == fresh.title && x.feed_id == feed_id)
+            holds(&a, |x| x.title == fresh.title && x.feed_id == feed_id),
+            "the fetched article is held"
         );
 
         tx.send(FetchResult::Failed {
@@ -511,16 +530,16 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
             a.core()
                 .pending_landings
                 .iter()
-                .map(|landing| landing.fetched.articles.len())
+                .map(|landing| landing.articles.len())
                 .sum()
         };
         let before = queued(&a);
         assert!(before >= total);
-        let articles = loaded(&doc).articles.len();
+        let articles = held_articles(&a);
         a.core_mut()
             .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
         assert!(before - queued(&a) <= FLUSH_BUDGET);
-        assert!(loaded(&doc).articles.len() - articles <= FLUSH_BUDGET);
+        assert!(held_articles(&a) - articles <= FLUSH_BUDGET);
         let mut frames = 0;
         while !a.core().pending_landings.is_empty() && frames < 5000 {
             let waiting = queued(&a);
@@ -537,7 +556,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         // one more frame; the first frame ran before the loop.
         let steps: usize = sizes.iter().map(|size| size.div_ceil(FLUSH_BUDGET)).sum();
         assert_eq!(frames + 1, steps, "frames to persist {sizes:?}");
-        assert!(loaded(&doc).articles.len() >= total);
+        assert!(held_articles(&a) >= total);
     }
 
     // What a feed reports again lands once, and an answer that changes
@@ -560,7 +579,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
             a.core()
                 .pending_landings
                 .iter()
-                .map(|landing| landing.fetched.articles.len())
+                .map(|landing| landing.articles.len())
                 .collect()
         };
         let title_of = |library: &Library| {
@@ -571,7 +590,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         };
         let once = fetched("Reported once", now, vec![]);
         let twice = fetched("Reported twice", now, vec![]);
-        let stored = loaded(&doc).articles.len();
+        let stored = held_articles(&a);
         let counted = (
             a.core().refresh.done,
             a.core().refresh.updated_feeds,
@@ -601,7 +620,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         a.core_mut()
             .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
         assert!(a.core().pending_landings.is_empty());
-        assert_eq!(loaded(&doc).articles.len(), stored + 2);
+        assert_eq!(held_articles(&a), stored + 2);
         present(&a, &doc);
 
         // And once more when the library holds them.
@@ -654,12 +673,12 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
             .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(waiting(&a), [1]);
         assert_eq!(title_of(&loaded(&doc)).as_deref(), Some(renamed));
-        assert_eq!(loaded(&doc).articles.len(), stored + 2 + FLUSH_BUDGET);
+        assert_eq!(held_articles(&a), stored + 2 + FLUSH_BUDGET);
         a.core_mut()
             .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
         assert!(a.core().pending_landings.is_empty());
         assert_eq!(title_of(&loaded(&doc)).as_deref(), Some(renamed));
-        assert_eq!(loaded(&doc).articles.len(), stored + 3 + FLUSH_BUDGET);
+        assert_eq!(held_articles(&a), stored + 3 + FLUSH_BUDGET);
     }
 
     {
@@ -792,7 +811,7 @@ fn reader_state_edits_persist_through_the_document() {
 
     let unread = a
         .core()
-        .store
+        .articles()
         .articles_for(&Filter::All)
         .into_iter()
         .find(|x| !x.read)
@@ -800,19 +819,22 @@ fn reader_state_edits_persist_through_the_document() {
         .expect("an unread article");
     a.core_mut()
         .select_article(&unread, &mut ui::widget::Edits::lend(&mut doc));
-    assert!(loaded(&doc).article(&unread).is_some_and(|x| x.read));
+    assert!(a.core().articles().article(&unread).is_some_and(|x| x.read));
 
     let id = nth_article(&a, 0);
-    let before = a.core().store.article(&id).is_some_and(|x| x.starred);
+    let before = a.core().articles().article(&id).is_some_and(|x| x.starred);
     a.core_mut()
         .toggle_star(&id, &mut ui::widget::Edits::lend(&mut doc));
-    assert_eq!(loaded(&doc).article(&id).map(|x| x.starred), Some(!before));
+    assert_eq!(
+        a.core().articles().article(&id).map(|x| x.starred),
+        Some(!before)
+    );
 
     a.core_mut().set_filter(Filter::Starred);
     let selected = a.selected_article();
     assert!(
         a.core()
-            .store
+            .articles()
             .articles_for(&Filter::Starred)
             .iter()
             .any(|x| Some(x.id) == selected.as_ref())
@@ -822,12 +844,21 @@ fn reader_state_edits_persist_through_the_document() {
     a.core_mut()
         .mark_all_read(&mut ui::widget::Edits::lend(&mut doc));
     present(&a, &doc);
-    assert_eq!(a.core().store.total_unread(), 0);
-    assert_eq!(loaded(&doc).total_unread(), 0, "marked read in the library");
+    assert_eq!(a.core().articles().total_unread(), 0);
+    assert_eq!(
+        a.core().articles().total_unread(),
+        0,
+        "marked read in the library"
+    );
 }
 
 fn nth_article(app: &FeedsApp, n: usize) -> Id {
-    app.core().store.articles.ids().nth(n).unwrap().clone()
+    app.core()
+        .articles()
+        .article_rows()
+        .nth(n)
+        .map(|row| row.id.clone())
+        .unwrap()
 }
 
 #[test]
@@ -846,7 +877,7 @@ fn accessibility_mirrors_and_operates_the_reader() {
     let id = a.core().list.rows[0].id.clone();
     assert!(has_target(&list, &format!("feeds.article:{id}")));
     assert!(has_target(&list, &format!("feeds.star:{id}")));
-    let before = a.core().store.article(&id).is_some_and(|x| x.starred);
+    let before = a.core().articles().article(&id).is_some_and(|x| x.starred);
     assert!(a.perform_semantic_action(
         &format!("feeds.star:{id}"),
         &A11yAction::ToggleCheck,
@@ -855,7 +886,7 @@ fn accessibility_mirrors_and_operates_the_reader() {
     ));
     present(a, &st.doc);
     assert_ne!(
-        a.core().store.article(&id).is_some_and(|x| x.starred),
+        a.core().articles().article(&id).is_some_and(|x| x.starred),
         before
     );
     assert!(a.perform_semantic_action(
@@ -869,7 +900,7 @@ fn accessibility_mirrors_and_operates_the_reader() {
     // A tag of the open article narrows the list to that tag.
     let tagged = a
         .core()
-        .store
+        .articles()
         .article_rows()
         .find(|x| !x.tags.is_empty())
         .map(|x| (x.id.clone(), crate::model::tag_key(&x.tag_list()[0])))
@@ -918,7 +949,7 @@ fn the_tag_editor_uses_the_canonical_action() {
         .set_value("Design, Later, design");
     a.submit_modal(&mut ui::widget::Edits::lend(&mut doc));
     assert_eq!(
-        loaded(&doc).article(&id).unwrap().tag_list(),
+        a.core().articles().article(&id).unwrap().tag_list(),
         ["design", "later"]
     );
     present(&a, &doc);
@@ -926,7 +957,7 @@ fn the_tag_editor_uses_the_canonical_action() {
     a.take_pending_modal();
     a.modal.as_mut().unwrap().dialog.content_mut().set_value("");
     a.submit_modal(&mut ui::widget::Edits::lend(&mut doc));
-    assert!(loaded(&doc).article(&id).unwrap().tags.is_empty());
+    assert!(a.core().articles().article(&id).unwrap().tags.is_empty());
 }
 
 #[test]
@@ -971,7 +1002,7 @@ fn the_window_shell_adapts_to_its_width() {
         let (a, st) = Framed::split(&mut mounted);
         a.shell_mut().show(NavPane::Overview);
         a.shell_mut().snap();
-        let id = a.core().store.articles_for(&Filter::All)[1].id.clone();
+        let id = a.core().articles().articles_for(&Filter::All)[1].id.clone();
         a.core_mut()
             .select_article(&id, &mut ui::widget::Edits::lend(&mut st.doc));
         a.settle(&mut ui::widget::Edits::lend(&mut st.doc), &st.root);
@@ -1094,7 +1125,7 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     let doc = &mut st.doc;
     let before: Vec<_> = a
         .core()
-        .store
+        .articles()
         .article_rows()
         .map(|x| (x.id.clone(), x.read, x.starred))
         .collect();
@@ -1103,7 +1134,7 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     }
     let after: Vec<_> = a
         .core()
-        .store
+        .articles()
         .article_rows()
         .map(|x| (x.id.clone(), x.read, x.starred))
         .collect();
@@ -1140,8 +1171,8 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
         &mut ui::widget::Edits::lend(doc),
     );
     present(a, doc);
-    assert_eq!(a.core().store.unread_for_feed(&feed), 0);
-    assert_eq!(loaded(doc).unread_for_feed(&feed), 0);
+    assert_eq!(a.core().articles().unread_for_feed(&feed), 0);
+    assert_eq!(a.core().articles().unread_for_feed(&feed), 0);
 
     // Undo takes an unsubscription back, so it runs at once: no dialog of
     // the window's own and nothing asked by the host (the resource tests
@@ -1177,7 +1208,7 @@ fn sidebar_counts_and_titles_follow_the_library() {
     assert_eq!(
         library[1].count,
         Some(ui::chrome::NavCount::Neutral(
-            u32::try_from(a.core().store.total_unread()).unwrap()
+            u32::try_from(a.core().articles().total_unread()).unwrap()
         ))
     );
     let feeds = sections
@@ -1190,7 +1221,7 @@ fn sidebar_counts_and_titles_follow_the_library() {
         .flat_map(|i| std::iter::once(i).chain(i.children.iter()))
         .find(|i| i.id == crate::sidebar::nav_id(&Filter::Feed(feed.clone())))
         .expect("the feed's row");
-    let unread = a.core().store.unread_for_feed(&feed);
+    let unread = a.core().articles().unread_for_feed(&feed);
     assert_eq!(
         item.count,
         Some(ui::chrome::NavCount::Neutral(
@@ -1241,22 +1272,31 @@ fn the_list_scrolls_and_keeps_the_open_article_in_view() {
     let a = app();
     // Enough articles to overflow the window.
     {
-        let mut core = a.core_mut();
-        let feed = core.store.feeds.ids().next().unwrap().clone();
-        let now = core.now;
+        let (feed, now, chain) = {
+            let core = a.core();
+            (
+                core.store.feeds.ids().next().unwrap().clone(),
+                core.now,
+                core.chain().expect("the demo's parts").clone(),
+            )
+        };
         for i in 0..40 {
-            let archived = Article::fetched(
-                feed.clone(),
-                fetched(
-                    &format!("Archive {i}"),
-                    now - 86_400 * 30 - i64::from(i),
-                    vec![],
-                ),
+            let archived = fetched(
+                &format!("Archive {i}"),
+                now - 86_400 * 30 - i64::from(i),
+                vec![],
             );
-            Rc::make_mut(&mut core.store)
-                .articles
-                .push(Id::from_raw(format!("archive-{i}")), archived);
+            chain
+                .stage_as(
+                    &ArticlePart::RECEIVE.with(crate::part::article_part::Receive {
+                        feed: feed.clone(),
+                        articles: vec![archived],
+                    }),
+                    &ui::tilo_resource::MemberId::person("component-test-author"),
+                )
+                .unwrap();
         }
+        a.core_mut().present_articles();
     }
     let mut mounted = framed_at(a, (1280, 600));
     settle(&mut mounted);
@@ -1284,7 +1324,7 @@ fn the_list_scrolls_and_keeps_the_open_article_in_view() {
 
     // Stepping to the first article brings it back into view.
     let (a, st) = Framed::split(&mut mounted);
-    let first = a.core().store.articles_for(&Filter::All)[0].id.clone();
+    let first = a.core().articles().articles_for(&Filter::All)[0].id.clone();
     a.core_mut()
         .select_article(&first, &mut ui::widget::Edits::lend(&mut st.doc));
     settle(&mut mounted);

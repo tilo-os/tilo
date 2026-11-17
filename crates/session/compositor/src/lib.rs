@@ -1965,6 +1965,16 @@ impl Compositor {
         self.data.state.cursor_shape(1.0).is_some()
     }
 
+    /// The shape the pointer shows, as the client named it, when a client asked for one.
+    #[must_use]
+    pub fn cursor_shape_name(&self) -> Option<&'static str> {
+        match &self.data.state.cursor.status {
+            smithay::input::pointer::CursorImageStatus::Named(icon) => Some(icon.name()),
+            smithay::input::pointer::CursorImageStatus::Hidden
+            | smithay::input::pointer::CursorImageStatus::Surface(_) => None,
+        }
+    }
+
     /// Give every input to `observer` before the desktop sees it; what it takes (returns `true`
     /// for) is not routed. An input capture takes the input while it holds the person's keyboard
     /// and pointer.

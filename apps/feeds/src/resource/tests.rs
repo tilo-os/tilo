@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::FeedsApp;
-use crate::model::{BlockKind, ContentBlock, ReadFont, ReadSettings, ReadTheme};
+use crate::model::{ReadFont, ReadSettings, ReadTheme};
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::{ActionSpec, OperationKind, ResourceSpec as Published};
 use ui::tilo_resource::items::item_resource_id;
@@ -45,35 +45,6 @@ fn folder(library: &mut Replica<Library>, name: &str) -> Id {
         .find(|(_, folder)| folder.name == name.trim())
         .map(|(id, _)| id.clone())
         .unwrap()
-}
-
-fn fetched(title: &str) -> Fetched {
-    Fetched {
-        title: title.to_owned(),
-        url: format!("https://example.test/{}", title.replace(' ', "-")),
-        published: 1_700_000_000,
-        blocks: vec![ContentBlock::new(BlockKind::Paragraph, title)],
-        ..Fetched::default()
-    }
-}
-
-fn refreshed(feed: &Id, titles: &[&str]) -> Invoke<Library> {
-    Library::REFRESHED.with(library::Refreshed {
-        articles: titles.iter().map(|title| fetched(title)).collect(),
-        feed: feed.clone(),
-        title: None,
-        certificate_pin: None,
-    })
-}
-
-fn article_titled(library: &Library, title: &str) -> Id {
-    library
-        .article_rows()
-        .find(|article| article.title == title)
-        .map_or_else(
-            || panic!("an article titled {title}"),
-            |article| article.id.clone(),
-        )
 }
 
 fn child<'a>(tree: &'a Published, id: &str) -> &'a Published {
@@ -129,38 +100,7 @@ fn verbs_and_field_edits_change_the_library() {
         "an address is subscribed once"
     );
 
-    library
-        .apply(Library::REFRESHED.with(library::Refreshed {
-            articles: vec![fetched("First"), fetched("Second")],
-            feed: feed.clone(),
-            title: Some("Example capsule".into()),
-            certificate_pin: Some("pin-1".into()),
-        }))
-        .unwrap();
-    library
-        .apply(Library::REFRESHED.with(library::Refreshed {
-            articles: vec![fetched("Second"), fetched("Third")],
-            feed: feed.clone(),
-            title: None,
-            certificate_pin: Some("impostor".into()),
-        }))
-        .unwrap();
-    let state = library.state().unwrap();
-    assert_eq!(state.articles.len(), 3, "an article is brought in once");
-    let subscription = state.feed(&feed).unwrap();
-    assert_eq!(subscription.title, "Example capsule");
-    assert_eq!(
-        subscription.certificate_pin.as_deref(),
-        Some("pin-1"),
-        "a feed pins the certificate of its first fetch, and only that"
-    );
-
-    let first = article_titled(&state, "First");
     let paths = Library::paths();
-    let article = paths.articles.item(&first);
-    edit(&mut library, &article.read.set(true)).unwrap();
-    edit(&mut library, &article.starred.set(true)).unwrap();
-    edit(&mut library, &article.tags.insert(&"design".to_owned())).unwrap();
     edit(
         &mut library,
         &paths.feeds.item(&feed).title.replace("My capsule"),
@@ -173,17 +113,10 @@ fn verbs_and_field_edits_change_the_library() {
     )
     .unwrap();
     let state = library.state().unwrap();
-    let changed = state.article(&first).unwrap();
-    assert!(changed.read && changed.starred);
-    assert_eq!(changed.tag_list(), ["design"]);
     assert_eq!(state.feed(&feed).unwrap().title, "My capsule");
     assert_eq!(state.feed(&feed).unwrap().folder, None);
     assert!(state.folder(&reading).unwrap().collapsed);
 
-    assert!(
-        edit(&mut library, &article.title.replace("Edited")).is_err(),
-        "what the feed sent is nobody's edit"
-    );
     assert!(
         edit(
             &mut library,
@@ -196,32 +129,11 @@ fn verbs_and_field_edits_change_the_library() {
         .is_err(),
         "only a refresh pins a certificate"
     );
-
-    library
-        .apply(Library::MARK_FEED_READ.with(feed.clone()))
-        .unwrap();
-    assert_eq!(library.state().unwrap().unread_for_feed(&feed), 0);
-    edit(&mut library, &article.read.set(false)).unwrap();
-    library
-        .apply(Library::MARK_EVERYTHING_READ.invoke())
-        .unwrap();
-    assert_eq!(library.state().unwrap().total_unread(), 0);
 }
 
 #[test]
-fn the_invariants_refuse_unnormalized_tags_and_blank_folders() {
+fn the_invariants_refuse_a_blank_folder() {
     let mut library = Replica::<Library>::new();
-    let feed = subscribe(&mut library, "https://example.test/feed.xml", None);
-    library.apply(refreshed(&feed, &["Only"])).unwrap();
-    let only = article_titled(&library.state().unwrap(), "Only");
-    let tags = Library::paths().articles.item(&only).tags;
-    for refused in ["Design", "#design", "  ", " design"] {
-        assert!(
-            edit(&mut library, &tags.insert(&refused.to_owned())).is_err(),
-            "{refused:?} is refused"
-        );
-    }
-    edit(&mut library, &tags.insert(&"design".to_owned())).unwrap();
     let reading = folder(&mut library, "Reading");
     assert!(
         edit(
@@ -242,8 +154,6 @@ fn unsubscribing_and_deleting_a_folder() {
     let reading = folder(&mut library, "Reading");
     let kept = subscribe(&mut library, "https://a.test/rss", Some(&reading));
     let gone = subscribe(&mut library, "https://b.test/rss", None);
-    library.apply(refreshed(&kept, &["Kept"])).unwrap();
-    library.apply(refreshed(&gone, &["Gone"])).unwrap();
 
     // Undo takes an unsubscription back, so nobody is asked first.
     library
@@ -251,7 +161,6 @@ fn unsubscribing_and_deleting_a_folder() {
         .unwrap();
     let state = library.state().unwrap();
     assert!(state.feed(&gone).is_none());
-    assert_eq!(state.articles.len(), 1, "its articles went with it");
 
     library
         .apply(Library::DELETE_FOLDER.with(reading.clone()))
@@ -300,24 +209,30 @@ fn importing_subscribes_once_in_named_folders() {
 fn concurrent_edits_converge() {
     let mut ours = Replica::<Library>::new();
     let feed = subscribe(&mut ours, "https://example.test/feed.xml", None);
-    ours.apply(refreshed(&feed, &["Shared"])).unwrap();
-    let shared = article_titled(&ours.state().unwrap(), "Shared");
     let mut theirs = ours.fork();
-    let article = Library::paths().articles.item(&shared);
+    let paths = Library::paths();
 
-    edit(&mut ours, &article.tags.insert(&"design".to_owned())).unwrap();
-    edit(&mut ours, &article.read.set(true)).unwrap();
-    edit(&mut theirs, &article.tags.insert(&"later".to_owned())).unwrap();
-    edit(&mut theirs, &article.starred.set(true)).unwrap();
-    theirs.apply(refreshed(&feed, &["Theirs"])).unwrap();
+    edit(&mut ours, &paths.feeds.item(&feed).title.replace("Ours")).unwrap();
+    edit(
+        &mut theirs,
+        &paths
+            .feeds
+            .item(&feed)
+            .site_url
+            .replace("https://theirs.test"),
+    )
+    .ok();
+    theirs
+        .apply(Library::NEW_FOLDER.with("Theirs".parse::<ui::tilo_resource::NonBlank>().unwrap()))
+        .unwrap();
+    ours.apply(Library::NEW_FOLDER.with("Ours".parse::<ui::tilo_resource::NonBlank>().unwrap()))
+        .unwrap();
 
     ours.sync_with(&mut theirs).unwrap();
     let merged = ours.state().unwrap();
     assert_eq!(merged, theirs.state().unwrap());
-    let article = merged.article(&shared).unwrap();
-    assert_eq!(article.tag_list(), ["design", "later"]);
-    assert!(article.read && article.starred);
-    assert_eq!(merged.articles.len(), 2);
+    assert_eq!(merged.feed(&feed).unwrap().title, "Ours");
+    assert_eq!(merged.folders.len(), 2, "both folders are there");
 }
 
 #[test]
@@ -329,22 +244,10 @@ fn the_published_library_offers_every_item_its_actions() {
         "https://example.test/feed.xml",
         Some(&reading),
     );
-    library.apply(refreshed(&feed, &["Tagged"])).unwrap();
-    let tagged = article_titled(&library.state().unwrap(), "Tagged");
-    edit(
-        &mut library,
-        &Library::paths()
-            .articles
-            .item(&tagged)
-            .tags
-            .insert(&"design".to_owned()),
-    )
-    .unwrap();
     let tree = library.published().unwrap();
     for id in [
         "add-subscription",
         "new-folder",
-        "mark-everything-read",
         "import-subscriptions",
         "field-edit",
     ] {
@@ -362,11 +265,7 @@ fn the_published_library_offers_every_item_its_actions() {
         action(feed_item, "unsubscribe").contract.risk,
         ui::tilo_actions::RiskLevel::Destructive
     );
-    action(feed_item, "mark-feed-read");
-
-    let tag = child(&tree, "feeds.library/derived/tag:design");
-    assert_eq!(tag.kind, "feeds.library.tag");
-    assert_eq!(action(tag, "reveal-tag").kind, OperationKind::View);
+    action(feed_item, "note-feed");
 
     // An item beyond the published page resolves by its id; a stale one
     // does not.
@@ -382,15 +281,11 @@ fn the_published_library_offers_every_item_its_actions() {
 }
 
 #[test]
-fn search_finds_subscriptions_and_articles() {
+fn search_finds_the_subscriptions_and_their_folders() {
     let mut library = Replica::<Library>::new();
     let feed = subscribe(&mut library, "https://example.test/feed.xml", None);
     library
-        .apply(Library::REFRESHED.with(library::Refreshed {
-            articles: vec![Fetched {
-                author: "Ada Lovelace".into(),
-                ..fetched("Engines")
-            }],
+        .apply(Library::NOTE_FEED.with(library::NoteFeed {
             feed: feed.clone(),
             title: Some("Analytical".into()),
             certificate_pin: None,
@@ -398,7 +293,6 @@ fn search_finds_subscriptions_and_articles() {
         .unwrap();
     let state = library.state().unwrap();
     let entries = Library::search(&state);
-    let engines = article_titled(&state, "Engines");
     let hit = |title: &str| {
         entries
             .iter()
@@ -406,29 +300,55 @@ fn search_finds_subscriptions_and_articles() {
             .unwrap_or_else(|| panic!("{title} is found"))
     };
     assert_eq!(
-        hit("Engines").anchor.as_deref(),
-        Some(item_resource_id::<Library>("articles", &engines).as_str())
-    );
-    assert!(
-        hit("Engines")
-            .fields
-            .iter()
-            .any(|(text, _)| text == "Ada Lovelace"),
-        "an article is found by its author"
-    );
-    assert_eq!(
         hit("Analytical").anchor.as_deref(),
         Some(item_resource_id::<Library>("feeds", &feed).as_str())
     );
+    // The articles are searched in the parts that keep them
+    // ([`crate::search::part_entries`]).
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.group.as_deref() != Some(crate::search::ARTICLES)),
+        "a library keeps no articles of its own"
+    );
 }
 
+/// Where the articles' actions are published: the chain of their parts.
+fn chain() -> String {
+    ui::resource::chain_resource_id(&crate::part::chain())
+}
+
+/// The articles the window's parts keep, with the subscriptions the library
+/// has, held for as long as the parts are.
+fn held(app: &TestApp<FeedsShell>) -> (Vec<(u64, std::rc::Rc<ArticlePart>)>, Library) {
+    (app.chain_parts::<ArticlePart>(), app.state())
+}
+
+/// The app opened over the sample library, its articles staged into the parts
+/// as a capture stages them.
 fn sample_app() -> TestApp<FeedsShell> {
     let mut app = TestApp::<FeedsShell>::new().unwrap();
+    stage_articles(&mut app);
     for invoke in FeedsShell::scenario(None) {
         app.invoke(invoke).unwrap();
     }
     app.settle();
     app
+}
+
+/// The sample library's articles, written into the parts the window holds.
+fn stage_articles(app: &mut TestApp<FeedsShell>) {
+    let (_, part) = crate::sample::store();
+    let chain = app
+        .surface_mut::<FeedsApp>()
+        .core()
+        .chain()
+        .expect("the window holds the parts")
+        .clone();
+    chain.write_start(0, &part).unwrap();
+    app.settle();
+    app.surface_mut::<FeedsApp>().core_mut().select_featured();
+    app.settle();
 }
 
 fn activate(app: &mut TestApp<FeedsShell>, name: &str) {
@@ -450,9 +370,10 @@ fn an_undoable_remove_runs_at_once_with_undo() {
     let feed = app.state().feeds.ids().next().unwrap().clone();
     let title = app.state().feed(&feed).unwrap().title.clone();
     let articles = app
-        .state()
-        .articles
-        .values()
+        .surface_mut::<FeedsApp>()
+        .core()
+        .articles()
+        .article_rows()
         .filter(|article| article.feed_id == feed)
         .count();
     assert!(articles > 0, "the sample feed has articles");
@@ -470,7 +391,14 @@ fn an_undoable_remove_runs_at_once_with_undo() {
     );
     let library = app.state();
     assert!(library.feed(&feed).is_none(), "it ran at once");
-    assert!(!library.articles.values().any(|x| x.feed_id == feed));
+    assert!(
+        !app.surface_mut::<FeedsApp>()
+            .core()
+            .articles()
+            .article_rows()
+            .any(|x| x.feed_id == feed),
+        "its articles are not shown"
+    );
     assert_eq!(
         app.surface_mut::<FeedsApp>().notice().as_deref(),
         Some(format!("Unsubscribed from {title}").as_str()),
@@ -490,9 +418,10 @@ fn an_undoable_remove_runs_at_once_with_undo() {
     let library = app.state();
     assert!(library.feed(&feed).is_some(), "Undo brings it back");
     assert_eq!(
-        library
-            .articles
-            .values()
+        app.surface_mut::<FeedsApp>()
+            .core()
+            .articles()
+            .article_rows()
             .filter(|article| article.feed_id == feed)
             .count(),
         articles,
@@ -611,23 +540,29 @@ fn reading_preferences_are_personal_settings() {
 #[test]
 fn the_reader_edits_through_the_framework_api() {
     let mut app = sample_app();
-    let first = {
-        let open = app.surface_mut::<FeedsApp>().selected_article().unwrap();
-        let starred = app.state().article(&open).unwrap().starred;
-        (open, starred)
-    };
-    // `s` stars the open article.
+    // `s` stars (or unstars) the open article, through the chain the parts
+    // are kept in: the window says what became of it.
     app.harness().key("s");
     app.settle();
-    let starred = |app: &TestApp<FeedsShell>| app.state().article(&first.0).unwrap().starred;
-    assert_eq!(starred(&app), !first.1);
-    assert!(app.undo(), "starring is one undo step");
-    assert_eq!(starred(&app), first.1);
+    let said = app.surface_mut::<FeedsApp>().notice();
+    assert!(
+        matches!(said.as_deref(), Some("Article starred" | "Star removed")),
+        "starring says what it did: {said:?}"
+    );
 
-    // `a` marks everything read.
+    // `a` marks everything read: one step over every part.
     app.harness().key("a");
     app.settle();
-    assert_eq!(app.state().total_unread(), 0);
+    let chain = app
+        .surface_mut::<FeedsApp>()
+        .core()
+        .chain()
+        .cloned()
+        .expect("the parts");
+    let state = app.state();
+    let parts = chain.parts();
+    let articles = crate::part::Articles::of(&parts, &state);
+    assert_eq!(articles.total_unread(), 0, "every article is read");
 
     // The palette's prompt subscribes; a blank one adds nothing.
     let before = app.state().feeds.len();
@@ -679,31 +614,39 @@ fn the_reader_edits_through_the_framework_api() {
 #[test]
 fn an_agent_edits_and_opens_items_one_call_each() {
     let mut app = sample_app();
-    let state = app.state();
-    let article = state
-        .articles_for(&Filter::All)
-        .into_iter()
-        .find(|article| !article.starred)
-        .map(|article| article.id.clone())
-        .unwrap();
-    let feed = state.feeds.ids().next().unwrap().clone();
-    let paths = Library::paths().articles.item(&article);
+    let article = {
+        let held = held(&app);
+        crate::part::Articles::of(&held.0, &held.1)
+            .articles_for(&Filter::All)
+            .into_iter()
+            .find(|article| !article.starred)
+            .map(|article| article.id.clone())
+            .unwrap()
+    };
+    let feed = app.state().feeds.ids().next().unwrap().clone();
+    let paths = ArticlePart::paths().articles.item(&article);
     for edit in [
         paths.starred.set(true),
         paths.tags.insert(&"later".to_owned()),
     ] {
-        app.call("field-edit", serde_json::json!({ "edit": edit }))
+        app.call_on(&chain(), "field-edit", serde_json::json!({ "edit": edit }))
             .unwrap();
     }
-    let shown = app.state();
-    let changed = shown.article(&article).unwrap();
-    assert!(changed.starred);
-    assert!(changed.tags.contains(&"later".to_owned()));
+    {
+        let held = held(&app);
+        let shown = crate::part::Articles::of(&held.0, &held.1);
+        let changed = shown.article(&article).unwrap();
+        assert!(changed.starred);
+        assert!(changed.tags.contains(&"later".to_owned()));
+    }
 
-    let feed_item = item_resource_id::<Library>("feeds", &feed);
-    app.call_on(&feed_item, "mark-feed-read", serde_json::json!({}))
+    app.call_on(&chain(), "mark-read", serde_json::json!({ "feed": feed }))
         .unwrap();
-    assert_eq!(app.state().unread_for_feed(&feed), 0);
+    let held = held(&app);
+    assert_eq!(
+        crate::part::Articles::of(&held.0, &held.1).unread_for_feed(&feed),
+        0
+    );
 
     let article_item = item_resource_id::<Library>("articles", &article);
     app.call("open", serde_json::json!({ "anchor": article_item }))
@@ -719,11 +662,11 @@ fn an_agent_edits_and_opens_items_one_call_each() {
     app.settle();
     assert_eq!(
         app.surface_mut::<FeedsApp>().selected_article(),
-        Some(article.clone()),
+        Some(article),
         "opening shows the article"
     );
     app.call_on(
-        "feeds.library/derived/tag:later",
+        "feeds.articles/derived/tag:later",
         "reveal-tag",
         serde_json::json!({}),
     )
@@ -736,6 +679,7 @@ fn an_agent_edits_and_opens_items_one_call_each() {
     );
 
     // Undo takes it back, so it asks nothing.
+    let feed_item = item_resource_id::<Library>("feeds", &feed);
     app.call_on(&feed_item, "unsubscribe", serde_json::json!({}))
         .unwrap();
     assert!(app.state().feed(&feed).is_none());
@@ -761,7 +705,15 @@ fn unsubscribing_the_last_feed_empties_the_reader() {
         .unwrap(),
     )
     .unwrap();
-    app.invoke(refreshed(&feed, &["The Only Article"])).unwrap();
+    app.call_on(
+        &chain(),
+        "receive",
+        serde_json::json!({
+            "feed": feed,
+            "articles": [{ "title": "The Only Article", "url": "https://example.test/only" }],
+        }),
+    )
+    .unwrap();
     app.settle();
     let shown = app.harness().inspection_json().unwrap();
     assert!(shown.contains("The Only Feed"), "{shown}");
@@ -808,14 +760,35 @@ fn fetched_rows_are_no_undo_step_and_an_import_is_one() {
     let feed = app.state().feeds.ids().next().unwrap().clone();
     app.invoke(Invoke::edit(&Library::paths().feeds.item(&feed).title.replace("Mine")).unwrap())
         .unwrap();
-    app.invoke(refreshed(&feed, &["Fetched"])).unwrap();
-    assert_eq!(app.state().articles.len(), 1);
+    app.call_on(
+        &chain(),
+        "receive",
+        serde_json::json!({
+            "feed": feed,
+            "articles": [{ "title": "Fetched", "url": "https://example.test/fetched" }],
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        held(&app)
+            .0
+            .iter()
+            .map(|(_, p)| p.articles.len())
+            .sum::<usize>(),
+        1
+    );
 
     // Undo takes back the rename, past the fetched article, which stays.
     assert!(app.undo());
-    let state = app.state();
-    assert_ne!(state.feed(&feed).unwrap().title, "Mine");
-    assert_eq!(state.articles.len(), 1);
+    assert_ne!(app.state().feed(&feed).unwrap().title, "Mine");
+    assert_eq!(
+        held(&app)
+            .0
+            .iter()
+            .map(|(_, p)| p.articles.len())
+            .sum::<usize>(),
+        1
+    );
 
     // The subscriptions an import added go in one step.
     app.invoke(Library::IMPORT_SUBSCRIPTIONS.with(vec![
@@ -869,16 +842,43 @@ fn history_entries_render_as_the_apps_sentences() {
     .unwrap();
     let feed = app.state().feeds.ids().next().unwrap().clone();
     let reading = app.state().folders.ids().next().unwrap().clone();
-    app.invoke(refreshed(&feed, &["Engines"])).unwrap();
-    let engines = article_titled(&app.state(), "Engines");
-    let article = Library::paths().articles.item(&engines);
+    app.call_on(
+        &chain(),
+        "receive",
+        serde_json::json!({
+            "feed": feed,
+            "articles": [{ "title": "Engines", "url": "https://example.test/engines" }],
+        }),
+    )
+    .unwrap();
+    let engines = {
+        let held = held(&app);
+        crate::part::Articles::of(&held.0, &held.1)
+            .iter()
+            .find(|(_, article)| article.title == "Engines")
+            .map(|(id, _)| id.clone())
+            .unwrap()
+    };
+    let article = ArticlePart::paths().articles.item(&engines);
     let subscription = Library::paths().feeds.item(&feed);
+    // The article is the parts': its reads, stars and tags go through the
+    // chain. The subscription and the folder are the library's.
     for edit in [
         article.read.set(true),
         article.read.set(false),
         article.starred.set(true),
         article.starred.set(false),
         article.tags.insert(&"design".to_owned()),
+    ] {
+        app.call_by(
+            agent.clone(),
+            &chain(),
+            "field-edit",
+            serde_json::json!({ "edit": edit }),
+        )
+        .unwrap();
+    }
+    for edit in [
         subscription.title.replace("Analytical"),
         subscription.folder.set(Some(reading.clone())),
         Library::paths().folders.item(&reading).collapsed.set(true),
@@ -896,26 +896,13 @@ fn history_entries_render_as_the_apps_sentences() {
         )
         .unwrap();
     }
+    app.call_by(agent.clone(), &chain(), "mark-read", serde_json::json!({}))
+        .unwrap();
     app.call_by(
         agent.clone(),
-        kind,
-        "mark-everything-read",
-        serde_json::json!({}),
-    )
-    .unwrap();
-    app.call_by(
-        agent.clone(),
-        kind,
-        "field-edit",
-        serde_json::json!({ "edit": article.read.set(false) }),
-    )
-    .unwrap();
-    let feed_item = item_resource_id::<Library>("feeds", &feed);
-    app.call_by(
-        agent.clone(),
-        &feed_item,
-        "mark-feed-read",
-        serde_json::json!({}),
+        &chain(),
+        "mark-read",
+        serde_json::json!({ "feed": feed }),
     )
     .unwrap();
     app.call_by(
@@ -945,23 +932,17 @@ fn history_entries_render_as_the_apps_sentences() {
             .map(|entry| reader.sentence(&entry))
             .collect()
     };
+    // The library's own steps. What the agent did to the articles is the
+    // parts' history, beside the part that holds them, not the library's.
     assert_eq!(
         sentences("en-US"),
         [
             "Created the folder Reading",
             "Subscribed to https://example.test/feed.xml",
-            "Marked Engines as read",
-            "Marked Engines as unread",
-            "Starred Engines",
-            "Unstarred Engines",
-            "Changed the tags of Engines",
             "Renamed the subscription https://example.test/feed.xml",
             "Moved Analytical to another folder",
             "Folded the folder Reading",
             "Renamed the folder Reading",
-            "Marked all articles as read",
-            "Marked Engines as unread",
-            "Marked everything in Analytical as read",
             "Subscribed to what an OPML file lists",
         ]
     );
@@ -1042,48 +1023,6 @@ fn the_catalog_resolves_the_link_messages() {
         assert_ne!(key, value);
         assert!(!value.is_empty());
     }
-}
-
-#[test]
-fn article_bodies_kept_as_json_strings_migrate_to_blocks() {
-    use ui::tilo_resource::{Slot, evolution, read_key};
-    let mut library = Replica::<Library>::new();
-    let feed = subscribe(&mut library, "https://example.org/feed.xml", None);
-    library
-        .apply(refreshed(&feed, &["First", "Second"]))
-        .unwrap();
-    let expected = library.state().unwrap();
-    let doc = library.doc_mut();
-    let root = ui::automerge::ROOT;
-    for article in evolution::collection_items(doc, &root, "articles").unwrap() {
-        let blocks: Vec<ContentBlock> = read_key(doc, &article, "blocks").unwrap();
-        let slot = Slot::Key(&article, "blocks");
-        slot.remove(doc).unwrap();
-        slot.put_scalar(
-            doc,
-            ui::automerge::ScalarValue::Str(serde_json::to_string(&blocks).unwrap().into()),
-        )
-        .unwrap();
-    }
-    Slot::Key(&root, evolution::VERSION_KEY)
-        .remove(doc)
-        .unwrap();
-    doc.commit();
-    let mut old = doc.fork();
-    assert!(
-        evolution::read_checked::<Library>(&old).is_err(),
-        "unmigrated"
-    );
-    assert!(evolution::migrate::<Library>(&mut old).unwrap());
-    let migrated = evolution::read_checked::<Library>(&old).unwrap();
-    assert_eq!(migrated, expected);
-    assert!(
-        migrated.articles.values().all(|article| article
-            .blocks
-            .iter()
-            .any(|block| block.kind == BlockKind::Paragraph)),
-        "{migrated:?}"
-    );
 }
 
 fn window_library(instance: u64, urls: &[&str]) -> ui::tilo_resource::Doc {

@@ -357,6 +357,13 @@ impl ContentStore {
         Self::open_inner(dir, gc_interval, &files_dir(dir)).await
     }
 
+    /// Whether `error` from [`Self::open`] is another process still holding one of the store's
+    /// databases open. Both of them are redb's, the blobs' and the file area's, and redb says a
+    /// database it cannot lock with this sentence, wherever the open that met it ended up.
+    pub fn held_elsewhere(error: &anyhow::Error) -> bool {
+        format!("{error:#}").contains("Database already open")
+    }
+
     /// The whole of file version `content` from the persistent store at `cache_dir`, read without
     /// opening it: for another process beside the one that has it open, which must not take its
     /// database locks. Only file-backed versions live where such a reader can find them; any other is

@@ -60,7 +60,7 @@ fn an_idle_connection_wakes_nothing() {
 #[cfg(unix)]
 fn a_read_the_app_takes_its_time_over_wakes_nothing() {
     let workspace = Uuid::new_v4();
-    let route = RouteSpec::record(
+    let route = RouteSpec::document(
         "so.tilo.notes",
         workspace,
         "derived:notes@derived:notebook@workspace",

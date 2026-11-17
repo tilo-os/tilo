@@ -445,7 +445,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     let desktop = DocumentRoute {
         app_id: "so.tilo.browser-desktop".into(),
         cluster_id: lounge.workspace.clone(),
-        record: "desktop".into(),
+        document: "desktop".into(),
     };
 
     // The crowd: people who came through the entry, each a device of their
@@ -474,7 +474,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         let route = DocumentRoute {
             app_id: "so.tilo.notes".into(),
             cluster_id: lounge.workspace.clone(),
-            record: format!("note-{record}"),
+            document: format!("note-{record}"),
         };
         author.send(Cmd::OpenRoute(route.clone())).unwrap();
         author
@@ -573,7 +573,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         note: &DocumentRoute {
             app_id: "so.tilo.notes".into(),
             cluster_id: lounge.workspace.clone(),
-            record: "note-0".into(),
+            document: "note-0".into(),
         },
         chat: &chat_part(&lounge.workspace),
     };
@@ -742,7 +742,7 @@ fn chat_part(workspace: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.to_owned(),
-        record: neighbour_wire::document_part(CHAT_CHAIN, 0),
+        document: neighbour_wire::document_part(CHAT_CHAIN, 0),
     }
 }
 
@@ -1194,7 +1194,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
     // brings that part in one round trip.
     let asked = Instant::now();
     let head = DocumentRoute {
-        record: neighbour_wire::chain_head(CHAT_CHAIN),
+        document: neighbour_wire::chain_head(CHAT_CHAIN),
         ..place.chat.clone()
     };
     page.send(Cmd::OpenDocumentAt(place.workspace_id, head.clone()))

@@ -42,9 +42,20 @@ use wayland_protocols::wp::content_type::v1::client::{
     wp_content_type_manager_v1::WpContentTypeManagerV1,
     wp_content_type_v1::{self, WpContentTypeV1},
 };
+use wayland_protocols::wp::cursor_shape::v1::client::{
+    wp_cursor_shape_device_v1::{Shape, WpCursorShapeDeviceV1},
+    wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
+};
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+};
+use wayland_protocols::wp::idle_inhibit::zv1::client::{
+    zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
+};
+use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
+    zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1,
+    zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1},
 };
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_dmabuf_feedback_v1, zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
@@ -58,6 +69,10 @@ use wayland_protocols::wp::pointer_gestures::zv1::client::{
     zwp_pointer_gesture_pinch_v1::{self as pinch_gesture, ZwpPointerGesturePinchV1},
     zwp_pointer_gesture_swipe_v1::{self as swipe_gesture, ZwpPointerGestureSwipeV1},
     zwp_pointer_gestures_v1::ZwpPointerGesturesV1,
+};
+use wayland_protocols::wp::presentation_time::client::{
+    wp_presentation::{self, WpPresentation},
+    wp_presentation_feedback::{self, WpPresentationFeedback},
 };
 use wayland_protocols::wp::primary_selection::zv1::client::{
     zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
@@ -78,10 +93,29 @@ use wayland_protocols::wp::text_input::zv3::client::{
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
+use wayland_protocols::xdg::activation::v1::client::{
+    xdg_activation_token_v1::{self, XdgActivationTokenV1},
+    xdg_activation_v1::XdgActivationV1,
+};
+use wayland_protocols::xdg::decoration::zv1::client::{
+    zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+    zxdg_toplevel_decoration_v1::{self, Mode as DecorationMode, ZxdgToplevelDecorationV1},
+};
+use wayland_protocols::xdg::dialog::v1::client::{
+    xdg_dialog_v1::XdgDialogV1, xdg_wm_dialog_v1::XdgWmDialogV1,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_popup::XdgPopup, xdg_positioner::XdgPositioner, xdg_surface,
     xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
     xdg_wm_base::XdgWmBase,
+};
+use wayland_protocols::xdg::toplevel_icon::v1::client::{
+    xdg_toplevel_icon_manager_v1::{self as icon_manager, XdgToplevelIconManagerV1},
+    xdg_toplevel_icon_v1::XdgToplevelIconV1,
+};
+use wayland_protocols_misc::server_decoration::client::{
+    org_kde_kwin_server_decoration::{self as kde, Mode as KdeMode, OrgKdeKwinServerDecoration},
+    org_kde_kwin_server_decoration_manager::OrgKdeKwinServerDecorationManager,
 };
 
 pub const OUTPUT: &str = "HEADLESS-1";
@@ -325,6 +359,25 @@ pub struct Heard {
     pub fractional_scale: Option<WpFractionalScaleManagerV1>,
     pub preferred_scales: Vec<u32>,
     pub content_type: Option<WpContentTypeManagerV1>,
+    pub decoration: Option<ZxdgDecorationManagerV1>,
+    pub decoration_modes: Vec<DecorationMode>,
+    pub kde_decoration: Option<OrgKdeKwinServerDecorationManager>,
+    pub kde_modes: Vec<KdeMode>,
+    pub activation: Option<XdgActivationV1>,
+    pub activation_tokens: Vec<String>,
+    pub presentation: Option<WpPresentation>,
+    pub clock_ids: Vec<u32>,
+    pub presented: Vec<Presented>,
+    pub presentation_discarded: usize,
+    pub sync_outputs: usize,
+    pub cursor_shape: Option<WpCursorShapeManagerV1>,
+    pub pointer_enter_serial: Option<u32>,
+    pub idle_inhibit: Option<ZwpIdleInhibitManagerV1>,
+    pub shortcuts_inhibit: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
+    pub shortcuts_inhibited: bool,
+    pub dialog_manager: Option<XdgWmDialogV1>,
+    pub toplevel_icon: Option<XdgToplevelIconManagerV1>,
+    pub icon_sizes: Vec<i32>,
     pub dmabuf_done: usize,
     pub surface_feedback_done: usize,
     pub configures: Vec<(i32, i32, Vec<u32>)>,
@@ -581,6 +634,192 @@ impl App {
         object
     }
 
+    /// Ask to be decorated, preferring `mode`.
+    pub fn decoration(&self, mode: DecorationMode) -> ZxdgToplevelDecorationV1 {
+        let qh = self.qh();
+        let decoration = self
+            .heard
+            .decoration
+            .as_ref()
+            .expect("an xdg decoration manager")
+            .get_toplevel_decoration(self.toplevel.as_ref().unwrap(), &qh, ());
+        decoration.set_mode(mode);
+        self.surface.as_ref().unwrap().commit();
+        decoration
+    }
+
+    /// Ask to be decorated through the KDE spelling of the same question.
+    pub fn kde_decoration(&self, mode: KdeMode) -> OrgKdeKwinServerDecoration {
+        let qh = self.qh();
+        let decoration = self
+            .heard
+            .kde_decoration
+            .as_ref()
+            .expect("a KDE decoration manager")
+            .create(self.surface.as_ref().unwrap(), &qh, ());
+        decoration.request_mode(mode);
+        self.surface.as_ref().unwrap().commit();
+        decoration
+    }
+
+    /// Ask the keeper for an activation token for this window, and wait for the desktop's answer.
+    pub fn activation_token(&mut self, rig: &mut Rig) -> String {
+        let qh = self.qh();
+        let token = self
+            .heard
+            .activation
+            .as_ref()
+            .expect("an activation manager")
+            .get_activation_token(&qh, ());
+        if let Some(surface) = &self.surface {
+            token.set_surface(surface);
+        }
+        token.commit();
+        let seen = self.heard.activation_tokens.len();
+        rig.pump(&mut [self], |_, apps| {
+            apps[0].heard.activation_tokens.len() > seen
+        });
+        self.heard
+            .activation_tokens
+            .last()
+            .cloned()
+            .expect("a token")
+    }
+
+    /// Ask to be activated with `token` on the window.
+    pub fn activate(&self, token: String) {
+        let (Some(activation), Some(surface)) = (&self.heard.activation, &self.surface) else {
+            panic!("an activation manager and a window");
+        };
+        activation.activate(token, surface);
+    }
+
+    /// Ask for presentation feedback on the window's next commit.
+    pub fn request_presentation(&self) -> WpPresentationFeedback {
+        let qh = self.qh();
+        self.heard
+            .presentation
+            .as_ref()
+            .expect("a presentation object")
+            .feedback(self.surface.as_ref().unwrap(), &qh, FeedbackSeen)
+    }
+
+    /// Name the cursor shape the desktop should draw for this app's pointer.
+    pub fn set_cursor_shape(&self, shape: Shape) {
+        let qh = self.qh();
+        let device = self
+            .heard
+            .cursor_shape
+            .as_ref()
+            .expect("a cursor shape manager")
+            .get_pointer(self.heard.pointer.as_ref().expect("a pointer"), &qh, ());
+        device.set_shape(
+            self.heard
+                .pointer_enter_serial
+                .expect("the pointer entered"),
+            shape,
+        );
+    }
+
+    /// Ask the desktop not to idle while this window shows.
+    pub fn inhibit_idle(&self) -> ZwpIdleInhibitorV1 {
+        let qh = self.qh();
+        self.heard
+            .idle_inhibit
+            .as_ref()
+            .expect("an idle inhibit manager")
+            .create_inhibitor(self.surface.as_ref().unwrap(), &qh, ())
+    }
+
+    /// Ask the desktop to stop acting on its own shortcuts while this window has the keys.
+    pub fn inhibit_shortcuts(&self) -> ZwpKeyboardShortcutsInhibitorV1 {
+        let qh = self.qh();
+        self.heard
+            .shortcuts_inhibit
+            .as_ref()
+            .expect("a shortcuts inhibit manager")
+            .inhibit_shortcuts(
+                self.surface.as_ref().unwrap(),
+                self.heard.seat.as_ref().expect("a seat"),
+                &qh,
+                (),
+            )
+    }
+
+    /// Open a second window of this app in front of `parent`, as a dialog would be.
+    pub fn open_child(
+        &mut self,
+        rig: &mut Rig,
+        title: &str,
+        app_id: Option<&str>,
+        parent: &XdgToplevel,
+    ) {
+        let qh = self.qh();
+        let surface = self
+            .heard
+            .compositor
+            .as_ref()
+            .unwrap()
+            .create_surface(&qh, ());
+        let xdg = self
+            .heard
+            .wm_base
+            .as_ref()
+            .unwrap()
+            .get_xdg_surface(&surface, &qh, ());
+        let toplevel = xdg.get_toplevel(&qh, ());
+        toplevel.set_title(title.to_owned());
+        if let Some(app_id) = app_id {
+            toplevel.set_app_id(app_id.to_owned());
+        }
+        toplevel.set_parent(Some(parent));
+        surface.commit();
+        self.surface = Some(surface);
+        self.xdg = Some(xdg);
+        self.toplevel = Some(toplevel);
+        let configured = self.heard.configured;
+        rig.pump(&mut [self], |_, apps| apps[0].heard.configured > configured);
+    }
+
+    /// Mark this window a modal dialog.
+    pub fn dialog(&self) -> XdgDialogV1 {
+        let qh = self.qh();
+        self.heard
+            .dialog_manager
+            .as_ref()
+            .expect("a dialog manager")
+            .get_xdg_dialog(self.toplevel.as_ref().expect("a toplevel"), &qh, ())
+    }
+
+    /// Ask to be activated with `token` on `surface`.
+    pub fn activate_on(&self, token: String, surface: &WlSurface) {
+        self.heard
+            .activation
+            .as_ref()
+            .expect("an activation manager")
+            .activate(token, surface);
+    }
+
+    /// Give the window an icon of `rgba` pixels at `size` by `size`.
+    pub fn set_window_icon(
+        &self,
+        size: (i32, i32),
+        rgba: [u8; 4],
+    ) -> (XdgToplevelIconV1, WlBuffer) {
+        let qh = self.qh();
+        let manager = self
+            .heard
+            .toplevel_icon
+            .as_ref()
+            .expect("a toplevel icon manager");
+        let icon = manager.create_icon(&qh, ());
+        let buffer = self.buffer(size, rgba);
+        icon.add_buffer(&buffer, 1);
+        manager.set_icon(self.toplevel.as_ref().expect("a toplevel"), Some(&icon));
+        self.surface.as_ref().unwrap().commit();
+        (icon, buffer)
+    }
+
     /// Ask for the next frame callback on the window.
     pub fn request_frame(&self) -> WlCallback {
         let qh = self.qh();
@@ -638,6 +877,10 @@ impl App {
 }
 
 impl Dispatch<WlRegistry, ()> for Heard {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per global the harness binds, in the registry's own order"
+    )]
     fn event(
         heard: &mut Self,
         registry: &WlRegistry,
@@ -716,6 +959,33 @@ impl Dispatch<WlRegistry, ()> for Heard {
                 }
                 "wp_content_type_manager_v1" => {
                     heard.content_type = Some(registry.bind(name, 1, qh, ()));
+                }
+                "zxdg_decoration_manager_v1" => {
+                    heard.decoration = Some(registry.bind(name, 1, qh, ()));
+                }
+                "org_kde_kwin_server_decoration_manager" => {
+                    heard.kde_decoration = Some(registry.bind(name, 1, qh, ()));
+                }
+                "xdg_activation_v1" => {
+                    heard.activation = Some(registry.bind(name, 1, qh, ()));
+                }
+                "wp_presentation" => {
+                    heard.presentation = Some(registry.bind(name, version.min(2), qh, ()));
+                }
+                "wp_cursor_shape_manager_v1" => {
+                    heard.cursor_shape = Some(registry.bind(name, version.min(2), qh, ()));
+                }
+                "zwp_idle_inhibit_manager_v1" => {
+                    heard.idle_inhibit = Some(registry.bind(name, 1, qh, ()));
+                }
+                "zwp_keyboard_shortcuts_inhibit_manager_v1" => {
+                    heard.shortcuts_inhibit = Some(registry.bind(name, 1, qh, ()));
+                }
+                "xdg_wm_dialog_v1" => {
+                    heard.dialog_manager = Some(registry.bind(name, 1, qh, ()));
+                }
+                "xdg_toplevel_icon_manager_v1" => {
+                    heard.toplevel_icon = Some(registry.bind(name, 1, qh, ()));
                 }
                 "zwp_linux_dmabuf_v1" if version >= 4 => {
                     let dmabuf: ZwpLinuxDmabufV1 = registry.bind(name, version.min(5), qh, ());
@@ -807,7 +1077,10 @@ impl Dispatch<WlPointer, ()> for Heard {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_pointer::Event::Enter { .. } => heard.pointer_entered = true,
+            wl_pointer::Event::Enter { serial, .. } => {
+                heard.pointer_entered = true;
+                heard.pointer_enter_serial = Some(serial);
+            }
             wl_pointer::Event::Leave { .. } => heard.pointer_entered = false,
             wl_pointer::Event::Button {
                 serial,
@@ -1021,6 +1294,168 @@ delegate_noop!(Heard: ignore WlShm);
 delegate_noop!(Heard: ignore WlShmPool);
 delegate_noop!(Heard: ignore WlSurface);
 delegate_noop!(Heard: ignore XdgPositioner);
+
+impl Dispatch<ZxdgToplevelDecorationV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZxdgToplevelDecorationV1,
+        event: zxdg_toplevel_decoration_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zxdg_toplevel_decoration_v1::Event::Configure {
+            mode: WEnum::Value(mode),
+        } = event
+        {
+            heard.decoration_modes.push(mode);
+        }
+    }
+}
+
+impl Dispatch<OrgKdeKwinServerDecoration, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &OrgKdeKwinServerDecoration,
+        event: kde::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let kde::Event::Mode {
+            mode: WEnum::Value(mode),
+        } = event
+        {
+            heard.kde_modes.push(mode);
+        }
+    }
+}
+
+impl Dispatch<XdgActivationTokenV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &XdgActivationTokenV1,
+        event: xdg_activation_token_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_activation_token_v1::Event::Done { token } = event {
+            heard.activation_tokens.push(token);
+        }
+    }
+}
+
+/// One presentation the desktop reported.
+#[derive(Clone, Copy, Debug)]
+pub struct Presented {
+    pub secs: u64,
+    pub nsec: u32,
+    pub refresh: u32,
+    pub seq: u64,
+    pub flags: u32,
+}
+
+/// The user data marking a presentation feedback request.
+pub struct FeedbackSeen;
+
+impl Dispatch<WpPresentation, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &WpPresentation,
+        event: wp_presentation::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wp_presentation::Event::ClockId { clk_id } = event {
+            heard.clock_ids.push(clk_id);
+        }
+    }
+}
+
+impl Dispatch<WpPresentationFeedback, FeedbackSeen> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &WpPresentationFeedback,
+        event: wp_presentation_feedback::Event,
+        _: &FeedbackSeen,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wp_presentation_feedback::Event::SyncOutput { .. } => {
+                heard.sync_outputs = heard.sync_outputs.saturating_add(1);
+            }
+            wp_presentation_feedback::Event::Presented {
+                tv_sec_hi,
+                tv_sec_lo,
+                tv_nsec,
+                refresh,
+                seq_hi,
+                seq_lo,
+                flags: WEnum::Value(flags),
+            } => heard.presented.push(Presented {
+                secs: (u64::from(tv_sec_hi) << 32) | u64::from(tv_sec_lo),
+                nsec: tv_nsec,
+                refresh,
+                seq: (u64::from(seq_hi) << 32) | u64::from(seq_lo),
+                flags: flags.bits(),
+            }),
+            wp_presentation_feedback::Event::Discarded => {
+                heard.presentation_discarded = heard.presentation_discarded.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpKeyboardShortcutsInhibitorV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZwpKeyboardShortcutsInhibitorV1,
+        event: zwp_keyboard_shortcuts_inhibitor_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_keyboard_shortcuts_inhibitor_v1::Event::Active => heard.shortcuts_inhibited = true,
+            zwp_keyboard_shortcuts_inhibitor_v1::Event::Inactive => {
+                heard.shortcuts_inhibited = false;
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<XdgToplevelIconManagerV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &XdgToplevelIconManagerV1,
+        event: icon_manager::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let icon_manager::Event::IconSize { size } = event {
+            heard.icon_sizes.push(size);
+        }
+    }
+}
+
+delegate_noop!(Heard: ignore XdgToplevelIconV1);
+delegate_noop!(Heard: ignore XdgWmDialogV1);
+delegate_noop!(Heard: ignore XdgDialogV1);
+delegate_noop!(Heard: ignore ZwpIdleInhibitManagerV1);
+delegate_noop!(Heard: ignore ZwpIdleInhibitorV1);
+delegate_noop!(Heard: ignore ZwpKeyboardShortcutsInhibitManagerV1);
+
+delegate_noop!(Heard: ignore WpCursorShapeManagerV1);
+delegate_noop!(Heard: ignore WpCursorShapeDeviceV1);
+delegate_noop!(Heard: ignore XdgActivationV1);
+delegate_noop!(Heard: ignore ZxdgDecorationManagerV1);
+delegate_noop!(Heard: ignore OrgKdeKwinServerDecorationManager);
 
 /// The state number of `suspended` in `xdg_toplevel.configure`.
 pub const SUSPENDED: u32 = 9;

@@ -76,7 +76,7 @@ async fn answer(page: &Link, route: &DocumentRoute) -> DocumentAnswer {
                 route: Some(opened),
                 answer,
                 ..
-            } if opened.record == route.record => Some(answer),
+            } if opened.document == route.document => Some(answer),
             _ => None,
         });
         async move { answered }
@@ -119,7 +119,7 @@ async fn a_page_names_its_own_record_and_another_member_is_told_it_is_not_theirs
     let adas = DocumentRoute {
         app_id: SETTINGS.into(),
         cluster_id: lounge.workspace.clone(),
-        record: collab_types::OwnResource::new("settings.root", ada_root)
+        document: collab_types::OwnResource::new("settings.root", ada_root)
             .unwrap()
             .document_id(),
     };

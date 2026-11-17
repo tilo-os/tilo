@@ -501,8 +501,10 @@ impl wayland_client::Dispatch<c::wl_pointer::WlPointer, ()> for State {
             let Some(surface) = state.app_surface(surface) else {
                 return;
             };
-            for pointer in state.seat.pointers_of(&surface) {
+            let pointers: Vec<WlPointer> = state.seat.pointers_of(&surface).cloned().collect();
+            for pointer in &pointers {
                 pointer.enter(*serial, &surface, *surface_x, *surface_y);
+                state.reapply_cursor_shape(pointer, *serial);
             }
             state.seat.pointer_focus = Some(surface);
             return;

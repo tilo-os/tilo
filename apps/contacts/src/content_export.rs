@@ -2,7 +2,7 @@
 //! chooser: an agent hands the `.vcf` on where a person exports to a file.
 
 use crate::model::Contact;
-use crate::resource::Contacts;
+use crate::part::Book;
 use crate::vcard::{VCardVersion, to_vcards};
 
 /// Keep every contact of `book`, or the one `contact` (or `name`, ignoring
@@ -13,7 +13,7 @@ use crate::vcard::{VCardVersion, to_vcards};
 /// No contact matches, the book is empty, or the content store refused the
 /// file.
 pub fn vcards(
-    book: &Contacts,
+    book: &Book,
     contact: Option<uuid::Uuid>,
     name: Option<&str>,
 ) -> Result<serde_json::Value, String> {
@@ -47,7 +47,7 @@ pub fn vcards(
     }))
 }
 
-fn named<'a>(book: &'a Contacts, name: &str) -> Result<&'a Contact, String> {
+fn named<'a>(book: &'a Book, name: &str) -> Result<&'a Contact, String> {
     let wanted = name.to_lowercase();
     let mut alike = book
         .contacts

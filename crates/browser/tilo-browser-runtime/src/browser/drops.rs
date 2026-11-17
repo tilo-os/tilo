@@ -448,7 +448,7 @@ async fn copy(
         reason = "the clock reads whole, non-negative milliseconds"
     )]
     let mtime = js_sys::Date::now().max(0.0) as u64;
-    let author = records.author().key();
+    let author = records.author().person_id().unwrap_or_default().to_owned();
     let folder = into
         .and_then(|folder| {
             tree.node(folder)

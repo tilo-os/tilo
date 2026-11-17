@@ -80,11 +80,6 @@ use plane::{Serving, Wire, run};
 #[cfg(target_os = "linux")]
 const BIND_WITHIN: Duration = Duration::from_secs(30);
 
-/// How long making an invitation waits for the relay this device is reached through, once the
-/// relays are woken for it: about one net report, and short, because the person waits for the link.
-#[cfg(target_os = "linux")]
-const INVITE_RELAY_WAIT: Duration = Duration::from_secs(2);
-
 /// The endpoint the thread bound, within [`BIND_WITHIN`]: what publishes on it, the endpoint
 /// itself, and whether this device can be reached.
 #[cfg(target_os = "linux")]
@@ -1843,16 +1838,23 @@ impl Client {
 
     /// Where a link this device hands out names it, as whoever redeems it dials: its address once
     /// it is reached through a relay. An invitation goes to someone who may be behind any network,
-    /// so the relays wake for it and the home relay is waited for
-    /// ([`tilo_endpoint_reachability::Reachability::relay_addr_within`]): an address signed before
-    /// one arrived names only this device's own network, and reaches nobody there.
+    /// so the relays wake for it and the answer waits until the endpoint is connected to one
+    /// ([`tilo_endpoint_reachability::Reachability::reached_addr`]): an address signed before then
+    /// names only this device's own network, and reaches nobody there. A device holding no relays
+    /// back names the address it has. The wait runs where the answer is awaited, never on the loop.
     #[cfg(target_os = "linux")]
-    pub(crate) fn invitation_addr(&self) -> EndpointAddr {
+    pub(crate) fn invitation_addr(
+        &self,
+    ) -> impl std::future::Future<Output = EndpointAddr> + Send + use<> {
         let reachability = self.hosting.local.reachability.borrow().clone();
-        reachability.wake("an invitation is this device's to hand out");
-        reachability
-            .relay_addr_within(INVITE_RELAY_WAIT)
-            .unwrap_or_else(|| self.endpoint_addr())
+        let reached = reachability.reached_addr("an invitation is this device's to hand out");
+        let own = self.endpoint_addr();
+        async move {
+            match reached {
+                Some(reached) => reached.await,
+                None => own,
+            }
+        }
     }
 
     /// Hand the workspace gate the session this session shows: whose workspaces' policies hold every

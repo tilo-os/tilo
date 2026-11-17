@@ -9,7 +9,7 @@ async fn create_feedback_document(browser: &mut Browser) -> DocumentRoute {
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: browser.cluster_id.clone(),
-        record: String::new(),
+        document: String::new(),
     };
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -228,7 +228,10 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
         after["content"]["receipt"]["digest"],
         submission.digest().unwrap()
     );
-    assert_eq!(after["content"]["triage"][0]["author"], person);
+    assert_eq!(
+        after["content"]["triage"][0]["author"],
+        serde_json::to_value(ui::tilo_resource::MemberId::person(person.as_str())).unwrap()
+    );
     assert_one_report(&mut returning, &route, &submission, &person).await;
     returning.peer.close();
     drop(restored.web);

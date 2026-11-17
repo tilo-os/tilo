@@ -59,6 +59,35 @@ pub(crate) struct Upstream {
     pub content_type: Option<
         wayland_protocols::wp::content_type::v1::client::wp_content_type_manager_v1::WpContentTypeManagerV1,
     >,
+    pub xdg_decoration: Option<
+        wayland_protocols::xdg::decoration::zv1::client::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+    >,
+    pub kde_decoration: Option<
+        wayland_protocols_misc::server_decoration::client::org_kde_kwin_server_decoration_manager::OrgKdeKwinServerDecorationManager,
+    >,
+    pub activation: Option<
+        wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1,
+    >,
+    pub presentation: Option<
+        wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation,
+    >,
+    pub cursor_shape: Option<
+        wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
+    >,
+    pub idle_inhibit: Option<
+        wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1,
+    >,
+    pub shortcuts_inhibit: Option<
+        wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1,
+    >,
+    pub dialog: Option<wayland_protocols::xdg::dialog::v1::client::xdg_wm_dialog_v1::XdgWmDialogV1>,
+    pub toplevel_icon: Option<
+        wayland_protocols::xdg::toplevel_icon::v1::client::xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1,
+    >,
+    /// The edge sizes the desktop asked window icons for.
+    pub icon_sizes: Vec<i32>,
+    /// The version the desktop's presentation global was bound at.
+    pub presentation_version: u32,
     pub feedback: FeedbackParts,
     pub xdg_outputs: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     pub seat: Option<c::wl_seat::WlSeat>,
@@ -124,6 +153,17 @@ impl Upstream {
                 viewporter: None,
                 fractional_scale: None,
                 content_type: None,
+                xdg_decoration: None,
+                kde_decoration: None,
+                activation: None,
+                presentation: None,
+                cursor_shape: None,
+                idle_inhibit: None,
+                shortcuts_inhibit: None,
+                dialog: None,
+                toplevel_icon: None,
+                icon_sizes: Vec::new(),
+                presentation_version: 0,
                 feedback: FeedbackParts::default(),
                 xdg_outputs: None,
                 seat: None,
@@ -203,6 +243,110 @@ impl Upstream {
     }
 }
 
+/// Bind the desktop's global `interface` for the keeper. The app-facing cursor-shape global's
+/// version is returned when it was bound, since the app is offered no newer one.
+fn bind_global(
+    up: &mut Upstream,
+    registry: &c::wl_registry::WlRegistry,
+    name: u32,
+    interface: &str,
+    version: u32,
+    qh: &QueueHandle<State>,
+) -> Option<u32> {
+    let mut cursor_shape_version = None;
+    match interface {
+        "wl_compositor" => {
+            up.compositor = Some(registry.bind(name, version.min(6), qh, ()));
+        }
+        "wl_subcompositor" => up.subcompositor = Some(registry.bind(name, 1, qh, ())),
+        "wl_shm" => up.shm = Some(registry.bind(name, 1, qh, ())),
+        "xdg_wm_base" => up.wm_base = Some(registry.bind(name, version.min(6), qh, ())),
+        "zwp_linux_dmabuf_v1" if version >= 4 => {
+            up.dmabuf = Some(registry.bind(name, version.min(5), qh, ()));
+        }
+        "zxdg_output_manager_v1" => {
+            let manager: zxdg_output_manager_v1::ZxdgOutputManagerV1 =
+                registry.bind(name, version.min(3), qh, ());
+            for output in &mut up.outputs {
+                output.xdg = Some(manager.get_xdg_output(&output.wl, qh, output.global));
+            }
+            up.xdg_outputs = Some(manager);
+        }
+        "wl_seat" if up.seat.is_none() => {
+            up.seat = Some(registry.bind(name, version.min(SEAT_VERSION), qh, ()));
+        }
+        "wp_viewporter" => {
+            up.viewporter = Some(registry.bind(name, 1, qh, ()));
+        }
+        "wp_fractional_scale_manager_v1" => {
+            up.fractional_scale = Some(registry.bind(name, 1, qh, ()));
+        }
+        "wp_content_type_manager_v1" => {
+            up.content_type = Some(registry.bind(name, 1, qh, ()));
+        }
+        "wl_data_device_manager" => {
+            up.data_device_manager = Some(registry.bind(name, version.min(3), qh, ()));
+        }
+        "zwp_primary_selection_device_manager_v1" => {
+            up.primary_selection = Some(registry.bind(name, 1, qh, ()));
+        }
+        "zwp_text_input_manager_v3" => {
+            up.text_input = Some(registry.bind(name, 1, qh, ()));
+        }
+        "zwp_pointer_constraints_v1" => {
+            up.pointer_constraints = Some(registry.bind(name, 1, qh, ()));
+        }
+        "zwp_relative_pointer_manager_v1" => {
+            up.relative_pointer = Some(registry.bind(name, 1, qh, ()));
+        }
+        "zwp_pointer_gestures_v1" => {
+            up.gestures = Some(registry.bind(name, version.min(3), qh, ()));
+        }
+        "zxdg_decoration_manager_v1" => {
+            up.xdg_decoration = Some(registry.bind(name, 1, qh, ()));
+        }
+        "org_kde_kwin_server_decoration_manager" => {
+            up.kde_decoration = Some(registry.bind(name, 1, qh, ()));
+        }
+        "xdg_activation_v1" => {
+            up.activation = Some(registry.bind(name, 1, qh, ()));
+        }
+        "wp_presentation" => {
+            let version = version.min(2);
+            up.presentation = Some(registry.bind(name, version, qh, ()));
+            up.presentation_version = version;
+        }
+        "wp_cursor_shape_manager_v1" => {
+            let version = version.min(2);
+            up.cursor_shape = Some(registry.bind(name, version, qh, ()));
+            cursor_shape_version = Some(version);
+        }
+        "zwp_idle_inhibit_manager_v1" => {
+            up.idle_inhibit = Some(registry.bind(name, 1, qh, ()));
+        }
+        "zwp_keyboard_shortcuts_inhibit_manager_v1" => {
+            up.shortcuts_inhibit = Some(registry.bind(name, 1, qh, ()));
+        }
+        "xdg_wm_dialog_v1" => {
+            up.dialog = Some(registry.bind(name, 1, qh, ()));
+        }
+        "xdg_toplevel_icon_manager_v1" => {
+            let manager = registry.bind(name, 1, qh, ());
+            up.toplevel_icon = Some(manager);
+        }
+        "wl_output" => {
+            let wl: c::wl_output::WlOutput = registry.bind(name, version.min(4), qh, name);
+            let xdg = up
+                .xdg_outputs
+                .as_ref()
+                .map(|manager| manager.get_xdg_output(&wl, qh, name));
+            up.outputs.push(UpOutput::new(name, wl, xdg));
+        }
+        _ => {}
+    }
+    cursor_shape_version
+}
+
 impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
     fn event(
         state: &mut Self,
@@ -230,63 +374,9 @@ impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
         let Some(up) = state.up.as_mut() else {
             return;
         };
-        match interface.as_str() {
-            "wl_compositor" => {
-                up.compositor = Some(registry.bind(name, version.min(6), qh, ()));
-            }
-            "wl_subcompositor" => up.subcompositor = Some(registry.bind(name, 1, qh, ())),
-            "wl_shm" => up.shm = Some(registry.bind(name, 1, qh, ())),
-            "xdg_wm_base" => up.wm_base = Some(registry.bind(name, version.min(6), qh, ())),
-            "zwp_linux_dmabuf_v1" if version >= 4 => {
-                up.dmabuf = Some(registry.bind(name, version.min(5), qh, ()));
-            }
-            "zxdg_output_manager_v1" => {
-                let manager: zxdg_output_manager_v1::ZxdgOutputManagerV1 =
-                    registry.bind(name, version.min(3), qh, ());
-                for output in &mut up.outputs {
-                    output.xdg = Some(manager.get_xdg_output(&output.wl, qh, output.global));
-                }
-                up.xdg_outputs = Some(manager);
-            }
-            "wl_seat" if up.seat.is_none() => {
-                up.seat = Some(registry.bind(name, version.min(SEAT_VERSION), qh, ()));
-            }
-            "wp_viewporter" => {
-                up.viewporter = Some(registry.bind(name, 1, qh, ()));
-            }
-            "wp_fractional_scale_manager_v1" => {
-                up.fractional_scale = Some(registry.bind(name, 1, qh, ()));
-            }
-            "wp_content_type_manager_v1" => {
-                up.content_type = Some(registry.bind(name, 1, qh, ()));
-            }
-            "wl_data_device_manager" => {
-                up.data_device_manager = Some(registry.bind(name, version.min(3), qh, ()));
-            }
-            "zwp_primary_selection_device_manager_v1" => {
-                up.primary_selection = Some(registry.bind(name, 1, qh, ()));
-            }
-            "zwp_text_input_manager_v3" => {
-                up.text_input = Some(registry.bind(name, 1, qh, ()));
-            }
-            "zwp_pointer_constraints_v1" => {
-                up.pointer_constraints = Some(registry.bind(name, 1, qh, ()));
-            }
-            "zwp_relative_pointer_manager_v1" => {
-                up.relative_pointer = Some(registry.bind(name, 1, qh, ()));
-            }
-            "zwp_pointer_gestures_v1" => {
-                up.gestures = Some(registry.bind(name, version.min(3), qh, ()));
-            }
-            "wl_output" => {
-                let wl: c::wl_output::WlOutput = registry.bind(name, version.min(4), qh, name);
-                let xdg = up
-                    .xdg_outputs
-                    .as_ref()
-                    .map(|manager| manager.get_xdg_output(&wl, qh, name));
-                up.outputs.push(UpOutput::new(name, wl, xdg));
-            }
-            _ => {}
+        let cursor_shape_version = bind_global(up, registry, name, &interface, version, qh);
+        if let Some(version) = cursor_shape_version {
+            state.offer_cursor_shape(version);
         }
     }
 }

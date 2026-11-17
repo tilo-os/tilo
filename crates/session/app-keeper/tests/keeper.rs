@@ -626,6 +626,366 @@ fn a_fault_is_attributed_to_the_window_that_caused_it_not_the_last_one_sent() {
 }
 
 #[test]
+fn a_window_icon_reaches_the_desktops_tab_and_survives_a_restart() {
+    use tilo_compositor::IconArtwork;
+
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Icon", Some("icon"));
+    app.show(&mut rig, (100, 80), GREEN);
+    rig.pump(&mut [&mut app], |_, apps| {
+        !apps[0].heard.icon_sizes.is_empty()
+    });
+    let mut sizes = app.heard.icon_sizes.clone();
+    sizes.sort_unstable();
+    assert_eq!(
+        sizes,
+        vec![16, 32, 48],
+        "the desktop's preferred icon sizes"
+    );
+
+    let _icon = app.set_window_icon((16, 16), RED);
+    let icon_of = |rig: &mut Rig| {
+        rig.desktop()
+            .windows()
+            .into_iter()
+            .next()
+            .and_then(|(info, _)| info.icon)
+    };
+    rig.pump(&mut [&mut app], |rig, _| icon_of(rig).is_some());
+    let icon = icon_of(&mut rig).expect("an icon");
+    let IconArtwork::Pixels(images) = icon.artwork() else {
+        panic!("the icon is the pixels the app handed over");
+    };
+    let first = images.first().expect("one size");
+    assert_eq!((first.width, first.height), (16, 16));
+    assert_eq!(
+        first.pixels.get(0..4),
+        Some([255, 0, 0, 255].as_slice()),
+        "the desktop has the app's red pixel"
+    );
+
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    rig.pump(&mut [&mut app], |rig, _| icon_of(rig).is_some());
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
+fn a_modal_dialog_takes_the_focus_from_its_parent_and_the_hint_survives_a_restart() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Parent", Some("parent"));
+    app.show(&mut rig, (100, 80), GREEN);
+    let parent_toplevel = app.toplevel.clone().unwrap();
+    let parent_surface = app.surface.clone().unwrap();
+    app.open_child(&mut rig, "Dialog", Some("dialog"), &parent_toplevel);
+    app.show(&mut rig, (60, 40), BLUE);
+    rig.pump(&mut [&mut app], |rig, _| rig.windows().len() == 2);
+    let dialog = app.dialog();
+    dialog.set_modal();
+    app.surface.as_ref().unwrap().commit();
+    rig.settle(&mut [&mut app]);
+
+    let id_of = |rig: &mut Rig, title: &str| {
+        rig.desktop()
+            .windows()
+            .into_iter()
+            .find(|(info, _)| info.title.as_deref() == Some(title))
+            .map(|(info, _)| info.id)
+            .expect("a window")
+    };
+    let dialog_id = id_of(&mut rig, "Dialog");
+    let token = rig.desktop().activation_token();
+    app.activate_on(token, &parent_surface);
+    rig.pump(&mut [&mut app], |rig, _| {
+        rig.desktop().focused_window().map(|info| info.id) == Some(dialog_id)
+    });
+
+    // The next desktop is told again, so the dialog still takes the focus from its parent.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| rig.windows().len() == 2);
+    rig.settle(&mut [&mut app]);
+    let dialog_id = id_of(&mut rig, "Dialog");
+    let token = rig.desktop().activation_token();
+    app.activate_on(token, &parent_surface);
+    rig.pump(&mut [&mut app], |rig, _| {
+        rig.desktop().focused_window().map(|info| info.id) == Some(dialog_id)
+    });
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
+fn an_idle_inhibitor_holds_the_desktop_awake_and_returns_with_the_next_one() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Playing", Some("playing"));
+    app.show(&mut rig, (100, 80), GREEN);
+    assert!(!rig.desktop().idle_inhibited());
+    let _inhibitor = app.inhibit_idle();
+    rig.pump(&mut [&mut app], |rig, _| rig.desktop().idle_inhibited());
+
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    rig.pump(&mut [&mut app], |rig, _| rig.desktop().idle_inhibited());
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
+fn a_shortcuts_inhibitor_follows_the_windows_focus_and_the_desktops_comings_and_goings() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Remote", Some("remote"));
+    app.show(&mut rig, (100, 80), GREEN);
+    let _inhibitor = app.inhibit_shortcuts();
+    rig.pump(&mut [&mut app], |_, apps| apps[0].heard.shortcuts_inhibited);
+
+    // No desktop holds the keys: the app is told its inhibitor is inactive.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    assert!(
+        !app.heard.shortcuts_inhibited,
+        "inactive while no desktop is attached"
+    );
+
+    // The next desktop grants it again to the focused window.
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, apps| {
+        !rig.windows().is_empty() && apps[0].heard.shortcuts_inhibited
+    });
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
+fn a_cursor_shape_the_app_names_is_drawn_by_the_desktop_and_kept_across_a_restart() {
+    use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
+
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Pointed", Some("pointed"));
+    app.show(&mut rig, (100, 80), GREEN);
+    let (x, y) = centre(&rig);
+    rig.desktop()
+        .input(InputEvent::PointerMotion {
+            x: f64::from(x),
+            y: f64::from(y),
+        })
+        .unwrap();
+    rig.pump(&mut [&mut app], |_, apps| apps[0].heard.pointer_entered);
+    app.set_cursor_shape(Shape::Crosshair);
+    rig.pump(&mut [&mut app], |rig, _| {
+        rig.desktop().cursor_shape_name() == Some("crosshair")
+    });
+
+    // The app has no reason to name it again: the next desktop gets it when its pointer enters.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    let (x, y) = centre(&rig);
+    rig.desktop()
+        .input(InputEvent::PointerMotion {
+            x: f64::from(x),
+            y: f64::from(y),
+        })
+        .unwrap();
+    rig.pump(&mut [&mut app], |rig, apps| {
+        apps[0].heard.pointer_entered && rig.desktop().cursor_shape_name() == Some("crosshair")
+    });
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
+fn a_frames_presentation_feedback_is_the_desktops_and_survives_a_restart() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Video", Some("video"));
+    app.show(&mut rig, (100, 80), GREEN);
+    assert_eq!(
+        app.heard.clock_ids.first().copied(),
+        Some(1),
+        "the desktop's presentation clock is passed on"
+    );
+
+    let surface = app.surface.clone().unwrap();
+    let _feedback = app.request_presentation();
+    let _frame = app.draw(&surface, (100, 80), RED);
+    rig.pump(&mut [&mut app], |rig, apps| {
+        rig.desktop().render().unwrap();
+        apps[0].heard.sync_outputs > 0 && !apps[0].heard.presented.is_empty()
+    });
+    let shown = app.heard.presented.last().copied().unwrap();
+    assert!(
+        shown.secs > 0 || shown.nsec > 0,
+        "the desktop's own presentation time"
+    );
+    assert!(shown.nsec < 1_000_000_000, "a valid nanosecond part");
+    assert_eq!(
+        shown.seq, 0,
+        "the headless desktop has no display frame counter"
+    );
+    assert_eq!(shown.flags, 0, "and no display flags");
+    assert_eq!(
+        shown.refresh, 16_666_666,
+        "the output's refresh interval in nanoseconds"
+    );
+    assert_eq!(rig.keeper.describe().fault, None);
+
+    // Content replaced before the desktop showed it is discarded, and a feedback asked for while
+    // no desktop is attached can never be shown.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    let _away = app.request_presentation();
+    let _frame = app.draw(&surface, (100, 80), BLUE);
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.presentation_discarded > 0
+    });
+
+    // The next desktop answers the app's feedback again.
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    let _again = app.request_presentation();
+    let _frame = app.draw(&surface, (100, 80), GREEN);
+    let before = app.heard.presented.len();
+    rig.pump(&mut [&mut app], |rig, apps| {
+        rig.desktop().render().unwrap();
+        apps[0].heard.presented.len() > before
+    });
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
+fn an_activation_token_is_the_desktops_and_activation_reaches_it() {
+    let mut rig = Rig::new(None);
+    let mut first = App::connect(&mut rig);
+    first.open_window(&mut rig, "First", Some("first"));
+    first.show(&mut rig, (100, 80), GREEN);
+    let mut second = App::connect(&mut rig);
+    second.open_window(&mut rig, "Second", Some("second"));
+    second.show(&mut rig, (100, 80), BLUE);
+    rig.pump(&mut [&mut first, &mut second], |rig, _| {
+        rig.windows().len() == 2
+    });
+    let id_of = |rig: &mut Rig, title: &str| {
+        rig.desktop()
+            .windows()
+            .into_iter()
+            .find(|(info, _)| info.title.as_deref() == Some(title))
+            .map(|(info, _)| info.id)
+            .expect("a window")
+    };
+    let first_id = id_of(&mut rig, "First");
+    assert_eq!(
+        rig.desktop().focused_window().map(|info| info.id),
+        Some(id_of(&mut rig, "Second")),
+        "the window mapped last has the keyboard"
+    );
+
+    // The token the app gets is the desktop's, and activating with it is the desktop's decision.
+    let token = first.activation_token(&mut rig);
+    assert!(!token.is_empty(), "the desktop made a token");
+    first.activate(token.clone());
+    rig.pump(&mut [&mut first, &mut second], |rig, _| {
+        rig.desktop().focused_window().map(|info| info.id) == Some(first_id)
+    });
+
+    // A token from before a restart names nothing on the next desktop.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut first, &mut second]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut first, &mut second], |rig, _| {
+        rig.windows().len() == 2
+    });
+    rig.settle(&mut [&mut first, &mut second]);
+    let before = rig.desktop().focused_window().map(|info| info.id);
+    first.activate(token);
+    rig.settle(&mut [&mut first, &mut second]);
+    assert_eq!(
+        rig.desktop().focused_window().map(|info| info.id),
+        before,
+        "a stale token activates nothing"
+    );
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
+fn a_token_requested_while_the_desktop_is_away_is_empty() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Waiting", Some("waiting"));
+    app.show(&mut rig, (100, 80), GREEN);
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    let token = app.activation_token(&mut rig);
+    assert!(token.is_empty(), "no desktop can act on a token made now");
+    assert!(!app.broken);
+}
+
+#[test]
+fn the_apps_decoration_request_and_the_desktops_answer_travel_both_ways_across_a_restart() {
+    use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::Mode;
+
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Decorated", Some("decorated"));
+    app.show(&mut rig, (100, 80), RED);
+    let _decoration = app.decoration(Mode::ClientSide);
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.decoration_modes.last() == Some(&Mode::ServerSide)
+    });
+    let told = app.heard.decoration_modes.len();
+
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    rig.settle(&mut [&mut app]);
+    assert_eq!(
+        app.heard.decoration_modes.len(),
+        told,
+        "the same answer is not repeated to the app"
+    );
+    assert_eq!(
+        app.heard.decoration_modes.last(),
+        Some(&Mode::ServerSide),
+        "the app keeps the desktop's answer while the new one makes its own objects"
+    );
+    assert_eq!(rig.keeper.describe().fault, None);
+    let (_, _, (x, y, _, _)) = rig.windows()[0];
+    assert_eq!(rig.pixel((x + 50) as u32, (y + 40) as u32), RED);
+}
+
+#[test]
+fn the_kde_spelling_of_the_same_decoration_question_is_answered_across_a_restart() {
+    use wayland_protocols_misc::server_decoration::client::org_kde_kwin_server_decoration::Mode;
+
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Kde", Some("kde"));
+    app.show(&mut rig, (100, 80), GREEN);
+    let _decoration = app.kde_decoration(Mode::Client);
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.kde_modes.last() == Some(&Mode::Server)
+    });
+    let told = app.heard.kde_modes.len();
+
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    rig.settle(&mut [&mut app]);
+    assert_eq!(app.heard.kde_modes.len(), told, "not repeated");
+    assert_eq!(app.heard.kde_modes.last(), Some(&Mode::Server));
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
 fn a_viewport_crops_and_scales_the_window_on_the_desktop() {
     let mut rig = Rig::new(None);
     let mut app = App::connect(&mut rig);

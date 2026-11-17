@@ -63,6 +63,11 @@ pub const SHOW_CONNECT: &str = "show-connect";
 /// and [`SHOW_CONNECT`] both choose it.
 pub const CONNECT_AGENT: &str = "connect-agent";
 
+/// The host action that shows the link another device of the person's joins with, as a code its
+/// camera reads: a page shows its own pairing sheet, with a fresh link each time it is asked. The
+/// person's search and [`SHOW_PAIR_DEVICE`] both choose it.
+pub const PAIR_DEVICE: &str = "pair-device";
+
 /// The target the inviting action `action` is invoked at: the session's own provider, on
 /// [`INVITE_RESOURCE`]. An app invokes one of these as the person using it, through the action
 /// broker.

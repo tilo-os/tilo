@@ -7,6 +7,8 @@ description = "The Tilo API server: OAuth 2.1 for agents, sign-in with a device 
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+# The client's errors, as the programs that call it report them.
+anyhow.workspace = true
 base64.workspace = true
 getrandom.workspace = true
 hex.workspace = true
@@ -36,6 +38,9 @@ tilo-mcp = { path = "../../runtime/tilo-mcp" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
+# This computer's login (`client::device`): where it is kept, its certificates as kept.
+tilo-paths.workspace = true
+postcard.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
@@ -47,6 +52,9 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

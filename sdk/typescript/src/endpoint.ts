@@ -374,11 +374,21 @@ export class Endpoint {
     return actionAnswerOf(await this.answer("POST", routes.invocationUndo(this.id, invocation)));
   }
 
-  /** Run a tilolang program as one step. */
-  async program(source: string, confirm: boolean | null = null): Promise<ProgramAnswer> {
+  /**
+   * Run a tilolang program as one step, in the program session `session` names (an earlier
+   * answer's `session`), or a new one.
+   */
+  async program(
+    source: string,
+    confirm: boolean | null = null,
+    session: string | null = null,
+  ): Promise<ProgramAnswer> {
     const json: Record<string, unknown> = { program: source };
     if (confirm !== null) {
       json.confirm = confirm;
+    }
+    if (session !== null) {
+      json.session = session;
     }
     return programAnswerOf(await this.answer("POST", routes.programs(this.id), { json }));
   }

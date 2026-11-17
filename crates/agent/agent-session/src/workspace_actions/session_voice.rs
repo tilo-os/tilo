@@ -283,7 +283,7 @@ impl Sessions {
 fn live(provider: &str, cluster: &str) -> Option<LiveResource> {
     crate::member::actions::resource_of(provider, cluster).map(|route| LiveResource {
         app: route.app_id,
-        record: route.record,
+        record: route.document,
     })
 }
 

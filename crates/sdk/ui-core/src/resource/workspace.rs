@@ -238,7 +238,7 @@ mod tests {
             let route = record.route().expect("a workspace's record syncs");
             assert_eq!(route.app_id, "so.tilo.chat");
             assert_eq!(
-                route.record.as_deref(),
+                route.document.as_deref(),
                 Some(collab_types::workspace_document_id("tilo.workspace.emoji").as_str())
             );
             assert!(
@@ -267,7 +267,7 @@ mod tests {
                 .unwrap();
             let route = record.route().expect("a conversation's record syncs");
             assert_eq!(route.app_id, "so.tilo.chat");
-            assert_eq!(route.record.as_deref(), Some(id.as_str()));
+            assert_eq!(route.document.as_deref(), Some(id.as_str()));
             assert!(
                 records(&store, "alice")
                     .open_resource_at("so.tilo.chat", "direct_nope", "so.tilo.chat", &|_| Ok(()))

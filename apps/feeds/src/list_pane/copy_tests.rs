@@ -84,7 +84,7 @@ fn library() -> (FeedsApp, Shared) {
     let shared = app.core_shared();
     {
         let mut core = shared.borrow_mut();
-        let mut store = (*core.store).clone();
+        let store = (*core.store).clone();
         let feed = store
             .feeds
             .ids()
@@ -92,20 +92,53 @@ fn library() -> (FeedsApp, Shared) {
             .cloned()
             .expect("the sample has feeds");
         let now = core.now;
+        // The extra articles, staged into the parts the window holds.
+        let chain = core.chain().expect("the demo's parts");
         for index in 0..EXTRA {
-            store.articles.push(
-                Id::from_raw(format!("copy-test-article-{index}")),
-                Article {
-                    feed_id: feed.clone(),
-                    title: format!("Article {index}: the quick brown fox jumps over the lazy dog"),
-                    summary: format!("Summary {index}"),
-                    published: now - 3_600 * (index + 1),
-                    read: index % 3 == 0,
-                    starred: index % 7 == 0,
-                    ..Article::default()
-                },
-            );
+            chain
+                .stage_as(
+                    &crate::part::ArticlePart::RECEIVE.with(crate::part::article_part::Receive {
+                        feed: feed.clone(),
+                        articles: vec![crate::model::Fetched {
+                            title: format!(
+                                "Article {index}: the quick brown fox jumps over the lazy dog"
+                            ),
+                            url: format!("https://example.test/copy-test-article-{index}"),
+                            summary: format!("Summary {index}"),
+                            published: now - 3_600 * (index + 1),
+                            ..crate::model::Fetched::default()
+                        }],
+                    }),
+                    &ui::tilo_resource::MemberId::person("component-test-author"),
+                )
+                .unwrap();
+            if let Some(article) = chain
+                .parts()
+                .iter()
+                .flat_map(|(_, part)| part.articles.iter())
+                .find(|(_, article)| {
+                    article.url == format!("https://example.test/copy-test-article-{index}")
+                })
+            {
+                if index % 3 == 0 {
+                    let _ = chain.invoke(&crate::part::ArticlePart::SET_READ.with(
+                        crate::part::article_part::SetRead {
+                            article: article.0.clone(),
+                            read: true,
+                        },
+                    ));
+                }
+                if index % 7 == 0 {
+                    let _ = chain.invoke(&crate::part::ArticlePart::SET_STARRED.with(
+                        crate::part::article_part::SetStarred {
+                            article: article.0.clone(),
+                            starred: true,
+                        },
+                    ));
+                }
+            }
         }
+        core.present_articles();
         core.store = Rc::new(store);
         core.filter = Filter::All;
         core.selected = Some(Id::from_raw("copy-test-article-4"));
@@ -283,10 +316,20 @@ fn a_frame_that_changes_the_rows_repaints_the_list_and_matches() {
     let shown = host.shared.borrow().list.rows[2].id.clone();
     let star = |host: &mut Host| {
         let mut core = host.shared.borrow_mut();
-        let mut store = (*core.store).clone();
-        let article = store.articles.get_mut(&shown).unwrap();
-        article.starred = !article.starred;
-        core.store = Rc::new(store);
+        let chain = core.chain().expect("the demo's parts").clone();
+        let starred = core
+            .articles()
+            .article(&shown)
+            .is_some_and(|article| !article.starred);
+        chain
+            .invoke(&crate::part::ArticlePart::SET_STARRED.with(
+                crate::part::article_part::SetStarred {
+                    article: shown.clone(),
+                    starred,
+                },
+            ))
+            .unwrap();
+        core.present_articles();
     };
     // A star on a row on screen, with a scroll.
     star(&mut host);

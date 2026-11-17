@@ -198,6 +198,8 @@ test-relay = { path = "../../dev/test-relay" }
 test-http = { path = "../../dev/test-http" }
 # Opens an invitation's link as a page does, from the site's shelf.
 tilo-workspace-directory = { path = "../../session/workspace-directory" }
+# `tilolang repl`, driven in process against a workspace the relay hosts.
+tilolang-cli = { path = "../../lang/tilolang-cli" }
 # The MCP projection `tilo mcp` serves, driven over a device's session.
 tilo-mcp = { path = "../../runtime/tilo-mcp" }
 iroh.workspace = true

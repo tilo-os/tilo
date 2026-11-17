@@ -111,3 +111,100 @@ async fn a_program_runs_on_a_workspace_the_relay_hosts() {
         "the step the program took is the task's history: {history}"
     );
 }
+
+/// The lines one REPL entry printed, as one text.
+fn said(said: tilolang_cli::repl::Said) -> String {
+    match said {
+        tilolang_cli::repl::Said::Lines(lines) => lines.join("\n"),
+        tilolang_cli::repl::Said::Quit => panic!("the entry ended the REPL"),
+    }
+}
+
+/// `tilolang repl` as the person, with the key this computer holds of theirs: in process, through
+/// the client `tilo` uses. Its entries are one program session of `POST …/programs`: a `let`
+/// holds for the entries after it, a bulk change waits for `confirm`, `undo` takes the last step
+/// back, and a second REPL is a session of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_repl_works_in_a_workspace_as_its_person() {
+    let on_relay = api_on_relay(ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    approved_key(&on_relay, &ada, &page, "Visa backend").await;
+    let laptop = enrol(&ada, "Ada's laptop", DeviceCapabilities::member());
+    let keys = tempfile::tempdir().unwrap();
+    let key_file = keys.path().join("laptop.json");
+    std::fs::write(
+        &key_file,
+        serde_json::to_vec(&tilo_api::direct::KeyFile::new(
+            &on_relay.relay,
+            Some(&on_relay.web_entry),
+            "Ada's laptop",
+            &laptop.key,
+            &laptop.cert,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let client = tilo_api::client::Client::open(tilo_api::client::Reach {
+        api: None,
+        key_file: Some(&key_file),
+        json: false,
+    })
+    .unwrap();
+    let made = client
+        .post("/v1/workspaces", &json!({"name": "Ada's notes"}))
+        .await
+        .unwrap();
+    let workspace = made["id"].as_str().unwrap().to_owned();
+    tilolang_cli::repl::style::set(false);
+
+    let mut repl = tilolang_cli::repl::Repl::open(&client, &workspace)
+        .await
+        .unwrap();
+    assert!(
+        repl.apps().iter().any(|app| app == "notes"),
+        "the REPL completes the workspace's apps: {:?}",
+        repl.apps()
+    );
+
+    // A `let` holds for the entries after it.
+    said(repl.entry("let title = \"Groceries\"").await);
+    let made = said(
+        repl.entry("notes.new_note(notes.notebook, title: title)")
+            .await,
+    );
+    assert!(!made.contains("error"), "{made}");
+
+    // A change to many waits for `confirm`, and is then one step.
+    let bulk = "for t in [\"Bins\", \"Oat milk\", \"Plants\", \"Library\", \"Haircut\"] { \
+                notes.new_note(notes.notebook, title: t) }";
+    let previewed = said(repl.entry(bulk).await);
+    assert!(previewed.contains("preview:"), "{previewed}");
+    let applied = said(repl.entry("confirm").await);
+    assert!(
+        !applied.contains("error") && !applied.contains("preview:"),
+        "{applied}"
+    );
+    assert_eq!(
+        said(repl.entry("confirm").await),
+        "no preview waits for confirm"
+    );
+
+    // `undo` takes the step back whole, and `history task` says so.
+    let undone = said(repl.entry("undo").await);
+    assert!(undone.contains("undone:"), "{undone}");
+    let history = said(repl.entry("history task").await);
+    assert!(history.contains("(undone)"), "{history}");
+
+    // Another REPL is a session of its own: the first one's `let`s and references are not
+    // there.
+    let mut other = tilolang_cli::repl::Repl::open(&client, &workspace)
+        .await
+        .unwrap();
+    let unknown = said(
+        other
+            .entry("notes.new_note(notes.notebook, title: title)")
+            .await,
+    );
+    assert!(unknown.contains("error"), "{unknown}");
+}
