@@ -134,6 +134,8 @@ final class TiloSourceTests: XCTestCase {
               return done({items: window.vault.map((item, at) => ({reference: 'vault.item:0' + at, kind: item.kind, belongsTo: item.belongsTo, addedAt: 1794900000}))});
             case 'tilo.models list': return done(own());
             case 'tilo.telling list': {
+              // A server that tells nothing this way (`window.told = null`) does not know the ask.
+              if (!window.told) throw Object.assign(new Error('No such action is offered'), {code: 'unknown_action'});
               const newer = () => window.told.filter(one => one.seq > (argument?.after ?? 0));
               if (!newer().length && argument?.waitMs) {
                 await new Promise(moved => { window.logMoved = moved; setTimeout(moved, Math.min(argument.waitMs, window.holds ?? 150)); });
