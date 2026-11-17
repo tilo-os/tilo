@@ -152,7 +152,7 @@ def violations(boundary: Boundary, target: str | None) -> list[str]:
         raise RuntimeError(f"cargo tree did not describe {boundary.package} for {where}")
     found = []
     reached = sorted(packages & boundary.forbidden)
-    if boundary.through:
+    if boundary.under:
         # Only the pruned subtree may bring a forbidden stack: outside it, the rule stands.
         outside = reached_packages(boundary.package, target, under=boundary.under)
         reached = sorted(outside & boundary.forbidden)
