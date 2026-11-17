@@ -999,6 +999,97 @@ fn accepted_delivery_is_refused_after_its_document_is_replaced() {
     fixture.thread.join().unwrap();
 }
 
+/// An invocation whose document never becomes current while it waits (the
+/// app's owner busy elsewhere, its newer capture still unapplied) fails with
+/// why, and nothing runs; collaboration goes on, so the next invocation, once
+/// the document is current, runs. A caller is always answered: a message is
+/// delivered or reported as failed, never left accepted with every later one
+/// hanging behind it.
+#[test]
+fn an_invocation_whose_document_never_becomes_current_fails_and_the_next_runs() {
+    let calls = Rc::new(Cell::new(0));
+    let mut history = automerge::AutoCommit::new();
+    history
+        .put(ROOT, "original-owner-history", "retained")
+        .unwrap();
+    history.commit();
+    let fixture = CollaborationManager::native_history_invocation_fixture_for_test(history.save());
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(InitialHistoryProbe(
+            calls.clone(),
+            Rc::new(Cell::new(false)),
+        )),
+    );
+    app.collaboration.local_author = crate::permissions::MemberId::person("fixture-user");
+    app.collaboration.manager = fixture.manager;
+    let deadline = tilo_test_env::hang_deadline();
+    while !app.published_action_history_ready() {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    // A newer capture arrives and its recheck is held: the document is not
+    // current for as long as the gate stays shut.
+    history
+        .put(ROOT, "subsequent-history", "settlement")
+        .unwrap();
+    history.commit();
+    let (release, gate) = tokio::sync::oneshot::channel();
+    (fixture.refresh)(history.save(), gate);
+    while app
+        .state
+        .doc
+        .get(ROOT, "subsequent-history")
+        .unwrap()
+        .is_none()
+    {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    (fixture.invoke)(31, uuid::Uuid::from_u128(31));
+    while (fixture.updates)().is_empty() && app.collaboration.manager.is_connected() {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(
+        app.collaboration.manager.is_connected(),
+        "an invocation that never reached the app is answered, not a reason to stop collaborating"
+    );
+    let updates = (fixture.updates)();
+    let [
+        (
+            31,
+            tilo_actions::InvocationUpdate::Failed {
+                invocation: failed,
+                error,
+            },
+        ),
+    ] = updates.as_slice()
+    else {
+        panic!("expected the invocation's failure, got {updates:?}");
+    };
+    assert_eq!(failed.0, uuid::Uuid::from_u128(31));
+    assert_eq!(error.code, "action_not_delivered");
+    assert!(error.retryable, "nothing ran, so asking again is safe");
+    assert_eq!(calls.get(), 0, "the failed invocation never ran");
+    // The document becomes current; the next invocation runs.
+    release.send(()).unwrap();
+    (fixture.invoke)(32, uuid::Uuid::from_u128(32));
+    while calls.get() == 0 {
+        app.pump_collab_presence();
+        assert!(app.collaboration.manager.is_connected());
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(calls.get(), 1);
+    assert!(app.action_publication_failure.is_none());
+    drop(app);
+    fixture.thread.join().unwrap();
+}
+
 /// A probe publishing `late-probe` only once it has read it, and saying it
 /// may until then.
 struct LateRowProbe(Rc<Cell<Option<bool>>>);
