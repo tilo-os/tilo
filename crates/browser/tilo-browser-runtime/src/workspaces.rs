@@ -5,7 +5,7 @@
 //! roles as the workspace settings name them, keys in hex.
 //!
 //! Nothing is decided here: the host admits every request by the person's
-//! standing, and its refusal is the answer.
+//! member access, and its refusal is the answer.
 
 use serde::Deserialize;
 use serde_json::{Value, json};

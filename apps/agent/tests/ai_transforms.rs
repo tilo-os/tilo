@@ -2,7 +2,7 @@
 //!
 //! The host below offers exactly [`transform::descriptors`] and answers an
 //! invocation the way the agent does — binding the wire argument and running
-//! the transform — with a scripted model standing in for the gateway. So the
+//! the transform — with a scripted model in place of the gateway. So the
 //! checker reads the real published parameters and result specs, and the
 //! interpreter holds the real answers to them.
 

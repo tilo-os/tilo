@@ -190,7 +190,7 @@ fn serve(link: &SessionLink, service: &mut ResourceService) {
 }
 
 /// The shell's frameless canvas over the layout the part holds now: the view the person's
-/// Frameless style draws, its places standing as their own views rather than in frames.
+/// Frameless style draws, its places shown as their own views rather than in frames.
 fn canvas(part: &ShellPart) -> tilolang_tilo::runtime::ViewInstance {
     let host = part.instance.host().expect("the shell runs");
     let app = host

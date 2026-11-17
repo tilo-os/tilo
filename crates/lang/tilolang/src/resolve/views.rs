@@ -1,5 +1,5 @@
 //! The declarations that attach views to a type: the row a list shows for each item of it, what a
-//! place of it shows standing on its own, and the views a window of it switches between. A view none
+//! place of it shows on its own, and the views a window of it switches between. A view none
 //! names is the app's own helper, which no window offers.
 
 use crate::ast;

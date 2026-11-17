@@ -30,7 +30,7 @@ pub(crate) fn takes_files(app: &str) -> bool {
 /// Where files dropped at a point of the shell go.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum DropTarget {
-    /// The window of `tab`, standing at `rect`, whose app is `app`.
+    /// The window of `tab`, at `rect`, whose app is `app`.
     Window {
         tab: u64,
         rect: Rect,

@@ -1029,7 +1029,7 @@ impl DesktopSurface {
         (surface, DesktopHandle { shared })
     }
 
-    /// The surface's own state, standing on the `shared` shell `new` made and drawing with `tiles` ,
+    /// The surface's own state, on the `shared` shell `new` made and drawing with `tiles` ,
     /// after its search `search` .
     fn on_shared(
         shared: Rc<RefCell<Shared>>,

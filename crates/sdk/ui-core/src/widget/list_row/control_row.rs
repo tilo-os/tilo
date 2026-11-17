@@ -1,4 +1,4 @@
-//! [`ControlRow`] — a selectable row of real controls standing in the list row's selection
+//! [`ControlRow`] — a selectable row of real controls in the list row's selection
 //! lift.
 
 use super::{RowMetrics, row_fill};
@@ -21,7 +21,7 @@ struct RowChoice {
 /// A selectable row of a short list whose items carry real controls (a
 /// layers panel with each layer's thumbnail, name and switches; a list of
 /// versions with a restore button): a [`crate::widget::Row`] of widgets
-/// standing in the list row's selection lift.
+/// in the list row's selection lift.
 ///
 /// It is selected while the [`crate::LocalState`] it was bound to with
 /// [`ControlRow::choosing`] holds its value, so every row of the list

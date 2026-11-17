@@ -1354,7 +1354,7 @@ mod tests {
 
     /// The notice that a workspace did not take the window layout names the workspace by
     /// the name the person gave it. One nobody named, and one that left the shell since, are said
-    /// to be that: the title never opens with an empty name, or with a word standing in for one.
+    /// to be that: the title never opens with an empty name, or with a word in place of one.
     #[test]
     fn a_shell_the_workspace_did_not_take_names_the_workspace_or_says_it_has_no_name() {
         let title = |workspace| {

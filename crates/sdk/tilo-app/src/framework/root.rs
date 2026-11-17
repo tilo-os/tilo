@@ -376,7 +376,7 @@ pub fn reserved_action_ids() -> Vec<String> {
 type WorkspaceArrival = ui_core::widget::ArrivingView;
 
 /// The app's view in `content`, once it shows: `content` itself, or the
-/// view standing in the window's arrival once that arrived. The arrival
+/// view in the window's arrival once that arrived. The arrival
 /// answers for nothing of the view (a traversal meets the view as its
 /// descendant, once), so what the root asks of the app's view it asks here.
 fn app_view_in(content: &dyn Widget) -> Option<&dyn Widget> {

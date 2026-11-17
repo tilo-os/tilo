@@ -137,7 +137,7 @@ impl HostOperation {
     /// `host`. Every host operation but making a person's own workspace is
     /// the host's person's own; an agent's grant does what its scope allows
     /// (see the module). The caller's certificate, revocation and agent
-    /// standing are checked by the entry before it asks.
+    /// member access are checked by the entry before it asks.
     pub fn permits(self, host: &[u8; 32], caller: &DeviceCert) -> bool {
         if caller.user_public_key != *host
             && !matches!(

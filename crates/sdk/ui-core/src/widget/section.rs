@@ -268,7 +268,7 @@ pub fn band_height(theme: &Theme) -> f64 {
 }
 
 /// The number a heading shows beside its words, when the number is worth reading: a heading of
-/// one row saying "1" restates the row standing under it, so it draws no count; two or more say
+/// one row saying "1" restates the row under it, so it draws no count; two or more say
 /// how many, and a run the surface cut short says how many it left out even when that is one.
 #[must_use]
 pub fn heading_count(shown: usize, total: Option<usize>) -> Option<usize> {

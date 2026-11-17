@@ -169,7 +169,7 @@ impl ConfirmState {
     }
 
     /// Where the displays are the sheet covers, in its own coordinates: the
-    /// cards of a question standing now move with them.
+    /// cards of a question now move with them.
     fn spans(&self, displays: Vec<Rect>) {
         if *self.displays.borrow() == displays {
             return;

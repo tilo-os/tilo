@@ -1,5 +1,5 @@
 #!/bin/bash
-# An MCP client standing in for Claude Code, run in a Terminal environment's shell
+# An MCP client in place of Claude Code, run in a Terminal environment's shell
 # (scripts/vm-acceptance/acceptance/checks/agents_e2e.py).
 #
 #     bash mcp_agent.sh DIR [SERVER ARGS...]
@@ -7,7 +7,7 @@
 # It starts the MCP server the way Claude Code starts the one a person configured as
 # {"command": "tilo-runtime", "args": ["--connect"]} (SERVER ARGS default to that), and
 # speaks newline-delimited JSON-RPC over its stdio. What to send comes from the harness, a
-# request per line appended to DIR/in (`quit` ends the conversation), standing in for the
+# request per line appended to DIR/in (`quit` ends the conversation), in place of the
 # model's decisions; every line the server writes is appended to DIR/out, and the server's
 # stderr to DIR/err. DIR/hello says where it runs; DIR/done that it is over, with the
 # server's exit status. It judges nothing: the harness reads DIR/out.

@@ -264,7 +264,7 @@ impl TopBarChrome {
         *handled = chrome.intent(intent);
     }
 
-    /// A secondary press on the bar that no control of its own took: the workspace menu, standing
+    /// A secondary press on the bar that no control of its own took: the workspace menu,
     /// where the person pressed — the same menu the workspace name opens, offering the shell's own
     /// commands there. Over a window covering its display the bar stands where that window's own
     /// bar would, which it no longer shows, so the press opens the window's menu instead.

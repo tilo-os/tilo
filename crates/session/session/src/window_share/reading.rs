@@ -311,7 +311,7 @@ impl WindowShares {
     }
 }
 
-/// The word the reading says a live session's standing by: what a tool branches on, the same in every
+/// The word the reading gives a live session's state: what a tool branches on, the same in every
 /// language.
 const fn state_of(state: Option<&LiveState>) -> &'static str {
     match state {

@@ -872,7 +872,7 @@ impl VideoEditorApp {
             text_width(ctx.text, &clip.speed.label(), &badge_style) + S4
         };
         // A linked clip wears a chain at the head of its header, so "these two
-        // move together" is legible standing still. The name starts after it,
+        // move together" is legible when still. The name starts after it,
         // and after the transition triangle when the head also carries one.
         let linked = links.linked(clip);
         let corner = if clip.transition == Transition::None {

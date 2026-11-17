@@ -84,7 +84,7 @@ mod tests {
     use vello::kurbo::Rect;
 
     /// The choice a list paints for a row stands around what the row shows, grown by the bleed
-    /// the row grows its own face by and no further: a row standing at a page's measure inside a
+    /// the row grows its own face by and no further: a row at a page's measure inside a
     /// wider list paints its selection inset like the rows in every other list, never across the
     /// gutters beside it.
     #[test]

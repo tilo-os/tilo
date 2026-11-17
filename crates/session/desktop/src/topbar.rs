@@ -342,7 +342,7 @@ pub struct TopBarChrome {
     /// display's full bar.
     variant: BarVariant,
     /// The display a compact bar stands on, as [`Placement`] names it; the full bar carries none,
-    /// standing on the display in use.
+    /// on the display in use.
     display: Option<u32>,
     /// Docked in the column, hidden, or shown over the window covering the display, as the host
     /// says.

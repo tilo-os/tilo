@@ -151,7 +151,7 @@ fn asked_there(
     let described = state.described_action(&request.target);
     ConfirmationQuestion {
         id,
-        // The device they are standing at, as the transport authenticated
+        // The device they are at, as the transport authenticated
         // it: a device of their own, elsewhere, is the other party here.
         device_label: caller.device_public_key().map_or_else(
             || "another device".to_owned(),

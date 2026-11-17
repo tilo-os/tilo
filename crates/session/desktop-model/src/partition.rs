@@ -512,7 +512,7 @@ mod tests {
 
         phase groups_a_gone_monitor_stranded_move_to_the_primary_that_is_there;
         // A monitor that goes away and comes back takes the groups it stranded
-        // to it, never to the display standing in for the primary.
+        // to it, never to the display in place of the primary.
         {
             let ws = workspace(&[1, 2]);
             let mut p = OutputPartition::default();

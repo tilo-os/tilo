@@ -1087,7 +1087,7 @@ impl Answers<'_> {
                 }
             }
             // The app's own geometry is a request: the layer's place stands. A card it presents
-            // again after standing it down draws the activity there once more.
+            // again after bringing it down draws the activity there once more.
             FloatingSurfaceClientMessage::SurfaceGeometry { id, .. } => {
                 self.cards.presented_again(&app, connection, &id);
             }
@@ -1253,7 +1253,7 @@ impl Answers<'_> {
 
     /// Open a window of `app` beside the one that sent from its box, showing
     /// the item `anchor` names: the conversation a message from that box
-    /// landed in. It opens in a window of its own, standing over the shell as
+    /// landed in. It opens in a window of its own, over the shell as
     /// the chord floats a window — over the place its strip gave it, the strip
     /// sharing out the card it draws at, so it stands beside what the person
     /// was reading instead of over it. The workspace's record keeps it there
@@ -1522,8 +1522,8 @@ struct Socket {
     /// What ends the loop's wait while an app connects or writes.
     watch: Option<ReadableWatch>,
     path: PathBuf,
-    /// The socket standing at `path` when it was bound: a session that takes the path later binds
-    /// one of its own, which this one leaves standing.
+    /// The socket at `path` when it was bound: a session that takes the path later binds
+    /// one of its own, which this one leaves in place.
     inode: Option<(u64, u64)>,
     /// The connection number the next connection taken is given.
     next: AtomicU64,
@@ -1589,7 +1589,7 @@ impl Socket {
 
 impl Drop for Socket {
     fn drop(&mut self) {
-        // A session started while this one ran takes the path for its own: the socket standing
+        // A session started while this one ran takes the path for its own: the socket
         // there is that session's, and stays.
         if inode_of(&self.path) == self.inode {
             let _ = std::fs::remove_file(&self.path);
@@ -1597,7 +1597,7 @@ impl Drop for Socket {
     }
 }
 
-/// The socket standing at `path` , as the file system names it: the device and inode of the node
+/// The socket at `path` , as the file system names it: the device and inode of the node
 /// there. A bound socket's own file descriptor names an inode of the socket layer, not this one.
 fn inode_of(path: &std::path::Path) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt as _;
@@ -1916,7 +1916,7 @@ mod tests {
     }
 
     /// A session started while another ran takes the shell-ui path for itself. The one that lost it
-    /// ends without a client waking a thread for it, and leaves the socket standing there alone.
+    /// ends without a client waking a thread for it, and leaves the socket in place there alone.
     #[test]
     fn a_session_ending_leaves_the_socket_another_one_took() {
         let dir = tempfile::tempdir().unwrap();

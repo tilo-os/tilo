@@ -22,7 +22,7 @@ mod component;
 pub use component::DisclosureBandProps;
 
 /// Content a view builds only while it is open (a tile's details under
-/// it, a row's section), standing in a column as a band
+/// it, a row's section), in a column as a band
 /// ([`crate::widget::Disclosing::Band`]).
 ///
 /// Built after its window has shown, it arrives: its box opens from the

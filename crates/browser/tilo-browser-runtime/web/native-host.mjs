@@ -47,7 +47,7 @@ export function deviceEntry({peer, ownWorkspace}) {
 }
 
 /**
- * Hand this page's device entry to the native host standing in the document, when one does.
+ * Hand this page's device entry to the native host in the document, when one does.
  * Answers whether one took it. Nothing is put where another script finds it.
  */
 export function handToNativeHost({peer, ownWorkspace}, host = globalThis.tiloNativeHost) {

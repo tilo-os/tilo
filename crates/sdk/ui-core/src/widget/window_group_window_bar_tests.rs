@@ -337,7 +337,7 @@ fn an_apps_parts_live_in_the_bar_and_the_content_starts_under_it() {
 /// The name a window's bar shows: the location its app names, or the
 /// window's own title while the app names none. A blank label names
 /// nothing — an app whose window has nothing open to name — so the bar
-/// says what the window is instead of standing empty.
+/// says what the window is instead of being empty.
 #[test]
 fn a_window_whose_app_names_no_location_shows_its_own_name() {
     let _settled = crate::motion::testing::settled();
@@ -1252,7 +1252,7 @@ fn a_menu_before_the_location_opens_like_one_after_it() {
 }
 
 /// A leading menu the row cannot fit lists its items in the overflow menu, under its name, and
-/// a row chosen there runs for it: never one dead row standing for the button.
+/// a row chosen there runs for it: never one dead row for the button.
 #[test]
 fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
     let _settled = crate::motion::testing::settled();

@@ -7,7 +7,7 @@
 //!
 //! - `impl Described for W` (with its `type Props = P;`): a described widget;
 //! - `#[derive(Component)] struct P`: a component's props; one that no described widget takes is
-//!   a part, standing only in a slot of another component;
+//!   a part, only in a slot of another component;
 //! - `pub fn entry() -> component::Entry` in a public module: a described widget whose entry is
 //!   written by hand, naming its props by `P::NAME`;
 //! - `impl Widget for X` of a `pub struct X` its top module re-exports: a public widget;

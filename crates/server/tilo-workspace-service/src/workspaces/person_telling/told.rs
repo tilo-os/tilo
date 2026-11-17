@@ -111,7 +111,7 @@ impl Kept {
 
     /// What happened while the person was away, as the one message at the
     /// top of the new stretch says it: what still waits for them, whenever
-    /// it was told; what their assistant did alone by an event's standing
+    /// it was told; what their assistant did alone by an event's lasting
     /// instruction; and whatever else came in.
     fn stretch(self) -> Stretch {
         let (Some(left), Some(back)) = (self.left_at_ms, self.back_at_ms) else {

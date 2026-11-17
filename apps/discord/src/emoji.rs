@@ -87,7 +87,7 @@ pub fn discord_name(name: &str) -> String {
     named
 }
 
-/// The server's emoji standing for the workspace emoji `name`, as its name
+/// The server's emoji for the workspace emoji `name`, as its name
 /// in Discord and its id: the one the bridge uploaded for it, else the
 /// server's own of that name.
 #[must_use]

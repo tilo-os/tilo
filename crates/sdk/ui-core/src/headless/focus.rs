@@ -130,7 +130,7 @@ impl FrameHarness {
             let target = saved.as_ref().and_then(|saved| unsafe {
                 saved.resolve(&self.node_map, &self.bindings, Some(&allowed))
             });
-            // Focus the trap itself moved, still standing, outlives it: a menu's
+            // Focus the trap itself moved, still there, outlives it: a menu's
             // "Rename" opens the field the person types into next, and the control
             // that opened the menu is gone. So does focus the person put on the
             // trap itself, which never went into what it hides. Focus the trap

@@ -98,7 +98,7 @@ final class PhoneProbe: ObservableObject {
         case .away: break
         case .arriving(let step):
             // A page that stopped on its way in and is loaded once more says why it stopped.
-            var line: [String: JSON] = ["standing": "arriving", "step": .string(step), "s": seconds]
+            var line: [String: JSON] = ["state": "arriving", "step": .string(step), "s": seconds]
             if step == "load", let why = engine?.lastStop { line["stoppedBefore"] = .string(String(why.prefix(300))) }
             PhoneProbe.say(.object(line))
             // Its page is still the one that stopped, for a moment: what that page says of itself.
@@ -108,15 +108,15 @@ final class PhoneProbe: ObservableObject {
             PhoneProbe.say(["asking": .string(ask.heading), "said": .array(ask.said.map(JSON.string)), "s": seconds])
         case .pairing(let code):
             keep(code, as: "code")
-            PhoneProbe.say(["standing": "pairing", "s": seconds])
+            PhoneProbe.say(["state": "pairing", "s": seconds])
         case .open(let route):
             keep(route, as: "route")
             let workspace = EngineAddress.workspace(of: route)?.split(separator: "/").last.map { String($0.prefix(8)) } ?? ""
-            PhoneProbe.say(["standing": "open", "workspace": .string(workspace), "s": seconds])
+            PhoneProbe.say(["state": "open", "workspace": .string(workspace), "s": seconds])
             await look(after: "getting in")
-        case .refused(let why): PhoneProbe.say(["standing": "refused", "why": .string(why), "s": seconds])
+        case .refused(let why): PhoneProbe.say(["state": "refused", "why": .string(why), "s": seconds])
         case .failed(let why):
-            PhoneProbe.say(["standing": "failed", "why": .string(why), "s": seconds])
+            PhoneProbe.say(["state": "failed", "why": .string(why), "s": seconds])
             await details()
         }
     }

@@ -473,7 +473,7 @@ pub struct TextInput {
     /// A plain field inside a toolkit document view keeps the document's own
     /// text inset instead of the zero inset of a plain app field.
     document_inset: bool,
-    /// A caret standing on a surface ([`Self::as_caret`]): no well and no fill, and only as
+    /// A caret on a surface ([`Self::as_caret`]): no well and no fill, and only as
     /// wide as what it holds — the words typed, or its prompt while it holds none.
     caret: bool,
     /// What a caret field was last measured holding: an edit that changes it lays the field out
@@ -561,7 +561,7 @@ pub enum AccessoryAction {
     Clear,
     Run(Box<dyn FnMut()>),
     /// A toggle that stays pressed (a "clear this for every photo" switch): shown whatever the
-    /// field holds, standing on the selection lift while on and announced as a pressed toggle. A
+    /// field holds, on the selection lift while on and announced as a pressed toggle. A
     /// press flips it and passes the new state; the host keeps it in step with
     /// [`TextInput::set_accessory_pressed`].
     Toggle {
@@ -5632,7 +5632,7 @@ impl Widget for TextInput {
     /// window that holds a field painting forever, which is what an idle
     /// window costs: nothing changed, so nothing is drawn. The pending edit
     /// notification ([`Self::dirty`]) is left out for the same reason: an
-    /// owner that reads the text when the person submits leaves it standing,
+    /// owner that reads the text when the person submits leaves it in place,
     /// and a field sitting in a window people are not touching must not keep
     /// that window drawing.
     fn needs_redraw(&self) -> bool {

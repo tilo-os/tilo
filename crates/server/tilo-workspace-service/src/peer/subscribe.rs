@@ -268,8 +268,9 @@ pub(super) async fn subscribe(
 /// The admission half of [`handle_subscribe`]: the agent's delegation, the
 /// workspace's binding (autobinding it for the server owner's own devices), and
 /// the workspace's decision under a fresh membership read, enrolling the device
-/// when the workspace says so. A connection whose own authorization changed
-/// meanwhile ends.
+/// when the workspace says so. A device the server does not admit is refused
+/// as not admitted; a connection whose own authorization changed meanwhile
+/// ends.
 async fn admit_subscription(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -321,24 +322,13 @@ async fn admit_subscription(
         }));
     };
     let mut wr = crate::workspace_io::fresh_membership(&ws).await?;
-    if !session_peer_authorized(peer, session) {
-        // A server that never had this person says so in the word a page acts
-        // on, as it does for a workspace it does not hold; one it knows but
-        // does not trust here is a member's question, which the workspace's
-        // own permissions answer.
-        let known = session
-            .admin
-            .is_some_and(|workspaces| workspaces.knows(&peer.user_public_key));
-        return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
-            workspace_id,
-            refusal: if known {
-                tilo_server_protocol::refusal::Refusal::NotAMember(
-                    "the device may not subscribe to this workspace".into(),
-                )
-            } else {
-                tilo_server_protocol::refusal::Refusal::NotAdmitted
-            },
-        }));
+    // The certificate passed when this session first subscribed: failing now
+    // is a change mid-session. A first subscribe that fails it is refused
+    // below, with no workspace data.
+    if !subscribed.is_empty() && !session_peer_authorized(peer, session) {
+        return Err(PeerError::Protocol(
+            "subscriber authorization changed".into(),
+        ));
     }
     if subscribed.contains(&workspace_id) && !current_session(&wr, peer, session.outbound) {
         return Err(lost_session(

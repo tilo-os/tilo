@@ -255,7 +255,7 @@ pub(crate) struct Shape {
     links: Vec<(Option<String>, Shape)>,
 }
 
-/// A collection and its items, and the one item standing between the root and it: a mail
+/// A collection and its items, and the one item between the root and it: a mail
 /// account holding the conversations, whose own collection is what people use and what grows.
 pub(crate) struct List {
     field: String,

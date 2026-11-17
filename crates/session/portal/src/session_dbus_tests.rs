@@ -1,6 +1,6 @@
 //! The session-based interfaces on a session bus of their own, called as
 //! the portal frontend calls them, with a session that captures and takes
-//! input standing in for the compositor.
+//! input in place of the compositor.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

@@ -174,7 +174,7 @@ impl Core {
     /// A list or a tree of the collection `coll`: a row after its items for each item someone
     /// else removed from it that `viewer` has not seen go, its title as it was struck through,
     /// its mark saying who removed it in which run and showing that run. A tree's row is a node
-    /// of its own, standing after the nodes at the top level.
+    /// of its own, after the nodes at the top level.
     fn mark_removed(
         &self,
         node: &mut UiNode,

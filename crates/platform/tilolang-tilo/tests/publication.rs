@@ -586,7 +586,7 @@ tilo_test_env::scenario! {
         let list = "tl:tasks:task";
         let task = "tl:tasks:task/1";
         // A requirement that read a task's own field is read again when that field moves, or when the
-        // task is replaced whole; another field of the same task leaves the answer standing.
+        // task is replaced whole; another field of the same task leaves the answer as it is.
         assert!(reached(field(task, "done"), &field(task, "done")));
         assert!(reached(field(task, "*"), &field(task, "done")));
         assert!(reached(field(task, "done"), &field(task, "*")));

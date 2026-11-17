@@ -23,7 +23,7 @@ use ui::widget::{
     EmptyStateContent, MediaArt,
 };
 
-/// The skeleton standing for the messages of an earlier part on their way.
+/// The skeleton for the messages of an earlier part on their way.
 const EARLIER_SHAPE: SkeletonShape = SkeletonShape::Text { lines: 3 };
 
 use super::agent_work::{draw_agent_work, measure_agent_work};

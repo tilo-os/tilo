@@ -2204,7 +2204,7 @@ impl LazyProfileCard {
         }
     }
 
-    /// The quiet panel standing under the anchor while the card's code is on its way: a host that
+    /// The quiet panel under the anchor while the card's code is on its way: a host that
     /// draws the card as an overlay draws this with it.
     pub fn draw_waiting(
         &self,

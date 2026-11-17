@@ -450,7 +450,7 @@ tilo_test_env::scenario! {
 }
 
 /// A frozen copy of the certificate types as they were before the
-/// foreign marker, standing in for a verifier built from an older tree.
+/// foreign marker, in place of a verifier built from an older tree.
 mod v1 {
     #[allow(
         clippy::struct_excessive_bools,

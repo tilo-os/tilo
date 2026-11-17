@@ -463,7 +463,7 @@ pub(super) fn readout_fit(
         fit.total_x = Some(total_x);
         used_to = total_x + total_w;
     }
-    // Zero width is "the playhead is standing still", which places nothing.
+    // Zero width is "the playhead is not moving", which places nothing.
     if motion_w > 0.0 {
         let motion_x = used_to + 14.0;
         if motion_x + motion_w <= right_edge {

@@ -114,7 +114,7 @@ impl BlockEditor {
     }
 
     /// The style of the editor's own node: the block stack's leaf and the pictures' controls in
-    /// a column, the drag handles standing in its own leading column so a host leaves no gutter
+    /// a column, the drag handles in its own leading column so a host leaves no gutter
     /// for them and they are never clipped by the window edge at any text scale.
     ///
     /// A document's body hangs its handle gutter outside the text column, so its text starts on

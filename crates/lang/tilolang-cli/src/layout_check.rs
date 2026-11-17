@@ -575,7 +575,7 @@ fn declared_headers(shell: &tilo_app_window::UiNode) -> Vec<&'static str> {
     .collect()
 }
 
-/// One control standing in a column's header row: what the person reads at the top of the column,
+/// One control in a column's header row: what the person reads at the top of the column,
 /// and what pressing it does there.
 #[cfg(test)]
 #[derive(Clone, Debug)]
@@ -585,11 +585,11 @@ pub(crate) struct RowControl {
     pub rect: [f64; 4],
     pub primary: bool,
     pub menu: bool,
-    /// It says its words beside its icon, rather than standing as its icon alone.
+    /// It says its words beside its icon, rather than shown as its icon alone.
     pub labelled: bool,
 }
 
-/// The controls standing in the window's header rows, in reading order: every button whose middle
+/// The controls in the window's header rows, in reading order: every button whose middle
 /// stands in a column's header row where the person reaches it.
 #[cfg(test)]
 pub(crate) fn header_row_controls(staged: &stage::Staged, viewport: (u32, u32)) -> Vec<RowControl> {
@@ -1626,7 +1626,7 @@ fn tappable_row(staged: &stage::Staged, viewport: (u32, u32)) -> Option<(f64, f6
     row_opened(root, viewport).or_else(|| first_row(root, viewport))
 }
 
-/// Where a finger taps to open a row of the list standing in front of
+/// Where a finger taps to open a row of the list in front of
 /// what the window shows: the first row the list does not keep chosen,
 /// which opens what the window is not already showing, or else the chosen
 /// one.

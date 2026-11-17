@@ -310,7 +310,7 @@ pub(super) struct InputRuntime {
     /// selection without it, and paint no caret ([`crate::caret_owner`]).
     pub(super) keyboard_held: bool,
     /// Whether the widgets last painted their carets: the window held the
-    /// keyboard and nothing standing over them took it.
+    /// keyboard and nothing over them took it.
     pub(super) widget_carets: bool,
     /// [`crate::host_core::KeyHost::keyboard_entry_owed`].
     pub(super) keyboard_entry_owed: bool,

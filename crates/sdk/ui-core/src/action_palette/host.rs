@@ -167,7 +167,7 @@ impl ActionPalette {
     }
 
     /// Show or hide the band. A host hides it until the results have
-    /// something to tell apart, so it isn't standing chrome over every
+    /// something to tell apart, so it isn't chrome over every
     /// search. Returns whether that changed.
     pub fn set_filter_band_shown(&mut self, shown: bool) -> bool {
         let changed = self.band_shown != shown;
@@ -228,7 +228,7 @@ impl ActionPalette {
 
     /// The host alone opens and closes this palette over its rows: the keyboard's focus leaving
     /// the card (the frame focusing a field of another surface, or blurring what it does not
-    /// treat as active) leaves it standing. A host that stands its palette over others, and closes
+    /// treat as active) leaves it in place. A host that stands its palette over others, and closes
     /// it on a press beside the card, on Escape or on a choice, turns this on; a palette that
     /// follows focus closes when focus leaves it.
     pub fn set_host_keeps_open(&mut self, keeps: bool) {

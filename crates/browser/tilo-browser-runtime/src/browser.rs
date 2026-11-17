@@ -1410,7 +1410,7 @@ struct Presentation {
 enum Root {
     Component(Box<ui::application::AppComponent>),
     Desktop(Box<crate::shell::BrowserShell>),
-    /// A window standing in for its application until the record it opens
+    /// A window in place of its application until the record it opens
     /// arrives: the place it reserves, showing its arrival.
     Arriving(Box<dyn ui::widget::Widget>),
 }

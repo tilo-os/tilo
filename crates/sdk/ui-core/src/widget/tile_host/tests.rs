@@ -991,7 +991,7 @@ fn a_painted_placeholder_asks_for_the_frame_its_next_step_shows_in() {
         host.mark_drawn();
         assert!(
             !Widget::needs_redraw(&host),
-            "the step standing was the one painted"
+            "the step shown was the one painted"
         );
         host
     });

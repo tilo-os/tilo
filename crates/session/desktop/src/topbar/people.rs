@@ -227,7 +227,7 @@ impl TopBarChrome {
         let stack = ui::presence::FaceStack::BAR;
         let gap = f64::from(theme.tokens.spacing.s2);
         let pill_right = self.ws_pill_rect.x1.max(self.rect.x0);
-        // The faces keep off the clock's area, standing between it and the people cluster where
+        // The faces keep off the clock's area, between it and the people cluster where
         // that is room enough. What does not fit joins the "+N" badge, and with no room for even
         // the badge the people button beside them is who is here. A phone-wide bar has no room
         // right of the clock and the gap before it where they fit: they stand there rather than

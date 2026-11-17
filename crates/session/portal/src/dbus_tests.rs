@@ -47,7 +47,7 @@ async fn bed() -> Bed {
     bed_with(Arc::new(crate::NoCapture)).await
 }
 
-/// [`bed`], with `capture` standing in for the session's screenshots and
+/// [`bed`], with `capture` in place of the session's screenshots and
 /// picks.
 async fn bed_with(capture: Arc<dyn crate::Capture>) -> Bed {
     let bus = SessionBus::start();

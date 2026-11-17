@@ -570,7 +570,7 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
 /// A window fullscreen on the display a part stands on owns that display: the part steps aside,
 /// with not a row of it over the window and no pointer taken there, and it is back over the
 /// whole screen when the window leaves fullscreen. A window fullscreen on another display
-/// leaves the part standing, and so does a surface of the shell's that is up: it is the person's
+/// leaves the part in place, and so does a surface of the shell's that is up: it is the person's
 /// to look at over any window, a fullscreen one too.
 #[test]
 fn a_part_steps_aside_only_for_a_window_fullscreen_on_its_own_display() {
@@ -698,7 +698,7 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
     assert!(!part.accepts_pointer(100.0, 10.0), "it takes no pointer");
     assert!(
         !crate::Published::offered(&part),
-        "the API reaches the bars still standing, not this one"
+        "the API reaches the bars still there, not this one"
     );
     // The compositor tells it of the outputs left: it does not stretch over them.
     part.outputs_changed(&[tilo_session_core::surface::HostedOutput {

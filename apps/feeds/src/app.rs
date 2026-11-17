@@ -771,7 +771,7 @@ impl Core {
     }
 
     /// [`Self::perform`] of a change that is nobody's step (what a refresh
-    /// fetched), which leaves an offered Undo standing.
+    /// fetched), which leaves an offered Undo in place.
     fn submit(
         &mut self,
         edits: &mut ui::widget::Edits<'_>,
@@ -1399,7 +1399,7 @@ impl Core {
             }
         };
         // What a feed brought in is nobody's step: it leaves an Undo
-        // offered for the person's last change standing. What the feed says
+        // offered for the person's last change as it is. What the feed says
         // of itself is the library's; what it brought is the parts'.
         if landing.title.is_some() || landing.certificate_pin.is_some() {
             self.submit(

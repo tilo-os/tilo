@@ -908,7 +908,7 @@ impl SurfaceHost for DesktopHost {
             // Something outside the desktop's tree asked for a pass — an app
             // described the controls of its window's content, a service
             // published what the desktop shows. The desktop reads what it changed in
-            // that frame, as it does standing under the shell
+            // that frame, as it does under the shell
             // ([`crate::shell::Aside`]), rather than whenever the next frame
             // comes for another reason. A desktop nobody asked draws nothing.
             if desktop.host.asking().get() {

@@ -94,7 +94,7 @@ pub struct AttachedView {
     unsettled: Cell<bool>,
     /// What the view has not laid out includes what reached it from
     /// elsewhere (a peer's change, a part another device started, a new
-    /// standing): what its records ask the workspace for is what a frame of
+    /// member's access): what its records ask the workspace for is what a frame of
     /// that makes of it.
     merged: Cell<bool>,
     /// What the view published as last asked, while nothing it reads moved
@@ -518,7 +518,7 @@ impl AttachedView {
         let tree = Rc::new(frame.resources());
         drop(frame);
         // Read after building: what building took in (a worker's reply that
-        // had landed) is part of the standing the tree was published at.
+        // had landed) is part of what the tree was published at.
         *self.published.borrow_mut() = Some(Published {
             at: self.inputs(),
             tree: Rc::clone(&tree),

@@ -4,7 +4,7 @@
 //! Two things a person saw on a live shell and reported:
 //!
 //! 1. A third place opened beside the conversation squeezed all three into one narrow column and
-//!    resized the place already standing: opening something never moves or resizes what stands,
+//!    resized the place already open: opening something never moves or resizes what stands,
 //!    and it never changes the person's zoom — it pans when what arrived would stand off-screen.
 //! 2. The style menu's band above its first row stood empty.
 //!
@@ -199,7 +199,7 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
 /// question, an agent opened Tasks and all three places were *drawn* as a narrow column down the
 /// left edge, the inbox itself shrunk to a sliver. Opening a place never resizes the places
 /// already there: a place is drawn at the size the canvas draws its neighbours at, and the camera
-/// pans to what arrived instead of zooming everything into the viewport. A place already standing
+/// pans to what arrived instead of zooming everything into the viewport. A place already open
 /// keeps the width it was drawn at, whichever places arrive beside it.
 #[test]
 fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {

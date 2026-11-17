@@ -799,7 +799,7 @@ fn boot(
 
     // An image built for another architecture cannot start here whatever the
     // firmware offers, so this overrides the startup verdict rather than
-    // standing beside it.
+    // beside it.
     let other_architecture = match (architecture, board.and_then(|b| b.architecture.as_deref())) {
         (Some(running), Some(built)) if built != running => {
             Some(SupportReason::OtherArchitecture {

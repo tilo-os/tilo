@@ -140,7 +140,7 @@ where
         self.child.as_mut()
     }
 
-    /// Take the subtree showing now out of the view, `with` standing in it.
+    /// Take the subtree showing now out of the view, `with` in it.
     /// The subtree's controls keep working where it goes: they were in this
     /// view's control scope, which closes with the view, so they move to the
     /// domain the view stands in, as a host renews ownership it closed.

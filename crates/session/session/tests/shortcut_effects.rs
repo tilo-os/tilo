@@ -714,7 +714,7 @@ fn the_window_menu_shows_the_chord_the_table_binds() {
 }
 
 /// A window's menu belongs to its window: one still up when the window in front closes goes with
-/// it, rather than standing over the shell with nothing to say and holding what the person presses,
+/// it, rather than over the shell with nothing to say and holding what the person presses,
 /// and the next window's menu opens as it always does.
 #[test]
 fn the_window_menu_closes_with_the_window_it_belongs_to() {

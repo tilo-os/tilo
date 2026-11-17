@@ -198,7 +198,7 @@ mod tests {
         }
     }
 
-    /// The shell a page has: one window, the cards of its apps standing over
+    /// The shell a page has: one window, the cards of its apps over
     /// it. A press on a card's control is the app's that draws the card, and
     /// the shell keeps the press from what lies under the card.
     #[test]

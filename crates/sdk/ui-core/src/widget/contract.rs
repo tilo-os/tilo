@@ -690,7 +690,7 @@ pub trait Widget {
         })
     }
 
-    /// Default `true`; false only for a widget standing in for a window's content whose first frame has
+    /// Default `true`; false only for a widget in place of a window's content whose first frame has
     /// not drawn.
     fn presented(&self) -> bool {
         true
@@ -705,7 +705,7 @@ pub trait Widget {
     fn arrival_progress(&self) -> Option<crate::arriving::Progress> {
         None
     }
-    /// The shape this content declares for the placeholder standing in for its first frame.
+    /// The shape this content declares for the placeholder in place of its first frame.
     fn arrival_shape(&self) -> crate::widget::SkeletonShape {
         crate::widget::SkeletonShape::Ground
     }

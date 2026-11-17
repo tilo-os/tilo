@@ -52,6 +52,8 @@ mod leases;
 pub use leases::{CLOCK_SKEW_NS, LEASES_KEY, Lease, LeaseClaim, unranked};
 mod bot_schedules;
 pub use bot_schedules::{BOT_SCHEDULES_KEY, trigger_mark};
+mod mail_sends;
+pub use mail_sends::{MAIL_SENDS_KEY, MailSent, mail_send_lease};
 #[cfg(test)]
 mod bot_schedules_tests;
 #[cfg(test)]

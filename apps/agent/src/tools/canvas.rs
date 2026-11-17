@@ -1,6 +1,6 @@
 //! The session's canvas, said first to an agent the person asked from it
 //! (`docs/designs/app-language/shell.md` §8.1): the arranging steps the session
-//! publishes, the places standing now, how the canvas is shown, and the
+//! publishes, the places there now, how the canvas is shown, and the
 //! resources there are to show. An agent asked on the canvas answers by showing
 //! what answers the question beside the conversation, so these are its main
 //! tools, ahead of every application's own operations.
@@ -230,7 +230,7 @@ pub fn canvas_section(
     );
 
     // The layout steps on the layout itself and on how it is shown,
-    // then each place standing now with its own.
+    // then each place there now with its own.
     let (places, steps): (Vec<&Offer>, Vec<&Offer>) = catalogue
         .offers
         .iter()

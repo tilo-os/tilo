@@ -722,7 +722,7 @@ mod tests {
                 .header(32.0)
                 .body_empty(true)
                 .layout(panel, &theme);
-            assert!(alone.rule.is_none(), "a header standing alone has no rule");
+            assert!(alone.rule.is_none(), "a header on its own has no rule");
             assert!((with_body.header.x0 - 8.0).abs() < 1e-6);
             assert!((with_body.body.x0 - 8.0).abs() < 1e-6);
             assert!((with_body.header.height() - 32.0).abs() < 1e-6);

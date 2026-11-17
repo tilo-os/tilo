@@ -63,7 +63,7 @@ pub enum Item {
     Root(RootDecl),
     DefaultView(DefaultViewDecl),
     RowView(DefaultViewDecl),
-    /// `place view v for T`: what a place of a `T` shows, standing as content on its own (a
+    /// `place view v for T`: what a place of a `T` shows, as content on its own (a
     /// place on the canvas, an answer's view), when its default view is the app's window.
     PlaceView(DefaultViewDecl),
     Views(ViewsDecl),

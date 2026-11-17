@@ -9,7 +9,7 @@ use ui::tilo_actions::{ActionContext, ActionInvoker, apply_local_with_context};
 ///
 /// The store that planned the action keeps its own write of it until a change of the record
 /// carries the edit, and writes it onto the record's copy again after every change that does not.
-/// A change that records no action would leave that write standing over whatever is written to
+/// A change that records no action would leave that write over whatever is written to
 /// the record after it by anyone else: a REPL's or an agent's change, or one from another of the
 /// person's devices, would never show.
 ///

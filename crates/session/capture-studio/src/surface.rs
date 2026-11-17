@@ -960,7 +960,7 @@ mod tests {
         );
 
         // Escape, with the answer still up: the bar goes down, and the studio
-        // goes with it rather than standing over a shell nobody sees it on.
+        // goes with it rather than over a shell nobody sees it on.
         surface.widget.close();
         surface.catch_up();
         assert!(

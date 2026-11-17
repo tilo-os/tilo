@@ -268,7 +268,7 @@ pub fn invitation(text: &str) -> Result<Invitation, String> {
     if !lines.iter().any(|line| line.begins("VCALENDAR")) {
         return Err("an invitation is iCalendar text: it begins with BEGIN:VCALENDAR".into());
     }
-    // The method is the calendar's. An event's identity and standing are
+    // The method is the calendar's. An event's identity and status are
     // its own, and a component that names one moved occurrence is no event
     // of its own.
     let mut cancels = false;

@@ -1389,7 +1389,7 @@ fn frame(session: &mut Session) -> tilo_compositor::Screenshot {
 /// How far around a panel its shadow reaches, in the shell's pixels.
 const SHADOW: f64 = 32.0;
 
-/// How many pixels differ between two frames of the shell where a panel standing at the rect
+/// How many pixels differ between two frames of the shell where a panel at the rect
 /// draws: the panel itself and the shadow around it.
 fn differing(
     before: &tilo_compositor::Screenshot,

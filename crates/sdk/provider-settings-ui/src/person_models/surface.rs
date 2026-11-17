@@ -35,7 +35,7 @@ pub fn everything<R: Resource>(cx: &ViewCx<R>) -> Element {
     Box::new(ModelsSurface::attached(cx, None))
 }
 
-/// [`everything`], with `unserved` standing in its place until a host says
+/// [`everything`], with `unserved` in its place until a host says
 /// it keeps the person's providers: on a device, or a page alone, none
 /// does.
 pub fn everything_or<R: Resource>(

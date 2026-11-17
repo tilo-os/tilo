@@ -3691,7 +3691,7 @@ tilo_test_env::scenario! {
 
     phase a_refused_change_stands_until_its_own_record_takes_a_change;
     // A refusal belongs to the record it was about: another record's change
-    // going through leaves it standing, its own record's next change ends it.
+    // going through leaves it in place, its own record's next change ends it.
     {
         let route = |record: &str| RouteSpec {
             app_id: "so.tilo.notes".into(),

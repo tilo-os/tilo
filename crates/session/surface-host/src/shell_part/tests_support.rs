@@ -133,7 +133,7 @@ pub(super) fn publish_overlays(link: &SessionLink, here: &str, revealed: bool) {
     );
 }
 
-/// A window of the shell, as the session publishes it, standing in the workspace `1`.
+/// A window of the shell, as the session publishes it, in the workspace `1`.
 pub(super) fn window(key: &str, title: &str, app: &str, strip: &str) -> serde_json::Value {
     serde_json::json!({
         "key": key,

@@ -60,7 +60,7 @@ pub trait NotificationHost {
     /// Viewer-local, no repaint.
     fn present(&self, now: ui::time::Instant, on_screen: &[u64], held: bool);
 
-    /// The person asked for the notification centre (the card standing in for banners that did not
+    /// The person asked for the notification centre (the card in place of banners that did not
     /// fit).
     fn open_center(&self);
 

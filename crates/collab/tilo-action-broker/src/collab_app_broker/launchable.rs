@@ -92,7 +92,7 @@ fn superseded_by(key: &SurfaceKey, retained: &SurfaceKey) -> bool {
 
 /// Starts `app_id` in a workspace in place of the host's launcher. Tests
 /// stand in for launching the installed app with one.
-/// Where an app runs with no window, standing in for the host's
+/// Where an app runs with no window, in place of the host's
 /// ([`crate::services::LauncherServices::windowless`]).
 pub(super) type WindowlessStarter = Arc<
     dyn Fn(&str, &str) -> Result<Option<crate::services::WindowlessStart>, String> + Send + Sync,
@@ -429,12 +429,12 @@ impl LaunchableCatalogue {
         }
     }
 
-    /// The launcher standing in for the host's, if one was installed.
+    /// The launcher in place of the host's, if one was installed.
     pub(super) fn launcher(&self) -> Option<AppLauncher> {
         self.launcher.lock_recover().clone()
     }
 
-    /// Where apps run with no window, standing in for the host's, if one
+    /// Where apps run with no window, in place of the host's, if one
     /// was installed.
     pub(super) fn windowless(&self) -> Option<WindowlessStarter> {
         self.windowless.lock_recover().clone()

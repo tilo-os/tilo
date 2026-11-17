@@ -38,7 +38,7 @@ pub use tilo_surface_host::{
 
 /// What a role places over the windows: the host's layers.
 pub trait Surfaces {
-    /// Place `tree` on a layer of its own, called `name`, standing at `placement`: it covers the
+    /// Place `tree` on a layer of its own, called `name`, at `placement`: it covers the
     /// outputs, and what `heard` says of the layer's role reaches it. The actions `published`
     /// offers are reached through the session's API.
     fn place(
@@ -54,7 +54,7 @@ pub trait Surfaces {
     fn publish(&mut self, published: Rc<RefCell<dyn Published>>);
 }
 
-/// The shell under the windows, as the roles standing over it read it.
+/// The shell under the windows, as the roles over it read it.
 pub trait Shell {
     /// The windows the shell shows, each at its logical rectangle on the desktop.
     fn shown(&self) -> Vec<(u64, ui::kurbo::Rect)>;
@@ -62,7 +62,7 @@ pub trait Shell {
     /// Where the shell's layer begins on the desktop: the chrome over it draws from there too.
     fn origin(&self) -> (i32, i32);
 
-    /// Lay the shell's layer out again: a panel standing over it went up or down.
+    /// Lay the shell's layer out again: a panel over it went up or down.
     fn relayout(&self);
 }
 

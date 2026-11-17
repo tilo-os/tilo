@@ -287,7 +287,7 @@ fn beside_rows(pane: Rect, node: &InspectionNode, window: Rect) -> bool {
 }
 
 /// Whether a pane takes the room of a column: more of
-/// the window than a notice standing in what it says.
+/// the window than a notice in what it says.
 fn pane_sized(pane: Rect, window: Rect) -> bool {
     has_area(pane)
         && pane.width() >= window.width() * PANE_WIDTH
@@ -489,7 +489,7 @@ fn texts_meet(a: &InspectionNode, b: &InspectionNode, clip: Rect) -> bool {
         .any(|u| over.iter().any(|o| has_area(u.intersect(*o))))
 }
 
-/// Whether `node` is a window standing on a desktop, or holds only one: its surface is opaque and
+/// Whether `node` is a window on a desktop, or holds only one: its surface is opaque and
 /// drawn over what it stands on, so what it covers is behind it by design, as on every desktop, and
 /// nothing of the two is read through the other.
 fn stands_as_window(node: &InspectionNode) -> bool {
@@ -878,7 +878,7 @@ fn indented_bodies_in(
     } else {
         page
     };
-    // A block standing one lead in from the box that holds it, that box on the page's own gutter:
+    // A block one lead in from the box that holds it, that box on the page's own gutter:
     // what the page's body holds, not a cell a grid places far across the page.
     if let (Some(gutter), "Section") = (gutter, node.widget.as_str())
         && (own.x0 - above.x0 - lead).abs() <= 0.5
@@ -1104,7 +1104,7 @@ impl Walk<'_> {
         self.heading = was_heading;
     }
 
-    /// The checks of a page's own parts: cards standing cramped against a sibling, an item shown
+    /// The checks of a page's own parts: cards cramped against a sibling, an item shown
     /// twice, a heading crowded or a body unruled.
     fn page_checks(&mut self, node: &InspectionNode, keys: &[String]) {
         self.cramped_card(node, keys);
@@ -1257,7 +1257,7 @@ impl Walk<'_> {
         );
     }
 
-    /// A page standing inside a page: the readable column is one thing, its gutter counted once, so a
+    /// A page inside a page: the readable column is one thing, its gutter counted once, so a
     /// page given a column of its own inside one counts the gutter twice — what it holds stands inset
     /// from the rows beside it and narrower than them, as if the column had moved for that one row.
     fn page_in_page(&mut self, node: &InspectionNode, keys: &[String]) {
@@ -1280,7 +1280,7 @@ impl Walk<'_> {
 
     /// A page's "…" in a column: the overflow button is the item's actions at the trailing edge of
     /// the title's
-    /// line, so one standing in a column takes a line of the document for its glyph alone, under
+    /// line, so one in a column takes a line of the document for its glyph alone, under
     /// the title and out of reach of the page's own composition.
     fn lone_overflow(&mut self, node: &InspectionNode, keys: &[String], above: &str) {
         let Some(id) = node.test_id.as_deref() else {
@@ -1343,7 +1343,7 @@ impl Walk<'_> {
         );
     }
 
-    /// A card or a notice standing closer to what stands over or under it than the gap siblings keep:
+    /// A card or a notice closer to what stands over or under it than the gap siblings keep:
     /// the two read as one block, and a list pressed against a notice says the notice is a row of it.
     fn cramped_card(&mut self, node: &InspectionNode, keys: &[String]) {
         let state: Vec<&InspectionNode> = node
@@ -1445,7 +1445,7 @@ impl Walk<'_> {
         }
     }
 
-    /// A section's heading standing no further from the block over it than from the content it
+    /// A section's heading no further from the block over it than from the content it
     /// opens: a heading belongs to what follows it, so it keeps clearly more room under the block
     /// it stands below than over its own content.
     fn heading_rhythm(&mut self, node: &InspectionNode, keys: &[String]) {
@@ -1502,7 +1502,7 @@ impl Walk<'_> {
         }
     }
 
-    /// A page's own sections standing straight under the writing it holds: a section's heading is
+    /// A page's own sections straight under the writing it holds: a section's heading is
     /// set like the writing's headings and stands no further from the writing than they stand from
     /// each other, so what the page says of itself reads as one more line of what was written.
     fn unruled_body(&mut self, node: &InspectionNode, keys: &[String]) {
@@ -1559,7 +1559,7 @@ impl Walk<'_> {
         }
     }
 
-    /// A surface with rounded corners standing on the edge of the column it is in, or of the window
+    /// A surface with rounded corners on the edge of the column it is in, or of the window
     /// where no column holds it: the edge cuts its curve, and the surface reads as part of the
     /// frame rather than as a card inside it.
     fn rounded_on_edge(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
@@ -1887,7 +1887,7 @@ impl Walk<'_> {
         }
     }
 
-    /// A sidebar standing beside a pane narrower than the class its content asks for
+    /// A sidebar beside a pane narrower than the class its content asks for
     /// ([`ui::widget::ShellLayout::needs`]): the pane beside it is a phone's screen, where the
     /// sidebar folds behind the bar's toggle and the content takes the window instead.
     fn content_beside_sidebar(&mut self, node: &InspectionNode, keys: &[String]) {
@@ -2104,7 +2104,7 @@ impl Walk<'_> {
         });
     }
 
-    /// A back control standing beside the sidebar toggle, in the same bar row: the window's leading
+    /// A back control beside the sidebar toggle, in the same bar row: the window's leading
     /// corner offers two ways to navigate, where a screen that went somewhere deeper has one, its
     /// way back at the leading edge.
     fn double_navigation(&mut self) {
@@ -2132,7 +2132,7 @@ impl Walk<'_> {
         }
     }
 
-    /// A pane that only says nothing is chosen, standing beside the list the window chooses from:
+    /// A pane that only says nothing is chosen, beside the list the window chooses from:
     /// the pane takes the room the list would list in, and there is nothing in it to read.
     fn placeholder_panes(&mut self, node: &InspectionNode, keys: &mut Vec<String>) {
         if node.widget == SHELL {

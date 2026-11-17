@@ -1,4 +1,4 @@
-//! A window standing on a shell, as a described component: what a shell draws for a place on a
+//! A window on a shell, as a described component: what a shell draws for a place on a
 //! floating shell (`shell.md` §4, `frame_classic`) and for a strip of places (`strips_view`),
 //! which is the same thing.
 //!
@@ -41,7 +41,7 @@ use crate::widget::tabs::{TAB_BAR_HEIGHT, TabStrip};
 use crate::widget::window_controls::WindowControls;
 use crate::widget::{Decorator, Element, Spacer, Text, Widget, WindowBar};
 
-/// A window standing on a shell: the window surface with its edge and shadow, holding the
+/// A window on a shell: the window surface with its edge and shadow, holding the
 /// window's content and its controls, clipped to its radius.
 #[derive(Component, Default)]
 #[component(name = "WindowFrame", role = "Group", label = "name")]

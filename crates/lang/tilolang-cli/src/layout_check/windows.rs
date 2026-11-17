@@ -1,5 +1,5 @@
 //! The shell's windows as a person sees them, staged from its own scenarios through the UI
-//! host's path: windows standing with their apps' content, one bar per window, filling the
+//! host's path: windows with their apps' content, one bar per window, filling the
 //! strips the shell gives them, and the trailing parts of the top bar at its edge.
 
 use std::path::Path;

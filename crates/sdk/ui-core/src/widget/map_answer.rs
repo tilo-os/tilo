@@ -135,7 +135,7 @@ impl Map {
         }
     }
 
-    /// The answer `key` (standing at `answer`, canvas pixels) with every place that arrived since
+    /// The answer `key` (at `answer`, canvas pixels) with every place that arrived since
     /// the person pointed and fits in the viewport beside it, nearest first: what the camera
     /// frames together.
     fn answer_group(&self, key: &str, answer: Rect, margin: f64) -> Rect {

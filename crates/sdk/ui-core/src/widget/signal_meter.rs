@@ -69,7 +69,7 @@ impl SignalLevel {
     }
 }
 
-/// The meter painted into a rect: four bars standing on its bottom edge,
+/// The meter painted into a rect: four bars on its bottom edge,
 /// centred in the largest square the rect holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SignalMeterFace {

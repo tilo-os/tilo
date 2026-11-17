@@ -51,7 +51,7 @@ struct Item {
     label: String,
 }
 
-/// `count` rows standing as a tracker's do: every tenth a parent, the nine
+/// `count` rows as a tracker's do: every tenth a parent, the nine
 /// after it its sub-issues.
 fn items(count: u64) -> Vec<Item> {
     (1..=count)

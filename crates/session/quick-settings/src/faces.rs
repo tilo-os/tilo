@@ -671,7 +671,7 @@ pub(crate) struct NetworkFace {
 /// One item of an open section.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Item {
-    /// A sentence standing for an empty or unavailable list.
+    /// A sentence for an empty or unavailable list.
     Message(String),
     Network(NetworkFace),
     /// A saved network this machine cannot see now; it can still be

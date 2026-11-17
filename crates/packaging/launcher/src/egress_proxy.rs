@@ -1359,7 +1359,7 @@ mod tests {
             assert_eq!(decision, EgressDecision::Unrestricted);
             assert!(decision.shares_host_network());
             assert_eq!(EgressPolicy::from_grants(["*"]), EgressPolicy::Any);
-            // A proxy standing in for `*` is not stricter than the `--share-net` it stands in for.
+            // A proxy in place of `*` is not stricter than the `--share-net` it stands in for.
             assert!(EgressPolicy::Any.permits_device_local("localhost"));
         }
 

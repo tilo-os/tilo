@@ -1035,7 +1035,7 @@ impl Runtime {
 }
 
 impl Core {
-    /// The value standing for `shown` here: a resource of this runtime when it holds `shown`'s
+    /// The value for `shown` here: a resource of this runtime when it holds `shown`'s
     /// app, else a foreign one that prints as its literal and title.
     pub(crate) fn value_of_shown(&self, shown: &Shown, local: bool) -> HResult<Value> {
         let author = self.module_of_frame()?;

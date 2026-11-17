@@ -13,7 +13,7 @@ const LIST_SHARE: f64 = 0.80;
 const LIST_MAX: f64 = 660.0;
 const LIST_MIN: f64 = 160.0;
 
-/// The width of a palette's card standing in `area`: three fifths of it,
+/// The width of a palette's card in `area`: three fifths of it,
 /// kept between 360 and 640, and never wider than `area` less its insets,
 /// so a card in a window narrower than the screen stays inside it.
 #[must_use]

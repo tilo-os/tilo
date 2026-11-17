@@ -186,7 +186,7 @@ impl SidebarDrawer {
     }
     /// Dock only while the content column keeps this authored minimum, and never narrower than
     /// a column ([`crate::widget::arrange::column_min_width`]): a pane below that is a phone's
-    /// screen, so the panel folds behind the bar's toggle instead of standing beside it.
+    /// screen, so the panel folds behind the bar's toggle instead of beside it.
     #[must_use]
     pub fn content_min_width(mut self, px: f64) -> Self {
         self.content_min = Some(ContentMinimum {

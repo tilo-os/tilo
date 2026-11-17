@@ -210,7 +210,7 @@ BASELINE = HERE / "copy_language_baseline"
 
 SOURCE_LOCALE = "en-US"
 
-# A separator glyph standing between two values, and unicode symbols used as
+# A separator glyph between two values, and unicode symbols used as
 # icons. The same sets as tools/policy/check_primitives.py.
 GLYPH_JOIN = re.compile(r"\S\s+[·•|—–›»]\s+\S|\S\s/\s\S|^\s*[·•]\s|\s[·•]\s*$")
 GLYPH_ICON = re.compile("[←→↑↓↖↗↘↙↔↕⇐⇒⇑⇓✓✔✗✘✕✖●○◉◎★☆▶◀▲▼▸◂▴▾►◄⬤⏵⏴⏶⏷]")

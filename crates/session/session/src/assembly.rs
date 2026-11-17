@@ -420,7 +420,7 @@ pub(crate) struct Shared {
     /// The controller the person last drove the desktop with: the guide
     /// leads with its buttons until a key of their own is pressed.
     pub(crate) controller: Rc<Cell<Option<ui::ControllerFamily>>>,
-    /// Whether the keys being routed now are a controller's own, standing
+    /// Whether the keys being routed now are a controller's own,
     /// for its presses: those say nothing about a keyboard.
     pub(crate) controller_keys: Rc<Cell<bool>>,
     /// The questions about the person's apps: whether to add a program they

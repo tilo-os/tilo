@@ -411,7 +411,7 @@ mod tests {
         assert!(
             kept.iter()
                 .all(|(at, typing)| !*typing || at.saturating_sub(typed) < linger),
-            "a draft left standing stops reading as typing within the linger"
+            "a draft left in place stops reading as typing within the linger"
         );
         let sent = read_by_bo(typed, true);
         assert!(

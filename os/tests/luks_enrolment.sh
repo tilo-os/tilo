@@ -44,7 +44,7 @@ done
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# A fresh volume with the throwaway install key in slot 0, standing in for what
+# A fresh volume with the throwaway install key in slot 0, in place of what
 # `prepare` hands to `enrol`. pbkdf2 at a low iteration count keeps the check to
 # about a second; the KDF is not what is under test.
 new_volume() {

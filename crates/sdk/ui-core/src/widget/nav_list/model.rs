@@ -68,7 +68,7 @@ pub(crate) enum NavRowKind {
     },
     /// The one quiet line an empty section shows ("No drafts").
     Caption { id: String, caption: String },
-    /// A row standing in for an item still being read.
+    /// A row in place of an item still being read.
     Pending { id: String },
 }
 

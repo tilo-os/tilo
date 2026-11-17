@@ -40,7 +40,7 @@ tilo_test_env::scenario! {
 
     phase a_header_row_gives_up_its_labels_before_its_title;
     // A header row holds its title against its actions by one rule: a label the row could show as its
-    // icon gives way before the title is cut, room standing empty beside the title is the title's, and
+    // icon gives way before the title is cut, room left empty beside the title is the title's, and
     // the app's primary action never leaves the row.
     {
         assert!(
@@ -59,7 +59,7 @@ tilo_test_env::scenario! {
             "a title cut beside actions with nothing left to give is the row's last resort"
         );
         let room = header_row_problem(&header_row(180.0, 99.0, 77.0, false, true))
-            .expect("a title cut with room standing empty beside it");
+            .expect("a title cut with room left empty beside it");
         assert!(room.contains("free beside it"), "{room}");
         let dropped = header_row_problem(&header_row(180.0, 180.0, 0.0, false, false))
             .expect("a row that keeps its menu and not its primary action");
@@ -965,7 +965,7 @@ tilo_test_env::scenario! {
         };
         assert!(
             heading_rooms(&heading_over(40.0 + inset), &theme, None).is_empty(),
-            "a heading standing on the content gutter"
+            "a heading on the content gutter"
         );
         let hugging_heading = heading_rooms(&heading_over(40.0), &theme, None);
         assert!(
@@ -1138,7 +1138,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             found(&read_at_the_measure([500.0, 676.0, 560.0, 32.0])).is_empty(),
-            "a bar standing on the column adds to it in its own column"
+            "a bar on the column adds to it in its own column"
         );
         assert!(
             found(&read_at_the_measure([492.0, 676.0, 560.0, 32.0])).is_empty(),
@@ -1907,7 +1907,7 @@ tilo_test_env::scenario! {
 
     phase a_page_section_after_the_writing_stands_under_a_rule;
     // A page's own sections stand under a rule, apart from the writing the page holds: a heading set
-    // like the writing's own and standing no further from it reads as another line of the text.
+    // like the writing's own and no further from it reads as another line of the text.
     {
         let page = |between: Vec<InspectionNode>, wrapped: bool| {
             let top = 400.0;
@@ -1966,7 +1966,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_surface_with_nothing_in_it_is_caught;
-    // A card standing empty in a column paints a filled block with nothing in it, and what it promised
+    // A card left empty in a column paints a filled block with nothing in it, and what it promised
     // is not there: a surface is drawn for what it holds, so one holding nothing — or only a
     // placeholder that never filled — is no surface at all.
     {
@@ -2037,7 +2037,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_pane_saying_nothing_is_chosen_beside_the_list_is_caught;
-    // A pane that only says nothing is chosen, standing beside the list the window chooses from, takes
+    // A pane that only says nothing is chosen, beside the list the window chooses from, takes
     // the room the rows would list in: with nothing chosen the list lists for the whole window, and
     // the pane appears when a row is chosen.
     {
@@ -2518,7 +2518,7 @@ tilo_test_env::scenario! {
 
     phase a_rounded_surface_keeps_a_gutter_from_its_column_and_the_window;
     // A rounded surface stands inside its column with a gutter on every side: one glued to the
-    // column's edges, cut by them, or one standing on the window's edge where no column holds it, is
+    // column's edges, cut by them, or one on the window's edge where no column holds it, is
     // found — and the same surface a gutter in is no finding.
     {
         let shell_with = |banner: InspectionNode| {
@@ -2668,7 +2668,7 @@ tilo_test_env::scenario! {
                 .collect()
         };
 
-        // A notice standing on the list under it, with the page's gap above it.
+        // A notice on the list under it, with the page's gap above it.
         let glued = found(&column_with(vec![
             node_of("Banner", "notice", [304.0, 24.0, 572.0, 65.0]),
             node_of("DescribedList", "list", [304.0, 89.0, 572.0, 400.0]),
@@ -2721,7 +2721,7 @@ tilo_test_env::scenario! {
 
     phase a_page_on_a_phone_screen_starts_its_body_on_the_gutter;
     // A page's body stands under the text a control beside its heading leads to only where the column
-    // has the room: on a phone's screen it starts on the gutter, and a section standing a control's
+    // has the room: on a phone's screen it starts on the gutter, and a section set a control's
     // width in is what a person sees the page lose on every line.
     {
         let theme = ui::Theme::dark();
@@ -2765,7 +2765,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A row of a list, named `title`, standing at `rect`: `open` a row grown into its document.
+/// A row of a list, named `title`, at `rect`: `open` a row grown into its document.
 fn list_row(title: &str, rect: [f64; 4], open: bool) -> InspectionNode {
     let mut row = node("SwipeRow", title, rect, Some(Role::ListItem));
     let access = row.semantics.as_mut().expect("the row's semantics");

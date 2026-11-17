@@ -155,7 +155,7 @@ enum Readable {
 
 impl Workspaces {
     /// Decide `author`'s write `body` (a retained document message) to
-    /// `workspace`'s shared desktop, with `author`'s own standing in the workspace.
+    /// `workspace`'s shared desktop, with `author`'s own member access in the workspace.
     /// Anything else, and what the workspace's governor writes, pass untouched.
     ///
     /// # Errors

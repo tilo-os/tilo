@@ -336,7 +336,7 @@ fn paste(
         }
     };
     if let Err(error) = transfer(&mut receipt, &staging, progress) {
-        // Nothing of a paste that could not be recorded is left standing: what landed stays whole
+        // Nothing of a paste that could not be recorded is left in place: what landed stays whole
         // and the rest goes back where it was.
         if let Err(kept) = undo(&receipt, progress) {
             staging.keep();

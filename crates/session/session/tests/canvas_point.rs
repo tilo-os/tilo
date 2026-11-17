@@ -248,7 +248,7 @@ fn escape_lets_go_of_the_words_typed_at_the_caret() {
 
 /// Drag a rectangle on free ground and say `text` in it: what it finds, by `needle` in its record,
 /// fills the rectangle on screen — its surface at the rectangle's corner and its size, the
-/// handle's band standing over it.
+/// handle's band over it.
 fn the_rectangle_is_filled(text: &str, needle: &str) {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
@@ -511,7 +511,7 @@ fn what_is_found_at_a_click_is_named_for_what_it_is_and_hugs_it() {
         let most = strip.canvas_height as f64;
         assert!(
             ph < most * 0.9,
-            "{} hugs its rows rather than standing at its most: {ph} of {most}",
+            "{} hugs its rows rather than at its most: {ph} of {most}",
             place.title
         );
     }
@@ -967,7 +967,7 @@ fn right_click(session: &mut Session, at: (f64, f64)) {
     }
 }
 
-/// The inbox, standing in the rectangle from `from` to `to`, and where it stands on screen.
+/// The inbox, in the rectangle from `from` to `to`, and where it stands on screen.
 fn inbox_in(
     session: &mut Session,
     from: (f64, f64),
@@ -1372,7 +1372,7 @@ fn the_turn_stays_in_view_over_the_agents_places() {
             .find(|id| id.starts_with(&prefix))
             .unwrap_or_else(|| panic!("{app}'s root is published"))
     };
-    // The agent's step in the turn, standing what it shows beside the turn: in view.
+    // The agent's step in the turn shows what it shows beside the turn: in view.
     let notes = root_of(&session, "so.tilo.lang.notes");
     session
         .invoke_in_turn(
@@ -1709,7 +1709,7 @@ fn root_of(session: &Session, app: &str) -> String {
         .unwrap_or_else(|| panic!("{app}'s root is published"))
 }
 
-/// Whether the box `what` fills the room under the turn standing at `turn`.
+/// Whether the box `what` fills the room under the turn at `turn`.
 fn in_room(what: (i64, i64, i64, i64), turn: (i64, i64, i64, i64)) -> bool {
     what.0 == turn.0 && what.2 == turn.2 && what.1 >= turn.1 + turn.3
 }

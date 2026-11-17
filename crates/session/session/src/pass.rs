@@ -766,7 +766,7 @@ impl Session {
         // What the asks opened or closed of the chrome's own surfaces stands in the stack now, and
         // the clipboard panel a key asked for goes up beside the caret: the session this pass lays out
         // and publishes names them, not the one after. Under the shell the chrome draws nothing:
-        // the session's search it runs for the launcher is no surface the person sees, and standing in
+        // the session's search it runs for the launcher is no surface the person sees, and in
         // the stack it would take the launcher down.
         if !self.shared.surfaces.shell {
             self.with_chrome_mut(tilo_desktop::desktop_host::DesktopChrome::publish_overlays);

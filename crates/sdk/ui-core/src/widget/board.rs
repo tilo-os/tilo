@@ -110,7 +110,7 @@ impl Board {
     }
 
     /// Add a list keyed `key`, headed by `header` where it has one, holding `cards` (each
-    /// with its key) in order, and `foot` standing at the list's end under them: what adds to
+    /// with its key) in order, and `foot` at the list's end under them: what adds to
     /// the list, always in reach while the cards scroll above it.
     ///
     /// A list with no heading starts its cards at its top, where a list's first row stands. The

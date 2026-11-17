@@ -315,7 +315,7 @@ impl Shared {
     }
 
     /// The desktop's control hints: the person's record as their settings hold it, the reasons
-    /// this session knows (following someone, setup standing over the desktop), and what they
+    /// this session knows (following someone, setup over the desktop), and what they
     /// learned since.
     pub(crate) fn follow_hints(&self, setup_up: bool) {
         let settings = settings_store::stamp();

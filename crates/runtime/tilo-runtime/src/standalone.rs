@@ -558,7 +558,7 @@ impl RuntimeServices for Standalone {
     }
 }
 
-/// The broker's action links as one more local caller, standing for no app
+/// The broker's action links as one more local caller, for no app
 /// connection. Its callers act from this foreign device.
 #[derive(Clone)]
 pub struct RuntimeActionProvider {

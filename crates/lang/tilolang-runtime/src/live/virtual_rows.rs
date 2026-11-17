@@ -1104,7 +1104,7 @@ fn keeps(core: &Core, coll: &CollRef, id: &str) -> Option<bool> {
 }
 
 /// The rows of a list of values the person looking took out of it that still stand: those kept
-/// before, those this change named, and the row standing `open`, where they stood in it. They
+/// before, those this change named, and the row open, where they stood in it. They
 /// stand there while the list is the one that kept them — its other rows there still, in order —
 /// and the items are still there: a row the list holds again is its own row, and one whose item
 /// is gone has no row.

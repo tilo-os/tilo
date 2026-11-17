@@ -1609,7 +1609,7 @@ scenario "an empty strip" -> Layout {
     a
 }
 
-/// A place standing in for a search: what a person typed into it, and the matches the notes app
+/// A place for a search: what a person typed into it, and the matches the notes app
 /// answered, each a press that shows it in the same place (`query_view`).
 scenario "a place finding what to show" -> Layout {
     let v = viewing
@@ -1724,7 +1724,7 @@ scenario "a canvas of clusters" -> Layout {
 /// The frameless canvas: the same places with no frame around them, so a resource's view stands
 /// as content and nearness groups it. Each note is its app's editor composed in place; the
 /// terminal beside them is a window, shown in its well.
-scenario "resources standing as content" -> Layout {
+scenario "resources shown as content" -> Layout {
     let v = viewing
     v.style = "so.tilo.shell:frameless"
     let a = root Layout
@@ -1994,7 +1994,7 @@ scenario "the agents on the bar" {
     if let part = s.bar_parts.find(p -> p.kind == BarPartKind.agent) { show_part(s, part, true) }
 }
 
-/// The text channel named `name` in the chat's sidebar, standing alone or in a category.
+/// The text channel named `name` in the chat's sidebar, on its own or in a category.
 fn channel_named(name: Text) -> Option<chat.TextChannel> {
     for x in chat.conversations.channels {
         match x {

@@ -52,7 +52,7 @@ pub struct LayoutStripReading {
     #[serde(default)]
     pub canvas_hugs: bool,
     /// Whether the strip's window floats above the workspace's windows,
-    /// rather than standing among them in its row.
+    /// rather than among them in its row.
     #[serde(default)]
     pub floating: bool,
     /// The corner of the work area a floating window keeps its distance from:

@@ -628,7 +628,7 @@ impl Core {
 
     /// Where the item `id` stands in `coll`, as the store's listing finds it: by what orders the
     /// listing — a page or two —, not by reading its items one by one. The view depends on the
-    /// item standing there, so an item that moves runs it again.
+    /// item there, so an item that moves runs it again.
     pub(crate) fn coll_index_of(&self, coll: &Rc<CollRef>, id: &str) -> HResult<Option<usize>> {
         let listing = self.coll_listing(coll)?;
         let Some(at) = listing.position(id) else {

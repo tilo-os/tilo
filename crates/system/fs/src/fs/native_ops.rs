@@ -90,7 +90,7 @@ impl QuickFS {
         self.ns().lookup_kind(parent, name)
     }
 
-    /// The directory at `components`, creating missing directories. A file standing where a directory
+    /// The directory at `components`, creating missing directories. A file where a directory
     /// must be is removed first: the changeset that made the path a directory removed it on the
     /// author's side too.
     fn ensure_dir_components(&self, components: &[Vec<u8>]) -> Result<u64, i32> {

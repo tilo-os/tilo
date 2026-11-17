@@ -917,7 +917,7 @@ impl Reconciler {
         let through = &placed.through;
         let inherited = self.filling.get(&parent.key).copied();
         let mut placement = placement_in(parent, inherited, child);
-        // A fragment draws nothing of its own, so what it asks for is the child standing under it:
+        // A fragment draws nothing of its own, so what it asks for is the child under it:
         // a `for`'s fill reaches each row it places in a row or a grid, and the narrowest width it
         // names floors each of them.
         let mut passed = None;
@@ -1847,7 +1847,7 @@ fn arrived_window(old_node: &UiNode, new_node: &UiNode) -> Option<String> {
 }
 
 /// Whether the embedded view `node` is framed as one object: unless it is made of objects itself,
-/// its cards standing at its top or in its top layout.
+/// its cards at its top or in its top layout.
 fn frames(node: &UiNode) -> bool {
     !node
         .children
@@ -1862,7 +1862,7 @@ fn frames(node: &UiNode) -> bool {
 fn placed(node: &UiNode) -> Vec<Placed<'_>> {
     // A row and a grid place every child a loop's fragment holds, as parts of their own, so a row's
     // items share the row's spans one by one. Every other container keeps a fragment as a part of
-    // its own: a view call is a box standing where the view put it, and what the view asks for is
+    // its own: a view call is a box where the view put it, and what the view asks for is
     // asked of that box.
     fn flatten<'a>(node: &'a UiNode, through: &mut Vec<&'a UiNode>, out: &mut Vec<Placed<'a>>) {
         for child in &node.children {

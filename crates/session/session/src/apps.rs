@@ -1067,7 +1067,7 @@ impl Apps {
     }
 
     /// Ask the shell for the tab a window of the app's own takes — right after `anchor`, the tab the
-    /// app shows there, and standing over the shell when `floated` — and plan the window that fills
+    /// app shows there, and over the shell when `floated` — and plan the window that fills
     /// it: the session starts it once the shell asks back, the tab being the window's instance
     /// ([`Self::start_asked`]). `reveal` is the item the window shows, when the app named one.
     /// Nothing comes when the shell holds no tab of the app to open beside. Whether a tab is held.

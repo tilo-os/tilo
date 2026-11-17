@@ -251,7 +251,7 @@ impl SurfaceHost for ShellPart {
         ui::lend_content(self.content.clone());
         let input = std::mem::take(&mut self.input);
         // A surface the shell shows, or a menu it opened, makes the part cover the outputs:
-        // standing over them is what lets a press outside it close it.
+        // over them is what lets a press outside it close it.
         self.follow_cover();
         if input || self.due() {
             self.turn();

@@ -7,7 +7,7 @@
 //! them through cursors), so the text around them may have changed in any
 //! way. Only one thing makes a text's part of a change somebody else's too:
 //! they rewrote it since. Then their text is the newer value, and the revert
-//! leaves it standing, as it leaves a field somebody set since. Somebody
+//! leaves it in place, as it leaves a field somebody set since. Somebody
 //! rewrote the change's text when, in a change made after it (with it in
 //! its history; a concurrent change never saw it):
 //!

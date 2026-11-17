@@ -1,4 +1,4 @@
-//! The project explorer: the toolkit's list, its rows standing as a tree, over
+//! The project explorer: the toolkit's list, its rows shown as a tree, over
 //! a snapshot of the [`Project`], in the shell's sidebar column.
 
 use std::cell::RefCell;

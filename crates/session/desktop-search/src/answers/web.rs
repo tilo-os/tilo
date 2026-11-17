@@ -54,7 +54,7 @@ pub struct Service {
     pub domain: &'static str,
     /// The page the service row opens.
     pub home: &'static str,
-    /// The search URL, `{query}` standing for the percent-encoded query.
+    /// The search URL, `{query}` for the percent-encoded query.
     pub search: &'static str,
     pub app: Option<ServingApp>,
 }

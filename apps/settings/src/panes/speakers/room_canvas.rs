@@ -17,7 +17,7 @@ use crate::i18n::t;
 use crate::speaker_setup::ROOM_EXTENT_MM;
 
 /// The least the canvas shows either side of the speakers' middle: a set
-/// standing close together still reads as a room, not as a magnified dot.
+/// close together still reads as a room, not as a magnified dot.
 const MIN_HALF_VIEW_MM: f64 = 1_500.0;
 /// Room left around the speakers (and the listener) the view fits.
 const VIEW_MARGIN_MM: f64 = 400.0;
@@ -1233,7 +1233,7 @@ mod tests {
     }
 
     /// The view fits the speakers: they spread across the canvas rather
-    /// than clustering in its middle, and a set standing close together is
+    /// than clustering in its middle, and a set close together is
     /// not magnified past a minimum.
     #[test]
     fn the_view_fits_the_speakers_and_grows_when_one_is_dragged_out() {

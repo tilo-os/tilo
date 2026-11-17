@@ -10,7 +10,7 @@
 //! far as its person admitted the agent; a stranger's code asks. Trusted code still asks before
 //! reaching outside, unless the workspace grants the person that.
 //!
-//! Where the host has no standing for the person (a window outside a host, a test), the person's
+//! Where the host has no member access for the person (a window outside a host, a test), the person's
 //! own part is not decided here, as a native window's detached dispatcher does not decide it: the
 //! api decides what they commit. The agent and code bounds still are.
 //!
@@ -73,7 +73,7 @@ pub struct TiloAuthority {
 }
 
 impl TiloAuthority {
-    /// The authority of a host for `viewer`, the person at the window, whose standing in the workspace
+    /// The authority of a host for `viewer`, the person at the window, whose member access in the workspace
     /// `access` reads.
     pub fn new(viewer: Actor, access: impl Fn() -> Option<MemberAccess> + 'static) -> Self {
         Self {
@@ -289,7 +289,7 @@ impl Authority for TiloAuthority {
             (Some(access), Some(person), _) => access.policy.party(person),
             // An agent nobody delegated: only what the workspace grants it.
             (Some(access), None, _) => access.policy.party_of(grantee(invoker)),
-            // No standing here: the API decides the person's own part.
+            // No member access here: the API decides the person's own part.
             (None, _, _) => Party::default().owning(TreePath::root()),
         };
         let delegation = match (agent, person) {

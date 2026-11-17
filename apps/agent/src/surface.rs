@@ -1119,7 +1119,7 @@ mod tests {
                 // Nor is it dropped when the split would leave nothing: two tied
                 // operations that both *want* a value are still ambiguous when the
                 // instruction supplied none — narrowing must give up and leave the
-                // original tie standing rather than choose from an empty set.
+                // original tie rather than choose from an empty set.
                 let both_prompted = vec![
                     offer(
                         "photos",

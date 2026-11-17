@@ -70,7 +70,7 @@ BASELINE = Path(__file__).resolve().parent / "primitives_baseline.txt"
 
 SCOPES = ("crates/session", "apps")
 
-# A separator glyph standing between two values.
+# A separator glyph between two values.
 GLYPH_JOIN = re.compile(r"\S\s+[·•|—–›»]\s+\S|\S\s/\s\S|^\s*[·•]\s|\s[·•]\s*$")
 # Unicode symbols used as icons: arrows, check marks, crosses, dots, stars,
 # triangles.

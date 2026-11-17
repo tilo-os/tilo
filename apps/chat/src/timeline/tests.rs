@@ -114,7 +114,7 @@ fn a_wheel_step_lays_out_nothing_and_draws_only_the_rows_it_brings_into_view() {
     let (first, _) = frames.draw(&mut app);
     assert!(
         first.measured > 0 && first.measured < 300,
-        "the first frame measures the rows standing in view, not every row: {first:?}"
+        "the first frame measures the rows in view, not every row: {first:?}"
     );
     settle(&mut app, &mut frames);
     // The pointer rests over the timeline's gutter, where no row lifts.

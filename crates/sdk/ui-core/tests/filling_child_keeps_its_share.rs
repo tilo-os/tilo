@@ -17,7 +17,7 @@ use tilo_ui::widget::arrange::{Fit, Part, Stack};
 use tilo_ui::widget::{Column, Container, Fitted, Row, Scrollable, Text};
 
 /// A stack of a strip above `content`, `content` filled (`fill` in the language), inside a
-/// container of exactly `height` standing in a column that fills the window.
+/// container of exactly `height` in a column that fills the window.
 fn stack_in_a_place(
     strip: Container,
     content: Box<dyn tilo_ui::widget::Widget>,

@@ -2431,7 +2431,7 @@ fn a_sideways_swipe_pans_the_strip_with_the_fingers_and_rests_where_they_stopped
                 );
                 let offsets = swipe_the_strip(&mut frame, &handle, windows, steps, forward);
                 // Every event moves the strip by its own travel, the fingers'
-                // way: never against them, never standing still while they move.
+                // way: never against them, never still while they move.
                 let mut asked = start;
                 for (index, (&part, &offset)) in steps.iter().zip(offsets.iter()).enumerate() {
                     asked += swipe_travel(forward, part);

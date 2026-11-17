@@ -1,5 +1,5 @@
 /// The canvases of shell.md §2 and §8: places at points on a surface that pans and zooms, each
-/// drawn in a frame (`frames`), or as its own view standing as content and grouped by where it
+/// drawn in a frame (`frames`), or as its own view shown as content and grouped by where it
 /// is grouped by where it is, a cluster per task (`frameless`).
 ///
 /// Pan and zoom are the map component's (`ui.Map`) camera: each person's lens, kept on their
@@ -8,7 +8,7 @@
 /// `canvas_width`, `canvas_height`); the places of a strip stand in a row from that corner, so a
 /// strip of several windows is one run of work and a strip of one is one window where it was
 /// dropped (canvas.md §6).
-/// The canvas: every strip at its point, its places standing side by side from there.
+/// The canvas: every strip at its point, its places side by side from there.
 /// Panning and zooming is the map's camera (a middle drag, Ctrl and a wheel, the arrow keys, two
 /// fingers); it moves the lens and nothing in the layout, so a place stays where it was
 /// while the person looks around, and the places keep their canvas points.
@@ -282,7 +282,7 @@ fn snap(at: Int, pitch: Int) -> Int {
     return (at + pitch / 2) / pitch * pitch
 }
 
-/// The place standing on the canvas that shows the resource `resource`, if one does: what a drag
+/// The place on the canvas that shows the resource `resource`, if one does: what a drag
 /// that ended on the canvas moves rather than placing a second time.
 fn place_showing(resource: Text) -> Option<LayoutPlace> {
     let a = layout
@@ -318,7 +318,7 @@ fn pin_x(a: Layout, s: LayoutStrip, p: LayoutPlace) -> Int {
     s.canvas_x
 }
 
-/// A place on the canvas: its resource's view standing on the canvas as content (canvas.md §2),
+/// A place on the canvas: its resource's view on the canvas as content (canvas.md §2),
 /// on the theme's window surface with no frame and no title bar. Hovering it, or working in it,
 /// shows its handle over its corner: what it is, its resource's actions, pin and close. Picking
 /// the handle up carries the place's resource: let go over the canvas, the map reports the drop
@@ -383,7 +383,7 @@ view framed_place(a: Layout, p: LayoutPlace, lists: Bool) {
     }
 }
 
-/// A place on the frameless canvas: its resource's view standing as content (or its window's
+/// A place on the frameless canvas: its resource's view shown as content (or its window's
 /// well), with a line naming what it is rather than a frame around it. The controls stand
 /// outside it, and the content itself is `place_content`'s, as every style draws it.
 view frameless_place(a: Layout, p: LayoutPlace) {

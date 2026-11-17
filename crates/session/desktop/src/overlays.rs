@@ -274,7 +274,7 @@ pub const POPOVER_HEIGHT: f64 = 640.0;
 /// and the notification centre keep, so the three line up on one trailing edge.
 pub const POPOVER_MARGIN: f64 = tilo_desktop_surface::notifications::CORNER_INSET;
 
-/// The kind of thing a surface is: what the person sees standing over the desktop. The kind fixes
+/// The kind of thing a surface is: what the person sees over the desktop. The kind fixes
 /// how Escape and a press outside it answer, how assistive technology hears it and whether it
 /// covers the whole display.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -778,7 +778,7 @@ impl Overlays {
         self.0.borrow().displays.caret
     }
 
-    /// Where the surface standing in `part` was last seen, as its app drew it: the size a panel
+    /// Where the surface in `part` was last seen, as its app drew it: the size a panel
     /// that fits its content asked for, which is shorter than the room when its page is.
     #[must_use]
     pub fn surface(&self, part: Part) -> Option<Rect> {
@@ -789,7 +789,7 @@ impl Overlays {
             .and_then(|state| state.stands)
     }
 
-    /// Put `part` up, standing at `anchor` or where the part stands by itself.
+    /// Put `part` up, at `anchor` or where the part stands by itself.
     /// One anchored surface at a time: the person looks at the one they just opened, so the others
     /// go down with it. Their widgets follow the stack ([`Self::is_open`]), which is how the chrome
     /// learns to close them.
@@ -797,7 +797,7 @@ impl Overlays {
         self.raise(part, anchor, false);
     }
 
-    /// Put `part` up over the surface the person types in, standing at `anchor`: what is opened
+    /// Put `part` up over the surface the person types in, at `anchor`: what is opened
     /// for that field (the clipboard, to paste into it) leaves the field's surface up under it,
     /// takes the keyboard from it while it stands, and gives it back as it goes. Every other
     /// anchored surface goes down, as [`Self::open`] takes them.
@@ -975,7 +975,7 @@ impl Overlays {
         })
     }
 
-    /// The surface a press at this point closes, by the dismissal table: the topmost popup standing
+    /// The surface a press at this point closes, by the dismissal table: the topmost popup
     /// where the point is not. What the session placed is judged by the rect its anchor settles; a
     /// surface its own widget draws says where it stands, and one that says neither is its view's
     /// to close.

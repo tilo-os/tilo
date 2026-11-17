@@ -359,7 +359,7 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
     });
     // Pressing send sends what was typed through Chat's own `send`: the channel's reading the
     // place draws then holds a message saying it, which is what the page shows again — the
-    // page's own message, not the draft still standing in the field.
+    // page's own message, not the draft still there in the field.
     let answer = crate::common::control(
         &mut session,
         &socket,

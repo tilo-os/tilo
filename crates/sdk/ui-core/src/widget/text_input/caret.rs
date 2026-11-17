@@ -1,14 +1,14 @@
-//! A caret standing on a surface (canvas.md §1): a field with no well and no fill, only as wide
+//! A caret on a surface (canvas.md §1): a field with no well and no fill, only as wide
 //! as what it holds.
 
 use super::TextInput;
 use crate::text_render::TextRenderer;
 
 impl TextInput {
-    /// A caret standing on a surface rather than a field in a form: it draws no well and no
+    /// A caret on a surface rather than a field in a form: it draws no well and no
     /// fill — the caret and the words are all there is of it — and it is only as wide as what
     /// it holds, growing as the words are typed (the prompt's width while it holds none). The
-    /// canvas's caret, standing where the person pointed (canvas.md §1).
+    /// canvas's caret, where the person pointed (canvas.md §1).
     #[must_use]
     pub fn as_caret(mut self) -> Self {
         self.set_caret(true);

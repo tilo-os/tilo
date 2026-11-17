@@ -233,7 +233,7 @@ pub struct Web {
     /// The workspace's content store a body that is not text is kept in.
     content: ui::content::ContentStore,
     /// Where a search asks and a read reaches instead of the web: a server on
-    /// this machine, standing in for the engines and the pages.
+    /// this machine, in place of the engines and the pages.
     #[cfg(any(test, feature = "fixture-servers"))]
     look_elsewhere: Option<Vec<(Engine, String)>>,
 }

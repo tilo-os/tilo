@@ -10,7 +10,7 @@
 //! that key: adding a stroke re-simulates only the tiles it reaches.
 //!
 //! A live view asks for its tiles and draws what is ready, the coarse
-//! picture standing in for the rest until worker threads finish them. An
+//! picture in place of the rest until worker threads finish them. An
 //! export or a `look` waits for every tile it needs. Farther than the
 //! coarse scale, the picture is drawn from halved copies of itself, so a
 //! zoomed-out painting does not shimmer.

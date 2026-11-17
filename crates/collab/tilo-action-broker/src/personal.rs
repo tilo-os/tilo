@@ -54,7 +54,7 @@ pub struct Person {
     /// Their identity root, which their store and their own cluster derive
     /// from.
     pub root: [u8; 32],
-    /// The actor their records' standing is decided for.
+    /// The actor their records' member access is decided for.
     pub actor: String,
 }
 

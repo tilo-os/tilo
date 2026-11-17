@@ -22,7 +22,7 @@ view dock(s: Shell) {
 /// Letting go runs `place_item`, the one action the gesture commits; a press on an item opens
 /// what it stands for. A floating dock is one compact group centred on its edge; a dock that
 /// rides the whole edge is the taskbar: the dock's items leading, then the time and the
-/// device's status trailing, in the one bar the theme draws as a bar's. A dock standing up a
+/// device's status trailing, in the one bar the theme draws as a bar's. A dock at a
 /// leading or trailing edge runs top to bottom. A dock along the top or the foot holding more
 /// than its edge has room for scrolls along it, so the dock stays on the output.
 ///

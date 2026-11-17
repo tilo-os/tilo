@@ -237,7 +237,7 @@ fn at_mut<T>(array: &mut [T; 4], column: Column) -> &mut T {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Part {
     Body(Column),
-    /// The overview's rail, standing in for the overview where the list
+    /// The overview's rail, in place of the overview where the list
     /// does not fit.
     Rail,
     /// A column's title (and count) in the header row.
@@ -2275,7 +2275,7 @@ impl NavShell {
 
     /// The screen a new window opens on, from [`opening_pane`](layout::opening_pane): the first
     /// list of items — the overview where there is one, the content's own list where it is one (a
-    /// mail window on the inbox, a Files window on the folder) or the empty state standing in for
+    /// mail window on the inbox, a Files window on the folder) or the empty state in place of
     /// it — else the sidebar (Settings' list).
     fn opening_pane(&self, stack: &[NavPane]) -> NavPane {
         stack

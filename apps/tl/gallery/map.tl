@@ -6,7 +6,7 @@ type Places {
 default view places for Places
 
 /// The canvas's window: a map filling it, as a canvas stands, with a place at each point and a
-/// window standing on it as a traditional desktop's does.
+/// window on it as a traditional desktop's does.
 view places(p: Places) {
     ui.Map(name: p.title) {
         ui.MapPin(name: "Notes", x: 40, y: 40, width: 240) {

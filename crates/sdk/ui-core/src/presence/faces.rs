@@ -86,7 +86,7 @@ impl FaceStack {
         max: 3,
     };
 
-    /// The faces standing on a control's own face `height` high (a bar's group of who is
+    /// The faces on a control's own face `height` high (a bar's group of who is
     /// here): the ring and the ground around it fit within the control, so no face is cut by
     /// the control's edge.
     #[must_use]
@@ -99,7 +99,7 @@ impl FaceStack {
         }
     }
 
-    /// The faces shown of `count` people, and the badge standing past them counting the
+    /// The faces shown of `count` people, and the badge past them counting the
     /// rest: up to three faces, then a "+N" face of its own (four people read as three faces
     /// and "+1", never as a face counting four).
     #[must_use]

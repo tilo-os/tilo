@@ -133,7 +133,7 @@ impl DocumentSync {
         Ok(changed)
     }
 
-    /// Merge `mutation`, which the peer delivered as the record standing at
+    /// Merge `mutation`, which the peer delivered as the record at
     /// `heads`; whether it changed. The peer holds the record there, so what
     /// this replica sends it next is only what lies past those heads, never
     /// the record whole: a window that opened a record before its workspace

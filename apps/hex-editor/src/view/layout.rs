@@ -316,7 +316,7 @@ impl Editor {
                 .top_row()
                 .min(rows.saturating_sub(geo.visible_rows)),
         );
-        // The quiet bar every scroll view has, standing off the edge by an `s1` step.
+        // The quiet bar every scroll view has, off the edge by an `s1` step.
         let gutter = s(theme.tokens.metrics.scrollbar_gutter);
         let inset = s(sp.s1);
         geo.scroll_track = Rect::new(

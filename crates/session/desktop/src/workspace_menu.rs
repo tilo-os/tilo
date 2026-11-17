@@ -299,7 +299,7 @@ impl WorkspaceMenu {
     }
 
     /// Open the menu for `model` with its first row at `at` (a secondary press on the shell) within
-    /// `viewport` , or close it when it is open: the same menu, standing where the person pressed.
+    /// `viewport` , or close it when it is open: the same menu, where the person pressed.
     pub fn open_at(&mut self, model: &WorkspaceMenuModel, at: Point, viewport: Rect) {
         if self.menu.is_open() {
             self.close();

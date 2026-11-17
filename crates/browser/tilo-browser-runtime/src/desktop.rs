@@ -209,7 +209,7 @@ impl SharedRole {
         self.0.swap(code, Ordering::Relaxed) != code
     }
 
-    /// The same standing as `other` from now on: one answer reaches both.
+    /// The same member access as `other` from now on: one answer reaches both.
     pub fn share(&mut self, other: &Self) {
         self.0 = Arc::clone(&other.0);
     }

@@ -402,3 +402,17 @@ paths = [
     "crates/browser/tilo-browser-runtime/web/entry-page.mjs",
     "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs",
 ]
+
+[[allow]]
+reason = "Plain English 'long-standing': an old problem, conjecture or surface the sample articles and a test's note name."
+words = ["standing"]
+paths = [
+    "apps/feeds/src/sample.rs",
+    "crates/platform/tilo-media/tests/software_fallback.rs",
+    "crates/sdk/ui-core/src/screen_reader.rs",
+]
+
+[[allow]]
+reason = "A photo taken standing is a portrait: plain English, and the gallery's tall photos say it."
+words = ["standing"]
+paths = ["apps/tl/gallery/locales/en-US.ftl", "apps/tl/gallery/media.tl"]

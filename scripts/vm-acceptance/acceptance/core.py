@@ -405,7 +405,7 @@ DISMISS_ESCAPES = 4
 
 
 def open_surfaces(state: dict) -> list[str]:
-    """Every surface the state dump shows standing over the windows, by name.
+    """Every surface the state dump shows over the windows, by name.
 
     Each of these takes the keyboard from the window behind it, so one left open by a
     check receives the next check's typing: run 89618's A01 typed its Terminal command

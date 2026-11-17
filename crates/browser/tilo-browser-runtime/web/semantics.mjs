@@ -425,7 +425,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     // covers a row and the row's own contents, and one layer's key is drawn as
     // a row and again inside it. Where two nodes would land on one key, each is
     // its own element, named by its place in the tree down from its parent: the
-    // other node's element standing above this one is no tree to append into.
+    // other node's element above this one is no tree to append into.
     function countKeys(semantics,index,identity){
       if(semantics.state?.hidden)return;
       const key=keyOf(identity,semantics.semantic_key??semantics.action_target??index);

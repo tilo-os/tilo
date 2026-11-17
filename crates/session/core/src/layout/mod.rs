@@ -184,7 +184,7 @@ pub enum LayoutAction {
         y: i64,
         width: i64,
         height: i64,
-        /// Float the place above the workspace's windows at `float` , instead of standing it on the
+        /// Float the place above the workspace's windows at `float` , instead of setting it on the
         /// canvas: how a conversation popped out of its app opens, its draft and scroll kept in the
         /// window it already was. Left out, the place stands on the canvas as it always did.
         #[serde(default)]
@@ -249,7 +249,7 @@ pub enum LayoutAction {
     /// The system's `open` (`docs/designs/app-language/one-app-model.md` §3): the resource
     /// `resource` placed with its view `view` (empty for its primary one) beside the place showing
     /// `beside` — the turn that asked, by the address of its message — or beside the place in
-    /// front when it names none. A resource already standing is brought forward instead. The action API
+    /// front when it names none. A resource already open is brought forward instead. The action API
     /// resolves it into the `Place` (or `Activate`) it makes before the step is recorded, so the
     /// record holds ids. Appended last.
     Open {
@@ -592,7 +592,7 @@ pub struct Target {
     /// the app. `None` where the default view is the resource's own.
     pub place_view: Option<String>,
     /// What [`Self::place_view`] is called, as its app publishes the view (`All inboxes`, `All
-    /// notes`): what a place standing through it is captioned, since it shows the thing the view
+    /// notes`): what a place shown through it is captioned, since it shows the thing the view
     /// names rather than the record the resource's own label is (an app's root goes by its first
     /// account or record).
     pub place_title: String,
@@ -948,7 +948,7 @@ impl Layout {
     /// Place the resource a text typed at `at` finds on the canvas, as `asked`'s:
     /// the top of the `hits` the system's search answered for it that a place can
     /// show ([`found_resource`]), resolved against what the session publishes now
-    /// ([`Catalog`]), standing at `at` through the layout action
+    /// ([`Catalog`]), at `at` through the layout action
     /// [`LayoutAction::Place`] — one attributed, undoable change of the
     /// person's record (shell.md §8). `view` empty shows the resource's primary
     /// view. `strip` names the strip the found resource joins as a tab (a strip
@@ -1094,7 +1094,7 @@ impl Layout {
 
     /// The place `place` shows what `answer` says, when the app the query asked has answered:
     /// exactly one match of its type re-points the place at that resource (one layout step, so
-    /// Undo puts the query back); several or none leave the query standing with what it found or
+    /// Undo puts the query back); several or none leave the query with what it found or
     /// did not. The layout is unchanged by this call alone: the re-point is one [Show] step.
     ///
     /// Returns the resource the place now shows, when it re-pointed, so a caller says so.
@@ -1195,7 +1195,7 @@ impl Layout {
 
     /// Settle the query a place stands with what its app answered, by the query's key: exactly one
     /// match re-points the place ([`LayoutAction::Show`], one step Undo takes back), and
-    /// several, none or a failure leave the query standing with what it found or did not. The one
+    /// several, none or a failure leave the query with what it found or did not. The one
     /// layout step is made as the person's.
     pub fn answer_query_of(&mut self, key: &str, answer: Answer, busy: Busy) {
         let Ok(place) = key.parse::<u64>() else {
@@ -1222,7 +1222,7 @@ impl Layout {
     }
 
     /// The place already showing `resource` or anything of its root, if one stands: what opening a
-    /// mailbox, a conversation, a notebook or one of its entries brings forward rather than standing
+    /// mailbox, a conversation, a notebook or one of its entries brings forward rather than opening
     /// a second place of the same app's record (`shell.md` §3, "Activating something already shown
     /// goes to it"). Opening the root and then one view inside it is one thing open, not two.
     #[must_use]
@@ -1264,8 +1264,8 @@ impl Layout {
     /// with its view `view` (empty for its primary one) beside the place that shows `beside`'s
     /// resource — the turn that asked, by its [`turn_key`], or its conversation — or beside the
     /// place in front when
-    /// `beside` names nothing. A resource already standing on the layout is brought forward instead,
-    /// so opening what is shown raises it rather than standing a second place.
+    /// `beside` names nothing. A resource already on the layout is brought forward instead,
+    /// so opening what is shown raises it rather than opening a second place.
     ///
     /// Returns the place's id, or `None` when the layout already held one and brought it forward.
     ///

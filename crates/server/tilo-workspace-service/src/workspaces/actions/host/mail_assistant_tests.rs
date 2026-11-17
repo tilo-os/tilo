@@ -898,6 +898,33 @@ async fn a_version_the_person_is_not_shown_is_refused_unasked() {
     sending.refused_unasked("a formatted version", answer);
 }
 
+/// One outbox message is sent once, whatever asks the workspace's server for it: the
+/// message the workspace's outbox holds is named by its own id, and a send
+/// the workspace already kept answers that send instead of handing the mail
+/// to its account's server again.
+#[tokio::test]
+async fn a_message_the_workspace_holds_leaves_once() {
+    let sending = Sending::new().await;
+    let begun = lunch_with(&json!({"messageId": "outbox-1@example.test"}));
+    let first = sending.send(begun.clone()).await.expect("it leaves");
+    let asked = sending.allowing.count();
+    let again = sending
+        .send(begun)
+        .await
+        .expect("the send already made answers");
+    assert_eq!(first, again, "the same send is answered");
+    assert_eq!(
+        sending.setup.servers.asked(),
+        [LUNCH_LEFT],
+        "the server is handed the message once"
+    );
+    assert_eq!(
+        sending.allowing.count(),
+        asked,
+        "its person is not asked about a message that left"
+    );
+}
+
 /// A file and an invitation a message carries are named with their size,
 /// and the person is asked only once every file is whole: what they allow
 /// is then what leaves.

@@ -16,7 +16,7 @@
 //! as content this one does not have.
 //!
 //! Who may: the host's own person and their agents, and any member of the
-//! workspace, or an agent of theirs, as their standing there is now: one who
+//! workspace, or an agent of theirs, as their member access there is now: one who
 //! may change its records (an editor, an agent of one) puts files, and one
 //! who may read it gets them. A viewer only reads.
 
@@ -265,7 +265,7 @@ impl WorkspaceActions {
 
     /// Answer `caller`'s request for a piece of `content` from the content
     /// store of the host's workspace `workspace_id`: the host's own person
-    /// and their agents, and anyone whose standing there lets them read it,
+    /// and their agents, and anyone whose member access there lets them read it,
     /// which the service's thread reads.
     pub(super) fn content_get(
         &self,

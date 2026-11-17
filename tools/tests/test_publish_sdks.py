@@ -144,7 +144,7 @@ class PublishSdksTests(unittest.TestCase):
         self.assertEqual(self.sent(), [])
 
     def test_a_working_tree_checks_a_stand_in_version(self):
-        # No T_REF: main's run, which must exercise the same build without standing for a release.
+        # No T_REF: main's run, which must exercise the same build without naming a release.
         result = self.run_script("check", None)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("tilo-sdk 0.0.0 is ready to publish", result.stdout)

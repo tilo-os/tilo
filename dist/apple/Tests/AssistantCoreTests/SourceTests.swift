@@ -65,8 +65,8 @@ final class SourceTests: XCTestCase {
         async let seen = take(4, of: source.session())
         try await Task.sleep(for: .milliseconds(50))
         try await source.pair(with: link)
-        let standings = await seen
-        XCTAssertEqual(standings, [.signedOut, .pairing, .confirming(code: "481 207"), .signedIn(Drawing.person)])
+        let states = await seen
+        XCTAssertEqual(states, [.signedOut, .pairing, .confirming(code: "481 207"), .signedIn(Drawing.person)])
         // A pairing that shows no code goes on as before.
         var plain = MemorySource.Content()
         plain.pairsAs = Drawing.person

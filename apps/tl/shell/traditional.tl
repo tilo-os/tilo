@@ -51,7 +51,7 @@ view traditional_desktop(a: Layout, lists: Bool) {
 }
 
 /// The window in front alone, filling the room it is given: what a compact output shows of the
-/// desktop (`desktop`), where windows standing where they were left would show their corners cut
+/// desktop (`desktop`), where windows left where they were would show their corners cut
 /// off and the window the person is in could stand behind another.
 view front_window(a: Layout, lists: Bool) {
     if let s = focused_strip(a) {
@@ -81,7 +81,7 @@ view desktop_frame(a: Layout, s: LayoutStrip, p: LayoutPlace, focused: Bool, lis
 /// one bar, never the shell's stacked on the app's. A foreign window stands in its well, under
 /// the frame's own bar naming the place. The controls stay the shell's, so a press there never
 /// reaches the app. The frame tells the window's bar to keep its title and the shell's controls
-/// alone (`lists_actions`), the window's own actions standing in the shell's one menu: the frame's
+/// alone (`lists_actions`), the window's own actions in the shell's one menu: the frame's
 /// `Window actions` where the shell's bar lists none, else the shell's bar
 /// (`bar_lists_actions`). `lists`: the shell's bar already lists them, so the frame's menu gives
 /// way, and every action stands once.

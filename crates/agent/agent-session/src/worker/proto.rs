@@ -97,7 +97,7 @@ pub(crate) enum Request {
         actor: String,
         seed: Option<(String, Vec<Vec<u8>>)>,
     },
-    /// The held record's member reads their standing as of a later time:
+    /// The held record's member reads their member access as of a later time:
     /// JSON `ReplicaActor`, a member of the same access and sandbox.
     Renew { actor: String },
     /// Every operation the held record publishes now.

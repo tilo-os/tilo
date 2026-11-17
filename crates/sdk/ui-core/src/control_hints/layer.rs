@@ -46,7 +46,7 @@ pub struct HintPlace {
     /// touchpad.
     pub touch: bool,
     /// Another surface's content, as one rect each (a window's body, the
-    /// cards standing over the shell and in a window's corners), which the
+    /// cards over the shell and in a window's corners), which the
     /// hint's card never sits over. Where there is no side of its anchor
     /// clear of them, the hint is in [`Self::bar`], or has nowhere to
     /// stand and does not show.
@@ -638,7 +638,7 @@ mod place_tests {
     tilo_test_env::scenario! {
         fn a_hint_is_placed_clear_of_content_or_leaves;
 
-        // A hint keeps off the cards standing over the shell: it sits on the other side of its
+        // A hint keeps off the cards over the shell: it sits on the other side of its
         // anchor when that side is free, never over a card's content.
         phase a_hint_stands_beside_its_anchor_clear_of_the_cards_over_the_shell;
         {

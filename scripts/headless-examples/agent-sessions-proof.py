@@ -82,7 +82,7 @@ def open_card(shell: "Shell", name: str) -> None:
 
 
 def close_card(shell: "Shell") -> None:
-    """Leave the card standing: the roster's place takes it back."""
+    """Leave the card up: the roster's place takes it back."""
     if any(card.endswith("’s profile") for card in shell.targets()):
         shell.call({"op": "key", "key": "Escape"})
         until(lambda: not any(card.endswith("’s profile") for card in shell.targets()), 10)

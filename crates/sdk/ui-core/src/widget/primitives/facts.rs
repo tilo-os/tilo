@@ -523,7 +523,7 @@ mod tests {
             assert_eq!(face.shown_in(10.0, &mut text, &theme), vec![0]);
         }
 
-        // A row of facts standing beside the chips it shares its line with is measured at its
+        // A row of facts beside the chips it shares its line with is measured at its
         // text's exact width, and the solver that places it rounds every edge onto the display's
         // device pixels.
         phase a_row_measured_for_its_text_is_not_handed_a_box_that_shaves_it;

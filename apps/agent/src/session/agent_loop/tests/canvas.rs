@@ -6,7 +6,7 @@
 
 use super::*;
 
-/// The session's own surface: the layout, two places standing, and the person's viewing
+/// The session's own surface: the layout, two places shown, and the person's viewing
 /// resource whose `show-style` switches the style.
 const SESSION_PEER: u64 = 31;
 /// The desktop's opens of the host programs installed on this computer.
@@ -313,7 +313,7 @@ fn canvas_world() -> World {
 }
 
 /// The first turn of a canvas conversation leads with the canvas: how to show a resource beside
-/// the conversation, the arranging and style steps, the places standing and what there is to
+/// the conversation, the arranging and style steps, the places shown and what there is to
 /// show. The opens of host programs are not in it at all, and the session's settings are not
 /// among the canvas' steps.
 #[test]

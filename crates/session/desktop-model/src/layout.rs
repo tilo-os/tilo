@@ -1192,7 +1192,7 @@ impl WorkspaceLayout {
         None
     }
 
-    /// The groups standing within `radius` canvas pixels of `point`,
+    /// The groups within `radius` canvas pixels of `point`,
     /// nearest first.
     #[must_use]
     pub fn near(&self, point: (i32, i32), radius: u32) -> Vec<GroupId> {
@@ -1407,7 +1407,7 @@ impl Beside {
         })
     }
 
-    /// The spots of `width` × `height` adjacent to the turn on `side`: standing against that edge
+    /// The spots of `width` × `height` adjacent to the turn on `side`: against that edge
     /// and sharing some of its length, lined up with the turn's ends, the view's edges and each
     /// place's edges, where the free spots nearest each lie.
     fn spots<'a>(
@@ -1924,7 +1924,7 @@ mod workspace_layout_tests {
         );
     }
 
-    /// The places standing in `layout`, for saying one crowds none.
+    /// The places in `layout`, for saying one crowds none.
     fn opened_places(layout: &WorkspaceLayout) -> Vec<CanvasPlace> {
         layout.places.values().copied().collect()
     }

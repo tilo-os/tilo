@@ -1343,7 +1343,7 @@ impl HistoryHost {
             })
     }
     /// Whether every document this surface answers for is a hosted component's (or the host's own),
-    /// whose standing a quiet frame's observation follows: its record's frontier, and whether it can be
+    /// whose member access a quiet frame's observation follows: its record's frontier, and whether it can be
     /// read at all.
     pub(crate) fn owners_followed_by_frame_observation(&self) -> bool {
         let followed =

@@ -17,7 +17,7 @@
 //! rewrote inside the run's own words, a container they wrote in) keeps their
 //! value: that part is left alone and reported in [`RevertOutcome::kept`].
 //! Nothing here refuses: what is kept was overwritten, and taking the run
-//! back means leaving the newer value standing.
+//! back means leaving the newer value in place.
 
 use std::collections::{HashMap, HashSet};
 

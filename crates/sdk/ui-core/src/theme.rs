@@ -407,7 +407,7 @@ pub fn drawn(mode: Option<&str>, host: Option<bool>) -> Drawn {
     }
 }
 
-/// `settings` with the host's light or dark standing in for an appearance the person left open —
+/// `settings` with the host's light or dark in place of an appearance the person left open —
 /// no mode, or Automatic — so the theme layers below draw what [`drawn`] says is drawn. A host
 /// naming no scheme leaves the document as it is, so Automatic keeps its schedule and no mode is
 /// written on the person's behalf.
@@ -586,7 +586,7 @@ impl Theme {
         }
     }
 
-    /// This theme as seen by a widget standing on `ground`: a region tier, a raised well,
+    /// This theme as seen by a widget on `ground`: a region tier, a raised well,
     /// a document's paper. `surfaces.raised` stays off the ground
     /// ([`crate::tokens::Colors::raised_on`]), so a control's face never sinks into a
     /// lighter panel.
@@ -714,7 +714,7 @@ impl Theme {
     }
 
     /// [`Theme::configured`] from an explicit settings document, with the host's own light or dark
-    /// ([`host_scheme`]) standing in for an appearance the person left open.
+    /// ([`host_scheme`]) in place of an appearance the person left open.
     pub fn configured_from(settings: &serde_json::Map<String, serde_json::Value>) -> Self {
         let text = serde_json::Value::Object(with_host_scheme(settings.clone(), host_scheme()))
             .to_string();

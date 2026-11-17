@@ -42,7 +42,7 @@ pub enum Kind {
     UnsharedVerb,
     /// A surface drawn inside another surface of the same kind: a card in a card.
     NestedCard,
-    /// A page's "…" standing in a column rather than at the trailing edge of its title's line: the
+    /// A page's "…" in a column rather than at the trailing edge of its title's line: the
     /// overflow button takes a line of its own and shows a lone glyph under the title.
     LoneOverflow,
     /// A heading with nothing in it: a band's height taken over
@@ -57,26 +57,26 @@ pub enum Kind {
     /// what it says there is cut off or cannot be pressed.
     PastWindow,
     /// A column's header row that broke the row's own rule: a title cut off while the row could
-    /// have given it more (room standing empty beside it, or an action keeping a label it could
+    /// have given it more (room left empty beside it, or an action keeping a label it could
     /// show as its icon), or a row that dropped the app's primary action.
     TitleClippedWithRoom,
     /// A word the window shows from a catalogue in another language than the one it speaks: a
     /// window says everything in one language, so a German word in an English window (or the source
-    /// standing in for a translation the window's own catalogues lack) is a fault.
+    /// in place of a translation the window's own catalogues lack) is a fault.
     MixedLanguage,
     /// An item held open where it stands, outside the list that shows it: the row that opened it
     /// is no row of a list the person sees, or more than one row of one list stands open at a time.
     OpenOutsideList,
-    /// A surface with nothing in it: a filled block standing where a person reads it as a card, a
+    /// A surface with nothing in it: a filled block where a person reads it as a card, a
     /// page or a band, and holding no words and nothing laid out of its own.
     EmptySurface,
-    /// A panel that says what it is for and shows nothing under it: its title standing over an empty
+    /// A panel that says what it is for and shows nothing under it: its title over an empty
     /// body, so the name of a thing stands where the thing cannot be used.
     HeaderOnly,
     /// A column's header naming the page while the page shows the same words as its own heading, or
     /// in the field it edits its title in: one title on screen, and the page's.
     RepeatedPageTitle,
-    /// A back control standing beside the sidebar toggle in the same bar
+    /// A back control beside the sidebar toggle in the same bar
     /// row: one corner offering two ways to navigate, where a screen
     /// that went somewhere deeper has one, its way back at the leading
     /// edge.
@@ -88,7 +88,7 @@ pub enum Kind {
     /// One bar showing one control twice: the same action under two ids, the same icon saying the
     /// same words twice, or a second "…" beside the bar's own.
     DuplicateBarControl,
-    /// An action that asks for its words standing as its icon alone in a bar with room for those
+    /// An action that asks for its words as its icon alone in a bar with room for those
     /// words: a glyph nobody can name, where the bar could have said what it does.
     IconOnlyBarAction,
     /// A pane that only says nothing is chosen, taking the window beside
@@ -110,7 +110,7 @@ pub enum Kind {
     /// inside it keeps a scrollbar of its own and cuts the rows it holds at its edge.
     NestedScroller,
     /// A row's title written a second time in the item the row opened into: the row became the
-    /// item, its title standing once, in the field that edits it.
+    /// item, its title once, in the field that edits it.
     RepeatedRowTitle,
     /// A page given a column of its own inside another page: the gutter is counted twice, so what
     /// it holds stands inset from the rows beside it and narrower than them.
@@ -124,20 +124,20 @@ pub enum Kind {
     /// stands on each other, neither on a surface of its
     /// own.
     TextOnText,
-    /// A bar docked at the foot of a column standing wider than the column the content above it is
+    /// A bar docked at the foot of a column wider than the column the content above it is
     /// read at: an entry that adds to a list spans the window beside the list it adds to.
     DockedColumn,
-    /// A surface with rounded corners standing against the edge of the
+    /// A surface with rounded corners against the edge of the
     /// column or window it is in: the curve is cut by the edge, or the
     /// surface reads as part of the frame rather than as a card inside
     /// it.
     RoundedOnEdge,
-    /// A card or a notice standing closer to the sibling above or below
+    /// A card or a notice closer to the sibling above or below
     /// it than the toolkit's section gap: the two read as one block,
     /// and a list pressed against a notice says the notice is a row of
     /// it.
     CrampedCard,
-    /// A sidebar standing beside content narrower than a column: the pane beside it is a phone's
+    /// A sidebar beside content narrower than a column: the pane beside it is a phone's
     /// screen, so the sidebar folds behind the bar's toggle there and the content takes the window.
     ContentBesideSidebar,
     /// One item shown twice: the document of a row
@@ -156,7 +156,7 @@ pub enum Kind {
     /// as that block's last line rather than as the title of what comes
     /// next.
     CrowdedHeading,
-    /// A list standing beside the page it opens that highlights another row than the one the page
+    /// A list beside the page it opens that highlights another row than the one the page
     /// shows: the tree says where the person is, and the page says it somewhere else.
     DetailRowNotChosen,
     /// A column whose header row — the words that name what it shows and the buttons that act on
@@ -167,11 +167,11 @@ pub enum Kind {
     /// A name tag presence draws — who is there, what an agent is doing — over a word of the
     /// window, or a second tag for one actor: the word is lost, and one actor reads as two.
     PresenceTag,
-    /// A field holding one line of text, standing it above the middle of the control a person types
+    /// A field holding one line of text, setting it above the middle of the control a person types
     /// into: the band around the line grew (a phone's target) while the line stayed at the top, so
-    /// the words float over empty room instead of standing where the field puts the caret.
+    /// the words float over empty room instead of where the field puts the caret.
     LineOffCentre,
-    /// A page's own sections — what links here, the discussion, its history — standing straight
+    /// A page's own sections — what links here, the discussion, its history — straight
     /// under the writing the page holds, with no rule between them: a section's heading is set like
     /// the writing's own headings and stands no further from it than they stand from each other, so
     /// what the page says of itself is read as another line of what was written.
@@ -179,7 +179,7 @@ pub enum Kind {
     /// An action the window's bar offers that a button in the window offers again: a column's
     /// actions stand in its header row, and the bar holds only what is the window's.
     OfferedTwice,
-    /// A page's body standing a leading control's width in from the page's gutter while the column
+    /// A page's body set a leading control's width in from the page's gutter while the column
     /// it is read in is a phone's screen: the indent stands under the text a heading's control
     /// leads to, and takes the control's cell out of every line the body has, where a screen that
     /// narrow starts its body on the gutter and keeps the control beside the title.
@@ -192,7 +192,7 @@ pub enum Kind {
     /// person did not know nor one they can act on.
     RepeatedDayFact,
     /// The first band a list that heads its rows draws — the heading over its first run, or the
-    /// first row where the list leaves that heading out — standing against the box over the list,
+    /// first row where the list leaves that heading out — against the box over the list,
     /// with less than a column's content gutter above it: where a page's first block stands.
     HuggingRow,
     /// A pill a list floats over its rows cutting the words it offers: the way back reads as half a

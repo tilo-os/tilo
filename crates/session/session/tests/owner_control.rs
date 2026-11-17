@@ -119,7 +119,7 @@ fn layout_tree() -> Layout {
     tree
 }
 
-/// The probe this package's tests ship, standing in for the lock screen: it connects and stays up
+/// The probe this package's tests ship, in place of the lock screen: it connects and stays up
 /// while the session keeps it, as the screen that shows the lock does.
 fn lock_screen() -> PathBuf {
     tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")

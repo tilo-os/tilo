@@ -456,7 +456,7 @@ impl PageList {
         self.rows.get(index)
     }
 
-    /// The note standing at `index`.
+    /// The note at `index`.
     fn page(&self, index: usize) -> Option<PageId> {
         Some(self.row(index)?.page)
     }

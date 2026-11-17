@@ -231,7 +231,7 @@ impl GitClientState {
         };
         self.confirm_sheet.reset();
         match choice {
-            // `perform_confirmed` takes the question; leaving it standing where no answer was found
+            // `perform_confirmed` takes the question; leaving it open where no answer was found
             // puts it away instead of asking forever.
             Some(choice) => self.perform_confirmed(choice),
             None => self.confirm = None,

@@ -2340,7 +2340,7 @@ fn menu_command(node: &UiNode) -> Command {
 
 /// The commands a task's menus offer, in the order a person reads them: every command, and of
 /// the commands that need something the task may not have, the ones this task has. This is a
-/// task in the inbox, with nothing standing over it and nothing under it: it is on no board to be
+/// task in the inbox, with nothing over it and nothing under it: it is on no board to be
 /// placed on, so it offers none of that, and it can still be moved under another task and copied
 /// with the steps it has.
 fn spec_commands() -> Vec<&'static str> {

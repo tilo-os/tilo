@@ -1,4 +1,4 @@
-//! The accessibility tree of a [`super::VirtualList`]: its mounted rows, and the heading standing
+//! The accessibility tree of a [`super::VirtualList`]: its mounted rows, and the heading
 //! before each group of them.
 use crate::i18n::widget_text;
 use std::collections::HashMap;
@@ -271,7 +271,7 @@ impl<M: ListModel> VirtualList<M> {
                 _ => false,
             };
         }
-        // A tree row's disclosure, standing where the painted chevron is: pressing it folds the
+        // A tree row's disclosure, where the painted chevron is: pressing it folds the
         // row's notes away or shows them again, where a press on the row itself opens the item
         // it stands for.
         if let Some(encoded) = target.strip_prefix("fold:") {
@@ -492,7 +492,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// The pill as a reader, an agent or a keyboard meets it: one button saying the words it
-    /// shows, standing where it is drawn, so the way back a list offers over its rows is reached
+    /// shows, where it is drawn, so the way back a list offers over its rows is reached
     /// by something that is not a pointer.
     fn pill_node(&self, enabled: bool) -> Option<AccessNode> {
         let (jump, _) = self.pill_rect_for(self.rect)?;

@@ -128,7 +128,7 @@ pub struct PackageMeta {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub row_views: Vec<DefaultViewMeta>,
     /// What a place of each type shows when its default view is the app's window
-    /// (`place view v for T`): the resource standing as content on its own.
+    /// (`place view v for T`): the resource shown as content on its own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub place_views: Vec<DefaultViewMeta>,
     /// The views a window of each type switches between (`views a, b for T`), in order.

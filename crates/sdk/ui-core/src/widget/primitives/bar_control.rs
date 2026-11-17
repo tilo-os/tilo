@@ -145,7 +145,7 @@ impl<'a> BarControlFace<'a> {
     }
 
     /// Paint the control in `rect` (its width from [`Self::width`], its
-    /// height [`Self::height`]) standing on `ground`. Inks are measured on
+    /// height [`Self::height`]) on `ground`. Inks are measured on
     /// what is under them.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect, ground: Color) {
         let theme = ctx.theme;

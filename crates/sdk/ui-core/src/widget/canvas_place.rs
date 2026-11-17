@@ -1,4 +1,4 @@
-//! `Place`: a resource's view standing on a canvas as content, not in a window (canvas.md §2).
+//! `Place`: a resource's view on a canvas as content, not in a window (canvas.md §2).
 //!
 //! A place is its view on the window surface's own ground — rounded, with the surface's soft
 //! edge and shadow — and nothing else: no title bar, no border of a window. Its handle (what it
@@ -30,7 +30,7 @@ use crate::widget::{
     Spacer, Text, Widget,
 };
 
-/// A resource's view standing on a canvas: the view on the window surface, with a handle shown
+/// A resource's view on a canvas: the view on the window surface, with a handle shown
 /// over its corner on hover and focus that names it, holds its controls and moves it.
 #[derive(Component, Default)]
 #[component(name = "Place", role = "Group", label = "name")]

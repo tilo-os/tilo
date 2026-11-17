@@ -585,7 +585,7 @@ pub fn open_with_id(view: &str) -> String {
 /// id) under its name `name`, so each view's open action is its alone. Built once per type and
 /// view; each resource binds it ([`open_with_spec`]).
 ///
-/// A type's place view (`place`) is what a place shows the resource through standing on its own,
+/// A type's place view (`place`) is what a place shows the resource through on its own,
 /// never what a person turns the app's window into: the canvas and an agent's `place` stand it,
 /// so its open action is offered to agents and kept out of people's palette and menus, where it
 /// would replace the window's sidebar and bar with the bare view.

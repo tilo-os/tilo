@@ -1416,7 +1416,7 @@ mod access_wait_tests {
             .expect("an access already projected: decided at once");
         assert!(device_access.unwrap().contains_key(&PAGE));
         // A change the projection does not refuse, the author's presence or
-        // governance among them, is decided at once, standing or not.
+        // governance among them, is decided at once, whether the author has member access or not.
         let unrefused = access_deciding(&ws, LAPTOP, |_, _| false);
         tokio::pin!(unrefused);
         tokio::time::timeout(std::time::Duration::ZERO, &mut unrefused)

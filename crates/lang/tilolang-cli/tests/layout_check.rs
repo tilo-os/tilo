@@ -195,7 +195,7 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// A window reads in one language throughout: a word it shows from a catalogue in another language
-/// — here the app's source standing in for a translation it lacks — is a finding, and the same
+/// — here the app's source in place of a translation it lacks — is a finding, and the same
 /// window read in the language the person speaks has none.
 #[test]
 fn a_word_a_window_shows_from_another_languages_catalogue_is_a_finding() {

@@ -331,7 +331,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use ui::accesskit::{Action, Node, NodeId, Role, TreeId, TreeInfo};
 
-    /// A surface standing in for one the session paints: the window name it carries, and whether it
+    /// A surface in place of one the session paints: the window name it carries, and whether it
     /// would take the keys.
     struct Face {
         name: &'static str,

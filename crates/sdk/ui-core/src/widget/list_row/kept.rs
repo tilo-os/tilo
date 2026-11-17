@@ -11,7 +11,7 @@ pub(super) struct KeptRow {
 
 impl ListRow {
     /// What names the row across rebuilds: the id of the item it shows, so a successor
-    /// standing somewhere else (a row a person added or removed) still picks its own mark
+    /// shown somewhere else (a row a person added or removed) still picks its own mark
     /// up.
     pub(super) fn identity(&self) -> Option<String> {
         Some(self.activation.id().to_owned())

@@ -253,7 +253,7 @@ impl Surfaces {
             self.settled();
             return;
         }
-        // The quick settings are their own app, standing where the stack places its part: a
+        // The quick settings are their own app, where the stack places its part: a
         // press opens the part, and the panel's app draws it there. A device without that app,
         // or one the shell covers, keeps the shell's own view of the surface.
         if self.panel_shows(surface) {

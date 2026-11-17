@@ -2297,13 +2297,13 @@ async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
     post_in_chat(
         &mut workspace.ben.0,
         &workspace.ben.1,
-        "Standing by for LR-2042",
+        "Waiting for LR-2042",
     );
     let ours = workspace.ana.0.open(CHAT, None).unwrap();
     wait_for("Ana to hold Ben's post", || {
         workspace.ana.0.pump();
         workspace.ben.0.pump();
-        let held = chat_parts_text(&workspace.ana.0, &ours).contains("Standing by");
+        let held = chat_parts_text(&workspace.ana.0, &ours).contains("Waiting");
         async move { held.then_some(()) }
     })
     .await;
@@ -2320,7 +2320,7 @@ async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
     // the post's own sender names the line, so it is not repeated there.
     assert!(
         told.contains(
-            "new messages arrived (chat).\n- chat, changed by Ben: Standing by for LR-2042\n"
+            "new messages arrived (chat).\n- chat, changed by Ben: Waiting for LR-2042\n"
         ),
         "the news names Ben's post: {told}"
     );
@@ -2438,13 +2438,13 @@ async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes(
     post_in_chat(
         &mut workspace.ben.0,
         &workspace.ben.1,
-        "Standing by for LR-2042",
+        "Waiting for LR-2042",
     );
     let ours = workspace.ana.0.open(CHAT, None).unwrap();
     wait_for("Ana to hold Ben's post", || {
         workspace.ana.0.pump();
         workspace.ben.0.pump();
-        let held = chat_parts_text(&workspace.ana.0, &ours).contains("Standing by");
+        let held = chat_parts_text(&workspace.ana.0, &ours).contains("Waiting");
         async move { held.then_some(()) }
     })
     .await;
@@ -2467,7 +2467,7 @@ async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes(
             .next_request(&sent, "the plan again for the news")
             .await,
     );
-    assert!(told.contains("Standing by for LR-2042"), "{told}");
+    assert!(told.contains("Waiting for LR-2042"), "{told}");
     assert!(
         told.contains(
             "Still to do: 1. post Alpha ready; 2. post Bravo ready; 3. post Charlie ready; 4. \

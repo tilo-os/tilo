@@ -51,7 +51,7 @@ action set_frames_snap(s: Shell, on: Bool) (label: "Snap places to a grid", grou
 /// keeps no per-style list (`shell.md` §6: "Nothing in Settings is per style").
 view style_panel() {
     let s = shell
-    // A panel over the shell, standing in from its edges as a surface does: what it sets down
+    // A panel over the shell, set in from its edges as a surface does: what it sets down
     // never sits on the window's own text under it, and a phone's shell keeps a section's gutter.
     row(
         fill,

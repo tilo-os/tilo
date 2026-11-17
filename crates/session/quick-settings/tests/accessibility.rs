@@ -65,7 +65,7 @@ fn a_panel_publishes_its_accessibility_tree() {
     // The controls a person reaches with a screen reader are there, by the
     // names they hear, and the tile among them takes a press through AT-SPI.
     // This session runs no sound server and no backlight: the volume row
-    // says so rather than standing a control that could set nothing.
+    // says so rather than a control that could set nothing.
     let read = assistive.until_it_presses(&mut session, "Night light");
     for control in ["Night light", "No audio device"] {
         assert!(

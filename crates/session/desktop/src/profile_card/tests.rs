@@ -880,7 +880,7 @@ fn an_agents_card_says_what_it_is_doing_now_while_it_stands() {
         !said.contains("Looking at the apps"),
         "not what it opened with: {said}"
     );
-    assert!(frame.is_open(), "the card keeps standing");
+    assert!(frame.is_open(), "the card stays open");
     let (card, _) = ui::headless::Framed::split(&mut frame);
     assert!(
         !card.updated(&claude("Working in Notes")),

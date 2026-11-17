@@ -330,7 +330,7 @@ pub type MenuEntries = Box<dyn Fn(Option<Point>) -> Vec<MenuEntry>>;
 /// keyboard opened the menu (`None`).
 pub type ContentMenuEntries = Box<dyn Fn(&dyn Widget, Option<Point>) -> Vec<MenuEntry>>;
 
-/// What opened the open menu: where it must keep standing.
+/// What opened the open menu: where it must stay.
 #[derive(Clone, Copy)]
 enum Opening {
     /// The pointer, at that point.
@@ -787,7 +787,7 @@ impl super::Decorator for ContextMenuArea {
 
     /// What a frame paints: the content's own change, what the menu paints
     /// over it (which is nothing while it is closed, [`ContextMenu::needs_redraw`]),
-    /// and a picker it stands open. A box standing without the menu is the
+    /// and a picker it stands open. A box without the menu is the
     /// menu's painting too.
     fn needs_redraw(&self) -> bool {
         self.content.needs_redraw()

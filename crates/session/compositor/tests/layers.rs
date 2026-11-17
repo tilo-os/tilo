@@ -277,7 +277,7 @@ tilo_test_env::scenario! {
 
     phase a_layer_surface_is_hit_where_it_is_drawn_and_never_shown_at_another_size;
     // A panel resting on the bottom edge that grows: until its app draws the new size, the frame on
-    // screen is the one it drew, at its own size, standing on that edge; the pointer reaches it where
+    // screen is the one it drew, at its own size, on that edge; the pointer reaches it where
     // it is drawn, one logical pixel for one; then the frame of the new size replaces it. At scale 1
     // and 2 alike.
     {

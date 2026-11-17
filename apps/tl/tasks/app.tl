@@ -669,7 +669,7 @@ view home(t: Tasks) {
     }
 }
 
-/// What there is to do, standing on its own as a place shows it: the open tasks, due soonest
+/// What there is to do, on its own as a place shows it: the open tasks, due soonest
 /// first and grouped by day, each opening where it stands, with the entry that adds one at their
 /// foot. None of the window's places, search or bar is around them.
 view to_do(t: Tasks) {

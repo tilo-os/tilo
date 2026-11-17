@@ -54,7 +54,7 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         | NeighbourMsg::RemoteInput { .. }
         | NeighbourMsg::PermissionGrant { .. } => Some((TreePath::root(), ActionKind::Undoable)),
         // A document op: the least any op is (a comment). What each envelope changes is decided
-        // again against the author's standing by the broker.
+        // again against the author's member access by the broker.
         NeighbourMsg::AppDocument { .. } => {
             Some((TreePath::root().field(COMMENTS_FIELD), ActionKind::Undoable))
         }

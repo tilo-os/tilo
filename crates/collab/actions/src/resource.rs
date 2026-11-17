@@ -527,7 +527,7 @@ impl ResourceViewSpec {
         self
     }
 
-    /// Make it what a place of the resource shows standing on its own ([`Self::place`]).
+    /// Make it what a place of the resource shows on its own ([`Self::place`]).
     #[must_use]
     pub fn with_place(mut self, place: bool) -> Self {
         self.place = place;

@@ -19,7 +19,7 @@
 //! - **While shown it stays** while the pointer is on it, heads for it, or
 //!   something of it is open (its menus, its own keyboard focus); anything
 //!   else hides it.
-//! - **The window's own bar comes with it**, standing under it over the
+//! - **The window's own bar comes with it**, under it over the
 //!   window: its name, leaving full screen and closing. The pointer on
 //!   either keeps both; a secondary press on the bar opens that window's
 //!   menu.

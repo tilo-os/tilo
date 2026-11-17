@@ -523,7 +523,7 @@ fn accessible_names(widget: &dyn ui::widget::Widget, out: &mut Vec<String>) {
 
 /// Frames until the account's server's mail is in the window as a person sees it: its
 /// conversations, filed in the inbox, with the messages the sync read. A sync makes a
-/// conversation before it fetches its messages and files it, so the conversations standing in
+/// conversation before it fetches its messages and files it, so the conversations in
 /// the account are not the sync's end.
 fn synced(session: &mut Session) {
     session.until("the inbox to sync", |session| {

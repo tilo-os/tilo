@@ -1,5 +1,5 @@
 //! Where the session's input path consults its overlay stack: the press that
-//! falls outside a surface standing where the session placed it closes that
+//! falls outside a surface where the session placed it closes that
 //! surface, and nothing else.
 //!
 //! The stack itself is the desktop's ([`tilo_desktop::overlays::Overlays`]),
@@ -44,7 +44,7 @@ impl SurfaceHost for PartsHost {
 
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
-    /// A press outside the surface it landed in: the topmost popup the session placed, standing
+    /// A press outside the surface it landed in: the topmost popup the session placed
     /// where the press is not, goes down — and stays down for that press, so it does not reopen
     /// under it.
     fn pressed_elsewhere(&mut self, x: f64, y: f64) {

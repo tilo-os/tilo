@@ -526,7 +526,7 @@ fn only_its_own_runner_says_how_a_sub_agent_stands() {
         sub.stands.at_work(),
         "one that waits for its person holds its place"
     );
-    // Said again, nothing moves; a new standing moves since.
+    // Said again, nothing moves; a new state moves since.
     other.set_now_ms(THEN + 30);
     other
         .apply(stands(
@@ -560,7 +560,7 @@ fn only_its_own_runner_says_how_a_sub_agent_stands() {
     let mut ada = record.fork().as_author(ADA);
     let refused = ada.apply(stands("other", Stands::Done, None)).unwrap_err();
     assert!(refused.to_string().contains("by an agent"), "{refused}");
-    // And an agent a person made has no standing to say.
+    // And an agent a person made has no say.
     let mut main = record.fork().as_agent_for(MAIN, ADA);
     let refused = main.apply(stands(MAIN, Stands::Done, None)).unwrap_err();
     assert!(refused.to_string().contains("not a sub-agent"), "{refused}");
@@ -945,7 +945,7 @@ fn a_sub_agents_turn_reads_nothing_chat_keeps_whatever_its_bound_says() {
     );
 }
 
-/// A sub-agent as the record keeps it, made `at`, standing `stands`.
+/// A sub-agent as the record keeps it, made `at`, with `stands` as its state.
 pub(super) fn kept(name: &str, started_by: &str, at: i64, stands: Stands) -> Agent {
     Agent {
         id: tilo_resource::Atom(name.to_owned()),

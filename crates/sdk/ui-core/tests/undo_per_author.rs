@@ -61,7 +61,7 @@ tilo_test_env::scenario! {
 
         // Claiming an unattributed entry must not widen Ctrl+Z to a member's
         // work: the fallback reaches past somebody else's action to an unclaimed one,
-        // and leaves theirs standing.
+        // and leaves theirs as it is.
         {
             let mut state = State::new();
             let me = MemberId::person("me");
@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
             );
             assert!(
                 tilo_doc::model::open(&state.doc, &root).is_ok(),
-                "and the schema nobody committed here is still standing"
+                "and the schema nobody committed here is still there"
             );
         }
 
@@ -198,7 +198,7 @@ tilo_test_env::scenario! {
             );
             assert!(
                 tilo_doc::model::open(&state.doc, &root).is_ok(),
-                "and the schema nobody committed here is still standing"
+                "and the schema nobody committed here is still there"
             );
         }
     }

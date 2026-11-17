@@ -12,5 +12,4 @@ record 56948
 slot 11556
 plane 15
 lane 3
-standing 714
 seam 7

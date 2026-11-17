@@ -97,7 +97,7 @@ fn the_session_starts_the_panel_as_a_trusted_client_on_its_layer() {
 
 /// What the panel offers is what the session's services publish, and nothing
 /// they do not: a session that dims nothing publishes no brightness, and the
-/// panel offers none, rather than a slider standing at a level nothing
+/// panel offers none, rather than a slider at a level nothing
 /// measured.
 #[test]
 fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
@@ -143,7 +143,7 @@ fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
 }
 
 /// A sound card with no output publishes nothing to set: the panel offers no
-/// volume, rather than one standing at a level no output holds.
+/// volume, rather than one at a level no output holds.
 #[test]
 fn the_panel_offers_no_volume_the_sound_card_did_not_publish() {
     let mut laptop = session_of_silent_device(&[panel()]);
@@ -718,7 +718,7 @@ fn drawn_on(session: &mut Session, screen: &Screenshot, output_width: i32) -> Sc
     }
 }
 
-/// A pixel inside the panel, standing against an output `output_width`
+/// A pixel inside the panel, against an output `output_width`
 /// physical pixels across: half a panel width in from its trailing edge.
 fn panel_pixel(frame: &Screenshot, output_width: i32) -> [u8; 4] {
     let physical = i32::try_from(frame.width).unwrap_or(output_width);

@@ -296,7 +296,7 @@ pub fn mutation_claims(
 }
 
 /// Committing changes that name what they do, where no app's executor makes
-/// them: a test standing in for an app, writing a record directly.
+/// them: a test in place of an app, writing a record directly.
 pub trait CommitNamed {
     /// Commit the pending operations as a field edit of `field` on a record
     /// of kind `kind`.

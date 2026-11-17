@@ -59,13 +59,14 @@ pub mod store;
 pub mod workspace;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
+pub use state::mail_send_lease;
 /// The person's own documents between their devices, with no host in between.
 pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use state::{
     BOT_SCHEDULES_KEY, CLOCK_SKEW_NS, DelegateInactive, DocumentRow, GovernedAccess, GovernedAgent,
     GovernedDelegateRow, InstalledApp, InstalledBot, KeptDocument, LEASES_KEY, Lease, LeaseClaim,
-    MAX_HELD_BYTES, MAX_HELD_INPUTS, Member, MemberId, MemberList, MembershipError,
-    NativePublicationCut, NotAdmitted, OpenedDocument, OpenedHistory, OpenedWrite,
+    MAIL_SENDS_KEY, MAX_HELD_BYTES, MAX_HELD_INPUTS, MailSent, Member, MemberId, MemberList,
+    MembershipError, NativePublicationCut, NotAdmitted, OpenedDocument, OpenedHistory, OpenedWrite,
     PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
     PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal,
     PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore,

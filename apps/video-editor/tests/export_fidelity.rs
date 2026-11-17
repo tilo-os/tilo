@@ -1867,7 +1867,7 @@ fn exported_keys_masks_and_curves_reach_the_encoded_file() {
         let subject = sample(&b, 0.5, 0.5);
         assert!(
             subject[0] > 130 && subject[0] as i32 > subject[2] as i32 + 40,
-            "the subject standing on the plate is still in the encoded file: {subject:?}",
+            "the subject on the plate is still in the encoded file: {subject:?}",
         );
 
         tidy(&plain);

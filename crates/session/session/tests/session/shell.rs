@@ -832,7 +832,7 @@ fn shell_motion_frames_match_the_old_shells_films() {
 }
 
 /// The overview shows the windows' own pixels where its cards rest, drawn by the compositor, rather
-/// than a mark standing in for them.
+/// than a mark in place of them.
 #[test]
 fn the_overview_pictures_the_shells_windows() {
     let _settled = ui::motion::testing::settled();

@@ -137,7 +137,7 @@ impl ToolbarReactions {
 /// What just happened, said in the window's bar for a while: an operation's result or
 /// failure ("Page 1 captured"). A notice that asks the person to act carries what they
 /// can do: at most [`MAX_NOTICE_ACTIONS`] actions ("Sync again", "Open Settings"),
-/// standing in order right after its text, each a button that names itself where the row
+/// in order right after its text, each a button that names itself where the row
 /// fits and its icon where not (the last first), and never in the overflow menu.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolbarNotice {
@@ -1440,7 +1440,7 @@ pub(crate) fn deliver_to_app(event: ToolbarEvent) -> bool {
     hands_keyboard
 }
 
-/// Whether the window floats over the shell as a card rather than standing in its strip
+/// Whether the window floats over the shell as a card rather than in its strip
 /// ([`ToolbarEvent::Floating`]).
 #[must_use]
 pub fn floats() -> bool {
@@ -1601,7 +1601,7 @@ pub struct BarLabel {
 }
 
 impl BarLabel {
-    /// The words `widget` paints as `text`, standing at `rect`.
+    /// The words `widget` paints as `text`, at `rect`.
     #[must_use]
     pub fn new(widget: &'static str, text: impl Into<String>, rect: crate::kurbo::Rect) -> Self {
         Self {

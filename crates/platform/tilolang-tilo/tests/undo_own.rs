@@ -1,5 +1,5 @@
 //! Undo in a workspace two people and an agent work in, with the shipped Notes and Tasks apps: each
-//! person's undo takes back their own step and leaves everybody else's edits standing, and it
+//! person's undo takes back their own step and leaves everybody else's edits in place, and it
 //! is never refused because somebody else changed the same document since.
 
 use automerge::AutoCommit;

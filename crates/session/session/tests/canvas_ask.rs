@@ -227,7 +227,7 @@ fn placed_as_agent(
 /// An agent's `place` that names no point but something to stand beside stands what it shows in
 /// the free space to that place's right, at its line — an agent's turn names the conversation it
 /// was asked in, so what it places stands next to that conversation (`shell.md` §8.1). Placing it
-/// again brings the place showing it forward rather than standing a second one.
+/// again brings the place showing it forward rather than opening a second one.
 #[test]
 fn an_agents_place_without_a_point_stands_beside_what_it_names() {
     let _settled = ui::motion::testing::settled();

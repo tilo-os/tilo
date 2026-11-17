@@ -177,7 +177,7 @@ pub(crate) struct Joined {
     /// The role the workspace last answered this page's person holds: the
     /// attached desktop's, so its policy offers what the workspace allows.
     role: crate::desktop::SharedRole,
-    /// The standing the mounts' permissions were last set to.
+    /// The member access the mounts' permissions were last set to.
     followed: u8,
     /// Nodes below the workspace the page's windows asked whether its person may
     /// change (an item someone shares), with the asked node's text form and
@@ -1386,7 +1386,7 @@ impl Joined {
         }
     }
 
-    /// Merge `bytes`, the replica's whole document of `route`, standing at `heads`, into the
+    /// Merge `bytes`, the replica's whole document of `route`, at `heads`, into the
     /// open record, the desktop, or the record's stored document for whoever opens it.
     fn apply(
         &mut self,

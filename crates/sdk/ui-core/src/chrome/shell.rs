@@ -339,7 +339,7 @@ pub fn paint_row_selection_joined(
 }
 
 /// The face of a control that has its floor (a filled rest face rather
-/// than a transparent one), for `state`, standing on `ground`: one ordered
+/// than a transparent one), for `state`, on `ground`: one ordered
 /// ramp from the ground, so rest, hover and active are each further from
 /// the ground than the last on every material, and no state mixes a floor
 /// with the transparent tier.
@@ -1530,8 +1530,8 @@ impl StripRibbon {
     }
 }
 
-/// A map of the windows along one strip, and where on it the user is
-/// standing — the counterpart of [`StripRibbon`] for the axis a strip can
+/// A map of the windows along one strip, and where on it the user is,
+/// the counterpart of [`StripRibbon`] for the axis a strip can
 /// overflow. Three facts in order of importance: how many windows the
 /// strip has (one segment each — the fact that makes travel worth
 /// attempting), which has focus (the long, bright segment), and which are

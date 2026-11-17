@@ -358,7 +358,7 @@ pub struct ChromaKey {
     /// staircase.
     pub softness: f64,
     /// How much of the key colour is pulled back out of what survives,
-    /// 0..1. Green bouncing off a subject standing near the screen tints
+    /// 0..1. Green bouncing off a subject near the screen tints
     /// them; this removes that tint without touching their brightness.
     pub spill: f64,
 }

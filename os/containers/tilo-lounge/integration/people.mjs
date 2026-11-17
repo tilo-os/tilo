@@ -1329,8 +1329,8 @@ try {
       failed(`${what}: a secondary click in the window bar opens no window menu: at ${JSON.stringify(bar)} over ${JSON.stringify(await namesAt(a.tab, bar.x, bar.y))}; shown: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
     }
     await settle(a.tab, 1);
-    // A row the click took closes the menu: still standing somewhere on the page, the click
-    // never reached it. A closed menu keeps naming its rows, standing nowhere.
+    // A row the click took closes the menu: still there somewhere on the page, the click
+    // never reached it. A closed menu keeps naming its rows, nowhere.
     await a.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
     await settle(a.tab, 1);
     let open = false;
@@ -1638,7 +1638,7 @@ try {
     // The page's own sheet, the same one a shell shows: the role a link brings
     // someone in at, chosen before the link is made.
     // The sheet is up once its choices stand where a person presses them:
-    // its title names the sheet without standing anywhere of its own.
+    // its title names the sheet without a place anywhere of its own.
     if (!await press(a.tab, 'Invite')) await failed("the bar's invite button could not be pressed", a.tab);
     await waitFor(a.tab, 'Commenter', "the invite sheet's Commenter part");
     // A sheet slides in over the shell, and a press lands where its controls

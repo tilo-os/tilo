@@ -167,7 +167,7 @@ impl Connect {
 /// The pin is the host it reached and the certificate it signs as. The owner's
 /// continuity moves with any security change of the workspace, another member
 /// joining included; the link follows it in place once this device's own
-/// standing was checked again ([`Connect::material`]), rather than ending and
+/// member access was checked again ([`Connect::material`]), rather than ending and
 /// redialling every member for one person's join.
 pub struct Scope {
     connect: Connect,
@@ -268,7 +268,7 @@ impl Scope {
 
 /// The app write a frame carries, for this device's apps: `None` for anything
 /// else, a write the owner neither accepted nor already held, this device's own
-/// write, a write naming another workspace, or an author without standing.
+/// write, a write naming another workspace, or an author without member access.
 #[must_use]
 pub fn app_write(
     owner: &NativeWorkspaceOwner,
@@ -409,7 +409,7 @@ impl Input {
     /// The app write `report` took in from another device, for this device's
     /// apps: `None` for anything else, a write the owner neither accepted nor
     /// already held, this device's own write, a write naming another
-    /// workspace, or an author without standing.
+    /// workspace, or an author without member access.
     #[must_use]
     pub fn app_write(&self, report: &crate::AdmissionReport) -> Option<AppWrite> {
         app_write(
@@ -445,7 +445,7 @@ impl Input {
             }))
             .collect()
     }
-    /// The author's current standing in the workspace: the workspace's policy, and
+    /// The author's current member access in the workspace: the workspace's policy, and
     /// the bound on a device not theirs.
     pub fn access(&self) -> Result<tilo_action_policy::MemberAccess, String> {
         self.scope

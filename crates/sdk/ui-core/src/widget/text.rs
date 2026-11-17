@@ -137,7 +137,7 @@ pub struct Text {
     max_lines: Option<u32>,
     /// It elides at the width it is given instead of wrapping wider: it never
     /// holds its longest word's width, so a title in a narrow card ends in an
-    /// ellipsis rather than standing the card up.
+    /// ellipsis rather than making the card taller.
     truncate: bool,
     live: Option<crate::a11y::Politeness>,
     layout_engine: Option<Box<dyn TextLayoutEngine>>,

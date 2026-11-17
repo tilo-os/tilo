@@ -92,7 +92,7 @@ fn person_vault(root: &Path) -> accounts::AccountCredentials {
 /// keeps the vault key in an owner-only file beside the ciphertext.
 ///
 /// A keyring that answers is the file-backed secret store
-/// [`tilo_secrets::SECRETS_DIR_ENV`] names standing in for the Secret
+/// [`tilo_secrets::SECRETS_DIR_ENV`] names in place of the Secret
 /// Service. Either way the session bus is one no Secret Service listens on,
 /// so on the second the host has no keyring whichever machine runs this.
 fn fixture(keyring: Keyring) -> Fixture {

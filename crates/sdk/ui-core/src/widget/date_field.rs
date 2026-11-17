@@ -89,7 +89,7 @@ impl DateField {
     }
 
     /// A field following the day `state` holds as its ISO text (`""` for no date), which the
-    /// person may clear when `optional`, with `time` standing in its popover as the control
+    /// person may clear when `optional`, with `time` in its popover as the control
     /// that picks `at`, the time of day the day is due at: a day set there shows in place.
     pub(super) fn from_state(
         id: &str,
