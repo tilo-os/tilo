@@ -320,6 +320,39 @@ fn the_apps_end_is_reported_and_recorded() {
 }
 
 #[test]
+fn an_app_whose_desktop_never_comes_back_ends_with_the_login() {
+    let command = vec!["sleep".into(), "30".into()];
+    let mut rig = Rig::configured(None, command, |options| {
+        options.desktop_gone = std::time::Duration::from_millis(300);
+    });
+    let mut session = rig.session();
+    rig.pump(&mut [], |rig, _| rig.keeper.describe().app_pid.is_some());
+    // A desktop that comes back in time keeps the app running.
+    rig.drop_desktop();
+    rig.settle(&mut []);
+    rig.attach_new(640, 480);
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    rig.settle(&mut []);
+    assert_eq!(
+        rig.keeper.describe().ended,
+        None,
+        "a restart in time ends nothing"
+    );
+
+    rig.drop_desktop();
+    let end = session.wait_for(&mut rig, |message| match message {
+        FromKeeper::Ended { end } => Some(end),
+        _ => None,
+    });
+    assert_eq!(
+        end,
+        End::Signalled { signal: 15 },
+        "asked to end, not killed"
+    );
+    rig.pump(&mut [], |rig, _| rig.keeper.finished());
+}
+
+#[test]
 fn the_control_socket_refuses_other_versions_and_keeps_placements_across_a_restart() {
     let mut rig = Rig::new(None);
     let mut app = App::connect(&mut rig);
