@@ -195,8 +195,10 @@ pub struct ToTell {
     /// from that, and any other is a new thing every time.
     pub id: Option<String>,
     /// What it is: a question for whoever tells a message's waiting
-    /// question, and otherwise what its cause says
-    /// ([`Kind::of_cause`]).
+    /// question; a reminder or a brief only for what carries out an event
+    /// of the person's own, from that event's own cause
+    /// ([`Kind::of_cause`]); news for everything else, and for whatever an
+    /// agent tells.
     pub kind: Kind,
     /// Its words, what caused it, where it is and its buttons.
     pub tell: Tell,
@@ -293,6 +295,20 @@ impl Workspaces {
     /// It says nothing, a button of it is incomplete, or the log could not
     /// be written.
     pub async fn tell(&self, person: &[u8; 32], telling: ToTell) -> Result<Told, String> {
+        self.tell_offered(person, telling, None).await
+    }
+
+    /// [`Self::tell`], with who offered its buttons where an agent's own
+    /// telling carried them: `offered_by`, whom a device names beside them.
+    ///
+    /// # Errors
+    /// As [`Self::tell`].
+    pub(super) async fn tell_offered(
+        &self,
+        person: &[u8; 32],
+        telling: ToTell,
+        offered_by: Option<Teller>,
+    ) -> Result<Told, String> {
         let ToTell {
             id,
             kind,
@@ -369,6 +385,7 @@ impl Workspaces {
                 through_quiet: reach.is_some_and(|reach| rule.lets_through(reach)),
                 outside,
                 actions: tell.actions,
+                offered_by,
                 // Only what reaches its person insists: whoever tells
                 // cannot make a thing loud that the rule keeps quiet.
                 insists: (tell.insists && reach.is_some()).then(|| insisting(&rule, now_ms)),

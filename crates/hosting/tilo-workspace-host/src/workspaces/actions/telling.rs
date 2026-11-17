@@ -125,7 +125,7 @@ fn tell_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "cause",
             ParamType::Object,
-            "What caused it: { kind, label, key }, as the turn that tells it was started. A reminder's kind is reminder, a brief's is brief; the key is the starter's own id, and one cause is told once.",
+            "What caused it: { kind, label, key }, in your own words; the key is your own id for it, and one cause is told once. What you tell is news whatever kind you name: your person's own rule marks it.",
         ),
         ActionParam::optional(
             "about",
@@ -145,7 +145,7 @@ fn tell_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "actions",
             ParamType::Array,
-            "Its buttons: [{ id, label, main, target: { app, record, resource, action }, arguments }], each a typed action the person's device invokes.",
+            "Its buttons: [{ id, label, main, target: { app, record, resource, action }, arguments }], each a typed action the person's device invokes as the person. Offer only an action you may invoke yourself here: anything else is refused, and a workspace's governance always.",
         ),
     ]
 }
