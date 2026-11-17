@@ -877,6 +877,86 @@ async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_persons_vault() {
     assert_eq!(opened.facts().len(), 1);
 }
 
+/// A server that kept each person's key in its state, beside the vault the
+/// key opens, is then told a folder for the keys. Nobody is locked out of
+/// their vault. The key moves under the folder the first time the vault is
+/// opened, once it was read back from there: the very key, and no new one.
+/// A key whose place under the folder cannot be made stays where it lies
+/// and opens its vault from there, at that start and at the one after it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_key_left_in_the_state_opens_its_vault_and_moves_apart_once_a_folder_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let asking = caller(&owner);
+    let hers = (&owner, &asking);
+    for movable in [true, false] {
+        let state = dir.path().join(format!("state-{movable}"));
+        let keys = dir.path().join(format!("keys-{movable}"));
+
+        // Before any folder was named, her key lies in the state.
+        let server = test_server_keeping_keys_apart(&state, no_folder(), &key, &owner).await;
+        let (_, workspace_id, actions) = governed(server.workspaces()).await;
+        let login = a_login("https://example.test");
+        ask(&actions, workspace_id, hers, person_vault::ADD, login)
+            .await
+            .expect("she keeps a login");
+        server.shutdown().await;
+        let beside = files_called(&state, "vault.key");
+        assert_eq!(beside.len(), 1, "her key lies beside her vault");
+        let sealed_under = std::fs::read(&beside[0]).unwrap();
+
+        // The folder is named, and it is there. Her keys' place under it is
+        // free, or it is taken by a link that leads nowhere, under which
+        // nothing can be made.
+        std::fs::create_dir(&keys).unwrap();
+        let her_place = keys.join(hex::encode(owner.user_public_key));
+        if !movable {
+            std::os::unix::fs::symlink(dir.path().join("nowhere"), &her_place).unwrap();
+        }
+        for (kept, start) in (1..).zip(["the first start with the folder", "the start after it"]) {
+            let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
+            let (_, workspace_id, actions) = governed(server.workspaces()).await;
+            let listed = ask(&actions, workspace_id, hers, person_vault::LIST, json!({}))
+                .await
+                .unwrap_or_else(|error| panic!("{start} locked her out of her vault: {error:?}"));
+            assert_eq!(
+                listed["items"].as_array().map(Vec::len),
+                Some(kept),
+                "{start}: {listed}"
+            );
+            let in_state = files_called(&state, "vault.key");
+            let apart = files_called(&keys, "vault.key");
+            if movable {
+                assert_eq!(
+                    in_state,
+                    Vec::<std::path::PathBuf>::new(),
+                    "{start}: her key still lies in the state"
+                );
+                assert_eq!(apart.len(), 1, "{start}: {apart:?}");
+                assert!(apart[0].starts_with(&her_place), "{start}: {apart:?}");
+                assert!(
+                    std::fs::read(&apart[0]).unwrap() == sealed_under,
+                    "{start}: the key kept apart is not the one her vault was sealed under"
+                );
+            } else {
+                assert_eq!(in_state, beside, "{start}: her key left its place");
+                assert_eq!(apart, Vec::<std::path::PathBuf>::new(), "{start}");
+                assert!(
+                    std::fs::read(&in_state[0]).unwrap() == sealed_under,
+                    "{start}: her key was replaced"
+                );
+            }
+            // What she keeps from now on is sealed under the same key.
+            let more = a_login(&format!("https://{kept}.example.test"));
+            ask(&actions, workspace_id, hers, person_vault::ADD, more)
+                .await
+                .unwrap_or_else(|error| panic!("{start} kept nothing more for her: {error:?}"));
+            server.shutdown().await;
+        }
+    }
+}
+
 /// What a server is told whose operator named no folder for people's keys:
 /// nothing, as an environment without the setting, or with it empty, reads.
 fn no_folder() -> &'static std::path::Path {
