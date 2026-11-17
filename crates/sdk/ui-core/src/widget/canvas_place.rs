@@ -95,12 +95,13 @@ impl Described for CanvasPlace {
         let props_carries = carries.clone().unwrap_or_default();
         let title = title_of(name.as_deref());
         // What the place shows, said quietly at rest in its band: the caption's size, in the
-        // theme's secondary ink, cut short rather than wrapped. It is what a person picks the
-        // place up by: a press on it that travels carries the place's resource.
+        // theme's secondary ink, wrapped and said in full (a turn's caption is the person's whole
+        // question), the band growing to hold it. It is what a person picks the place up by: a
+        // press on it that travels carries the place's resource.
         let caption = Text::new(&title)
             .with_role(TextRole::Caption)
             .dimmed()
-            .with_truncate(true);
+            .with_wrap_mode(crate::text_render::TextWrapMode::WordOrGlyph);
         let caption: Element = match carries {
             Some(resource) if !resource.is_empty() => Box::new(DragSource::new(
                 format!("{key}\u{1f}handle"),
