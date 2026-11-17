@@ -42,6 +42,9 @@ use crate::overview_panel::OverviewPick;
 /// What the overview shows below the workspaces, as the host knows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TiloOverview {
+    /// The person's workspaces this session holds, as `(id, name)`: a row
+    /// saying which one an agent may reach names it as the person does.
+    pub workspaces: Vec<(String, String)>,
     /// The person's workspaces the host knows that this session does not hold, as `(id, name)`:
     /// going to one is the host's action `id`.
     pub elsewhere: Vec<(String, String)>,
@@ -246,24 +249,31 @@ fn agent_hue(grant: &mcp_server::Grant) -> PresenceHue {
 }
 
 /// What a grant may reach: the words its row says it with, and the same words inside the
-/// sentence naming what revoking takes.
-fn agent_reach(grant: &mcp_server::Grant) -> (String, String) {
+/// sentence naming what revoking takes. A workspace's grant names the
+/// workspace as the person does, never by its id, however the host spelled it.
+fn agent_reach(grant: &mcp_server::Grant, workspaces: &[(&str, &str)]) -> (String, String) {
     match &grant.reach {
         // A fact starts a line, a sentence does not.
         Reach::Account => (
             t("overview-tilo-agent-everywhere"),
             t("overview-tilo-agent-everywhere-lower"),
         ),
-        Reach::Workspace { name, .. } => (name.clone(), name.clone()),
+        Reach::Workspace { name, id } => {
+            let named = workspaces
+                .iter()
+                .find_map(|(known, label)| (*known == id.as_str()).then(|| (*label).to_owned()))
+                .unwrap_or_else(|| name.clone());
+            (named.clone(), named)
+        }
     }
 }
 
 /// An agent let in: its face, what it may reach, what it is doing now, the way to its card, and
 /// the way to take its grant back. Revoking ends its access and its sessions, so that control
 /// asks first.
-fn agent_row(grant: &mcp_server::Grant) -> TiloItem {
+fn agent_row(grant: &mcp_server::Grant, workspaces: &[(&str, &str)]) -> TiloItem {
     let hue = agent_hue(grant);
-    let (reach, in_sentence) = agent_reach(grant);
+    let (reach, in_sentence) = agent_reach(grant, workspaces);
     let mut facts = vec![Fact::text(reach)];
     if grant.browser_pages {
         // Its key's own word on its pages: what it does in Browser without asking each time.
@@ -316,6 +326,11 @@ fn agent_row(grant: &mcp_server::Grant) -> TiloItem {
 #[must_use]
 pub fn rows(shell: &TiloOverview) -> Vec<TiloRow> {
     let mut rows = Vec::new();
+    let workspaces: Vec<(&str, &str)> = shell
+        .workspaces
+        .iter()
+        .map(|(id, name)| (id.as_str(), name.as_str()))
+        .collect();
     if !shell.elsewhere.is_empty() {
         rows.push(TiloRow::Caption(t("overview-tilo-more-workspaces")));
         rows.extend(shell.elsewhere.iter().map(|(id, name)| {
@@ -346,7 +361,7 @@ pub fn rows(shell: &TiloOverview) -> Vec<TiloRow> {
             server
                 .grants
                 .iter()
-                .map(|grant| TiloRow::Item(agent_row(grant))),
+                .map(|grant| TiloRow::Item(agent_row(grant, &workspaces))),
         );
     }
     rows
