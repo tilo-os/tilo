@@ -485,6 +485,9 @@ impl PersonProviders {
         Ok(Self {
             public: provider_builder()
                 .dns_resolver(PublicNames)
+                // A proxy taken from the environment would look the name up
+                // itself, past the check made here.
+                .no_proxy()
                 .build()
                 .map_err(unavailable)?,
             any: provider_builder().build().map_err(unavailable)?,
