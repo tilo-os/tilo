@@ -242,7 +242,13 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       // A face that hugs its words grows a little rather than cutting them short.
       if (!node.own.spread && node.own.label) css += slack(w, SLACK * 2);
     }
-    else if (node.own?.kind === 'control') css += 'display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0;';
+    else if (node.own?.kind === 'control') {
+      // A switch with a caption: the caption leads, the switch keeps the trailing edge.
+      const captioned = node.own.controls?.some(control => control.kind === 'check' && control.style === 'switch' && control.label);
+      css += captioned
+        ? 'display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;'
+        : 'display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0;';
+    }
     else if (node.own?.kind === 'field') {
       const [ix, iy] = node.own.inset ?? [0, 0];
       css += textStyle(node.own.look) + `margin:0;padding:${iy}px ${ix}px;border:0;outline:none;font-family:inherit;resize:none;`;
@@ -590,8 +596,9 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         input.disabled = disabled;
         write(input, '@aria-label', control.label ? null : (node.semantics?.name ?? null));
         mark(input, 'toggle', target);
-        out.push(input);
-        if (control.label) out.push(wordsFor(`${key}:label`, control.label, next));
+        const label = control.label && wordsFor(`${key}:label`, control.label, next);
+        if (label && control.style === 'switch') out.push(label, input);
+        else out.push(input, ...(label ? [label] : []));
         return;
       }
       if (control.kind === 'range') {
@@ -709,7 +716,13 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     write(item, '@aria-selected', role === 'radio' ? null : String(Boolean(option.selected)));
     if (role === 'radio' || role === 'option') write(item, '@aria-checked', role === 'radio' ? String(Boolean(option.selected)) : null);
     write(item, '@aria-disabled', option.disabled ? 'true' : null);
-    write(item, 'css', 'display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:6px;white-space:nowrap;cursor:pointer;' + (option.selected ? 'background:var(--tilo-raised,rgba(127,127,127,.16));' : ''));
+    // A tool on a toolbar is its icon; its name is what a reader hears and a tooltip says.
+    const iconOnly = role === 'button' && Boolean(option.icon);
+    write(item, '@aria-label', iconOnly ? option.label : null);
+    write(item, '@title', iconOnly ? option.label : null);
+    write(item, 'css', iconOnly
+      ? 'display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border-radius:6px;cursor:pointer;' + (option.selected ? 'background:color-mix(in srgb,var(--tilo-accent,#2f6fed) 14%,transparent);' : '')
+      : 'display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:6px;white-space:nowrap;cursor:pointer;' + (option.selected ? 'background:var(--tilo-raised,rgba(127,127,127,.16));' : ''));
     item.disabled = Boolean(option.disabled);
     const runs = [];
     if (option.colour) {
@@ -718,10 +731,12 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       runs.push(dot);
     }
     if (option.icon) runs.push(glyph(`${path}:icon`, option.icon, next));
-    const label = elementFor(`${path}:label`, 'span', next);
-    write(label, 'css', 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;');
-    write(label, 'text', option.label);
-    runs.push(label);
+    if (!iconOnly) {
+      const label = elementFor(`${path}:label`, 'span', next);
+      write(label, 'css', 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;');
+      write(label, 'text', option.label);
+      runs.push(label);
+    }
     if (option.detail) {
       const detail = elementFor(`${path}:detail`, 'span', next);
       write(detail, 'css', 'flex:none;color:var(--tilo-text-dim,#6e6e73);white-space:pre;');
@@ -877,6 +892,35 @@ export const VIEW_CSS = `
 .tilo-view [data-widget=WindowNoticeStrip]>[aria-hidden]{border-radius:var(--tilo-radius,8px);box-shadow:0 0 0 1px var(--tilo-border,rgba(127,127,127,.25)),0 6px 20px rgba(0,0,0,.12);}
 .tilo-view button:focus-visible{outline:2px solid var(--tilo-accent,#2f6fed);outline-offset:-2px;}
 .tilo-view ul{margin:0;padding:0;list-style:none;}
+/* A page's own boxes, switches, radios and ranges, set in the toolkit's look: a box that
+   fills with the accent and its tick, a switch whose knob slides, a range in the accent. */
+.tilo-view input[type=checkbox],.tilo-view input[type=radio]{appearance:none;-webkit-appearance:none;margin:0;flex:none;width:18px;height:18px;border-radius:5px;background:var(--tilo-raised,#f1f2f4);box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 55%,transparent);display:grid;place-content:center;cursor:pointer;transition:background .15s ease,box-shadow .15s ease;}
+.tilo-view input[type=radio]{border-radius:50%;}
+.tilo-view input[type=checkbox]:checked,.tilo-view input[type=radio]:checked,.tilo-view input[type=checkbox]:indeterminate{background:var(--tilo-accent,#2f6fed);box-shadow:none;}
+.tilo-view input[type=checkbox]:checked::after{content:"";width:9px;height:5px;border:2px solid var(--tilo-on-accent,#fff);border-top:0;border-right:0;transform:translateY(-1px) rotate(-45deg);}
+.tilo-view input[type=checkbox]:indeterminate::after{content:"";width:9px;height:2px;background:var(--tilo-on-accent,#fff);border-radius:1px;}
+.tilo-view input[type=radio]:checked::after{content:"";width:7px;height:7px;border-radius:50%;background:var(--tilo-on-accent,#fff);}
+.tilo-view input[role=switch]{width:36px;height:22px;border-radius:11px;place-content:center start;padding:0 3px;}
+.tilo-view input[role=switch]::after{content:"";width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .18s ease;}
+.tilo-view input[role=switch]:checked::after{width:16px;height:16px;border:0;transform:translateX(14px);}
+.tilo-view input:disabled{opacity:.5;cursor:default;}
+.tilo-view input[type=checkbox]:focus-visible,.tilo-view input[type=radio]:focus-visible,.tilo-view input[type=range]:focus-visible{outline:2px solid var(--tilo-accent,#2f6fed);outline-offset:2px;}
+.tilo-view input[type=range]{flex:1;min-width:0;margin:0;accent-color:var(--tilo-accent,#2f6fed);cursor:pointer;}
+/* Entries, choosers and strips of choices on the raised well the canvas paints them on. */
+.tilo-view [data-tilo-act=step]{width:28px!important;height:28px!important;background:var(--tilo-raised,#f1f2f4);color:var(--tilo-text,#1d1d1f)!important;font-size:15px!important;}
+.tilo-view [data-tilo-act=step]:hover{background:color-mix(in srgb,var(--tilo-raised,#f1f2f4) 85%,var(--tilo-text,#1d1d1f) 8%);}
+.tilo-view [data-tilo-act=step]:disabled{opacity:.45;}
+.tilo-view [data-tilo-act=value][role=spinbutton],.tilo-view input[type=date],.tilo-view input[type=time],.tilo-view input[type=search]{height:28px;border-radius:6px!important;background:var(--tilo-raised,#f1f2f4)!important;padding:0 8px!important;text-align:center;}
+.tilo-view input[type=search]{text-align:start;}
+.tilo-view [role=combobox]{background:var(--tilo-raised,#f1f2f4);box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));}
+.tilo-view [role=combobox]:hover{background:color-mix(in srgb,var(--tilo-raised,#f1f2f4) 85%,var(--tilo-text,#1d1d1f) 8%);}
+.tilo-view [role=radiogroup]{background:var(--tilo-raised,#f1f2f4);border-radius:var(--tilo-radius,8px);padding:2px;box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));flex-wrap:nowrap!important;}
+.tilo-view [role=radiogroup]>button,.tilo-view [role=tablist]>button,.tilo-view [role=menu]>button,.tilo-view li[role=option]{font-size:13px;font-weight:500;line-height:1.3;}
+.tilo-view [role=radiogroup]>button{padding:4px 14px!important;color:var(--tilo-text-dim,#6e6e73);background:transparent!important;}
+.tilo-view [role=radiogroup]>button[aria-checked=true]{background:var(--tilo-ground,#fff)!important;color:var(--tilo-text,#1d1d1f);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12);}
+.tilo-view [role=tablist]{flex-wrap:nowrap!important;}
+.tilo-view [role=tablist]>button{color:var(--tilo-text-dim,#6e6e73);}
+.tilo-view [role=tablist]>button[aria-selected=true]{color:var(--tilo-text,#1d1d1f);font-weight:600;box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));}
 /* What the shell paints as cards, rows and keys, as elements: the lift and the edge
    come from the theme's own variables, the words from each part's own look. */
 .tilo-view [data-widget=NotificationBanner]{box-sizing:border-box;padding:12px 14px;background:var(--tilo-raised,rgba(127,127,127,.08));color:var(--tilo-text,#1d1d1f);border-radius:var(--tilo-radius,8px);box-shadow:0 8px 24px rgba(0,0,0,.16),inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));overflow:hidden;}
@@ -889,7 +933,7 @@ export const VIEW_CSS = `
 .tilo-view [data-widget=PowerMenuTitle]{box-sizing:border-box;padding:0 12px;display:flex;align-items:center;}
 .tilo-view [data-widget=PasscodeKey]{box-sizing:border-box;background:var(--tilo-raised,rgba(127,127,127,.08));border-radius:var(--tilo-radius,8px);box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));display:flex;align-items:center;justify-content:center;}
 .tilo-view li{list-style:none;box-sizing:border-box;}
-.tilo-view li:has(>.tilo-words){display:flex;align-items:center;padding:0 12px;border-radius:var(--tilo-radius,8px);}
+.tilo-view li:has(>.tilo-words){display:flex;align-items:center;border-radius:var(--tilo-radius,8px);}
 .tilo-view li[aria-selected=true]{background:var(--tilo-raised);}
 .tilo-view li:hover{background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);}
 .tilo-words{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;}
@@ -899,6 +943,9 @@ export const VIEW_CSS = `
 /* A table's head stands over a rule, and its chosen row on the selection's tint, as painted. */
 .tilo-view thead{box-shadow:inset 0 -1px 0 var(--tilo-border,rgba(127,127,127,.25));}
 .tilo-view tr[aria-selected=true]{background:color-mix(in srgb,var(--tilo-accent,#2f6fed) 10%,transparent);border-radius:var(--tilo-radius,8px);}
+.tilo-view img{object-fit:cover;overflow:clip;}
+.tilo-view img[data-fit=contain]{object-fit:contain;}
+.tilo-view img[data-fit=fill]{object-fit:fill;}
 .tilo-view progress{accent-color:var(--tilo-accent,#2f6fed);}
 .tilo-view [data-widget=Spinner]{box-sizing:border-box;border-radius:50%;border:2px solid color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 28%,transparent);border-top-color:var(--tilo-text-dim,#6e6e73);animation:tilo-spin .8s linear infinite;}
 .tilo-view [data-widget=Skeleton]{background:var(--tilo-raised,rgba(127,127,127,.1));border-radius:6px;overflow:hidden;position:relative;}

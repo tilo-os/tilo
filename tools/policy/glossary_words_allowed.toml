@@ -365,3 +365,8 @@ reason = "The module an action's edited-field constant is declared in."
 words = ["run"]
 identifiers = ["run"]
 paths = ["crates/collab/tilo-action-broker/src/collab_app_broker/execution_activity.rs"]
+
+[[allow]]
+reason = "CSS's own property and keyword names (white-space, space-between) in the styles the HTML presenter writes."
+words = ["space"]
+paths = ["crates/browser/tilo-browser-runtime/web/view-present.mjs"]

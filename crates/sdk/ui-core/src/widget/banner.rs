@@ -656,9 +656,27 @@ impl Widget for BannerBody {
             self.geometry(text, theme, width)
         });
         let dy = ((self.rect.height() - g.height) / 2.0).max(0.0);
+        // Its geometry is the banner's own; the page places its parts in the window.
+        let at = vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0 + dy);
+        let x = g.text.x + at.x;
+        // Its icon and its buttons as painted, where they stand.
+        for (key, rect) in [
+            ("icon", Some(g.icon)),
+            ("action", g.action),
+            ("secondary-action", g.secondary_action),
+            ("dismiss", g.dismiss),
+        ] {
+            if let Some(rect) = rect.filter(|rect| !rect.is_zero_area()) {
+                let part = cx.part(key, "BannerPart", rect + at);
+                if key != "icon" {
+                    part.tag = Some("button");
+                }
+                part.painted(0);
+            }
+        }
         let on_well = theme.on_ground(well);
         let text_width = f64::from(g.text_width);
-        let mut y = g.text.y + dy;
+        let mut y = g.text.y + at.y;
         if let Some(source) = content.source_line() {
             let look = TextLook::new(
                 source.to_owned(),
@@ -668,7 +686,7 @@ impl Widget for BannerBody {
             cx.words(
                 "source",
                 "p",
-                Rect::new(g.text.x, y, g.text.x + text_width, y + g.source_h),
+                Rect::new(x, y, x + text_width, y + g.source_h),
                 look,
             );
             y += g.source_h;
@@ -681,7 +699,7 @@ impl Widget for BannerBody {
         cx.words(
             "title",
             "p",
-            Rect::new(g.text.x, y, g.text.x + text_width, y + g.title_h),
+            Rect::new(x, y, x + text_width, y + g.title_h),
             look,
         );
         y += g.title_h;
@@ -694,7 +712,7 @@ impl Widget for BannerBody {
             cx.words(
                 "message",
                 "p",
-                Rect::new(g.text.x, y, g.text.x + text_width, self.rect.y1 - dy),
+                Rect::new(x, y, x + text_width, self.rect.y1 - dy),
                 look,
             );
         }
