@@ -642,6 +642,36 @@ impl DesktopPolicy {
         self.handle.rebuild(tab);
     }
 
+    /// Say `answer` in every tab that answers for `asked`, as a [`Self::failed_at`] left them.
+    pub fn answer_again(&mut self, asked: &str, answer: Outcome) {
+        self.answers.borrow_mut().insert(asked.to_owned(), answer);
+        for tab in self.answering(asked) {
+            self.handle.rebuild(tab);
+        }
+    }
+
+    /// Close every tab that answers for `asked`: what it said is over, and nothing comes into it.
+    pub fn close_answers(&mut self, asked: &str) {
+        for tab in self.answering(asked) {
+            let Some(route) = self.handle.read(|tree| route_of(tree, tab)) else {
+                continue;
+            };
+            let _ = self.handle.dispatch(LayoutEffect::CloseTab {
+                tab: route.tab.to_string(),
+            });
+        }
+    }
+
+    /// The tabs that answer for `asked`.
+    fn answering(&self, asked: &str) -> Vec<TabId> {
+        self.crashed
+            .borrow()
+            .iter()
+            .filter(|(_, known)| known.as_str() == asked)
+            .map(|(tab, _)| *tab)
+            .collect()
+    }
+
     /// The name the person knows `asked` by, for the words its answer uses:
     /// what the shell showed in the app's tab, else the app's own id.
     #[must_use]

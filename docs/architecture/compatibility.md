@@ -75,8 +75,18 @@ the machinery `tilo device swap` uses on a development machine:
    backstop, and the end is reported as a memory end from the group's events
    once the new desktop takes it back. An app that ended while no desktop was
    there is reported from the record its keeper left. A keeper started by an
-   older desktop that speaks another version of its interface is left running
-   and not taken back.
+   older desktop that speaks another version of its interface cannot be shown:
+   the new desktop counts it as a launch (tiers, memory watch, ended at
+   logout), starts no second copy of its app, and offers to restart it, which
+   ends the old app (process group asked first, then the launch's own scope)
+   and starts it again. One part of that interface is not versioned and never
+   changes, so this works between any two builds: the hello, the
+   version-mismatch answer followed by `"holding"`, after which the open
+   connection keeps the keeper from ending its app for want of a desktop, and
+   the `app` file (pid and start time) in the keeper's directory
+   (`crates/session/app-keeper/src/wire.rs`, "The part that never changes").
+   Keepers from before that rule close the connection and end their app 5
+   minutes after their desktop went.
 5. A restarted unit that fails, or a desktop that does not become usable again
    within 60 s, puts the previous layer back, restarts the same parts again and
    marks the update failed; it then applies with the next restart of the
@@ -104,7 +114,7 @@ because it boots the staged deployment that holds them.
 | App ↔ shell (shell-ui) | `ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION` | `crates/sdk/ui-core/interface.toml` | the app's first frame on its shell-ui connection; the launcher, from the manifest |
 | App ↔ runtime (the session services the launcher connects) | `runtime_portal::RUNTIME_INTERFACE_VERSION` | `crates/runtime/runtime-portal/interface.toml` | the launcher, before it connects any service |
 | Device ↔ device (handshake, relay frames, peer-sync messages) | `neighbour_wire::PEER_PROTOCOL_VERSION` | `crates/collab/neighbour-wire/interface.toml` | the first field of the certified handshake's `Hello` and `HelloAck` (server sessions, compute, environments, the HTTPS carrier), and of the `IdentityHello` a device announces on a workspace, whose index never moves |
-| Session ↔ app keeper (the control socket of a kept app) | `tilo_app_keeper::wire::INTERFACE_VERSION` | `crates/session/app-keeper/interface.toml` | the session's `Hello`, the first message on every connection: a keeper at another version (one started by an older session build, still running its app) answers `VersionMismatch` and keeps displaying |
+| Session ↔ app keeper (the control socket of a kept app) | `tilo_app_keeper::wire::INTERFACE_VERSION` | `crates/session/app-keeper/interface.toml` | the session's `Hello`, the first message on every connection: a keeper at another version (one started by an older session build, still running its app) answers `VersionMismatch`, then `"holding"`, keeps displaying, and holds its app while that connection stays open (the unversioned part, never changed) |
 | Host CLI ↔ guest daemon (`tilo-vm` and `tilo-vmd`, over `ssh <vm> tilo-vmd rpc`) | `tilo_vm_protocol::PROTOCOL_VERSION` | `crates/dev/tilo-vm-protocol/interface.toml` | the harness's `Hello`, the first call on every connection: a daemon at another version answers with its own and refuses every other method, and the client updates the daemon with the VM's image (`tilo-vm vm upgrade`) |
 | Store package format (`.tapp`, its manifest, and the registry's snapshots, version indexes and channel authorizations) | `registry_types::PACKAGE_FORMAT_VERSION` (`tilo_app_package::TAPP_FORMAT_VERSION` is it) | `crates/packaging/tilo-app-package/interface.toml` | the archive header, when a package is read; a snapshot's `protocol`, when the catalogue is verified |
 

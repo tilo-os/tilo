@@ -293,6 +293,24 @@ pub fn on_screen_at(
         .filter(|&rect| on_display(rect, width, height))
 }
 
+/// Where the control named `name` stands on the standard display, among everything the session
+/// shows: the shell's parts, the desktop's own content (the card a tab shows in place of a window)
+/// and the controls apps describe of their windows.
+pub fn control_on_screen(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> {
+    session
+        .controls()
+        .into_iter()
+        .find(|control| control.name == name)
+        .map(|control| control.rect)
+        .filter(|&rect| on_display(rect, WIDTH, HEIGHT))
+}
+
+/// Press the control named `name` wherever the session shows it ([`control_on_screen`]) with the
+/// pointer, as the person does.
+pub fn press_control(session: &mut Session, name: &str) {
+    press_where(session, name, |session| control_on_screen(session, name));
+}
+
 /// Whether any of the rectangle `(x, y, w, h)` stands on a display `width` by `height`.
 pub fn on_display((x, y, w, h): (f64, f64, f64, f64), width: i32, height: i32) -> bool {
     w > 0.0

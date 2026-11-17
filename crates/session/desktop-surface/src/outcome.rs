@@ -27,6 +27,9 @@ pub struct Outcome {
     /// Never among the words the person is told; its card keeps it behind "Details". Empty where
     /// there is none.
     pub technical_details: String,
+    /// What the button asked for is under way: it stays, says so under its label, and takes no
+    /// second press until the outcome is replaced.
+    pub busy: bool,
 }
 
 impl Outcome {
@@ -38,6 +41,7 @@ impl Outcome {
             why: String::new(),
             retry: None,
             technical_details: String::new(),
+            busy: false,
         }
     }
 
@@ -62,6 +66,49 @@ impl Outcome {
         ))
         .retryable(crate::i18n::t("answer-try-again"))
         .with_technical_details(technical_details)
+    }
+
+    /// The outcome for the app `app` still running from before an update, which this desktop
+    /// cannot show: Restart ends it and opens it again. `apps` names a Linux VM's apps, which all
+    /// close and open again together.
+    #[must_use]
+    pub fn from_before_update(app: &str, apps: bool) -> Self {
+        let (what, why) = if apps {
+            (
+                "answer-apps-from-before-update",
+                "answer-why-apps-from-before-update",
+            )
+        } else {
+            (
+                "answer-app-from-before-update",
+                "answer-why-from-before-update",
+            )
+        };
+        Self::new(crate::i18n::t_args(what, &[("app", app.into())]))
+            .saying(crate::i18n::t(why))
+            .retryable(crate::i18n::t("answer-restart"))
+    }
+
+    /// The same outcome with what its button asked for under way ([`Self::busy`]).
+    #[must_use]
+    pub fn under_way(mut self) -> Self {
+        self.busy = true;
+        if self.retry.is_some() {
+            self.retry = Some(crate::i18n::t("answer-restarting"));
+        }
+        self
+    }
+
+    /// The outcome for the app `app` that ran on from before an update until it was closed for
+    /// having no desktop: Reopen.
+    #[must_use]
+    pub fn closed_after_update(app: &str) -> Self {
+        Self::new(crate::i18n::t_args(
+            "answer-app-closed-after-update",
+            &[("app", app.into())],
+        ))
+        .saying(crate::i18n::t("answer-why-closed-after-update"))
+        .retryable(crate::i18n::t("answer-reopen"))
     }
 
     /// The same outcome, saying `why` .
@@ -184,6 +231,7 @@ impl OutcomeCard {
             body = body.push(Box::new(
                 Button::new(RETRY_ID, label)
                     .role(ButtonRole::Primary)
+                    .with_enabled(!outcome.busy)
                     .on_effect(retry),
             ));
         }
@@ -389,6 +437,61 @@ mod tests {
                 frame.render_png(&directory.join(format!("window-not-built-details-{scheme}.png")));
             }
         }
+    }
+
+    /// `TILO_OUTCOME_SHOTS=<dir>` writes the cards of an app from before an update in the tab it
+    /// left: still there, being restarted, and closed; in a wide tab and a narrow one, with a long
+    /// name, in the dark and light themes.
+    #[test]
+    fn shots_of_an_app_from_before_an_update() {
+        let Ok(directory) = std::env::var("TILO_OUTCOME_SHOTS") else {
+            return;
+        };
+        let directory = std::path::Path::new(&directory);
+        let long = "LibreOffice Writer – Quarterly report draft (final).odt";
+        let cards = [
+            ("from-before", Outcome::from_before_update("Firefox", false)),
+            ("from-before-long", Outcome::from_before_update(long, false)),
+            (
+                "restarting",
+                Outcome::from_before_update("Firefox", false).under_way(),
+            ),
+            (
+                "vm-from-before",
+                Outcome::from_before_update("Fedora apps", true),
+            ),
+            ("closed-after", Outcome::closed_after_update("Firefox")),
+        ];
+        for (scheme, theme) in [("dark", ui::Theme::dark()), ("light", ui::Theme::light())] {
+            for (name, outcome) in &cards {
+                for (width, size) in [("wide", (900, 560)), ("narrow", (300, 560))] {
+                    let mut frame = ui::headless::FrameHarness::new(
+                        ui::state::State::new(),
+                        Box::new(OutcomeCard::new(outcome, || {})),
+                        size,
+                    );
+                    frame.set_theme(theme.clone());
+                    frame.relayout();
+                    frame.render_png(&directory.join(format!("{name}-{width}-{scheme}.png")));
+                }
+            }
+        }
+    }
+
+    /// A card whose button is under way takes no second press.
+    #[test]
+    fn a_restart_under_way_takes_no_second_press() {
+        let pressed = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counted = std::rc::Rc::clone(&pressed);
+        let outcome = Outcome::from_before_update("Firefox", false).under_way();
+        assert_eq!(outcome.retry.as_deref(), Some("Restarting…"));
+        let card = OutcomeCard::new(&outcome, move || counted.set(counted.get() + 1));
+        let mut frame =
+            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), (720, 480));
+        frame.relayout();
+        let (x, y) = centre_of_control(frame.root_widget(), "Restarting…").expect("its button");
+        frame.click_at(x, y);
+        assert_eq!(pressed.get(), 0);
     }
 
     /// What an outcome that trying again cannot fix says, and that it offers no button.

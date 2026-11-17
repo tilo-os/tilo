@@ -128,6 +128,11 @@ pub struct Options {
     pub grace: Duration,
     /// [`DESKTOP_GONE`], shorter in a test.
     pub desktop_gone: Duration,
+    /// Test only: once this file exists the keeper speaks as one of an older build, at version 0;
+    /// it holds its app for a session at another version unless the file says `closes`, as a
+    /// keeper from before that rule does.
+    #[cfg(feature = "test-support")]
+    pub aged_by: Option<PathBuf>,
 }
 
 impl Options {
@@ -141,6 +146,8 @@ impl Options {
             x11: false,
             grace: GRACE,
             desktop_gone: DESKTOP_GONE,
+            #[cfg(feature = "test-support")]
+            aged_by: None,
         }
     }
 
@@ -487,7 +494,7 @@ impl Data {
 
     /// Send `message` to the session `id` without waiting: whether it reached the socket whole.
     /// What does not fit waits for room; a session gone or too far behind is closed.
-    fn send(&mut self, id: u64, message: &FromKeeper) -> bool {
+    fn send<T: serde::Serialize>(&mut self, id: u64, message: &T) -> bool {
         let Some((conn, _)) = self.conns.get_mut(&id) else {
             return false;
         };
@@ -547,32 +554,35 @@ impl Data {
     }
 
     fn session_message(&mut self, id: u64, frame: &[u8]) {
+        let (speaks, holds) = self.speaks();
         let Some((conn, _)) = self.conns.get_mut(&id) else {
             return;
         };
+        // A session at another version was answered once: nothing more it says is read.
+        if conn.holds {
+            return;
+        }
         if !conn.greeted {
-            if wire::hello_version(frame) == Some(INTERFACE_VERSION) {
+            if wire::hello_version(frame) == Some(speaks) {
                 conn.greeted = true;
-                self.send(
-                    id,
-                    &FromKeeper::Hello {
-                        version: INTERFACE_VERSION,
-                    },
-                );
+                self.send(id, &FromKeeper::Hello { version: speaks });
                 if let Some(end) = self.ended
                     && self.send(id, &FromKeeper::Ended { end })
                 {
                     self.delivered = true;
                 }
             } else {
-                tracing::warn!("a session spoke another version of the control interface");
-                self.send(
-                    id,
-                    &FromKeeper::VersionMismatch {
-                        version: INTERFACE_VERSION,
-                    },
+                tracing::warn!(
+                    "a session spoke another version of the control interface; holding the app for it"
                 );
-                self.close_session(id);
+                self.send(id, &FromKeeper::VersionMismatch { version: speaks });
+                if holds && self.send(id, &wire::HOLDING) {
+                    if let Some((conn, _)) = self.conns.get_mut(&id) {
+                        conn.holds = true;
+                    }
+                } else {
+                    self.close_session(id);
+                }
             }
             return;
         }
@@ -612,6 +622,26 @@ impl Data {
                 }
             }
         }
+    }
+
+    /// The version this keeper speaks, and whether it holds its app for a session at another.
+    #[cfg(not(feature = "test-support"))]
+    #[expect(clippy::unused_self, reason = "the test build reads its options")]
+    const fn speaks(&self) -> (u32, bool) {
+        (INTERFACE_VERSION, true)
+    }
+
+    #[cfg(feature = "test-support")]
+    fn speaks(&self) -> (u32, bool) {
+        match self.options.aged_by.as_ref().map(std::fs::read_to_string) {
+            Some(Ok(said)) => (0, said.trim() != "closes"),
+            _ => (INTERFACE_VERSION, true),
+        }
+    }
+
+    /// Whether a session that cannot show the app is connected and holds it.
+    fn held(&self) -> bool {
+        self.conns.values().any(|(conn, _)| conn.holds)
     }
 
     fn describe(&self) -> Description {
@@ -789,8 +819,15 @@ impl Data {
     }
 
     /// A running app whose desktop stayed away for [`Options::desktop_gone`] is asked to end
-    /// (SIGTERM to its process group), and made to after [`Options::grace`] more.
+    /// (SIGTERM to its process group), and made to after [`Options::grace`] more. A session that
+    /// cannot show it holds it: the time counts from when the last such session went.
     fn end_without_desktop(&mut self) {
+        if self.held() {
+            if let Some((lost, None)) = &mut self.desktop_lost {
+                *lost = Instant::now();
+            }
+            return;
+        }
         let (Some(app), None, Some((lost, asked))) =
             (&self.app, self.ended, &mut self.desktop_lost)
         else {
@@ -814,6 +851,7 @@ impl Data {
 
     fn wake_in(&self) -> Option<Duration> {
         let gone = match (&self.app, self.ended, self.desktop_lost) {
+            (Some(_), None, Some((_, None))) if self.held() => None,
             (Some(_), None, Some((lost, None))) => {
                 Some(self.options.desktop_gone.saturating_sub(lost.elapsed()))
             }
@@ -860,6 +898,11 @@ impl Data {
             Ok(token) => self.app_token = Some(token),
             Err(error) => tracing::warn!(%error, "the app's end cannot be watched"),
         }
+        if let Some(started_at) = app.started_at
+            && let Err(error) = write_app(&self.options.dir, app.pid, started_at)
+        {
+            tracing::warn!(%error, "the app's process could not be recorded");
+        }
         self.app = Some(app);
     }
 
@@ -884,6 +927,16 @@ impl Data {
         }
         self.state.outbox.push(FromKeeper::Ended { end });
     }
+}
+
+/// Write the app's process to `<dir>/app` ([`wire::AppProcess`]), whole or not at all.
+fn write_app(dir: &Path, pid: u32, started_at: u64) -> io::Result<()> {
+    let partial = dir.join(".app.partial");
+    std::fs::write(
+        &partial,
+        serde_json::to_vec(&wire::AppProcess { pid, started_at })?,
+    )?;
+    std::fs::rename(partial, dir.join("app"))
 }
 
 fn write_ended(dir: &Path, end: End) -> io::Result<()> {

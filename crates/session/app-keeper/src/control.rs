@@ -10,7 +10,7 @@ use std::os::unix::net::UnixStream;
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags};
 use smithay::reexports::calloop::RegistrationToken;
 
-use crate::wire::{self, FromKeeper};
+use crate::wire;
 
 /// What a session was sent and has not read yet, beyond which it is closed: a session that stops
 /// reading never holds the keeper, and never grows it without end.
@@ -67,6 +67,9 @@ pub(crate) struct Conn {
     pub writing: Option<RegistrationToken>,
     /// Said hello at this keeper's version.
     pub greeted: bool,
+    /// Said hello at another version and was told [`wire::HOLDING`]: while it stays open the app
+    /// is not ended for want of a desktop.
+    pub holds: bool,
 }
 
 impl Conn {
@@ -78,6 +81,7 @@ impl Conn {
             pending: Vec::new(),
             writing: None,
             greeted: false,
+            holds: false,
         }
     }
 
@@ -132,7 +136,7 @@ impl Conn {
     ///
     /// # Errors
     /// The session is gone, or has left more unread than [`PENDING_LIMIT`].
-    pub(crate) fn send(&mut self, message: &FromKeeper) -> io::Result<bool> {
+    pub(crate) fn send<T: serde::Serialize>(&mut self, message: &T) -> io::Result<bool> {
         let frame = wire::encode(message)?;
         if self.pending.len().saturating_add(frame.len()) > PENDING_LIMIT {
             return Err(io::Error::new(

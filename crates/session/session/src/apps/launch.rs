@@ -12,6 +12,10 @@ impl Apps {
         self.mark_placed();
         let ended = self.state.borrow().spawner.events();
         for event in ended {
+            #[cfg(target_os = "linux")]
+            if self.outdated_ended(&event) {
+                continue;
+            }
             // An agent has no window and no place of its own on the shell: its end is logged, and
             // the record's next change starts it again rather than this pass starting it in a loop.
             if let Some((workspace, agent)) = self.agent_ended(event.id) {

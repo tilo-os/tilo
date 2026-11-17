@@ -361,11 +361,17 @@ impl Session {
 
     /// The next message, pumping the rig until it arrives; `None` once the keeper closed.
     pub fn next(&mut self, rig: &mut Rig) -> Option<FromKeeper> {
+        self.next_frame(rig)
+            .map(|frame| serde_json::from_slice(&frame).expect("message"))
+    }
+
+    /// The next frame as it came, pumping the rig until it arrives; `None` once the keeper closed.
+    pub fn next_frame(&mut self, rig: &mut Rig) -> Option<Vec<u8>> {
         for _ in 0..1500 {
             self.frames
                 .extend(wire::take_frames(&mut self.buffer).expect("frames"));
             if let Some(frame) = self.frames.pop_front() {
-                return Some(serde_json::from_slice(&frame).expect("message"));
+                return Some(frame);
             }
             let mut bytes = [0_u8; 4096];
             match self.stream.read(&mut bytes) {

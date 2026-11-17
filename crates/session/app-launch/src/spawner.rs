@@ -481,6 +481,10 @@ pub struct Adopted {
     pub launch: tilo_app_keeper::registry::KeptLaunch,
     /// Its windows, oldest first, each with the place the run before last told its keeper.
     pub windows: Vec<crate::kept::Window>,
+    /// Its keeper is of a build before an update that changed how the session speaks to it: the
+    /// app goes on with unsaved work, and this session can show none of it, only end it
+    /// ([`Spawner::restart_outdated`]). Its windows are not known.
+    pub outdated: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -550,12 +554,10 @@ impl Spawner {
                         adopted.push(taken);
                     }
                 }
-                Err(crate::kept::Refused::Version(version)) => {
-                    tracing::warn!(
-                        dir = %dir.display(),
-                        version,
-                        "not adopted: the kept app runs an older keeper and needs a restart to finish the update"
-                    );
+                Err(crate::kept::Refused::Version(outdated)) => {
+                    if let Some(taken) = self.adopt_outdated(&dir, outdated) {
+                        adopted.push(taken);
+                    }
                 }
                 Err(crate::kept::Refused::Gone) => {
                     if !crate::kept::written_launch(&dir).is_some_and(|launch| launch.service) {
@@ -707,7 +709,99 @@ impl Spawner {
             pid: keeper,
             launch,
             windows,
+            outdated: false,
         })
+    }
+
+    /// Take up the kept app in `dir` whose keeper speaks another version: a launch of this session
+    /// like any other for tiers, the memory watch and the logout that ends it, which shows nothing
+    /// and is reported once its app ended. Its keeper holds the app for this session while it is
+    /// connected, when it is of a build that does.
+    fn adopt_outdated(&mut self, dir: &Path, outdated: crate::kept::Outdated) -> Option<Adopted> {
+        let Some(launch) = crate::kept::written_launch(dir) else {
+            tracing::warn!(dir = %dir.display(), version = outdated.version, "not adopted: an outdated keeper's launch is not one this session reads");
+            return None;
+        };
+        let keeper = outdated.keeper;
+        let Some(process) = crate::kept::kept_app(dir, keeper) else {
+            // A service's keeper is the service's to clear away.
+            if !launch.service {
+                drop(outdated);
+                self.report_gone(dir, None);
+            }
+            return None;
+        };
+        let ended = crate::kept::pidfd(process.pid)?;
+        tracing::warn!(
+            app = %launch.app,
+            version = outdated.version,
+            holding = outdated.holding.is_some(),
+            "a kept app is behind a keeper from before the update: it shows only once restarted"
+        );
+        let kept = crate::kept::Kept::outdated(dir.to_path_buf(), launch.service, outdated);
+        let id = self.next;
+        self.next = self.next.wrapping_add(1);
+        let mut app = App::of(keeper, &launch.app);
+        app.started = Instant::now()
+            .checked_sub(launcher::priority::STARTUP_WINDOW)
+            .unwrap_or(app.started);
+        app.kept = Some(Arc::clone(&kept));
+        running(&self.running).insert(id, app);
+        let (events, wake, still_running) = (
+            self.events.0.clone(),
+            self.wake.clone(),
+            Arc::clone(&self.running),
+        );
+        let (name, title) = (launch.app.clone(), launch.title.clone());
+        let spawned = std::thread::Builder::new()
+            .name(format!("outdated-{name}"))
+            .spawn(move || {
+                while !crate::kept::ended_within(&ended, std::time::Duration::from_secs(3600)) {}
+                if kept.released() {
+                    return;
+                }
+                running(&still_running).remove(&id);
+                let end =
+                    crate::kept::recorded_end(&kept.dir).unwrap_or(End::signalled(libc::SIGTERM));
+                kept.remove();
+                let _ = events.send(Event {
+                    id,
+                    app: name,
+                    title,
+                    end,
+                    said: crate::output::OutputTail::default(),
+                });
+                if let Some(wake) = wake {
+                    wake();
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "an outdated kept app's end goes unheard");
+        }
+        Some(Adopted {
+            id,
+            pid: keeper,
+            launch,
+            windows: Vec::new(),
+            outdated: true,
+        })
+    }
+
+    /// End the outdated kept app `id` ([`Adopted::outdated`]) so it can start again on this
+    /// desktop: asked to end, then its launch's scope ended, away from the caller's thread. Its
+    /// end is reported as any launch's. False when there is no such launch.
+    pub fn restart_outdated(&self, id: u64) -> bool {
+        let kept = running(&self.running)
+            .get(&id)
+            .and_then(|app| app.kept.clone())
+            .filter(|kept| kept.is_outdated());
+        let Some(kept) = kept else {
+            return false;
+        };
+        let spawned = std::thread::Builder::new()
+            .name("outdated-restart".into())
+            .spawn(move || kept.end_outdated());
+        spawned.is_ok()
     }
 
     /// Report the kept app in `dir`, which ended while no desktop was there, and remove its

@@ -30,6 +30,8 @@ use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_desktop_surface::outcome::{Closed, Outcome};
 
 mod launch;
+#[cfg(target_os = "linux")]
+mod outdated;
 
 use crate::agents::Kept;
 use crate::search::AppActions;
@@ -158,6 +160,9 @@ struct State {
     /// ([`Apps::take_kept`]).
     #[cfg(target_os = "linux")]
     kept: Vec<tilo_app_launch::Adopted>,
+    /// The apps from before an update that this desktop cannot show, by launch id.
+    #[cfg(target_os = "linux")]
+    outdated: BTreeMap<u64, outdated::FromBefore>,
 }
 
 /// A window whose tab the session asked the shell for: the launch that starts it once the shell asks
@@ -294,6 +299,8 @@ impl Apps {
                 documents: None,
                 #[cfg(target_os = "linux")]
                 kept: Vec::new(),
+                #[cfg(target_os = "linux")]
+                outdated: BTreeMap::new(),
             }),
         }
     }
@@ -945,6 +952,13 @@ impl Apps {
                 self.start_planned(app, asked.tab);
                 continue;
             }
+            // Restart pressed on an app still running from before the update.
+            #[cfg(target_os = "linux")]
+            if let Some(tab) = asked.tab
+                && self.restart_outdated(tab, &asked.app)
+            {
+                continue;
+            }
             let Some(launch) = Launch::parse(&asked.app) else {
                 tracing::warn!(asked = %asked.app, "not a launch this session knows");
                 self.could_not_open(
@@ -1139,15 +1153,22 @@ impl Apps {
     /// and shows the answer, with the button that asks for the app again. A launch no tab holds is
     /// answered by whoever asked for it.
     fn could_not_open(&self, tab: Option<u64>, asked: &str, why: &str) {
-        let (Some(tab), Some(desktop)) = (tab, self.desktop.borrow().clone()) else {
+        let Some(tab) = tab else {
             return;
         };
-        desktop.with_policy(|policy| {
+        self.answer_in_tabs(|policy| {
             let outcome = not_opened(policy, asked, why);
             policy.failed_at(tab, asked, outcome);
         });
-        // The answer is a shell command like any other: the shell carries it out, and lays its tab
-        // out, on its next pass.
+    }
+
+    /// Change what tabs say through the desktop's policy. The answer is a shell command like any
+    /// other: the shell carries it out, and lays its tabs out, on its next pass.
+    fn answer_in_tabs(&self, answer: impl FnOnce(&mut tilo_desktop_policy::DesktopPolicy)) {
+        let Some(desktop) = self.desktop.borrow().clone() else {
+            return;
+        };
+        desktop.with_policy(answer);
         desktop.with_widgets(WidgetHost::relayout);
     }
 

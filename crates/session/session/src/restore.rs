@@ -54,6 +54,10 @@ pub(crate) struct Restore {
     kept_apps: Vec<String>,
     /// The revision of the layout the kept windows' keepers were last told their tabs at.
     placed_at: Option<u64>,
+    /// The apps still running from before an update that this desktop cannot show, while they
+    /// run: a saved tab of theirs, whenever it comes, says so rather than starting a second copy.
+    #[cfg(target_os = "linux")]
+    outdated: Vec<tilo_app_launch::Adopted>,
 }
 
 /// A window the person left open, and the app that opens it again.
@@ -178,11 +182,14 @@ impl Restore {
             // stay as they are.
             return;
         };
-        if self.started() && !self.kept_shown {
+        let first = self.started() && !self.kept_shown;
+        if first {
             self.kept_shown = true;
             self.claim_kept(desktop, apps.take_kept());
             apps.attach_kept();
         }
+        #[cfg(target_os = "linux")]
+        self.claim_outdated(apps, first);
         self.release_admitted(desktop, awaited);
         loop {
             if let Some(opening) = &self.opening {
@@ -235,6 +242,10 @@ impl Restore {
     #[cfg(target_os = "linux")]
     fn claim_kept(&mut self, desktop: &DesktopHost, adopted: Vec<tilo_app_launch::Adopted>) {
         for kept in adopted {
+            if kept.outdated {
+                self.outdated.push(kept);
+                continue;
+            }
             for window in &kept.windows {
                 // A window that opened while the desktop was away was told no place.
                 let Some(placement) = window.placement.as_deref() else {
@@ -276,6 +287,37 @@ impl Restore {
         self.waiting.retain(|saved| !closed.contains(&saved.tab));
         for tab in closed {
             desktop.with_policy(|policy| policy.release_tab(tab));
+        }
+    }
+
+    /// The saved tabs of each app still open from before an update, which this desktop cannot
+    /// show: each says so, with Restart, and the app is not started a second time beside the one
+    /// that still holds the person's unsaved work. `first` is the pass that took the apps back,
+    /// which also gives one that left no saved tab a tab of its own.
+    #[cfg(target_os = "linux")]
+    fn claim_outdated(&mut self, apps: &Apps, first: bool) {
+        self.outdated.retain(|kept| apps.is_launched(kept.id));
+        for kept in &self.outdated {
+            let ids: Vec<&str> = std::iter::once(kept.launch.app.as_str())
+                .chain(kept.launch.window_identities.iter().map(String::as_str))
+                .collect();
+            let (theirs, rest): (VecDeque<Saved>, VecDeque<Saved>) =
+                std::mem::take(&mut self.waiting)
+                    .into_iter()
+                    .partition(|saved| {
+                        ids.iter().any(|id| {
+                            tilo_desktop_policy::app_ids_match(id, &saved.app)
+                                || tilo_desktop_policy::app_ids_match(&saved.app, id)
+                        })
+                    });
+            self.waiting = rest;
+            if first || !theirs.is_empty() {
+                let tabs: Vec<(u64, String)> = theirs
+                    .into_iter()
+                    .map(|saved| (saved.tab, saved.name))
+                    .collect();
+                apps.show_outdated(kept, &tabs);
+            }
         }
     }
 
@@ -673,6 +715,7 @@ mod tests {
         restore.claim_kept(
             &host,
             vec![tilo_app_launch::Adopted {
+                outdated: false,
                 id: 1,
                 pid: 50,
                 launch: KeptLaunch {

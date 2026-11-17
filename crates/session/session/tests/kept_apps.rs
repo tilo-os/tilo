@@ -495,3 +495,105 @@ fn a_restart_ends_an_app_whose_keeper_stopped_answering() {
     signal(keeper, libc::SIGCONT);
     tilo_test_env::exited("the app of a keeper that stopped answering", pid);
 }
+
+#[test]
+fn an_app_from_before_an_update_says_so_in_its_tab_and_restart_opens_it_again() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let mut first = rig.run(false);
+    rig.launch(&first);
+    let placed = shown_and_told(&rig, &mut first, &["Only"]);
+    let (dir, pid, at) = rig.kept();
+    first.end(Teardown::InPlaceRestart);
+    // The update changed how the desktop speaks to the app's keeper.
+    testing::age(&dir, true).expect("aged");
+
+    let mut second = rig.run(true);
+    crate::common::wait_for(
+        &mut second.session,
+        "its tab says it is from before the update",
+        |session| crate::common::control_on_screen(session, "Restart").map(|_| ()),
+    );
+    assert_eq!(tabs(&second.session).len(), 1, "it says so in its own tab");
+    assert_eq!(tabs(&second.session)[0].0, placed[0].1, "the tab it was in");
+    assert_eq!(rig.starts(), [pid], "no second copy started beside it");
+    assert!(running(pid, at), "it goes on with what it holds");
+
+    crate::common::press_control(&mut second.session, "Restart");
+    until(
+        &mut second.session,
+        "the old app ended and a new one started",
+        |_| !running(pid, at) && rig.starts().len() == 2,
+    );
+    let back = shown_and_told(&rig, &mut second, &["Only"]);
+    assert_eq!(
+        back[0].1,
+        placed[0].1,
+        "the new one opens in the same tab: {:?}",
+        tabs(&second.session)
+    );
+    assert_eq!(tabs(&second.session).len(), 1, "and nowhere else");
+    assert!(!dir.exists(), "the old keeper's directory is gone");
+    second.end(Teardown::Logout);
+}
+
+#[test]
+fn a_logout_ends_an_app_from_before_an_update() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let mut first = rig.run(false);
+    rig.launch(&first);
+    shown_and_told(&rig, &mut first, &["Only"]);
+    let (dir, pid, _) = rig.kept();
+    first.end(Teardown::InPlaceRestart);
+    testing::age(&dir, true).expect("aged");
+    let mut second = rig.run(true);
+    crate::common::wait_for(
+        &mut second.session,
+        "its tab says it is from before the update",
+        |session| crate::common::control_on_screen(session, "Restart").map(|_| ()),
+    );
+    second.end(Teardown::Logout);
+    tilo_test_env::exited("the app from before the update at logout", pid);
+    assert!(!dir.exists());
+}
+
+#[test]
+fn an_app_from_before_an_update_that_left_no_tab_says_so_in_a_tab_of_its_own() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let mut first = rig.run(false);
+    rig.launch(&first);
+    shown_and_told(&rig, &mut first, &["Only"]);
+    let (dir, pid, at) = rig.kept();
+    first.end(Teardown::InPlaceRestart);
+    testing::age(&dir, true).expect("aged");
+    // Its keeper names an app no saved tab shows: the tab it had is gone.
+    let launch = tilo_app_launch::kept::KeptLaunch {
+        version: tilo_app_launch::kept::LAUNCH_VERSION,
+        app: "org.example.Elsewhere".into(),
+        title: "Elsewhere".into(),
+        workspace: String::new(),
+        asked: None,
+        window_identities: Vec::new(),
+        service: false,
+    };
+    fs::write(dir.join("launch"), launch.encode()).expect("the launch rewritten");
+
+    let mut second = rig.run(true);
+    crate::common::wait_for(&mut second.session, "a tab of its own says so", |session| {
+        crate::common::control_on_screen(session, "Restart").map(|_| ())
+    });
+    assert!(
+        second
+            .session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Elsewhere is still running from before the update"),
+        "{:?}",
+        second.session.accessible_labels()
+    );
+    assert!(running(pid, at), "it goes on with what it holds");
+    second.end(Teardown::Logout);
+    tilo_test_env::exited("the app from before the update at logout", pid);
+}

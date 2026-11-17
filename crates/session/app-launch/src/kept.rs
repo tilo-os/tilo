@@ -30,6 +30,10 @@
 //!   its windows and leaves it running, at a logout too; its end is the service's to handle and is
 //!   never reported, and the session never signals it or kills its cgroup (it runs in the
 //!   service's own).
+//! - **Outdated.** A keeper of a build before an update that changed its interface cannot be
+//!   shown ([`Outdated`]). It is taken as a launch all the same, with no windows, so no second
+//!   copy of its app starts and a logout ends it; its keeper holds the app while this session stays
+//!   connected; and restarting it ([`end_outdated`]) ends the old app so it can start again.
 
 use std::io::{self, Read as _, Write as _};
 use std::os::fd::{AsFd as _, AsRawFd as _, FromRawFd as _, OwnedFd};
@@ -133,6 +137,12 @@ pub(crate) struct Kept {
     attached: AtomicBool,
     /// What the keeper was last told of where each window stands, by tag.
     placed: Mutex<std::collections::HashMap<String, String>>,
+    /// The keeper speaks another version ([`Outdated`]): this session shows nothing of it, and
+    /// only ends it.
+    outdated: bool,
+    /// When an outdated keeper started, as read when it was met: what it is checked against
+    /// before it is signalled.
+    keeper_started: Option<u64>,
 }
 
 impl Kept {
@@ -146,13 +156,48 @@ impl Kept {
             released: AtomicBool::new(false),
             attached: AtomicBool::new(false),
             placed: Mutex::new(std::collections::HashMap::new()),
+            outdated: false,
+            keeper_started: None,
         })
+    }
+
+    /// The outdated keeper `outdated` in `dir`, holding its app on the connection it was asked on
+    /// when it does.
+    pub(crate) fn outdated(dir: PathBuf, service: bool, outdated: Outdated) -> Arc<Self> {
+        Arc::new(Self {
+            dir,
+            service,
+            control: Mutex::new(outdated.holding),
+            keeper: AtomicU32::new(outdated.keeper),
+            described: AtomicBool::new(false),
+            released: AtomicBool::new(false),
+            attached: AtomicBool::new(true),
+            placed: Mutex::new(std::collections::HashMap::new()),
+            outdated: true,
+            keeper_started: outdated.keeper_started,
+        })
+    }
+
+    /// Whether the keeper speaks another version than this session.
+    pub(crate) const fn is_outdated(&self) -> bool {
+        self.outdated
+    }
+
+    /// End an outdated keeper's app as Restart asks ([`end_outdated`]).
+    pub(crate) fn end_outdated(&self) {
+        if self.outdated {
+            end_outdated(&self.dir, self.keeper(), self.keeper_started);
+        }
     }
 
     /// Whether this run may leave the launch running through an in-place restart: its keeper
     /// answered in this run, and answers now. A keeper that stopped answering since (stopped,
     /// hung) would hold the app with nobody to take it back, so it ends instead.
     pub(crate) fn answers(&self) -> bool {
+        // An outdated keeper is never described; the next session meets it as this one did.
+        if self.outdated {
+            return UnixStream::connect(self.dir.join("control")).is_ok();
+        }
         self.described.load(Ordering::Acquire)
             && self.control.lock_recover().is_some()
             && greet(&self.dir, ANSWER_AT_RESTART).is_ok()
@@ -253,8 +298,127 @@ pub(crate) enum Refused {
     /// Nothing listens: the keeper is gone.
     Gone,
     /// It speaks another version of the interface: it was started before an update and runs on.
-    Version(u32),
+    Version(Outdated),
     Failed(io::Error),
+}
+
+/// A keeper at another version than this session's: its app goes on, and this session can show
+/// none of it. Only the part of the interface that never changes is spoken with it
+/// ([`tilo_app_keeper::wire`]).
+#[derive(Debug)]
+pub(crate) struct Outdated {
+    pub(crate) version: u32,
+    /// The keeper's process, and when it started, so a pid the kernel gave someone else since is
+    /// never signalled.
+    pub(crate) keeper: u32,
+    pub(crate) keeper_started: Option<u64>,
+    /// The connection the keeper holds its app for while it stays open; none from a keeper of a
+    /// build before that rule, which closes it and ends its app once its desktop stayed away for
+    /// [`tilo_app_keeper::DESKTOP_GONE`].
+    pub(crate) holding: Option<UnixStream>,
+}
+
+/// How long an app asked to end may take before its launch's scope is ended under it: what the
+/// person waits for after pressing Restart.
+pub(crate) const ASKED_TO_END: Duration = Duration::from_secs(3);
+
+/// The app of the outdated keeper in `dir`, verified against `/proc`: as its `app` file names it,
+/// else the keeper's one child (keepers from before that file).
+pub(crate) fn kept_app(dir: &Path, keeper: u32) -> Option<wire::AppProcess> {
+    let written = std::fs::read(dir.join("app"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<wire::AppProcess>(&bytes).ok());
+    let process = written.or_else(|| {
+        // Each of its threads lists the children it started.
+        let children: Vec<u32> = std::fs::read_dir(format!("/proc/{keeper}/task"))
+            .ok()?
+            .filter_map(Result::ok)
+            .filter_map(|task| std::fs::read_to_string(task.path().join("children")).ok())
+            .flat_map(|children| {
+                children
+                    .split_whitespace()
+                    .filter_map(|pid| pid.parse().ok())
+                    .collect::<Vec<u32>>()
+            })
+            .collect();
+        // A keeper starts one process, its app.
+        let [pid] = children.as_slice() else {
+            return None;
+        };
+        let pid = *pid;
+        Some(wire::AppProcess {
+            pid,
+            started_at: start_time(pid)?,
+        })
+    })?;
+    (start_time(process.pid) == Some(process.started_at)).then_some(process)
+}
+
+/// End the app of the outdated keeper in `dir`, as Restart asks: its process group is asked to
+/// end and given [`ASKED_TO_END`], then the launch's own scope ends with everything left in it,
+/// keeper included, and the directory goes. Every process is checked against when it started
+/// before it is signalled; a launch outside a scope of its own is never ended by cgroup, only its
+/// verified app and keeper are.
+pub(crate) fn end_outdated(dir: &Path, keeper: u32, keeper_started: Option<u64>) {
+    if let Some(app) = kept_app(dir, keeper)
+        && let Some(fd) = pidfd(app.pid)
+        // Checked once the descriptor holds the process: it is that one, never a later one.
+        && start_time(app.pid) == Some(app.started_at)
+    {
+        signal_group(app.pid, libc::SIGTERM);
+        ended_within(&fd, ASKED_TO_END);
+    }
+    let keeper_alive = keeper_started.is_some() && start_time(keeper) == keeper_started;
+    if keeper_alive {
+        let scope = std::fs::read_to_string(format!("/proc/{keeper}/cgroup"))
+            .ok()
+            .and_then(|cgroup| launcher::app_cgroup::app_cgroup_at(&cgroup))
+            .map(|cgroup| launcher::app_cgroup::fs_path(&cgroup));
+        if let Some(scope) = scope {
+            if let Err(error) = launcher::app_cgroup::kill(&scope) {
+                tracing::warn!(%error, "an outdated kept app's scope did not end");
+            }
+        } else {
+            // Outside a scope of its own (a service's keeper), only its verified processes end.
+            if let Some(app) = kept_app(dir, keeper) {
+                signal(app.pid, libc::SIGKILL);
+            }
+            signal(keeper, libc::SIGTERM);
+        }
+    }
+    if let Err(error) = std::fs::remove_dir_all(dir)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        tracing::warn!(dir = %dir.display(), %error, "an outdated keeper's directory stays");
+    }
+}
+
+/// Send `signal` to the process group `leader` leads, when it leads one: a keeper starts its app
+/// in a group of its own.
+fn signal_group(leader: u32, signal: i32) {
+    let Ok(pid) = libc::pid_t::try_from(leader) else {
+        return;
+    };
+    // SAFETY: getpgid and kill take plain integers.
+    unsafe {
+        if libc::getpgid(pid) == pid {
+            libc::kill(pid.saturating_neg(), signal);
+        } else {
+            libc::kill(pid, signal);
+        }
+    }
+}
+
+/// Wait at most `within` for the process `fd` holds to end: whether it did.
+pub(crate) fn ended_within(fd: &OwnedFd, within: Duration) -> bool {
+    let mut fds = [libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    }];
+    let timeout = i32::try_from(within.as_millis()).unwrap_or(i32::MAX);
+    // SAFETY: one live pollfd in a buffer of that length.
+    unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout) > 0 }
 }
 
 impl From<io::Error> for Refused {
@@ -302,10 +466,23 @@ pub(crate) fn greet(dir: &Path, answer: Duration) -> Result<Greeted, Refused> {
         None,
     )?;
     let mut buffer = Inbox::default();
-    match receive(&control, &mut buffer)? {
-        Some(FromKeeper::Hello { .. }) => {}
-        Some(FromKeeper::VersionMismatch { version }) => return Err(Refused::Version(version)),
-        _ => return Err(Refused::Gone),
+    let Some(first) = receive_frame(&control, &mut buffer)? else {
+        return Err(Refused::Gone);
+    };
+    if let Some(version) = wire::mismatch_version(&first) {
+        // A keeper that holds its app for this session says so next; one from before that rule
+        // closes the connection.
+        let holds = matches!(receive_frame(&control, &mut buffer), Ok(Some(frame)) if wire::holding(&frame));
+        control.set_read_timeout(None)?;
+        return Err(Refused::Version(Outdated {
+            version,
+            keeper,
+            keeper_started: start_time(keeper),
+            holding: holds.then_some(control),
+        }));
+    }
+    if !matches!(serde_json::from_slice(&first), Ok(FromKeeper::Hello { .. })) {
+        return Err(Refused::Gone);
     }
     send(&control, &ToKeeper::Describe, None)?;
     loop {
@@ -563,11 +740,19 @@ pub(crate) struct Inbox {
 /// The next message from the keeper; `None` once the connection ended. A message this session
 /// cannot read is passed over.
 fn receive(stream: &UnixStream, inbox: &mut Inbox) -> io::Result<Option<FromKeeper>> {
+    while let Some(frame) = receive_frame(stream, inbox)? {
+        if let Ok(message) = serde_json::from_slice(&frame) {
+            return Ok(Some(message));
+        }
+    }
+    Ok(None)
+}
+
+/// The next frame from the keeper, as it came; `None` once the connection ended.
+fn receive_frame(stream: &UnixStream, inbox: &mut Inbox) -> io::Result<Option<Vec<u8>>> {
     loop {
-        while let Some(frame) = inbox.frames.pop_front() {
-            if let Ok(message) = serde_json::from_slice(&frame) {
-                return Ok(Some(message));
-            }
+        if let Some(frame) = inbox.frames.pop_front() {
+            return Ok(Some(frame));
         }
         let mut chunk = [0u8; 8192];
         let read = (&*stream).read(&mut chunk)?;
@@ -647,19 +832,19 @@ mod tests {
     }
 
     /// One run of the session: its spawner and its desktop, which goes with it.
-    struct Run {
+    struct Spawned {
         spawner: Spawner,
         _desktop: Desktop,
     }
 
-    impl std::ops::Deref for Run {
+    impl std::ops::Deref for Spawned {
         type Target = Spawner;
         fn deref(&self) -> &Spawner {
             &self.spawner
         }
     }
 
-    impl std::ops::DerefMut for Run {
+    impl std::ops::DerefMut for Spawned {
         fn deref_mut(&mut self) -> &mut Spawner {
             &mut self.spawner
         }
@@ -722,7 +907,7 @@ mod tests {
         }
 
         /// A run of the session's spawner.
-        fn run(&self) -> Run {
+        fn spawned(&self) -> Spawned {
             let desktop = Desktop::new();
             let mut spawner = Spawner::default();
             spawner.keep_behind(Keeping {
@@ -730,14 +915,14 @@ mod tests {
                 root: self.root(),
                 desktop: Arc::clone(&desktop.connector),
             });
-            Run {
+            Spawned {
                 spawner,
                 _desktop: desktop,
             }
         }
 
         /// Start the kept app in `spawner`, and wait until it runs on the desktop: its process.
-        fn start(&self, spawner: &mut Run) -> (u32, u64) {
+        fn start(&self, spawner: &mut Spawned) -> (u32, u64) {
             let planned = Planned {
                 app: "org.example.Kept".into(),
                 title: "Kept".into(),
@@ -779,7 +964,7 @@ mod tests {
     }
 
     /// Wait for `count` events of `spawner`.
-    fn events(spawner: &Run, count: usize) -> Vec<Event> {
+    fn events(spawner: &Spawned, count: usize) -> Vec<Event> {
         let started = Instant::now();
         let mut collected = Vec::new();
         while collected.len() < count {
@@ -807,13 +992,13 @@ mod tests {
         phase an_in_place_restart_leaves_it_running_and_the_next_run_takes_it_back;
         {
             let rig = Rig::new();
-            let mut first = rig.run();
+            let mut first = rig.spawned();
             let (pid, at) = rig.start(&mut first);
             first.end_running(Teardown::InPlaceRestart);
             drop(first);
             assert!(running(pid, at), "the app outlives the run that started it");
 
-            let mut second = rig.run();
+            let mut second = rig.spawned();
             let adopted = second.adopt_kept();
             assert_eq!(adopted.len(), 1, "the kept app is taken back");
             let kept = adopted.first().expect("one");
@@ -833,18 +1018,18 @@ mod tests {
         phase it_survives_two_restarts_in_a_row_and_a_logout_ends_it;
         {
             let rig = Rig::new();
-            let mut first = rig.run();
+            let mut first = rig.spawned();
             let (pid, at) = rig.start(&mut first);
             first.end_running(Teardown::InPlaceRestart);
             drop(first);
-            let mut second = rig.run();
+            let mut second = rig.spawned();
             assert_eq!(second.adopt_kept().len(), 1);
             second.attach_kept();
             rig.shown();
             // The new desktop never became ready: the update is rolled back, in place again.
             second.end_running(Teardown::InPlaceRestart);
             drop(second);
-            let mut third = rig.run();
+            let mut third = rig.spawned();
             assert_eq!(third.adopt_kept().len(), 1);
             third.attach_kept();
             assert_eq!(rig.shown(), (pid, at), "the same process after both");
@@ -857,7 +1042,7 @@ mod tests {
         phase an_app_that_ended_while_no_desktop_was_there_is_reported;
         {
             let rig = Rig::new();
-            let mut first = rig.run();
+            let mut first = rig.spawned();
             let (pid, _) = rig.start(&mut first);
             first.end_running(Teardown::InPlaceRestart);
             drop(first);
@@ -868,7 +1053,7 @@ mod tests {
                 assert!(started.elapsed() < Duration::from_secs(20), "the keeper never recorded the end");
                 std::thread::park_timeout(Duration::from_millis(20));
             }
-            let mut second = rig.run();
+            let mut second = rig.spawned();
             assert!(second.adopt_kept().is_empty(), "nothing runs to take back");
             let ended = events(&second, 1);
             assert_eq!(ended.first().map(|event| event.app.as_str()), Some("org.example.Kept"));
@@ -879,11 +1064,11 @@ mod tests {
         phase a_start_that_follows_no_restart_ends_what_was_left;
         {
             let rig = Rig::new();
-            let mut first = rig.run();
+            let mut first = rig.spawned();
             let (pid, _) = rig.start(&mut first);
             first.end_running(Teardown::InPlaceRestart);
             drop(first);
-            let second = rig.run();
+            let second = rig.spawned();
             second.clear_kept();
             tilo_test_env::exited("a leftover kept app", pid);
             assert!(dirs(&rig.root()).is_empty(), "and its directory is gone");
@@ -904,11 +1089,11 @@ mod tests {
                 let frame = wire::encode(&FromKeeper::VersionMismatch { version: 0 }).expect("a frame");
                 (&stream).write_all(&frame).expect("answered");
             });
-            let mut run = rig.run();
-            assert!(run.adopt_kept().is_empty(), "an older keeper is not taken");
+            let mut spawned = rig.spawned();
+            assert!(spawned.adopt_kept().is_empty(), "an older keeper is not taken");
             let _ = answering.join();
             assert!(dir.exists(), "nor is it removed");
-            assert!(run.events().is_empty(), "nor reported as ended");
+            assert!(spawned.events().is_empty(), "nor reported as ended");
         }
 
         phase a_services_keeper_is_shown_at_a_fresh_start_and_never_ended;
@@ -916,21 +1101,21 @@ mod tests {
             let rig = Rig::new();
             let mut keeper = rig.service_keeper();
             rig.listening();
-            let mut run = rig.run();
-            run.clear_kept();
-            let adopted = run.adopt_kept();
+            let mut spawned = rig.spawned();
+            spawned.clear_kept();
+            let adopted = spawned.adopt_kept();
             assert_eq!(adopted.len(), 1, "a fresh start takes up a service's keeper too");
             assert!(adopted.first().is_some_and(|kept| kept.launch.service));
-            run.attach_kept();
+            spawned.attach_kept();
             let (pid, at) = rig.shown();
-            run.end_running(Teardown::Logout);
-            drop(run);
+            spawned.end_running(Teardown::Logout);
+            drop(spawned);
             assert!(running(pid, at), "a logout leaves the service's app to the service");
             assert_eq!(dirs(&rig.root()).len(), 1, "and its directory");
             let _ = keeper.kill();
             let _ = keeper.wait();
             kill(pid);
-            let mut next = rig.run();
+            let mut next = rig.spawned();
             assert!(next.adopt_kept().is_empty(), "a keeper its service lost is not taken up");
             assert!(dirs(&rig.root()).is_empty(), "and its directory goes");
             assert!(next.events().is_empty(), "nor is its end reported");
@@ -939,13 +1124,13 @@ mod tests {
         phase a_services_keeper_that_appears_later_is_shown_and_its_end_not_reported;
         {
             let rig = Rig::new();
-            let mut run = rig.run();
-            run.clear_kept();
-            assert!(run.adopt_kept().is_empty());
+            let mut spawned = rig.spawned();
+            spawned.clear_kept();
+            assert!(spawned.adopt_kept().is_empty());
             let mut keeper = rig.service_keeper();
             let started = Instant::now();
             let adopted = loop {
-                let adopted = run.adopt_appeared();
+                let adopted = spawned.adopt_appeared();
                 if !adopted.is_empty() {
                     break adopted;
                 }
@@ -954,17 +1139,127 @@ mod tests {
             };
             assert_eq!(adopted.len(), 1);
             let (pid, _) = rig.shown();
-            assert!(run.adopt_appeared().is_empty(), "taken up once");
+            assert!(spawned.adopt_appeared().is_empty(), "taken up once");
             kill(pid);
             let _ = keeper.wait();
             std::thread::park_timeout(Duration::from_millis(200));
-            assert!(run.events().is_empty(), "the service's app ending is the service's to handle");
+            assert!(spawned.events().is_empty(), "the service's app ending is the service's to handle");
+        }
+
+        phase an_app_behind_an_outdated_keeper_is_held_through_restarts_and_restart_ends_it;
+        {
+            let rig = Rig::new();
+            let mut first = rig.spawned();
+            let (pid, at) = rig.start(&mut first);
+            first.end_running(Teardown::InPlaceRestart);
+            drop(first);
+            let dir = dirs(&rig.root()).into_iter().next().expect("the keeper's directory");
+            testing::age(&dir, true).expect("aged");
+
+            let mut second = rig.spawned();
+            let adopted = second.adopt_kept();
+            assert_eq!(adopted.len(), 1, "taken as a launch of this session");
+            let kept = adopted.first().expect("one");
+            assert!(kept.outdated, "one this session cannot show");
+            assert!(kept.windows.is_empty());
+            assert_eq!(kept.launch.app, "org.example.Kept");
+            assert!(running(pid, at), "its app goes on, with whatever it holds");
+            assert!(dir.join("control").exists(), "and its keeper with it");
+            // A desktop that restarts in place again leaves it as it is.
+            second.end_running(Teardown::InPlaceRestart);
+            drop(second);
+            assert!(running(pid, at));
+
+            // A keeper from before the `app` file: its app is found as its child.
+            std::fs::remove_file(dir.join("app")).expect("the file goes");
+            let mut third = rig.spawned();
+            let adopted = third.adopt_kept();
+            let kept = adopted.first().expect("taken again");
+            assert!(kept.outdated);
+            assert!(third.restart_outdated(kept.id), "Restart ends it");
+            let ended = events(&third, 1);
+            assert_eq!(ended.first().map(|event| event.id), Some(kept.id));
+            assert!(!running(pid, at), "the old app ended");
+            assert!(dirs(&rig.root()).is_empty(), "its directory goes with it");
+        }
+
+        phase an_outdated_keeper_from_before_the_hold_is_reported_once_its_app_ended;
+        {
+            let rig = Rig::new();
+            let mut first = rig.spawned();
+            let (pid, at) = rig.start(&mut first);
+            first.end_running(Teardown::InPlaceRestart);
+            drop(first);
+            let dir = dirs(&rig.root()).into_iter().next().expect("the keeper's directory");
+            testing::age(&dir, false).expect("aged");
+            let mut second = rig.spawned();
+            let adopted = second.adopt_kept();
+            let kept = adopted.first().expect("taken");
+            assert!(kept.outdated);
+            assert!(running(pid, at));
+            // Its keeper ends it once no desktop came back in time.
+            signal(pid, libc::SIGTERM);
+            let ended = events(&second, 1);
+            assert_eq!(ended.first().map(|event| event.id), Some(kept.id));
+            assert_eq!(ended.first().map(|event| event.end.clone()), Some(End::signalled(libc::SIGTERM)));
+        }
+
+        phase a_logout_ends_an_app_behind_an_outdated_keeper;
+        {
+            let rig = Rig::new();
+            let mut first = rig.spawned();
+            let (pid, _) = rig.start(&mut first);
+            first.end_running(Teardown::InPlaceRestart);
+            drop(first);
+            let dir = dirs(&rig.root()).into_iter().next().expect("the keeper's directory");
+            testing::age(&dir, true).expect("aged");
+            let mut second = rig.spawned();
+            assert_eq!(second.adopt_kept().len(), 1);
+            second.end_running(Teardown::Logout);
+            tilo_test_env::exited("the outdated kept app at logout", pid);
+            assert!(dirs(&rig.root()).is_empty());
+        }
+
+        phase a_services_keeper_from_before_an_update_outlives_a_logout_and_restart_ends_only_it;
+        {
+            let rig = Rig::new();
+            let mut keeper = rig.service_keeper();
+            rig.listening();
+            let mut before = rig.spawned();
+            before.clear_kept();
+            assert_eq!(before.adopt_kept().len(), 1);
+            before.attach_kept();
+            let (pid, at) = rig.shown();
+            before.end_running(Teardown::InPlaceRestart);
+            drop(before);
+            let dir = dirs(&rig.root()).into_iter().next().expect("its directory");
+            testing::age(&dir, true).expect("aged");
+            let mut spawned = rig.spawned();
+            let adopted = spawned.adopt_kept();
+            let kept = adopted.first().expect("taken up");
+            assert!(kept.outdated && kept.launch.service);
+            spawned.end_running(Teardown::Logout);
+            drop(spawned);
+            assert!(
+                matches!(keeper.try_wait(), Ok(None)),
+                "a logout leaves the service's keeper to the service"
+            );
+            let mut next = rig.spawned();
+            let adopted = next.adopt_kept();
+            let kept = adopted.first().expect("taken up again");
+            assert!(next.restart_outdated(kept.id), "Restart ends it");
+            let ended = events(&next, 1);
+            assert_eq!(ended.first().map(|event| event.id), Some(kept.id));
+            // Its service starts a current keeper once this one ended.
+            keeper.wait().expect("the old keeper ended");
+            assert!(!running(pid, at), "and its app with it");
+            assert!(dirs(&rig.root()).is_empty(), "its directory goes with it");
         }
 
         phase a_logout_ends_a_kept_app_the_same_run_started;
         {
             let rig = Rig::new();
-            let mut first = rig.run();
+            let mut first = rig.spawned();
             let (pid, _) = rig.start(&mut first);
             drop(first);
             tilo_test_env::exited("the kept app its session no longer runs", pid);

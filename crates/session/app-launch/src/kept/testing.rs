@@ -26,7 +26,21 @@ pub fn serve_keeper() -> io::Result<()> {
     // A keeper whose app ended waits this long for a session to hear it: a test's next run is
     // there in milliseconds, or never comes.
     options.grace = Duration::from_secs(5);
+    options.aged_by = Some(options.dir.join(AGED));
     tilo_app_keeper::Keeper::new(options).and_then(tilo_app_keeper::Keeper::run)
+}
+
+/// The file that makes a test keeper one of an older build ([`age`]).
+const AGED: &str = "test-aged";
+
+/// Make the test keeper in `dir` one of an older build from now on: it speaks another version
+/// than the session's, and holds its app for a session at another version when `holds`, as every
+/// keeper since that rule does; one from before closes the connection instead.
+///
+/// # Errors
+/// The keeper's directory could not be written.
+pub fn age(dir: &Path, holds: bool) -> io::Result<()> {
+    std::fs::write(dir.join(AGED), if holds { "holds" } else { "closes" })
 }
 
 /// Write at `path` a program that runs this test binary's test `test` as the keeper; that test

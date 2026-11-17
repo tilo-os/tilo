@@ -397,6 +397,51 @@ fn an_app_whose_desktop_never_comes_back_ends_with_the_login() {
 }
 
 #[test]
+fn a_session_at_another_version_holds_the_app_while_it_stays_connected() {
+    let command = vec!["sleep".into(), "30".into()];
+    let mut rig = Rig::configured(None, command, |options| {
+        options.desktop_gone = std::time::Duration::from_millis(300);
+    });
+    let mut session = rig.session();
+    let pid = {
+        rig.pump(&mut [], |rig, _| rig.keeper.describe().app_pid.is_some());
+        rig.keeper.describe().app_pid.expect("the app started")
+    };
+    let process: tilo_app_keeper::wire::AppProcess =
+        serde_json::from_slice(&std::fs::read(rig.dir.path().join("keeper").join("app")).unwrap())
+            .unwrap();
+    assert_eq!(process.pid, pid, "the app's process is written down");
+    let mut newer = crate::support::Session::connect(&rig);
+    newer.send(&ToKeeper::Hello { version: 999 });
+    assert!(matches!(
+        newer.receive(&mut rig),
+        FromKeeper::VersionMismatch { .. }
+    ));
+    assert!(tilo_app_keeper::wire::holding(
+        &newer.next_frame(&mut rig).expect("holding")
+    ));
+    rig.drop_desktop();
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    rig.settle(&mut []);
+    assert_eq!(
+        rig.keeper.describe().ended,
+        None,
+        "a session that cannot show it holds it past the bound"
+    );
+
+    drop(newer);
+    let end = session.wait_for(&mut rig, |message| match message {
+        FromKeeper::Ended { end } => Some(end),
+        _ => None,
+    });
+    assert_eq!(
+        end,
+        End::Signalled { signal: 15 },
+        "once it went, the app ends after the bound"
+    );
+}
+
+#[test]
 fn the_control_socket_refuses_other_versions_and_keeps_placements_across_a_restart() {
     let mut rig = Rig::new(None);
     let mut app = App::connect(&mut rig);
@@ -411,7 +456,21 @@ fn the_control_socket_refuses_other_versions_and_keeps_placements_across_a_resta
             version: tilo_app_keeper::wire::INTERFACE_VERSION
         }
     );
-    assert_eq!(stranger.next(&mut rig), None, "the connection closes");
+    let holding = stranger.next_frame(&mut rig).expect("a second frame");
+    assert!(
+        tilo_app_keeper::wire::holding(&holding),
+        "it holds its app for that session"
+    );
+    stranger.send(&ToKeeper::Describe);
+    rig.settle(&mut [&mut app]);
+    let mut unread = [0_u8; 64];
+    assert!(
+        matches!(
+            std::io::Read::read(&mut stranger.stream, &mut unread),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ),
+        "nothing more is said to a session at another version, and its connection stays"
+    );
     rig.settle(&mut [&mut app]);
     assert_eq!(rig.windows().len(), 1, "the keeper keeps displaying");
 
