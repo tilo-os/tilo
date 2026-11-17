@@ -1399,7 +1399,7 @@ action a_front_workspace(a: Layout, name: Text) -> Text {
     r.key
 }
 
-/// Adds a strip named `name` to `row`, standing at `width`, and returns its key.
+/// Adds a strip named `name` to `row` at `width`, and returns its key.
 action a_strip(a: Layout, row: Text, name: Text, width: Int) -> Text {
     let s = a.strips.insert(
         LayoutStrip(

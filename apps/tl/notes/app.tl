@@ -179,7 +179,7 @@ action insert_image(n: Note, image: File) (icon: .image, did: "added an image") 
     n.images.put(image.url, base_name(image.name))
 }
 
-/// A note as Markdown: its title, then its body, each picture it shows standing beside it as
+/// A note as Markdown: its title, then its body, each picture it shows written beside it as
 /// `<note>/images/<name>`, a path another reader of the file follows and this app reads again
 /// as the address of the picture's bytes.
 action export_markdown(n: Note) -> Text (icon: .download) {
