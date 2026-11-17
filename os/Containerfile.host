@@ -203,7 +203,7 @@ COPY docs/recovery.md docs/app-model/environments.md /usr/share/doc/tilo/
 # `server` and not `dev`: everything that treats `dev` as a development image —
 # the development signing key, dev-only paths — must keep treating this one as a
 # release image.
-RUN echo server > /usr/lib/tilo/image-flavour
+RUN install -d -m 0755 /usr/lib/tilo && echo server > /usr/lib/tilo/image-flavour
 
 # The first-boot script consumes /etc/tilo/enrollment-token.txt (a
 # base32-Crockford EnrollmentToken minted on the operator's primary
