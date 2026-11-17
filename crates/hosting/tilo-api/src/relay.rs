@@ -150,6 +150,8 @@ pub struct Relay {
     host: Origin,
     /// The relay's name, as hosts are named (`eu1.tilo.sh`).
     name: String,
+    /// Where it is reached, as it was configured (`https://eu1.tilo.sh`).
+    origin: String,
 }
 
 impl Relay {
@@ -164,6 +166,7 @@ impl Relay {
         Self {
             host: Origin::new(client, origin),
             name,
+            origin: origin.trim_end_matches('/').to_owned(),
         }
     }
 
@@ -171,6 +174,12 @@ impl Relay {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Its origin, as a link that admits into it names it.
+    #[must_use]
+    pub fn origin(&self) -> &str {
+        &self.origin
     }
 
     /// `key` on the relay: its session, not in any workspace yet.
