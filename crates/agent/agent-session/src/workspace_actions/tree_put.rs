@@ -28,10 +28,12 @@ use super::{Outcome, Worker, commit_failed, invoke_arguments};
 
 mod by_path;
 mod read;
+mod write;
 
 /// Whether `target` is one of Files' verbs on the workspace's own folder, by a path in the
-/// workspace ([`by_path`]), which change its tree where it is kept, or one of its reads of
-/// that folder ([`read`]), which answer what the tree kept here holds.
+/// workspace ([`by_path`]), which change its tree where it is kept; its `write-file` there
+/// ([`write`]), which writes a file into it; or one of its reads of that folder ([`read`]),
+/// which answer what the tree kept here holds.
 pub(super) fn acts_on_tree(target: &tilo_actions::remote::RemoteActionTarget) -> bool {
     let action = target.address.action.as_str();
     target
@@ -39,7 +41,7 @@ pub(super) fn acts_on_tree(target: &tilo_actions::remote::RemoteActionTarget) ->
         .resource
         .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
         == Some(FILES_APP)
-        && (tree::is_tree_verb(action) || tree::is_tree_read(action))
+        && (tree::is_tree_verb(action) || tree::is_tree_read(action) || action == tree::WRITE_FILE)
 }
 
 /// The records of a workspace's tree as the host holds them: each with the
@@ -158,11 +160,12 @@ impl Worker {
             })
     }
 
-    /// Answer one of Files' verbs on the folder of the workspace `named`, or one of its
-    /// reads of that folder ([`acts_on_tree`]).
+    /// Answer one of Files' verbs on the folder of the workspace `named`, its `write-file`
+    /// there, or one of its reads of that folder ([`acts_on_tree`]).
     ///
     /// # Errors
-    /// What the verb ([`Self::change_tree`]) or the read ([`Self::read_tree`]) refuses.
+    /// What the verb ([`Self::change_tree`]), the write ([`Self::write_tree_file`]) or the
+    /// read ([`Self::read_tree`]) refuses.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the holder keeps"
@@ -180,8 +183,12 @@ impl Worker {
         ),
         Outcome,
     > {
-        if tree::is_tree_read(&request.target.address.action) {
+        let action = request.target.address.action.as_str();
+        if tree::is_tree_read(action) {
             return self.read_tree(workspace_id, caller, request, named);
+        }
+        if action == tree::WRITE_FILE {
+            return self.write_tree_file(workspace_id, caller, request, named);
         }
         self.change_tree(workspace_id, caller, request, named)
     }

@@ -627,15 +627,15 @@ fn names_in(listed: &Value) -> Vec<&str> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn with_no_page_open_a_folder_is_listed_and_a_file_read_back_by_its_path() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     // The server alone: no page is opened, and no device of the person ever joins.
     let (server, actions) = tilo_server::agents::start_serving_documents(
         crate::harness::hosted::on_this_machine(state.path()),
         tilo_server::daemon::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
-            device_signing_key: host.key.clone(),
-            device_cert: host.cert.clone(),
+            device_signing_key: device.key.clone(),
+            device_cert: device.cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
         },
         Some(std::sync::Arc::new(crate::common::catalogue)),
@@ -649,9 +649,11 @@ async fn with_no_page_open_a_folder_is_listed_and_a_file_read_back_by_its_path()
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let id = tilo_server_protocol::WorkspaceId::parse(&workspace).unwrap();
     let provider = WorkspaceActionProvider::new(actions.clone(), id);
-    let person =
-        Caller::authenticated(root.verifying_key().to_bytes(), host.cert.device_public_key)
-            .in_workspace(&workspace);
+    let person = Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        device.cert.device_public_key,
+    )
+    .in_workspace(&workspace);
     let list = |arguments: Value| asked(&provider, &person, &workspace, "list", arguments);
     let read = |arguments: Value| asked(&provider, &person, &workspace, "read-text", arguments);
 
@@ -983,6 +985,18 @@ async fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
     assert!(file_at(&tree, TASK, "Notes.md").is_some(), "{renamed}");
     let file = format!("{TASK}/Notes.md");
 
+    // It writes its report as a file where the task's folder is, and reads it back.
+    let written = done(
+        &free,
+        "write-file",
+        json!({"folder": TASK, "name": "report.md", "text": "The hall is booked.\n"}),
+    )
+    .await;
+    assert!(written.contains("report.md"), "{written}");
+    let report = format!("{TASK}/report.md");
+    let read = done(&free, "read-text", json!({"file": report})).await;
+    assert!(read.contains("The hall is booked."), "{read}");
+
     // Held to reading what Files keeps: it lists and reads, and changes nothing.
     let reader = tools(files_denied(&workspace, &[Undoable]));
     let listed = done(&reader, "list", json!({"folder": TASK})).await;
@@ -1008,9 +1022,28 @@ async fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
     )
     .await;
 
+    not_allowed(
+        &reader,
+        "write-file",
+        json!({"folder": TASK, "name": "other.md", "text": "x"}),
+    )
+    .await;
+
     // Refused Files by its rules: every verb, the put and both reads.
     let refused = tools(files_denied(&workspace, &[Read, Undoable]));
     not_allowed(&refused, "list", json!({"folder": TASK})).await;
+    not_allowed(
+        &refused,
+        "write-file",
+        json!({"folder": TASK, "name": "other.md", "text": "x"}),
+    )
+    .await;
+    not_allowed(
+        &refused,
+        "write-file",
+        json!({"folder": TASK, "name": "report.md", "text": "x", "replace": true}),
+    )
+    .await;
     not_allowed(&refused, "list", json!({})).await;
     not_allowed(&refused, "read-text", json!({"file": file})).await;
     not_allowed(
@@ -1055,8 +1088,199 @@ async fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
     let tree = tree_kept(&workspaces, &workspace).await;
     assert!(file_at(&tree, TASK, "Notes.md").is_some());
     assert!(file_at(&tree, TASK, "copy.md").is_none());
+    assert!(file_at(&tree, TASK, "other.md").is_none());
+    assert_eq!(
+        content_at(&tree, TASK, "report.md"),
+        Some(manifest_of(b"The hall is booked.\n")),
+        "the report is as the agent wrote it"
+    );
     assert!(file_at(&tree, TASK, "Taken.md").is_none());
     assert!(!folder_at(&tree, "Tasks", "13 Other") && !folder_at(&tree, "", "Elsewhere"));
     let listed = done(&free, "list", json!({"folder": TASK})).await;
     assert!(listed.contains("Notes.md"), "{listed}");
+}
+
+/// A file is written into the workspace's folder where its tree is kept, with no page open:
+/// from text, and from content the workspace keeps, as an export another app answered is. It
+/// writes over nothing unless asked to, and the call it answers takes it back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_no_page_open_a_file_is_written_from_text_and_from_content_and_taken_back() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    // The server alone: no page is opened, and no device of the person ever joins.
+    let (server, actions) = tilo_server::agents::start_serving_documents(
+        crate::harness::hosted::on_this_machine(state.path()),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: device.key.clone(),
+            device_cert: device.cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        },
+        Some(std::sync::Arc::new(crate::common::catalogue)),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let workspaces = server.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let id = tilo_server_protocol::WorkspaceId::parse(&workspace).unwrap();
+    let provider = WorkspaceActionProvider::new(actions.clone(), id);
+    let person = Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        device.cert.device_public_key,
+    )
+    .in_workspace(&workspace);
+    let write = |arguments: Value| asked(&provider, &person, &workspace, "write-file", arguments);
+    let text_of = |file: &str| {
+        let read = asked(
+            &provider,
+            &person,
+            &workspace,
+            "read-text",
+            json!({"file": file}),
+        );
+        async move { read.await.unwrap()["text"].as_str().unwrap().to_owned() }
+    };
+
+    // A report written as text lands in the task's folder, which is made on the way, and
+    // is named as a mounted computer names the same file.
+    let report = format!("{TASK}/report.md");
+    let written = write(json!({"folder": TASK, "name": "report.md", "text": NOTES}))
+        .await
+        .unwrap();
+    assert_eq!(written["path"], report, "{written}");
+    assert_eq!(written["size"], NOTES.len(), "{written}");
+    assert_eq!(written["replaced"], false, "{written}");
+    assert_eq!(written["made"], json!(["Tasks", TASK]), "{written}");
+    assert_eq!(
+        written["undo"],
+        json!({"action": "trash", "args": {"folder": "", "entries": ["Tasks"]}}),
+        "one call takes it back: {written}"
+    );
+    assert_eq!(text_of(&report).await, NOTES);
+    let tree = kept_when(&workspaces, &workspace, |tree| {
+        content_at(tree, TASK, "report.md").is_some()
+    })
+    .await;
+    assert_eq!(
+        content_at(&tree, TASK, "report.md"),
+        Some(manifest_of(NOTES.as_bytes())),
+        "{written}"
+    );
+
+    // The name is taken: a second write is refused and the report is as it was.
+    let moved = "Launch moved to Monday.\n";
+    let said = write(json!({"folder": TASK, "name": "report.md", "text": moved}))
+        .await
+        .unwrap_err();
+    assert!(said.contains("is there already"), "{said}");
+    assert_eq!(text_of(&report).await, NOTES);
+    // Asked to, it writes over it, and the call it answers writes back what the file held.
+    let over = write(json!({"folder": TASK, "name": "report.md", "text": moved, "replace": true}))
+        .await
+        .unwrap();
+    assert_eq!(over["replaced"], true, "{over}");
+    assert_eq!(over["made"], json!([]), "{over}");
+    assert_eq!(
+        over["entries"][0]["id"], written["entries"][0]["id"],
+        "the same file"
+    );
+    assert_eq!(text_of(&report).await, moved);
+    assert_eq!(over["undo"]["action"], "write-file", "{over}");
+    let back = write(over["undo"]["args"].clone()).await.unwrap();
+    assert_eq!(back["replaced"], true, "{back}");
+    assert_eq!(back["size"], NOTES.len(), "{back}");
+    assert_eq!(text_of(&report).await, NOTES);
+
+    // What another app answers as content, here a PDF put into the workspace's store, is
+    // written as a file by the same call, and the tree names it by its bytes.
+    let pdf = form_pdf("Launch plan");
+    let content = uploaded(&actions, id, &person, &pdf).await;
+    let exports = format!("{TASK}/exports");
+    let exported = write(json!({"folder": exports, "name": "plan.pdf", "content": content}))
+        .await
+        .unwrap();
+    assert_eq!(
+        exported["path"],
+        format!("{exports}/plan.pdf"),
+        "{exported}"
+    );
+    assert_eq!(exported["size"], pdf.len(), "{exported}");
+    assert_eq!(exported["made"], json!([exports]), "{exported}");
+    let tree = kept_when(&workspaces, &workspace, |tree| {
+        content_at(tree, &exports, "plan.pdf").is_some()
+    })
+    .await;
+    assert_eq!(
+        content_at(&tree, &exports, "plan.pdf"),
+        Some(manifest_of(&pdf)),
+        "{exported}"
+    );
+    // The call it answered takes the file back, with the folder made for it.
+    assert_eq!(exported["undo"]["action"], "trash", "{exported}");
+    asked(
+        &provider,
+        &person,
+        &workspace,
+        "trash",
+        exported["undo"]["args"].clone(),
+    )
+    .await
+    .unwrap();
+    let tree = kept_when(&workspaces, &workspace, |tree| {
+        !folder_at(tree, TASK, "exports")
+    })
+    .await;
+    assert!(!folder_at(&tree, TASK, "exports"), "{exported}");
+
+    // A path never leaves the workspace's folder, one of text and content is named, the
+    // content is the workspace's, and no device is named.
+    let missing = format!("tilo.content:{}", "0".repeat(64));
+    for (arguments, why) in [
+        (
+            json!({"folder": "../outside", "name": "x.md", "text": "x"}),
+            "no name in the workspace",
+        ),
+        (
+            json!({"folder": "/etc", "name": "x.md", "text": "x"}),
+            "no leading /",
+        ),
+        (
+            json!({"folder": TASK, "name": "a/b.md", "text": "x"}),
+            "no file's name",
+        ),
+        (json!({"folder": TASK, "name": "x.md"}), "one of the two"),
+        (
+            json!({"folder": TASK, "name": "x.md", "text": "x", "content": content}),
+            "one of the two",
+        ),
+        (
+            json!({"folder": TASK, "name": "x.md", "content": "tilo.content:"}),
+            "names no content",
+        ),
+        (
+            json!({"folder": TASK, "name": "x.md", "content": missing}),
+            "holds no",
+        ),
+        (
+            json!({"device": "laptop", "folder": "/home/ada", "name": "x.md", "text": "x"}),
+            "names no device",
+        ),
+    ] {
+        let said = write(arguments.clone()).await.unwrap_err();
+        assert!(said.contains(why), "{arguments}: {said}");
+    }
+    let listed = asked(
+        &provider,
+        &person,
+        &workspace,
+        "list",
+        json!({"folder": TASK}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(names_in(&listed), ["report.md"], "{listed}");
 }
