@@ -13,12 +13,24 @@ HOOK_SOURCES = [
     ".githooks/pre-push",
     "tools/ci/pre_push_lint.py",
     "tools/ci/lint_inputs.py",
+    "tools/ci/package_features.py",
     "tools/ci/package_sets.py",
+    "tools/ci/wasm_clippy_conf.py",
     "tools/ci/workspace_graph.py",
+    "tools/ci/suites.py",
+    "tools/ci/suites.toml",
+    "tools/ci/check-changed-rustfmt.sh",
+    "tools/ci/comparison_range.py",
 ]
 WORKSPACE = """[workspace]
 members = ["native", "web", "fake-binding"]
 resolver = "2"
+"""
+# The workspace's Clippy configuration: the page's own configuration is this one
+# with std's clock reads added, so the page lint has one to read.
+CLIPPY_TOML = """disallowed-methods = [
+    { path = "std::env::set_var", reason = "injected" },
+]
 """
 CRATE = """[package]
 name = "{name}"
@@ -70,6 +82,10 @@ DROP_IN_STUB = (CARGO_STUB.replace("printf 'start ", "printf 'dropin ")
                          '''  fmt) printf 'dropin-fmt %s\\n' "$*" >> "$HOOK_LOG"; exit 2 ;;'''))
 assert "dropin-fmt" in DROP_IN_STUB, "the drop-in stub must refuse to format"
 # The toolchain's installed targets, which say whether the page build can be linted here.
+RUSTFMT_STUB = """#!/bin/sh
+printf 'rustfmt %s\\n' "$*" >> "$HOOK_LOG"
+exit "${STUB_FMT_STATUS:-0}"
+"""
 RUSTUP_STUB = """#!/bin/sh
 case "$*" in
   "target list --installed") printf '%s\\n' "$STUB_TARGETS" ;;
@@ -79,7 +95,7 @@ exit 0
 HOST_ONLY = "x86_64-unknown-linux-gnu"
 WITH_PAGE = HOST_ONLY + "\nwasm32-unknown-unknown"
 MISSING_REF = "0" * 40
-NATIVE_CLIPPY = "clippy --locked -p fixture-native --all-targets -- -D warnings"
+NATIVE_CLIPPY = "clippy --locked -p fixture-native --all-targets --keep-going -- -D warnings"
 
 
 class PrePushLintTests(unittest.TestCase):
@@ -102,6 +118,7 @@ class PrePushLintTests(unittest.TestCase):
         # so the way the workspace's page crates do, by depending on wasm-bindgen.
         self.write("Cargo.toml", WORKSPACE)
         self.write("Cargo.lock", LOCK)
+        self.write("clippy.toml", CLIPPY_TOML)
         # Running the hook compiles its Python; the repository ignores that as well.
         self.write(".gitignore", "__pycache__/\n")
         self.write("native/Cargo.toml", CRATE.format(name="fixture-native"))
@@ -115,10 +132,13 @@ class PrePushLintTests(unittest.TestCase):
         self.bin.mkdir()
         self.stub("cargo", CARGO_STUB)
         self.stub("rustup", RUSTUP_STUB)
+        self.stub("rustfmt", RUSTFMT_STUB)
         self.stub("drop-in", DROP_IN_STUB)
         self.log = self.temporary / "hook.log"
-        # Whether the fixture has a page entry that compiles the host crate.
+        # Whether the fixture has a page entry that compiles the host crate, and
+        # which crates build on the host one.
         self.page_entry = False
+        self.dependents = []
         self.commit("test: a workspace of one host crate and one page crate")
         self.base = self.head()
 
@@ -154,6 +174,11 @@ class PrePushLintTests(unittest.TestCase):
             {"name": "wasm-bindgen", "manifest_path": str(self.root / "fake-binding/Cargo.toml"),
              "dependencies": []},
         ]
+        for name in self.dependents:
+            packages.append(
+                {"name": name, "manifest_path": str(self.root / name / "Cargo.toml"),
+                 "dependencies": [{"name": "fixture-native", "kind": None,
+                                   "path": str(self.root / "native")}]})
         if self.page_entry:
             packages.append(
                 {"name": "tilo-web-desktop", "manifest_path": str(self.root / "page/Cargo.toml"),
@@ -201,6 +226,71 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("no Rust or Cargo file changed", result.stderr)
         self.assertFalse(self.log.exists(), "nothing should have been compiled")
 
+    def add_dependent(self, name, source):
+        """A crate that builds on the host one, with its own source."""
+        self.dependents.append(name)
+        self.write(f"{name}/Cargo.toml", CRATE.format(name=name)
+                   + f'\n[dependencies]\nfixture-native = {{ path = "../native" }}\n')
+        self.write(f"{name}/src/lib.rs", source)
+        self.commit(f"feat: {name} uses the host crate")
+        self.base = self.head()
+
+    def test_a_dependent_that_names_what_the_change_removed_is_linted_too(self):
+        # A rename in the declaring crate breaks the crates that spell the old
+        # name, and those are the crates a lint of the declaring one never builds.
+        self.add_dependent("user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
+        self.add_dependent("spare", "pub fn unrelated() -> u32 { 1 }\n")
+        self.write("native/src/lib.rs", "pub fn solution() -> u32 {\n    42\n}\n")
+        self.commit("refactor: the answer is the solution")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("clippy --locked -p fixture-native -p user --all-targets "
+                      "--keep-going -- -D warnings", self.calls())
+        self.assertIn("built on them", result.stderr)
+
+    def test_a_push_of_a_commit_that_is_not_checked_out_is_refused(self):
+        # The lint reads the files on disk: sending a commit whose files those
+        # are not would send it unlinted.
+        self.write("native/src/lib.rs", LIB.format(answer=60))
+        pushed = self.commit("feat: answer 60")
+        self.write("docs/notes.md", "words\n")
+        self.commit("docs: move on")
+        result = self.push(head=pushed)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is not the commit checked out here", result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_lock_change_lints_the_members_it_reaches(self):
+        # A resolved dependency that moved reaches the members that link it,
+        # which the changed paths alone do not name.
+        self.write("Cargo.lock", LOCK.replace(
+            'name = "wasm-bindgen"\nversion = "0.1.0"', 'name = "wasm-bindgen"\nversion = "0.2.0"'))
+        self.commit("chore: move the binding")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The binding's own record is a member here, so it is linted as well.
+        self.assertEqual(sorted(self.calls()), sorted([
+            NATIVE_CLIPPY.replace("native", "web -p wasm-bindgen"),
+            "clippy --locked --target wasm32-unknown-unknown -p fixture-web -- -D warnings",
+        ]))
+
+    def test_the_lint_gets_the_features_the_workspace_builds_with(self):
+        # A member's code behind a feature no default build enables is compiled
+        # only with the features the workspace's whole build resolves for it.
+        self.write("crates/dev/workspace-unify/Cargo.toml",
+                   '[package]\nname = "workspace-unify"\nversion = "0.0.0"\n\n'
+                   "[target.'cfg(all(target_os = \"linux\", target_arch = \"x86_64\"))'.dependencies]\n"
+                   '"fixture-native" = { path = "../../../native", default-features = false, '
+                   'features = ["extra"] }\n')
+        self.commit("chore: unify the features")
+        self.base = self.head()
+        self.write("native/src/lib.rs", LIB.format(answer=61))
+        self.commit("feat: answer 61")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY.replace(
+            "--all-targets", "--features fixture-native/extra --all-targets")])
+
     def test_a_host_crate_change_lints_the_host_only(self):
         self.write("native/src/lib.rs", LIB.format(answer=43))
         self.commit("feat: answer 43")
@@ -239,13 +329,17 @@ class PrePushLintTests(unittest.TestCase):
             "clippy --locked --target wasm32-unknown-unknown -p tilo-web-desktop -- -D warnings",
         ]))
 
-    def test_a_page_build_is_skipped_without_its_target(self):
+    def test_a_page_build_that_cannot_run_refuses_the_push(self):
+        # A push that changes crates the page compiles is not linted for the page
+        # by a toolchain that cannot build it: passing it would send the page's
+        # side unlinted, which is how a wasm-only break reached main.
         self.write("web/src/lib.rs", LIB.format(answer=12))
         self.commit("feat: answer 12 in the page")
         result = self.push(page=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY.replace("native", "web")])
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.calls(), [], "nothing may be sent for a lint that cannot speak for it")
         self.assertIn("wasm32-unknown-unknown is not installed here", result.stderr)
+        self.assertIn("rustup target add wasm32-unknown-unknown", result.stderr)
 
     def test_a_cargo_drop_in_compiles_instead_of_the_local_cargo(self):
         self.write("web/src/lib.rs", LIB.format(answer=13))
@@ -264,7 +358,8 @@ class PrePushLintTests(unittest.TestCase):
         result = self.push(drop_in=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         log = self.log.read_text().splitlines()
-        self.assertIn("fmt fmt --check -p fixture-web", log, "the cargo here must check the formatting")
+        self.assertIn("rustfmt --edition 2024 --check -- web/src/lib.rs", log,
+                      "the rustfmt here must check the changed files")
         self.assertEqual([line for line in log if line.startswith("dropin-fmt ")], [],
                          "the drop-in builds; it must not be asked to format")
         self.assertNotIn("rustfmt is not installed", result.stderr)
@@ -275,8 +370,8 @@ class PrePushLintTests(unittest.TestCase):
         self.commit("feat: answer 15 in the page")
         result = self.push(drop_in=True, unformatted=True)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("pre-push: rustfmt failed - rerun: cargo fmt --check -p fixture-web",
-                      result.stderr)
+        self.assertIn("pre-push: rustfmt failed - rerun: bash ", result.stderr)
+        self.assertIn("check-changed-rustfmt.sh", result.stderr)
         self.assertIn("refusing the push", result.stderr)
 
     def test_a_lint_failure_refuses_the_push(self):
@@ -285,7 +380,8 @@ class PrePushLintTests(unittest.TestCase):
         result = self.push(status=1)
         self.assertEqual(result.returncode, 1)
         self.assertIn("pre-push: clippy (native) failed - rerun: cargo "
-                      "clippy --locked -p fixture-web --all-targets -- -D warnings", result.stderr)
+                      "clippy --locked -p fixture-web --all-targets --keep-going -- -D warnings",
+                      result.stderr)
         self.assertIn("pre-push: clippy (wasm32) failed - rerun: cargo clippy --locked --target "
                       "wasm32-unknown-unknown -p fixture-web -- -D warnings", result.stderr)
         self.assertIn("unreachable value in a page build", result.stderr)
@@ -327,7 +423,6 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(self.calls(), [], "nothing the lint reads changed")
         self.assertNotIn("fmt --check", self.log.read_text() if self.log.exists() else "")
         self.assertIn("clippy (native) passed before on the same inputs", retry.stderr)
-        self.assertIn("rustfmt passed before on the same inputs", retry.stderr)
 
     def test_a_retry_after_a_dependency_changed_lints_again(self):
         self.write("web/src/lib.rs", LIB.format(answer=52))

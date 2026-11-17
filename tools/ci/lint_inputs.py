@@ -36,8 +36,20 @@ from ci.workspace_graph import _lock_graph
 CONFIGURATION = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rust-toolchain",
                  "clippy.toml", ".clippy.toml", "rustfmt.toml", ".rustfmt.toml",
                  ".cargo/config.toml", ".cargo/config")
-# This file and the hook that runs the lint: a change to either can change what passing means.
-LINT_CODE = (Path(__file__), Path(__file__).with_name("pre_push_lint.py"))
+# This file, the hook that runs the lint, and the tools a run goes through: a
+# change to any of them can change what passing means. A run that passed is not
+# reused across a push that changed one, nor across one that changed a
+# dependency of the linted packages (their directories and lock records are in
+# the key too), which a rebase brings in.
+LINT_CODE = (Path(__file__), Path(__file__).with_name("pre_push_lint.py"),
+             Path(__file__).with_name("package_features.py"),
+             Path(__file__).with_name("package_sets.py"),
+             Path(__file__).with_name("wasm_clippy_conf.py"),
+             Path(__file__).with_name("check-changed-rustfmt.sh"),
+             Path(__file__).with_name("comparison_range.py"),
+             Path(__file__).with_name("workspace_graph.py"),
+             Path(__file__).with_name("suites.py"),
+             Path(__file__).with_name("suites.toml"))
 ENVIRONMENT_PREFIXES = ("CARGO", "RUST")
 INCLUDE = re.compile(r"\binclude(?:_str|_bytes)?!\s*\(")
 PATH_ATTRIBUTE = re.compile(r'#\s*\[\s*path\s*=\s*"([^"\n]*)"')
