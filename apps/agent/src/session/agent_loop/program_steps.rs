@@ -394,11 +394,20 @@ impl Session {
         if ran && changed > 0 && program.reply.is_none() {
             text.push_str(CHANGED_UNSAID);
         }
+        // The reply the person reads takes what the program printed in their words (no reference
+        // literals, days and moments in their formats); where the task answered no person line,
+        // the model's text is what is left. `{answer}` therefore fills from the person's words,
+        // never the model's.
+        let for_a_person = if answered.person_text.is_empty() {
+            text.clone()
+        } else {
+            answered.person_text
+        };
         let reply = program
             .reply
             .as_deref()
             .filter(|_| ran && !changed_nothing)
-            .map(|reply| programs::reply_with_answer(reply, &text))
+            .map(|reply| programs::reply_with_answer(reply, &for_a_person))
             .and_then(|reply| tools::spoken_reply(&reply));
         if let Some(reply) = &reply {
             state.reply = Some(reply.clone());

@@ -407,6 +407,13 @@ impl TaskSession {
         self.runtime.set_clock(clock);
     }
 
+    /// How a day or a time of day reads in a sentence: the person's formats, which a reply the
+    /// person reads takes (`person_output`). `read` answers `(kind, value)` in their words;
+    /// until it is set, a day or a moment stays its stored text.
+    pub fn set_shown_by(&self, read: impl Fn(&str, &str) -> String + 'static) {
+        self.runtime.set_shown_by(read);
+    }
+
     /// Run `source`, written by `author`, as one step of the task; see the module docs for
     /// `confirm`. The program runs as its author: the agent's as the agent, a line its person
     /// typed as the person. The answer: `{state, output, detail, lets, steps, changed, apps}`,
@@ -480,6 +487,9 @@ impl TaskSession {
             "kind": "program",
             "state": state,
             "output": reply.output,
+            // The same lines as a person reads them: a reply the person sees takes these, and
+            // the model keeps `output` for its next program.
+            "person_output": reply.person_output,
             "detail": detail,
             "lets": lets,
             "steps": steps.planned,

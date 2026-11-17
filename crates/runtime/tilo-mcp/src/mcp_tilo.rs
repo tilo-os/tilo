@@ -881,6 +881,8 @@ fn preview(answer: &Value) -> String {
 pub struct TaskProgram {
     /// What the agent reads: the API's tilolang answer.
     pub text: String,
+    /// What a person reads: the same answer in their words (`person_text`), no references.
+    pub person_text: String,
     pub failed: bool,
     /// The host's answer (`{state, output, detail, steps, changed, apps}`), when the program ran.
     pub answer: Option<Value>,
@@ -958,8 +960,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 refs.push((text, literal.clone()));
             }
         }
+        let person_text = answer
+            .as_ref()
+            .map_or_else(String::new, |answer| person_text(answer, &reply));
         TaskProgram {
             text: reply.text,
+            person_text,
             failed: reply.failed,
             answer,
             refs,
@@ -1013,11 +1019,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default(),
+            // The same lines as a person reads them: no reference literals, a day or a moment in
+            // their formats, a field that is none left out. A reply the person reads takes these;
+            // the model keeps `output` for its next program.
+            "person_output": answer
+                .get("person_output")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
             "changed": answer.get("changed").cloned().unwrap_or_else(|| json!(0)),
             "apps": answer.get("apps").cloned().unwrap_or_else(|| json!([])),
             "steps": steps,
-            // What a person reads: the answer's lines, each resource by its reference.
-            "text": reply.text,
+            // What a person reads: the answer's lines as they read them, each resource by its
+            // title, not the reference the model names it by.
+            "text": person_text(answer, reply),
         });
         if let Some(fields) = typed.as_object_mut() {
             for key in ["detail", "error"] {
@@ -1621,6 +1636,32 @@ const fn refused(why: &super::Failure) -> bool {
                 | ActionCallError::UnknownAction
         )
     )
+}
+
+/// The text of a program's answer as a person reads it: what the program printed in their words
+/// (`person_output`: no reference literals, days and moments in their formats), and the step's own
+/// bookkeeping line. Where the task answered no person line — a program that only changed
+/// something — the model's text with its references dropped is what is left.
+fn person_text(answer: &Value, reply: &Reply) -> String {
+    let person: Vec<&str> = answer["person_output"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .flat_map(str::lines)
+        .collect();
+    let bookkeeping: Vec<&str> = reply
+        .text
+        .lines()
+        .filter(|line| line.starts_with("step "))
+        .collect();
+    let mut lines: Vec<&str> = person;
+    lines.extend(bookkeeping);
+    if lines.is_empty() {
+        reply.text.clone()
+    } else {
+        lines.join("\n")
+    }
 }
 
 /// The text of a program's answer in `programs`' session, and whether it is an error.

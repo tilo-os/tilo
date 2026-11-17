@@ -298,6 +298,7 @@ fn unavailable(message: String) -> HostStepOutcome {
 fn outcome(ran: tilo_mcp::TaskProgram) -> tilo_actions::ActionOutput {
     let answer = wire::ProgramAnswer {
         text: ran.text,
+        person_text: ran.person_text,
         failed: ran.failed,
         answer: ran.answer,
         refs: ran.refs,

@@ -45,6 +45,22 @@ use tilolang_tilo::runtime::value::ResourceRef;
 use tilolang_tilo::task::{Answered, TaskApi, TaskSession, Unreachable};
 use tilolang_tilo::task_documents::{DocumentReads, DocumentSource};
 
+/// How a day or a time of day reads in a sentence a person reads (`person_output`): the
+/// person's formats, from their settings, and their zone's clock. Until a region is installed,
+/// [`tilo_formats::shown`] leaves the stored text as it is.
+fn shown_for_a_person(kind: &str, value: &str) -> String {
+    let now = ui::clock::local_now();
+    tilo_formats::shown(
+        kind,
+        value,
+        ui::format::region::current(),
+        now.date_naive(),
+        now.naive_local(),
+        i64::from(now.offset().local_minus_utc()),
+        ui::format::words(),
+    )
+}
+
 /// The program connection, one line at a time.
 struct Line {
     reader: RefCell<BufReader<UnixStream>>,
@@ -362,6 +378,9 @@ impl Task {
             &apps.bundles,
             native,
         )?;
+        // A reply the person reads takes the words they read: a day or a moment in their
+        // formats, not the stored ISO text.
+        session.set_shown_by(shown_for_a_person);
         // An app whose payload did not read is reported as one whose package does not load: a
         // program naming it reads that it can't be reached, and the task runs every other app.
         for gone in &apps.unreachable {

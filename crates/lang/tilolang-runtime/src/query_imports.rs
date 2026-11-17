@@ -169,11 +169,17 @@ impl Core {
             .is_some_and(|io| !io.missing.is_empty())
     }
 
-    /// A line of the program's output.
-    fn say(&self, line: String) {
+    /// A line of the program's output, and the same line as a person reads it (`person`).
+    fn say_with(&self, line: String, person: String) {
         if let Some(io) = self.program.borrow_mut().as_mut() {
             io.output.push(line);
+            io.person_output.push(person);
         }
+    }
+
+    /// A line of the program's output, as both the model and a person read it.
+    fn say(&self, line: String) {
+        self.say_with(line.clone(), line);
     }
 
     /// The app a resource value belongs to, and whether this runtime holds it.
@@ -236,8 +242,9 @@ impl Core {
                     other => vec![other],
                 };
                 let lines = self.rows(&items, &fields, &ty);
-                for line in lines {
-                    self.say(line);
+                let for_a_person = self.rows_for_a_person(&items, &fields, &ty);
+                for (line, person) in lines.into_iter().zip(for_a_person) {
+                    self.say_with(line, person);
                 }
                 Ok(None)
             }
@@ -732,6 +739,131 @@ impl Core {
             Ok(value) => self.show_inline(&value),
             Err(e) => format!("error: {e}"),
         }
+    }
+
+    /// [`Self::show_typed`], as a person reads it: a day or a moment in their formats, an option
+    /// that is `none` left out of a row's fields, and a resource by its title rather than its
+    /// reference literal. The model keeps [`Self::show_typed`] for its next program.
+    pub(crate) fn show_typed_for_a_person(&self, value: &Value, ty: &str) -> String {
+        // A day or a moment printed alone reads in the person's formats.
+        if let Some(ty) = crate::meta::Ty::parse_meta(ty, "")
+            && matches!(ty, crate::meta::Ty::Date | crate::meta::Ty::Time)
+            && let Value::Text(text) = value
+        {
+            return self.format_shown(&ty, text.clone());
+        }
+        self.show_for_a_person(value)
+    }
+
+    /// [`Self::show`], as a person reads it: a resource by its title, a day or a moment of a
+    /// value a list shows in their formats, and a list one item per line as `show` gives them.
+    pub(crate) fn show_for_a_person(&self, value: &Value) -> String {
+        match value {
+            Value::Ref(r) => self
+                .program_title(&r.target)
+                .unwrap_or_else(|| self.show(value)),
+            Value::List(items) => {
+                let lines: Vec<String> = items.iter().map(|v| self.show_for_a_person(v)).collect();
+                if lines.is_empty() {
+                    "(none)".to_owned()
+                } else {
+                    lines.join("\n")
+                }
+            }
+            other => self.show_inline_for_a_person(other),
+        }
+    }
+
+    /// [`Self::show_inline`], as a person reads it: an option that holds nothing says nothing, a
+    /// resource is its title, and a list's items as they read alone.
+    fn show_inline_for_a_person(&self, value: &Value) -> String {
+        match value {
+            Value::Opt(None) | Value::Unit => String::new(),
+            Value::Opt(Some(v)) => self.show_inline_for_a_person(v),
+            Value::Ref(r) => self
+                .program_title(&r.target)
+                .unwrap_or_else(|| self.ref_literal(&r.target)),
+            Value::Text(t) => t.clone(),
+            other => self.show_inline(other),
+        }
+    }
+
+    /// [`Self::rows`], as a person reads each field: a field that is `none` is left out, a day
+    /// or a moment reads in their formats, and a resource reads by its title.
+    fn rows_for_a_person(&self, items: &[Value], fields: &[String], ty: &str) -> Vec<String> {
+        let _ = ty;
+        let mut lines = Vec::with_capacity(items.len());
+        for item in items {
+            let mut line = match item {
+                Value::Tuple(_) => self.show_match(item),
+                Value::Ref(_) => self.show_for_a_person(item),
+                other => self.show_inline_for_a_person(other),
+            };
+            for field in fields {
+                let value = match item {
+                    Value::Ref(r) => self.field_shown_for_a_person(&r.target, field),
+                    _ => "?".to_owned(),
+                };
+                // A field that is `none` says nothing, and one that says again what the row
+                // already leads with (its title) is not repeated.
+                if !value.is_empty() && value != ".none" && value != line {
+                    let _ = write!(line, "  {value}");
+                }
+            }
+            lines.push(line);
+        }
+        if lines.is_empty() {
+            lines.push("(none)".to_owned());
+        }
+        lines
+    }
+
+    /// [`Self::field_shown`], as a person reads it: a `none` field says nothing, and a day or a
+    /// moment reads in their formats.
+    fn field_shown_for_a_person(&self, target: &ResourceRef, name: &str) -> String {
+        let Some((_, info)) = self.registry.borrow().type_info(&target.ty) else {
+            return "?".to_owned();
+        };
+        let Some(field) = info.field_by_id_or_name(name).cloned() else {
+            return "?".to_owned();
+        };
+        match self.read_value(target, &field, None) {
+            Ok(Value::List(items)) if field.kind == crate::meta::FieldKind::Collection => {
+                format!("{} items", items.len())
+            }
+            Ok(value) => {
+                let shown = self.show_inline_for_a_person(&value);
+                self.format_shown(&field.ty, shown)
+            }
+            Err(e) => format!("error: {e}"),
+        }
+    }
+
+    /// `shown`, a value of the field type `ty`, in the person's formats when it is a day or a
+    /// moment: `Friday, June 30` and `6:00 PM`, not the stored ISO text.
+    fn format_shown(&self, ty: &crate::meta::Ty, shown: String) -> String {
+        // An option of a day or a moment reads in the same formats it holds.
+        let inner = match ty {
+            crate::meta::Ty::Option(inner) => inner.as_ref(),
+            other => other,
+        };
+        let kind = match inner {
+            crate::meta::Ty::Date => "date",
+            crate::meta::Ty::Time => "time",
+            _ => return shown,
+        };
+        if shown.is_empty() {
+            return shown;
+        }
+        if let Some(read) = self.shown_by.borrow().as_ref() {
+            return read(kind, &shown);
+        }
+        let by_region = self
+            .shown
+            .borrow()
+            .as_ref()
+            .map(|shown_in| shown_in.shown(kind, &shown));
+        by_region.unwrap_or(shown)
     }
 
     /// A `host.Match` as it prints: its resource, the anchor, what the paragraph says around

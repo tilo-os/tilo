@@ -1035,6 +1035,14 @@ impl Runtime {
         *self.core.shown.borrow_mut() = Some(Box::new(host));
     }
 
+    /// How a day or a time of day reads in a sentence, from a plain function a caller already
+    /// has: `read` answers a day or a time of day (`kind` is `date` or `time`, `value` its stored
+    /// text) in the person's formats, so a caller with the toolkit's formats says them without
+    /// naming a trait here.
+    pub fn set_shown_by(&self, read: impl Fn(&str, &str) -> String + 'static) {
+        *self.core.shown_by.borrow_mut() = Some(Box::new(read));
+    }
+
     /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. The
     /// runtime reads it once per outermost invocation, so the actions one invocation runs see
     /// one time. Until it is set, `now` is `1970-01-01T00:00:00Z`.

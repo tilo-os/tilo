@@ -478,3 +478,39 @@ fn a_reminder_past_the_tasks_day_moves_the_task() {
     );
     assert_eq!(said.matches("2026-11-20").count(), 2, "{said}");
 }
+
+/// "What's on my plate today?" answered by `print(xs, fields: [.title, .due, .priority])`: the
+/// answer a person reads (`person_output`) has no reference literals, leaves out a field that is
+/// `none`, and writes a day in the person's words; the model keeps `output`, refs and all, for
+/// its next program.
+#[test]
+fn a_programs_answer_reads_for_a_person_without_its_references() {
+    let task = task(Vec::new());
+    task.session.set_shown_by(|kind, value| {
+        if kind == "date" && value == "2026-11-18" {
+            return "18th November 2026".to_owned();
+        }
+        value.to_owned()
+    });
+    let answer = task.run(
+        "tasks.new_task(tasks.tasks, title: \"Call mum\", due: Date(\"2026-11-18\"))\nprint(find(tasks.Task), fields: [.title, .due, .priority])",
+        true,
+    );
+    assert_eq!(answer["state"], "done", "{answer:#}");
+    let model = answer["output"][0].as_str().expect("a printed line");
+    let person = answer["person_output"][0]
+        .as_str()
+        .expect("a printed line for a person");
+    assert!(
+        model.contains("@tasks.Task:"),
+        "the model names the resource by its reference: {model}"
+    );
+    assert!(
+        !person.contains("@tasks.Task:") && !person.contains("title:"),
+        "a person reads the title and fields, not the reference or the field name: {person}"
+    );
+    assert_eq!(
+        person, "Call mum  18th November 2026",
+        "the day reads in the person's words, a field that is none left out"
+    );
+}
