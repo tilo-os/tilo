@@ -110,6 +110,9 @@ struct TurnTeam {
     workspace_id: WorkspaceId,
     /// The turn's agent, as the list held it when the turn began.
     agent: Agent,
+    /// The keeper whose skills the turn hands to a sub-agent it starts ([`super::skills`]):
+    /// none unless the turn is told those skills itself.
+    skilled: Option<[u8; 32]>,
     /// What the turn is offered: nothing for a turn that is not its keeper's own.
     offered: Vec<CatalogueRow>,
 }
@@ -134,6 +137,7 @@ impl TurnTeam {
             workspace: scope.workspace.clone(),
             workspace_id: scope.workspace_id,
             agent: turn.agent.clone(),
+            skilled: super::learned::keeps(turn),
             offered: Vec::new(),
         };
         let caller = scope.reply(turn).caller;
@@ -327,25 +331,115 @@ impl TurnTeam {
 
     /// Start the sub-agent `given` asks for.
     async fn start(&self, given: &Map<String, Value>) -> Result<Result<Value, String>, NotTaken> {
-        let mut new: NewSubAgent = read_as(given)?;
+        // The skill it works by is this server's to hand it. The list, which every member's
+        // device holds, keeps the skill's model for it and nothing the skill says: which
+        // skill it is stands in its keeper's own store ([`super::skills`]).
+        let mut given = given.clone();
+        let skill = match given.remove("skill") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(named)) => Some(named),
+            Some(_) => {
+                return Err(NotTaken::InvalidRequest {
+                    reason: "a skill is named by its name".to_owned(),
+                });
+            }
+        };
+        let mut new: NewSubAgent = read_as(&given)?;
+        let mut handed = match self.handed(skill.as_deref(), &new).await {
+            Ok(handed) => handed,
+            Err(why) => return Ok(Err(why)),
+        };
+        if let Some(handed) = &handed {
+            handed.to(&mut new);
+        }
         // Named here where the starter gave no id, so it is told the id at once.
         let named = new.id.as_deref().map(str::trim).unwrap_or_default();
-        let id = if named.is_empty() {
-            match self.list().await {
-                Ok(list) => list.free_id(&new.name),
+        let named = named.to_owned();
+        let id = if named.is_empty() || handed.is_some() {
+            let list = match self.list().await {
+                Ok(list) => list,
                 Err(why) => return Ok(Err(why)),
+            };
+            if named.is_empty() {
+                list.free_id(&new.name)
+            } else {
+                // An id that is taken is the list's to refuse, and what the agent that has it
+                // was handed stays as it is.
+                if list.get(&Id::from_raw(named.clone())).is_some() {
+                    handed = None;
+                }
+                named
             }
         } else {
-            named.to_owned()
+            named
         };
         new.id = Some(id.clone());
+        // Which skill it works by is kept before the list holds it, so that its first turn is
+        // told the skill, and taken away again where the list refuses the start.
+        if let Some(handed) = &handed
+            && let Err(why) = handed
+                .kept_for(&self.workspaces, &self.workspace, (&id, None))
+                .await
+        {
+            return Ok(Err(why));
+        }
         let started = self
             .on_list(WorkspaceAgents::START_SUB_AGENT.with(StartSubAgent { sub_agent: new }))
             .await;
         Ok(match started {
-            Ok(()) => self.one(&id).await,
-            Err(why) => Err(why),
+            Ok(()) => {
+                self.made(handed.as_ref(), &id).await;
+                self.one(&id).await
+            }
+            Err(why) => {
+                if let Some(handed) = &handed {
+                    handed
+                        .taken_from(&self.workspaces, &self.workspace, &id)
+                        .await;
+                }
+                Err(why)
+            }
         })
+    }
+
+    /// What a sub-agent about to be started as `new` is handed where its starter named
+    /// `skill`: nothing where it named none, and in words why none is handed here.
+    async fn handed(
+        &self,
+        skill: Option<&str>,
+        new: &NewSubAgent,
+    ) -> Result<Option<super::skills::Handed>, String> {
+        let Some(named) = skill.map(str::trim).filter(|named| !named.is_empty()) else {
+            return Ok(None);
+        };
+        let Some(keeper) = &self.skilled else {
+            return Err(super::skills::NOT_HANDED.to_owned());
+        };
+        if new.coding.is_some() {
+            return Err(super::skills::NOT_TO_CODING.to_owned());
+        }
+        super::skills::for_sub_agent(&self.workspaces, &self.workspace, keeper, named)
+            .await
+            .map(Some)
+    }
+
+    /// Keep, with what the sub-agent `id` was `handed`, when the list made it: a later
+    /// sub-agent that takes its id once it is gone was handed nothing.
+    async fn made(&self, handed: Option<&super::skills::Handed>, id: &str) {
+        let Some(handed) = handed else {
+            return;
+        };
+        let made = self.list().await.ok().and_then(|list| {
+            list.get(&Id::from_raw(id.to_owned()))
+                .map(|agent| agent.created_at)
+        });
+        if let Some(made) = made {
+            // Where this cannot be kept, what was kept before the start holds for the entry
+            // the list made in that minute.
+            let _ = handed
+                .kept_for(&self.workspaces, &self.workspace, (id, Some(made)))
+                .await;
+        }
     }
 
     /// Take the call `request` asks for as `caller`: how it ended, or why this server did
@@ -519,6 +613,12 @@ fn rows() -> Vec<CatalogueRow> {
                     "model",
                     "The model it works with, as provider/model. Leave it out for your \
                      person's choice for the kind.",
+                ),
+                words(
+                    "skill",
+                    "The skill it works by, by its name: each turn of its own is told that \
+                     skill as it is then, and it works with the model the skill names unless \
+                     you name one.",
                 ),
                 words("task", "The issue in Tasks it works for, by its address."),
                 words(

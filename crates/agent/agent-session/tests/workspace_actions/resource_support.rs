@@ -10,17 +10,29 @@ pub(super) async fn open_admitted_peer(
     host: &Device,
     cluster_id: &str,
 ) -> Browser {
+    open_admitted_at(&hosted.server, device, host, cluster_id).await
+}
+
+/// [`open_admitted_peer`] on whatever `server` serves the workspace: the page of `device`,
+/// whose person was admitted by an invitation, joins as a member does, under `holder`, the
+/// device that serves it.
+pub(super) async fn open_admitted_at(
+    server: &tilo_server::daemon::Server,
+    device: &Device,
+    holder: &Device,
+    cluster_id: &str,
+) -> Browser {
     let workspace = tilo_server_protocol::WorkspaceId::parse(cluster_id).unwrap();
     let peer = start_peer(
-        Host::at(hosted.server.node_addr()),
+        Host::at(server.node_addr()),
         device.cert.clone(),
-        host.cert.clone(),
+        holder.cert.clone(),
         device.key.clone(),
     );
     let events = peer.events();
     peer.send(Cmd::Join(workspace)).unwrap();
     ready(&[&peer]).await;
-    Browser::joined((peer, events), device, host, cluster_id)
+    Browser::joined((peer, events), device, holder, cluster_id)
 }
 
 pub(super) async fn admit_person(

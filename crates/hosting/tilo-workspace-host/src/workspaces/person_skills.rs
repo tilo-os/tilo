@@ -17,10 +17,17 @@
 //! take out an example, or forget one. Nobody else is answered, the person's own agents
 //! included: unknown and forbidden are the same answer.
 //!
+//! Which of them a sub-agent was handed when the person's own agent started it is kept in the
+//! same store, beside the skills of that workspace ([`HandedSkill`]): the skill by its id and
+//! not a word of it. The workspace's own documents, which every member's device holds, say
+//! nothing of a skill; what a handed skill says is read here when that sub-agent's turn is
+//! told it.
+//!
 //! A skill names a model only where its person linked that model on this server
 //! ([`Workspaces::person_links_model`]): a skill never asks a model somebody else pays for.
 //! Nothing a skill says is written to a log.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -59,6 +66,17 @@ const CHAT: (&str, &str) = ("so.tilo.chat", "Chat");
 
 /// The folder of a person's store their skills are kept in, one file a workspace.
 const FOLDER: &str = "skills";
+
+/// What ends the name of the file that keeps, beside a workspace's skills, which of them each
+/// sub-agent of the person's agents was handed.
+const HANDED_FILE: &str = "handed.json";
+
+/// The most sub-agents one such file names: past it, those handed longest ago go.
+const MOST_HANDED: usize = 1024;
+
+/// How long after a skill was handed the workspace's list may still make the sub-agent it was
+/// handed to, in milliseconds, while this server has not kept when the list made it.
+const HANDED_OPEN_MS: i64 = 60_000;
 
 /// The most bytes one kept resource holds. Every skill at its longest with all its examples
 /// and their history stays below it, and a file past it is neither read nor written.
@@ -161,6 +179,34 @@ impl SkillView {
                 .collect(),
             at_ms: skill.at,
             by: skill.by.clone(),
+        }
+    }
+}
+
+/// Which skill a sub-agent was handed when its person's own agent started it. It names the
+/// skill and holds nothing the skill says: that is read from the list when a turn of the
+/// sub-agent is told it, so the turn is told the skill as it is then.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandedSkill {
+    /// The skill, by its id in the person's list.
+    pub skill: String,
+    /// When it was handed, in milliseconds since the Unix epoch.
+    pub at_ms: i64,
+    /// When the workspace's list made the sub-agent, as its entry there says; none until this
+    /// server kept that the list took the start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_ms: Option<i64>,
+}
+
+impl HandedSkill {
+    /// Whether it was handed to the sub-agent the workspace's list made at `made_ms`: a later
+    /// sub-agent that takes the id of one that is gone was handed nothing.
+    #[must_use]
+    pub fn is_for(&self, made_ms: i64) -> bool {
+        match self.made_ms {
+            Some(made) => made == made_ms,
+            None => (0..=HANDED_OPEN_MS).contains(&made_ms.saturating_sub(self.at_ms)),
         }
     }
 }
@@ -438,6 +484,75 @@ impl Workspaces {
         changed.map_err(NotChanged::Refused)
     }
 
+    /// Where it is kept which skill each of `person`'s sub-agents in `workspace` was handed:
+    /// in the person's own store, beside their skills of that workspace.
+    fn handed_at(&self, person: &[u8; 32], workspace: &str) -> Result<PathBuf, String> {
+        // The id as the workspace spells it, never the caller's text: the name of a file.
+        let workspace = collab_types::WorkspaceId::parse(workspace)
+            .ok_or_else(|| "not a workspace id".to_owned())?;
+        Ok(self
+            .person_settings_root(person)
+            .join(FOLDER)
+            .join(format!("{workspace}.{HANDED_FILE}")))
+    }
+
+    /// The skill `person`'s sub-agent `sub_agent` in `workspace` was handed: none where it was
+    /// handed none. For the code that answers the turns of the person's agents; it decides
+    /// which turn is told the skill.
+    #[must_use]
+    pub fn skill_handed(
+        &self,
+        person: &[u8; 32],
+        workspace: &str,
+        sub_agent: &str,
+    ) -> Option<HandedSkill> {
+        let path = self.handed_at(person, workspace).ok()?;
+        handed_kept(&path).remove(sub_agent)
+    }
+
+    /// Keep that `person`'s sub-agent `sub_agent` in `workspace` was handed `handed`, or with
+    /// none take away what is kept for it. Kept in the person's own store on this server and
+    /// nowhere else, readable on disk by the server's own user alone.
+    ///
+    /// # Errors
+    /// `workspace` is no workspace id, or the file cannot be written.
+    pub fn hand_skill(
+        &self,
+        person: &[u8; 32],
+        workspace: &str,
+        sub_agent: &str,
+        handed: Option<HandedSkill>,
+    ) -> Result<(), String> {
+        let path = self.handed_at(person, workspace)?;
+        let one_at_a_time = CHANGING.lock_recover();
+        let mut kept = handed_kept(&path);
+        match handed {
+            Some(handed) => {
+                kept.insert(sub_agent.to_owned(), handed);
+            }
+            None => {
+                if kept.remove(sub_agent).is_none() {
+                    return Ok(());
+                }
+            }
+        }
+        while kept.len() > MOST_HANDED {
+            let oldest = kept
+                .iter()
+                .min_by_key(|(_, handed)| handed.at_ms)
+                .map(|(id, _)| id.clone());
+            let Some(oldest) = oldest else {
+                break;
+            };
+            kept.remove(&oldest);
+        }
+        let bytes = serde_json::to_vec(&kept).map_err(|error| error.to_string())?;
+        tilo_files::native::atomic::write_creating_parent_with_mode(&path, &bytes, 0o600)
+            .map_err(|error| error.to_string())?;
+        drop(one_at_a_time);
+        Ok(())
+    }
+
     /// Refuses a `model` a skill would name that `person` has not linked on this server; a
     /// skill that names none, or takes its model away, names nothing to refuse.
     fn names_linked_model(&self, person: &[u8; 32], model: Option<&str>) -> Result<(), NotChanged> {
@@ -495,6 +610,32 @@ impl Workspaces {
                 })?;
         }
         answer(&Ok::<_, String>(self.skills_listed(&person, &workspace)))
+    }
+}
+
+/// Which skill each sub-agent was handed, as the file at `path` keeps it: nothing where none
+/// was handed yet, and nothing where the file does not read.
+fn handed_kept(path: &Path) -> BTreeMap<String, HandedSkill> {
+    let bytes = match read(path) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return BTreeMap::new(),
+        Err(error) => {
+            tracing::warn!(%error, "which skill a person's sub-agents were handed is not read");
+            return BTreeMap::new();
+        }
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(kept) => kept,
+        Err(error) => {
+            // Where it fails is said and not why: the error's own words may quote the file.
+            let (line, column) = (error.line(), error.column());
+            tracing::warn!(
+                line,
+                column,
+                "which skill a person's sub-agents were handed does not read as it was kept"
+            );
+            BTreeMap::new()
+        }
     }
 }
 

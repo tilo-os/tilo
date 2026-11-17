@@ -74,6 +74,13 @@ fn keepers_own(agent: &Agent, person: &str) -> Option<[u8; 32]> {
     if agent.sub.is_some() {
         return None;
     }
+    keeper_asking(agent, person)
+}
+
+/// The keeper of `agent`, where `person`, as a turn says who it was asked for, is that keeper:
+/// `None` for anybody else, for nobody, and for an agent nobody keeps.
+#[must_use]
+pub(super) fn keeper_asking(agent: &Agent, person: &str) -> Option<[u8; 32]> {
     let keeper = tilo_action_policy::PersonId::parse(&agent.keeper)
         .ok()?
         .root()?;
@@ -106,7 +113,7 @@ pub(super) fn knows(agent: &Agent, person: &str, conversation: &Id) -> Option<[u
 
 /// The keeper `turn` knows and keeps facts for ([`knows`]). An issue's turn has none: what it
 /// reads is whoever wrote the issue's.
-fn keeps(turn: &Turn) -> Option<[u8; 32]> {
+pub(super) fn keeps(turn: &Turn) -> Option<[u8; 32]> {
     if !matches!(turn.ask, Ask::Message { .. }) {
         return None;
     }

@@ -1374,3 +1374,8 @@ async fn a_sub_agent_writes_only_into_its_own_conversation() {
 /// its own turn, and a lead reads the team under it.
 #[path = "hosted_sub_agent_teams.rs"]
 mod teams;
+
+/// Skills on the server: written and corrected from a turn, told to the turn they fit, and
+/// what gives a sub-agent its model.
+#[path = "hosted_skills.rs"]
+mod skills;

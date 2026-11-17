@@ -71,6 +71,7 @@ mod going;
 mod issue_work;
 mod learned;
 mod mail;
+mod skills;
 mod sub_agents;
 mod summary;
 mod team;
@@ -1000,6 +1001,7 @@ impl HostAgents {
             workspace_id,
         };
         team::join(&self.workspaces, turn, &mut scope).await;
+        skills::join(&self.workspaces, turn, &mut scope);
         // What the turn's tools reach beside the workspace's resources, each a provider of the
         // turn's own ([`TurnProvider`]): what its person's vault lets it use by reference.
         // Beside that, the services its person connected, by this server's own entry for a turn.
@@ -1052,7 +1054,7 @@ impl HostAgents {
             Err(error) => return (turn.ask.clone(), Err(error)),
         };
         let began = turn.ask.clone();
-        let turn = turn.clone();
+        let turn = skills::told_turn(&self.workspaces, workspace, turn).await;
         let reply = scope.reply(&turn);
         if self.left_begun(workspace, &turn).await {
             // Its steps may have changed things already, and nothing says which: starting over
@@ -1257,6 +1259,9 @@ impl HostAgents {
                 let theirs = self
                     .workspaces
                     .person_model(keeper, sub_agents::kind_of(&turn.agent))
+                    // The model the agent itself names answers where its keeper linked it on
+                    // this server: a sub-agent's is its skill's, or the one its starter named.
+                    .naming(turn.agent.model.as_deref())
                     .working_in(workspace_id)
                     .spending_as(Spender {
                         workspace: workspace.to_owned(),
@@ -2151,8 +2156,9 @@ fn instructions(turn: &Turn) -> String {
         ""
     };
     format!(
-        "{every}{view}{}{}{told}",
+        "{every}{view}{}{}{}{told}",
         learned::told_how(turn),
+        skills::told_how(turn),
         sub_agents::told(turn)
     )
 }

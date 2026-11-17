@@ -25,7 +25,7 @@ use super::tests::{admit, caller, governed, request, settled};
 use crate::workspaces::person_model::scripted::Linking;
 use crate::workspaces::person_model::{Interaction, ProviderProtocol};
 use crate::workspaces::person_skills::{
-    self, CORRECT, DROP_EXAMPLE, FORGET, KEEP_EXAMPLE, Kept, NotChanged, READ, WRITE,
+    self, CORRECT, DROP_EXAMPLE, FORGET, HandedSkill, KEEP_EXAMPLE, Kept, NotChanged, READ, WRITE,
 };
 use crate::workspaces::tests::governor;
 
@@ -625,5 +625,145 @@ async fn skills_are_kept_for_one_person_in_one_workspace() {
             assert_eq!(mode & 0o777, 0o600, "{path:?}");
         }
     }
+    served.shutdown().await;
+}
+
+/// Every file under `dir` that keeps which skill a person's sub-agents were handed.
+fn handed_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            found.extend(handed_files(&path));
+        } else if path.to_string_lossy().ends_with(".handed.json") {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// What is kept of a handed skill holds for one sub-agent. Until the workspace's list said
+/// when it made the sub-agent, it holds for one made in the minute after the skill was handed;
+/// from then on for the one the list made at that moment, so a later sub-agent that takes
+/// its id once it is gone was handed nothing.
+#[test]
+fn what_was_handed_holds_for_the_sub_agent_the_list_made_then() {
+    let handed = |made_ms: Option<i64>| HandedSkill {
+        skill: "market-analysis".to_owned(),
+        at_ms: 5_000,
+        made_ms,
+    };
+    let open = handed(None);
+    assert!(open.is_for(5_000) && open.is_for(65_000));
+    assert!(!open.is_for(4_999) && !open.is_for(65_001));
+    let made = handed(Some(5_250));
+    assert!(made.is_for(5_250));
+    assert!(!made.is_for(5_251) && !made.is_for(5_000) && !made.is_for(65_000));
+}
+
+/// Which skill a sub-agent was handed is kept in its person's own store, beside their skills
+/// of that workspace: by the skill's id and without a word of it, apart from every other
+/// person's, workspace's and sub-agent's, on disk for the server's user alone. It is taken
+/// away again, and nothing that is no workspace id names a file.
+#[tokio::test]
+async fn which_skill_a_sub_agent_was_handed_is_kept_in_its_persons_own_store() {
+    const ADA: [u8; 32] = [7; 32];
+    const BO: [u8; 32] = [9; 32];
+    const HOW: &str = "One row per company, each with its source.";
+    stage!(dir, served, workspaces, here, _provider, _ada, _bo);
+    let there = workspaces.create("There").await.unwrap().workspace;
+    let skill = json!({
+        "name": "Market analysis",
+        "work": "Analysing a market for the person",
+        "how": HOW,
+    });
+    let id = workspaces
+        .skills_action(&ADA, &here, Some(SCOUT), (WRITE, &given(skill)))
+        .unwrap()
+        .expect("the id of the skill it wrote");
+    let handed = |made_ms: Option<i64>| HandedSkill {
+        skill: id.clone(),
+        at_ms: 5_000,
+        made_ms,
+    };
+
+    // Nothing is kept until a skill is handed, and taking away what was never kept writes
+    // nothing.
+    assert!(
+        workspaces
+            .skill_handed(&ADA, &here, "bike-market")
+            .is_none()
+    );
+    workspaces
+        .hand_skill(&ADA, &here, "bike-market", None)
+        .unwrap();
+    assert!(handed_files(dir.path()).is_empty());
+
+    for made_ms in [None, Some(5_250)] {
+        workspaces
+            .hand_skill(&ADA, &here, "bike-market", Some(handed(made_ms)))
+            .unwrap();
+        assert_eq!(
+            workspaces.skill_handed(&ADA, &here, "bike-market"),
+            Some(handed(made_ms))
+        );
+    }
+    for (person, workspace, sub_agent, whose) in [
+        (&ADA, &here, "other", "another sub-agent's"),
+        (&BO, &here, "bike-market", "another person's"),
+        (&ADA, &there, "bike-market", "another workspace's"),
+    ] {
+        assert!(
+            workspaces
+                .skill_handed(person, workspace, sub_agent)
+                .is_none(),
+            "{whose}"
+        );
+    }
+
+    // On disk: one file, in her own folder beside her skills, for the server's user alone. It
+    // names the skill by its id and holds nothing the skill says.
+    let files = handed_files(dir.path());
+    let [file] = files.as_slice() else {
+        panic!("one file, not {files:?}");
+    };
+    let beside = kept_files(dir.path());
+    let [skills] = beside.as_slice() else {
+        panic!("her skills, not {beside:?}");
+    };
+    assert_eq!(file.parent(), skills.parent(), "beside her skills");
+    assert!(
+        file.to_string_lossy().contains(&hex::encode(ADA)),
+        "{file:?}"
+    );
+    let written = std::fs::read_to_string(file).unwrap();
+    assert!(
+        written.contains(&id) && !written.contains(HOW) && !written.contains("Market analysis"),
+        "{written}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "{file:?}");
+    }
+
+    // Only a workspace's id names a file: nothing else becomes part of a path.
+    for no_workspace in ["", "..", "../../people", "a/b"] {
+        let kept = workspaces.hand_skill(&ADA, no_workspace, "bike-market", Some(handed(None)));
+        let read = workspaces.skill_handed(&ADA, no_workspace, "bike-market");
+        assert!(kept.is_err() && read.is_none(), "{no_workspace:?}");
+    }
+    assert_eq!(handed_files(dir.path()).len(), 1, "and no second file");
+
+    // Taken away, it is handed to nobody.
+    workspaces
+        .hand_skill(&ADA, &here, "bike-market", None)
+        .unwrap();
+    assert!(
+        workspaces
+            .skill_handed(&ADA, &here, "bike-market")
+            .is_none()
+    );
     served.shutdown().await;
 }
