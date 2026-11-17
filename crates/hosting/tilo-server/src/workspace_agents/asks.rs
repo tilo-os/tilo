@@ -65,6 +65,9 @@ const INTERRUPTED: &str =
 const STOPPED: &str = "You stopped the work this question belonged to.";
 /// What an answer nothing here carries out is told.
 const NO_CARRIER: &str = "Nothing on this server carries that answer out";
+/// What a question is told when it no longer stands as this server asked it.
+pub(super) const NOT_AS_ASKED: &str =
+    "The question no longer says what this server asked, so nothing was done or allowed.";
 
 /// What a person answered about an ask.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +94,13 @@ pub trait Carries: Send + Sync {
     /// # Errors
     /// Why it could not be done, in words its person reads.
     fn carry<'a>(&'a self, ask: &'a KeptAsk, answer: Answered) -> Carried<'a>;
+
+    /// The words `ask` was put to its person with, where its carrier keeps
+    /// them: a yes to a question that says anything else is carried out as a
+    /// no. `None` where they are not kept.
+    fn asked_with(&self, _ask: &KeptAsk) -> Option<String> {
+        None
+    }
 }
 
 /// The carriers of this server, by their word.
@@ -361,6 +371,35 @@ struct Found {
     message: String,
     /// The conversation it stands in.
     conversation_id: String,
+    /// The words it says now.
+    says: String,
+    /// Whether it was ever edited. An agent may edit a message it wrote, and
+    /// an edited question is not the one its person was asked.
+    edited: bool,
+    /// Whether it is the only question that carries its ask. An agent may ask
+    /// questions of its own, and one put beside the server's is not it.
+    alone: bool,
+}
+
+/// How many questions in `parts` carry one ask: those `agent` wrote for
+/// `person` that show `shown`, what this server kept for it.
+fn carrying(
+    parts: &[(String, chat::parts::ChatPart)],
+    (agent, person): (&MemberId, &MemberId),
+    shown: &Value,
+) -> usize {
+    parts
+        .iter()
+        .flat_map(|(_, part)| part.messages.iter())
+        .filter(|(_, message)| {
+            message.author == *agent
+                && message.question.as_ref().is_some_and(|question| {
+                    question.kind.0 == chat::question::ACTION
+                        && question.person == *person
+                        && question.kept().as_ref() == Some(shown)
+                })
+        })
+        .count()
 }
 
 /// The question this server put about `ask`, in `parts`: the one its agent
@@ -374,6 +413,7 @@ fn question_of<'a>(
         MemberId::person(ask.person.clone()),
     );
     let shown = detail_of(ask);
+    let alone = carrying(parts, (&agent, &person), &shown) == 1;
     parts.iter().find_map(|(document, part)| {
         part.messages.iter().find_map(|(id, message)| {
             let question = message.question.as_ref()?;
@@ -388,6 +428,9 @@ fn question_of<'a>(
                         document: document.clone(),
                         message: id.to_string(),
                         conversation_id: message.channel.to_string(),
+                        says: message.text.clone(),
+                        edited: message.edited || !message.history.is_empty(),
+                        alone,
                     },
                     question,
                 )
@@ -864,6 +907,18 @@ impl HostAgents {
         let Ok(claimed) = self.workspaces.claim_ask(&found.ask.ask) else {
             return;
         };
+        // A question that was edited, that stands beside another carrying the
+        // same ask, or that says other words than its carrier asked with, is
+        // not what its person answered: their yes is carried out as a no, so
+        // nothing they allowed is kept and nothing is done, and it ends as not
+        // done.
+        let carrier = self.carriers.lock_recover().get(&claimed.carrier).cloned();
+        let asked_with = carrier.and_then(|carrier| carrier.asked_with(&claimed));
+        let changed = answer != Answered::No
+            && (found.edited
+                || !found.alone
+                || asked_with.is_some_and(|words| words.trim() != found.says.trim()));
+        let answer = if changed { Answered::No } else { answer };
         if answer != Answered::No
             && let Err(error) = self
                 .settle_ask(at, &outside, found, (chat::question::STARTED, None))
@@ -899,6 +954,7 @@ impl HostAgents {
             }
         }
         let settled = match self.carried(workspace_id, &turn, &claimed, answer).await {
+            _ if changed => (chat::question::FAILED, Some(NOT_AS_ASKED.to_owned())),
             Ok(()) if answer == Answered::No => (chat::question::DROPPED, None),
             Ok(()) => (chat::question::DONE, not_kept),
             Err(error) => (chat::question::FAILED, Some(error)),

@@ -596,3 +596,7 @@ async fn the_assistant_signs_in_to_mail_with_a_password_it_never_sees() {
     the_password_is_nowhere_a_model_or_a_reader_looks(&hosted, &lines).await;
     hosted.page.peer.close();
 }
+
+/// What a person's "Always" to a question its agent reworded does: nothing.
+#[path = "hosted_reworded_question.rs"]
+mod reworded;
