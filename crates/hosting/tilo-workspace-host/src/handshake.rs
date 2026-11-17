@@ -19,7 +19,7 @@ use crate::auth::{
     self, AuthError, AuthenticatedPeer, HandshakeTrust, Hello, HelloAck, HelloAck2, PendingServer,
     ServerIdentity,
 };
-use crate::frame::{read_frame, write_frame};
+use crate::frame::{read_frame, write_frame, write_refusal};
 use crate::policy::TrustPolicy;
 use tilo_lock::RwLockRecover as _;
 use tilo_server_protocol::entering::{ENTERING_DEADLINE, Entered, Entry, MAX_ENTERING};
@@ -154,6 +154,28 @@ impl LiveIdentity {
         }
     }
 
+    /// What answers `hello`, which [`Self::begin`] refused with `error` under
+    /// `trust`, where this server says why ([`auth::HelloRefusal::said_of`]).
+    fn refusal(
+        &self,
+        trust: EndpointTrust<'_>,
+        hello: &Hello,
+        error: &AuthError,
+    ) -> Option<auth::HelloRefused> {
+        let identity = ServerIdentity {
+            own_user: &self.user_public_key,
+            cert: &self.cert,
+            key: &self.signing_key,
+        };
+        match trust {
+            EndpointTrust::Live(policy) => {
+                let policy = policy.read_recover();
+                auth::server_refusal(&identity, HandshakeTrust::Live(&policy), hello, error)
+            }
+            EndpointTrust::Fixed(trust) => auth::server_refusal(&identity, trust, hello, error),
+        }
+    }
+
     /// Run the whole handshake over a stream: read the [`Hello`], then as
     /// [`Self::authenticate_hello`].
     ///
@@ -263,14 +285,63 @@ impl LiveIdentity {
         let (Some(admit), Some(binding)) = (admit, binding) else {
             return Err(HandshakeError::NotEntering);
         };
+        let mut said = false;
         let entered = n0_future::time::timeout(ENTERING_DEADLINE, async {
             let _entry = ENTERING.acquire().await.map_err(|_| queue_closed())?;
-            enter(self, hello, &binding, send, admit).await
+            enter(self, hello, &binding, send, admit, &mut said).await
         })
-        .await
-        .map_err(|_| timed_out())?;
+        .await;
+        if said {
+            refusal_read(recv, send).await;
+        }
+        let entered = entered.map_err(|_| timed_out())?;
         entered.map(|(peer, entered)| (peer, Some(entered)))
     }
+}
+
+/// How long a device that was told why its hello is refused has to read it.
+const REFUSAL_READ: Duration = Duration::from_secs(5);
+
+/// Say why this server refused `hello` with `error` under `trust`, where it
+/// says so ([`LiveIdentity::refusal`]): to a device its person removed, that
+/// it was removed. `true` once that is written; the stream is then the
+/// device's to read ([`refusal_read`]). A device that reads none of it has
+/// what it had, a refused hello.
+async fn say_refusal<W: AsyncWrite + Unpin + Send>(
+    identity: &LiveIdentity,
+    trust: EndpointTrust<'_>,
+    hello: &Hello,
+    error: &AuthError,
+    send: &mut W,
+) -> bool {
+    let Some(refused) = identity.refusal(trust, hello, error) else {
+        return false;
+    };
+    let Ok(refused) = postcard::to_allocvec(&refused) else {
+        return false;
+    };
+    // The hello stays refused whether this reaches the device or not.
+    write_refusal(send, &refused).await.is_ok()
+}
+
+/// Hold the stream of a device that was just told why its hello is refused
+/// ([`say_refusal`]): finished, until the device lets go of its end or
+/// [`REFUSAL_READ`] has passed. Whoever ran the handshake closes the
+/// connection next, and a connection closed at once drops what is still on
+/// its way to the device. The handshake is over by then, so this waits
+/// outside its deadline and holds no place in its budget.
+async fn refusal_read<R, W>(recv: &mut R, send: &mut W)
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let _ = send.shutdown().await;
+    let let_go = async {
+        let mut unread = [0_u8; 256];
+        while matches!(recv.read(&mut unread).await, Ok(read) if read > 0) {}
+    };
+    let _ = n0_future::time::timeout(REFUSAL_READ, let_go).await;
 }
 
 fn queue_closed() -> HandshakeError {
@@ -291,17 +362,19 @@ fn timed_out() -> HandshakeError {
 /// this connection checked ([`auth::server_enter`]), this server's proof
 /// written at once, and the workspace's answer once the entry let the person
 /// in and the workspace admitted the device. Nothing after the hello is read.
+/// `said` is set once a refused device was told why ([`say_refusal`]).
 async fn enter<W>(
     identity: &LiveIdentity,
     mut hello: Hello,
     binding: &[u8; 32],
     send: &mut W,
     admit: &dyn Admit,
+    said: &mut bool,
 ) -> Result<(AuthenticatedPeer, Entered), HandshakeError>
 where
     W: AsyncWrite + Unpin + Send,
 {
-    let (peer, ack) = {
+    let begun = {
         let server = ServerIdentity {
             own_user: &identity.user_public_key,
             cert: &identity.cert,
@@ -315,7 +388,16 @@ where
             binding,
             tilo_clock::unix_now_ns(),
             rand::random(),
-        )?
+        )
+    };
+    let (peer, ack) = match begun {
+        Ok(begun) => begun,
+        Err(error) => {
+            // An entry is checked as any certified device's, its proof first.
+            let trust = EndpointTrust::Fixed(HandshakeTrust::AnyCertifiedDevice);
+            *said = say_refusal(identity, trust, &hello, &error, send).await;
+            return Err(error.into());
+        }
     };
     let ack = postcard::to_allocvec(&ack).map_err(|source| HandshakeError::Codec {
         stage: "encode ack",
@@ -353,7 +435,8 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     let max_frame = max_frame.min(MAX_HANDSHAKE_FRAME_BYTES);
-    n0_future::time::timeout(HANDSHAKE_DEADLINE, async {
+    let mut said = false;
+    let authenticated = n0_future::time::timeout(HANDSHAKE_DEADLINE, async {
         // A burst past the budget queues for a slot instead of being refused;
         // the deadline bounds the wait and the exchange together. Errors,
         // timeouts and cancellation release the slot too, through RAII.
@@ -368,7 +451,13 @@ where
         if hello.entering.is_some() {
             return Err(HandshakeError::NotEntering);
         }
-        let (pending, ack) = identity.begin(trust, hello)?;
+        let (pending, ack) = match identity.begin(trust, hello) {
+            Ok(begun) => begun,
+            Err(error) => {
+                said = say_refusal(identity, trust, hello, &error, send).await;
+                return Err(error.into());
+            }
+        };
         let ack = postcard::to_allocvec(&ack).map_err(|source| HandshakeError::Codec {
             stage: "encode ack",
             source,
@@ -382,8 +471,11 @@ where
         let ack2: HelloAck2 = decode("decode ack2", &read("read ack2", recv, max_frame).await?)?;
         Ok(pending.finish(&ack2)?)
     })
-    .await
-    .map_err(|_| HandshakeError::Io {
+    .await;
+    if said {
+        refusal_read(recv, send).await;
+    }
+    authenticated.map_err(|_| HandshakeError::Io {
         stage: "handshake",
         source: std::io::Error::new(std::io::ErrorKind::TimedOut, "handshake timed out"),
     })?
@@ -875,5 +967,390 @@ mod tests {
             Err(HandshakeError::Auth(_))
         ));
         assert_eq!(budget.available_permits(), 1);
+    }
+
+    /// What the tests of a refusal that says why share. They stand in a module of their own
+    /// because the lints take only a plain `#[cfg(test)]` module for a test's.
+    #[cfg(test)]
+    mod removed {
+        use super::*;
+
+        /// A device of the person `root` is, named `label`: its key and certificate.
+        pub(super) fn device_of(
+            root: &ed25519_dalek::SigningKey,
+            label: &str,
+        ) -> (ed25519_dalek::SigningKey, DeviceCert) {
+            let (signing_key, device) = DeviceIdentity::generate(label, 100);
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device.public_key,
+                device_label: device.label,
+                capabilities: DeviceCapabilities::primary(),
+                issued_at_ns: 200,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            sign_device_cert(&mut cert, root).unwrap();
+            (signing_key, cert)
+        }
+
+        /// `root`'s removal of `device`, signed.
+        pub(super) fn removal(
+            root: &ed25519_dalek::SigningKey,
+            device: &DeviceCert,
+        ) -> tilo_user_identity::RevocationEntry {
+            let mut removal = tilo_user_identity::RevocationEntry {
+                user_public_key: root.verifying_key().to_bytes(),
+                revoked_device_public_key: device.device_public_key,
+                revoked_at_ns: 500,
+                reason: tilo_user_identity::RevocationReason::Retired,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_revocation_entry(&mut removal, root).unwrap();
+            removal
+        }
+
+        /// A person's server, and one more device of theirs which the person removed: the server's
+        /// own list holds the removal, signed by the person's root.
+        pub(super) fn server_and_removed_device()
+        -> (LiveIdentity, DeviceCert, ed25519_dalek::SigningKey) {
+            let (root, user) = UserIdentity::generate("Ada", 1);
+            let (signing_key, cert) = device_of(&root, "server");
+            let (removed_key, removed) = device_of(&root, "browser");
+            let mut revocations = RevocationList::new();
+            revocations.insert(removal(&root, &removed)).unwrap();
+            let identity = LiveIdentity {
+                user_public_key: user.public_key,
+                cert,
+                signing_key,
+                revocations: Arc::new(RwLock::new(revocations)),
+            };
+            (identity, removed, removed_key)
+        }
+
+        /// Everything a device reads of `client` once its server let go of the stream.
+        pub(super) async fn heard(mut client: DuplexStream) -> Vec<u8> {
+            let mut said = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut client, &mut said)
+                .await
+                .unwrap();
+            said
+        }
+
+        /// The refusal in `said`, as a device built since refusals said why reads it; nothing may
+        /// follow it.
+        pub(super) async fn refusal_in(said: Vec<u8>) -> auth::HelloRefused {
+            use crate::frame::{Answer, read_answer};
+            let mut said = std::io::Cursor::new(said);
+            let Some(Answer::Refusal(frame)) =
+                read_answer(&mut said, MAX_FRAME_BYTES).await.unwrap()
+            else {
+                panic!("the server said no refusal");
+            };
+            assert_eq!(
+                read_answer(&mut said, MAX_FRAME_BYTES).await.unwrap(),
+                None,
+                "the server said more than its refusal"
+            );
+            auth::decode_handshake(&frame).unwrap()
+        }
+
+        /// What `hello` is answered at an endpoint that asks `trust`: how the handshake ended, and
+        /// every byte the device read.
+        pub(super) async fn answered(
+            identity: &LiveIdentity,
+            trust: EndpointTrust<'_>,
+            hello: &Hello,
+        ) -> (HandshakeError, Vec<u8>) {
+            let budget = Semaphore::new(1);
+            let (server, mut client) = tokio::io::duplex(4096);
+            let (mut recv, mut send) = split(server);
+            write_frame(&mut client, &postcard::to_allocvec(hello).unwrap())
+                .await
+                .unwrap();
+            let error = authenticate_bounded(
+                identity,
+                trust,
+                None,
+                &mut recv,
+                &mut send,
+                MAX_FRAME_BYTES,
+                &budget,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(budget.available_permits(), 1);
+            drop((recv, send));
+            (error, heard(client).await)
+        }
+
+        /// An entry that lets nobody in: a refused hello never reaches it.
+        pub(super) struct NobodyEnters;
+
+        impl Admit for NobodyEnters {
+            fn enter<'a>(
+                &'a self,
+                _cert: &'a DeviceCert,
+                _entry: Entry,
+            ) -> EntryFuture<'a, Entered> {
+                panic!("a refused device reached the workspace's entry")
+            }
+        }
+    }
+
+    use removed::{
+        NobodyEnters, answered, device_of, heard, refusal_in, removal, server_and_removed_device,
+    };
+
+    #[tokio::test(start_paused = true)]
+    async fn a_removed_device_is_told_so_before_its_hello_is_closed() {
+        let (identity, removed, _removed_key) = server_and_removed_device();
+        let (error, said) = answered(&identity, trust(), &Hello::new(removed, [1; 32])).await;
+        assert!(
+            matches!(error, HandshakeError::Auth(AuthError::Revoked)),
+            "{error}"
+        );
+        assert!(
+            !said.is_empty(),
+            "the server closed a removed device's hello without saying why"
+        );
+
+        // A device built before refusals said why reads frames one way: it refuses the first,
+        // and so reads what it read before, a hello nobody answered.
+        let mut before = std::io::Cursor::new(said.clone());
+        assert!(
+            crate::frame::read_frame_or_eof(&mut before, MAX_FRAME_BYTES)
+                .await
+                .is_err()
+        );
+
+        // A device built since reads why, signed by this server for this very hello: it
+        // believes the refusal where it would have believed the ack.
+        let refused = refusal_in(said).await;
+        assert_eq!(refused.refusal, auth::HelloRefusal::DeviceRevoked);
+        let checked = |nonce: [u8; 32]| {
+            auth::verify_hello_ack(
+                &refused,
+                &identity.user_public_key,
+                &RevocationList::new(),
+                tilo_clock::unix_now_ns(),
+                &nonce,
+            )
+        };
+        assert_eq!(
+            checked([1; 32]).unwrap().device_public_key,
+            identity.cert.device_public_key
+        );
+        assert!(matches!(checked([2; 32]), Err(AuthError::BadChallengeSig)));
+        // It names the server and the reason, and nothing of the person's other devices or of
+        // whoever removed this one.
+        assert_eq!(refused.cert, identity.cert);
+        assert_eq!(refused.protocol, auth::PEER_PROTOCOL_VERSION);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hello_refused_for_anything_else_is_closed_with_nothing_said() {
+        let (identity, removed, _removed_key) = server_and_removed_device();
+        // A stranger: a device of a person this endpoint does not admit.
+        let (stranger_root, _) = UserIdentity::generate("Bob", 1);
+        let (_, stranger) = device_of(&stranger_root, "laptop");
+        let (error, said) =
+            answered(&identity, trust(), &Hello::new(stranger.clone(), [1; 32])).await;
+        assert!(
+            matches!(error, HandshakeError::Auth(AuthError::PolicyReject)),
+            "{error}"
+        );
+        assert!(said.is_empty(), "a stranger was told something");
+
+        // A stranger's device that its own person removed, which this server knows: it hears
+        // what that person's other devices hear here, nothing.
+        identity
+            .revocations
+            .write()
+            .unwrap()
+            .insert(removal(&stranger_root, &stranger))
+            .unwrap();
+        let (error, said) =
+            answered(&identity, trust(), &Hello::new(stranger.clone(), [1; 32])).await;
+        assert!(
+            matches!(error, HandshakeError::Auth(AuthError::Revoked)),
+            "{error}"
+        );
+        assert!(said.is_empty(), "a stranger learned of a removal");
+        // Where its person is admitted, the removal alone refuses it, and it is told.
+        let admitting = RwLock::new(TrustPolicy::AllowList {
+            users: vec![hex::encode(stranger.user_public_key)],
+        });
+        let (error, said) = answered(
+            &identity,
+            EndpointTrust::Live(&admitting),
+            &Hello::new(stranger, [1; 32]),
+        )
+        .await;
+        assert!(
+            matches!(error, HandshakeError::Auth(AuthError::Revoked)),
+            "{error}"
+        );
+        assert_eq!(
+            refusal_in(said).await.refusal,
+            auth::HelloRefusal::DeviceRevoked
+        );
+
+        // A certificate that does not verify is refused before any removal is looked at.
+        let mut forged = removed;
+        forged.signature = [0; 64];
+        let (error, said) = answered(&identity, trust(), &Hello::new(forged, [1; 32])).await;
+        assert!(
+            matches!(error, HandshakeError::Auth(AuthError::Cert(_))),
+            "{error}"
+        );
+        assert!(said.is_empty(), "a forged certificate was told something");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refusal_that_says_why_is_held_until_its_device_let_go_of_the_stream() {
+        let (identity, removed, _removed_key) = server_and_removed_device();
+        let hello = postcard::to_allocvec(&Hello::new(removed, [1; 32])).unwrap();
+        let budget = Semaphore::new(1);
+
+        // A device that reads the refusal and lets go: its server lets go at once.
+        let (server, mut client) = tokio::io::duplex(4096);
+        let (mut recv, mut send) = split(server);
+        write_frame(&mut client, &hello).await.unwrap();
+        let began = tokio::time::Instant::now();
+        let mut handshake = Box::pin(authenticate_bounded(
+            &identity,
+            trust(),
+            None,
+            &mut recv,
+            &mut send,
+            MAX_FRAME_BYTES,
+            &budget,
+        ));
+        poll_pending(handshake.as_mut()).await;
+        // The refusal is written and the handshake over, its place in the budget given back,
+        // while the stream is still the device's to read.
+        assert_eq!(budget.available_permits(), 1);
+        let Some(crate::frame::Answer::Refusal(_)) =
+            crate::frame::read_answer(&mut client, MAX_FRAME_BYTES)
+                .await
+                .unwrap()
+        else {
+            panic!("the server said no refusal");
+        };
+        poll_pending(handshake.as_mut()).await;
+        client.shutdown().await.unwrap();
+        let error = handshake.await.unwrap_err();
+        assert!(
+            matches!(error, HandshakeError::Auth(AuthError::Revoked)),
+            "{error}"
+        );
+        assert!(
+            began.elapsed() < Duration::from_millis(100),
+            "it waited {:?} for a device that had let go",
+            began.elapsed()
+        );
+
+        // A device that never lets go is held no longer than the refusal is given to be read.
+        let (server, mut client) = tokio::io::duplex(4096);
+        let (mut recv, mut send) = split(server);
+        write_frame(&mut client, &hello).await.unwrap();
+        let began = tokio::time::Instant::now();
+        let error = authenticate_bounded(
+            &identity,
+            trust(),
+            None,
+            &mut recv,
+            &mut send,
+            MAX_FRAME_BYTES,
+            &budget,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, HandshakeError::Auth(AuthError::Revoked)),
+            "{error}"
+        );
+        let held = began.elapsed();
+        assert!(
+            held >= REFUSAL_READ && held < REFUSAL_READ + Duration::from_millis(100),
+            "held for {held:?}"
+        );
+        assert_eq!(budget.available_permits(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_removed_device_at_an_entry_is_told_only_once_it_proved_its_key() {
+        use ed25519_dalek::Signer as _;
+        use tilo_server_protocol::entering::{Entering, Through, entry_digest};
+        let (identity, removed, removed_key) = server_and_removed_device();
+        let binding = [7; 32];
+        let entering = Entering {
+            workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".to_owned(),
+            name: "Ada".to_owned(),
+            request_id: [2; 32],
+            through: Through::Entry,
+        };
+        let proof = removed_key
+            .sign(&entry_digest(
+                &binding,
+                &removed.device_public_key,
+                &entering,
+            ))
+            .to_bytes();
+        for (proof, proved) in [(proof, true), ([0; 64], false)] {
+            let hello = Hello::entering(
+                removed.clone(),
+                [1; 32],
+                Entry {
+                    entering: entering.clone(),
+                    access: None,
+                    proof,
+                },
+            );
+            let (server, mut client) = tokio::io::duplex(4096);
+            let (mut recv, mut send) = split(server);
+            write_frame(&mut client, &postcard::to_allocvec(&hello).unwrap())
+                .await
+                .unwrap();
+            let error = identity
+                .authenticate_or_enter(
+                    trust(),
+                    &mut recv,
+                    &mut send,
+                    MAX_FRAME_BYTES,
+                    Some(&NobodyEnters),
+                    Some(binding),
+                )
+                .await
+                .unwrap_err();
+            drop((recv, send));
+            let said = heard(client).await;
+            if proved {
+                assert!(
+                    matches!(error, HandshakeError::Auth(AuthError::Revoked)),
+                    "{error}"
+                );
+                let refused = refusal_in(said).await;
+                assert_eq!(refused.refusal, auth::HelloRefusal::DeviceRevoked);
+                auth::verify_hello_ack(
+                    &refused,
+                    &identity.user_public_key,
+                    &RevocationList::new(),
+                    tilo_clock::unix_now_ns(),
+                    &[1; 32],
+                )
+                .unwrap();
+            } else {
+                // Whoever only shows a removed device's certificate at an entry learns nothing
+                // of it: not even that it was looked at.
+                assert!(
+                    matches!(error, HandshakeError::Auth(AuthError::BadChallengeSig)),
+                    "{error}"
+                );
+                assert!(said.is_empty(), "an unproved entry was told something");
+            }
+        }
     }
 }

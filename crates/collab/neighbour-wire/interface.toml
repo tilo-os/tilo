@@ -50,7 +50,7 @@ sources = [
     "crates/collab/collab-types/src/peer.rs",
     "crates/collab/collab-types/src/presence/shell.rs",
 ]
-roots = ["Hello", "HelloAck", "HelloAck2", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "ActionServiceFrame", "crates/collab/neighbour-wire/src/offer.rs:Answer"]
+roots = ["Hello", "HelloAck", "HelloAck2", "HelloRefused", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "ActionServiceFrame", "crates/collab/neighbour-wire/src/offer.rs:Answer"]
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
@@ -449,6 +449,13 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "HelloAck.sig_over_client_nonce" = "#3 [u8; 64] with=serde_bytes"
 "HelloAck2" = "struct"
 "HelloAck2.sig_over_server_nonce" = "#0 [u8; 64] with=serde_bytes"
+"HelloRefusal" = "enum external"
+"HelloRefusal::DeviceRevoked" = "#0 unit"
+"HelloRefused" = "struct"
+"HelloRefused.cert" = "#1 DeviceCert"
+"HelloRefused.protocol" = "#0 u32"
+"HelloRefused.refusal" = "#2 HelloRefusal"
+"HelloRefused.sig_over_refusal" = "#3 [u8; 64] with=serde_bytes"
 "HistoryOp" = "enum external"
 "HistoryOp::checkpoint" = "#3 struct"
 "HistoryOp::checkpoint.name" = "#0 String"

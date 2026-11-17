@@ -38,6 +38,7 @@ import {createReconnect, describeError, domReconnectView} from './reconnect.mjs'
 import {followConnection} from './connection-status.mjs';
 import {domFailureView, failureCause, failureDetails, failureScreen, namedOrigin, unanswered} from './failure-screen.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
+import {deviceRemoved} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
@@ -1670,6 +1671,12 @@ export async function startEntryPage({mode}) {
     // reached the page; else the name the page was served or remembered.
     const named = (typeof admitted?.workspaceName === 'string' && admitted.workspaceName) || workspaceName;
     const messages = await localeMessagesSoon();
+    // This browser was removed from its person's devices: its server's own word at the
+    // handshake, which nothing here undoes. Said in the words an open page says it in.
+    if (deviceRemoved(error)) {
+      error = Object.assign(new AdmissionError('device-revoked', refusalText('device-revoked', named || null)), {cause: error});
+      document.documentElement.dataset.refusal = 'device-revoked';
+    }
     // A refusal is the host's answer, which trying again does not change.
     arrive('stopped');
     document.documentElement.dataset.entry = error instanceof AdmissionError || refusedByHost(error) ? 'refused' : 'failed';

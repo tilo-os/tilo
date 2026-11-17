@@ -37,6 +37,7 @@
  * the page read the workspace's catalogue to resolve the target.
  */
 import {parsePairSecret} from './pairing.mjs';
+import {deviceRemoved} from './session-refusal.mjs';
 
 export const NO_ACCESS = 'You don’t have access to this workspace. Ask the person who shared the link to invite you.';
 /** An invitation the site no longer keeps, or one that does not open: the
@@ -225,6 +226,10 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
           // once the peer is certified: that, too, is no access.
           return await ready(await deps.connectMember({origin, workspace: id, account}), onProgress);
         } catch (error) {
+          // This browser was removed from its person's devices. Its server said so at the
+          // handshake, before any workspace was named, so it tells nothing of this one:
+          // the person reads that, and no other way in is tried.
+          if (deviceRemoved(error)) throw error;
           // Other tabs of this browser hold every device key the account has here:
           // not the host's answer, and not no access.
           const held = error?.name === 'DeviceKeyError' && error.code === 'device-key-busy';
@@ -248,6 +253,8 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
         try {
           peer = await deps.reconnect?.({origin, workspace: id, onProgress});
         } catch (error) {
+          // Removed from its person's devices: said, as above, and nothing else is tried.
+          if (deviceRemoved(error)) throw error;
           // Other tabs hold every device key this browser can get in with: not
           // the host's answer.
           held = error?.name === 'DeviceKeyError' && error.code === 'device-key-busy';

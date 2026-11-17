@@ -305,8 +305,10 @@ pub(super) fn connect_backoff(attempt: u32) -> std::time::Duration {
 /// How a failed dial reads to the session loop: reachability
 /// (`Unavailable`, `Malformed`, retried with backoff) or a host that turned
 /// this device away without saying why (`Refused`, which fails the session
-/// after `REFUSALS_BEFORE_FAILING` in a row). Every variant is named, so a new
-/// client error must be classified here rather than fall into a default.
+/// after `REFUSALS_BEFORE_FAILING` in a row), or one that said why
+/// (`DeviceRevoked`, which stops the session at once). Every variant is named,
+/// so a new client error must be classified here rather than fall into a
+/// default.
 pub(super) fn link_error(error: tilo_server_session::ClientError) -> LinkError {
     use tilo_server_session::ClientError;
     match error {
@@ -317,8 +319,12 @@ pub(super) fn link_error(error: tilo_server_session::ClientError) -> LinkError {
         ClientError::Sign(reason) => LinkError::Sign(reason),
         ClientError::Codec(reason) => LinkError::Malformed(reason),
         ClientError::PeerVersion { theirs } => LinkError::PeerVersion { theirs },
-        // A host that turns a device away closes the handshake stream
-        // without a word.
+        // The server said why, and proved the refusal its own.
+        ClientError::Refused(tilo_server_protocol::auth::HelloRefusal::DeviceRevoked) => {
+            LinkError::DeviceRevoked
+        }
+        // A server that refuses a device and does not say why closes the
+        // handshake stream with nothing said.
         ClientError::NoHandshakeAnswer(reason) => LinkError::Refused(reason),
         // A host that rejects the device either fails its ack (auth) or
         // closes the handshake stream, which surfaces as an I/O error on the

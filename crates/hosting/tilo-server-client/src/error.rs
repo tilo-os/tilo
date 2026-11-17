@@ -23,6 +23,12 @@ pub enum LinkError {
     /// The signer failed.
     #[error("signer: {0}")]
     Sign(String),
+    /// The server refused this device because its person removed it from
+    /// their devices, and said so under its own signature
+    /// (`tilo_server_protocol::auth::HelloRefusal::DeviceRevoked`). Nothing
+    /// this device asks again changes it.
+    #[error("this device was removed from its person's devices")]
+    DeviceRevoked,
     /// The host speaks peer protocol `theirs`, not this device's: they do not
     /// sync until the one behind has updated
     /// (docs/architecture/compatibility.md).

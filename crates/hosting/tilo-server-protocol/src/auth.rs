@@ -27,6 +27,16 @@
 //! flow only needs one nonce. We do two so the client also
 //! authenticates the server — otherwise a MITM could accept a
 //! client's connection and forward its cert to the real server.
+//!
+//! **A refusal that says why.** A server that refuses a hello closes the
+//! stream. Where one thing alone refused the device, and the device may know
+//! it, the server says so first ([`HelloRefusal`]): a [`HelloRefused`] in the
+//! ack's place, signed as an ack is, behind an empty frame
+//! (`tilo_server_client::frame::write_refusal`). A device built before this
+//! refuses the empty frame and reads what it always read, a hello nobody
+//! answered. A device built since believes the refusal exactly where it would
+//! have believed that server's ack, and takes one it cannot check, or a
+//! reason it does not know, as a refusal with nothing said.
 
 use ed25519_dalek::{Signer, Verifier};
 use serde::{Deserialize, Serialize};
@@ -65,6 +75,13 @@ pub const UNVERSIONED_PEER_PROTOCOL: u32 = 0;
 const TILO_AUTH_SERVER_TAG: &[u8] = b"tilo-server-auth-v2/server\0";
 /// Domain tag under which the *client* signs the server's challenge.
 const TILO_AUTH_CLIENT_TAG: &[u8] = b"tilo-server-auth-v2/client\0";
+/// Domain tag under which the *server* signs why it refused a hello.
+///
+/// A tag of its own, as each direction has: a server acks whatever
+/// `client_nonce` a device it admits hands it, so under the server's
+/// challenge tag such a device could have it sign a refusal of another
+/// device's hello.
+const TILO_AUTH_REFUSAL_TAG: &[u8] = b"tilo-server-auth-v2/refusal\0";
 
 /// First message: client → server.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -189,6 +206,119 @@ pub struct HelloAck2 {
     /// [`client_challenge_digest`]`(server_nonce)`.
     #[serde(with = "serde_bytes")]
     pub sig_over_server_nonce: [u8; 64],
+}
+
+/// Why a server refused a device's hello, where it says so
+/// ([`HelloRefusal::said_of`]).
+///
+/// New reasons are added at the end. A device that does not know a reason
+/// cannot read the [`HelloRefused`] that carries it, and takes the refusal as
+/// one with nothing said.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HelloRefusal {
+    /// The device's person removed it from their devices.
+    DeviceRevoked,
+}
+
+impl HelloRefusal {
+    /// The reason's name, which never changes: the server's signature is over
+    /// it, and a session that stops for this reason fails with it.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::DeviceRevoked => "device-revoked",
+        }
+    }
+
+    /// What a server says of `error`, its refusal of the hello that showed
+    /// `cert` at an endpoint that asks `trust`: `None` where it says nothing.
+    ///
+    /// A server says no more than its refusal gives away. A removal is said
+    /// when it alone refused the device: the certificate is valid, or the
+    /// removal would not have been looked at, and `trust` admits its person.
+    /// Whoever shows that certificate and is refused can work out as much,
+    /// because nothing else refuses it. A removed device of a person the
+    /// endpoint does not admit hears nothing, as that person's other devices
+    /// hear nothing. Who removed the device, when, for what reason, and which
+    /// other devices its person has are never said.
+    #[must_use]
+    pub fn said_of(
+        error: &AuthError,
+        cert: &DeviceCert,
+        own_user_public_key: &[u8; 32],
+        trust: HandshakeTrust<'_>,
+    ) -> Option<Self> {
+        (matches!(error, AuthError::Revoked) && trust.admits(cert, own_user_public_key))
+            .then_some(Self::DeviceRevoked)
+    }
+}
+
+impl std::fmt::Display for HelloRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DeviceRevoked => f.write_str("its person removed this device"),
+        }
+    }
+}
+
+/// What a server answers a hello it refuses and says why: it stands in the
+/// place of a [`HelloAck`] and is signed as one is, so a device checks it as
+/// it checks an ack ([`ServerProof`]).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HelloRefused {
+    /// The server's [`PEER_PROTOCOL_VERSION`]. First, and never moved.
+    pub protocol: u32,
+    /// Server's device cert.
+    pub cert: DeviceCert,
+    /// Why the server refused the hello.
+    pub refusal: HelloRefusal,
+    /// Ed25519 signature by the server's *device* signing key over
+    /// [`refusal_digest`]`(client_nonce, refusal)`: this server refused this
+    /// hello, for this reason.
+    #[serde(with = "serde_bytes")]
+    pub sig_over_refusal: [u8; 64],
+}
+
+/// A server's signed answer to a hello: its [`HelloAck`], or its
+/// [`HelloRefused`]. Every check a device makes of its server's ack
+/// ([`verify_hello_ack`] and the ones beside it) takes either, so a device
+/// believes a refusal exactly where it would have believed that server's ack.
+pub trait ServerProof {
+    /// The certificate the server answers under.
+    fn cert(&self) -> &DeviceCert;
+    /// The server's signature over [`Self::digest`].
+    fn signature(&self) -> &[u8; 64];
+    /// What the server signed, in answer to the hello that carried
+    /// `client_nonce`.
+    fn digest(&self, client_nonce: &[u8; 32]) -> [u8; 32];
+}
+
+impl ServerProof for HelloAck {
+    fn cert(&self) -> &DeviceCert {
+        &self.cert
+    }
+
+    fn signature(&self) -> &[u8; 64] {
+        &self.sig_over_client_nonce
+    }
+
+    fn digest(&self, client_nonce: &[u8; 32]) -> [u8; 32] {
+        server_challenge_digest(client_nonce)
+    }
+}
+
+impl ServerProof for HelloRefused {
+    fn cert(&self) -> &DeviceCert {
+        &self.cert
+    }
+
+    fn signature(&self) -> &[u8; 64] {
+        &self.sig_over_refusal
+    }
+
+    fn digest(&self, client_nonce: &[u8; 32]) -> [u8; 32] {
+        refusal_digest(client_nonce, self.refusal)
+    }
 }
 
 /// Authenticated peer state that survives past the handshake — used
@@ -334,8 +464,9 @@ pub fn server_begin(
 ///
 /// # Errors
 ///
-/// As [`server_begin`] for the certificate; [`AuthError::BadChallengeSig`]
-/// for a hello that carries no entry or whose proof does not verify.
+/// [`AuthError::BadChallengeSig`] for a hello that carries no entry or whose
+/// proof does not verify; then as [`server_begin`] for the certificate, so a
+/// certificate is refused only to a device that holds its key.
 pub fn server_enter(
     identity: &ServerIdentity<'_>,
     revocations: &RevocationList,
@@ -345,6 +476,14 @@ pub fn server_enter(
     server_nonce: [u8; 32],
 ) -> Result<(AuthenticatedPeer, HelloAck), AuthError> {
     let entry = hello.entering.as_ref().ok_or(AuthError::BadChallengeSig)?;
+    // The proof first: what is then said of the certificate
+    // ([`HelloRefusal::said_of`]) is said to a device that holds its key.
+    let device = &hello.cert.device_public_key;
+    let digest = crate::entering::entry_digest(binding, device, &entry.entering);
+    ed25519_dalek::VerifyingKey::from_bytes(device)
+        .map_err(|_| AuthError::BadChallengeSig)?
+        .verify(&digest, &ed25519_dalek::Signature::from_bytes(&entry.proof))
+        .map_err(|_| AuthError::BadChallengeSig)?;
     let peer = admit_cert(
         &hello.cert,
         identity.own_user,
@@ -352,11 +491,6 @@ pub fn server_enter(
         revocations,
         now_ns,
     )?;
-    let digest = crate::entering::entry_digest(binding, &peer.device_public_key, &entry.entering);
-    ed25519_dalek::VerifyingKey::from_bytes(&peer.device_public_key)
-        .map_err(|_| AuthError::BadChallengeSig)?
-        .verify(&digest, &ed25519_dalek::Signature::from_bytes(&entry.proof))
-        .map_err(|_| AuthError::BadChallengeSig)?;
     let ack = build_hello_ack(
         identity.cert.clone(),
         identity.key,
@@ -429,6 +563,16 @@ fn challenge_digest_under(tag: &[u8], nonce: &[u8; 32]) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+/// The digest the *server* signs in [`HelloRefused`]: the client's challenge
+/// and the reason's name, under the refusal tag.
+pub fn refusal_digest(client_nonce: &[u8; 32], refusal: HelloRefusal) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(TILO_AUTH_REFUSAL_TAG);
+    hasher.update(client_nonce);
+    hasher.update(refusal.code().as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
 /// Server-side: verify the client's `Hello` against `own_user_pk` +
 /// `policy` + `revocations`. Returns the authenticated peer state
 /// on success.
@@ -475,6 +619,43 @@ pub fn build_hello_ack(
     }
 }
 
+/// Server-side: build the [`HelloRefused`] that answers the hello carrying
+/// `client_nonce` with `refusal`, signed with the server's device signing key.
+pub fn build_hello_refused(
+    own_cert: DeviceCert,
+    own_signing_key: &ed25519_dalek::SigningKey,
+    client_nonce: &[u8; 32],
+    refusal: HelloRefusal,
+) -> HelloRefused {
+    let sig = own_signing_key
+        .sign(&refusal_digest(client_nonce, refusal))
+        .to_bytes();
+    HelloRefused {
+        protocol: PEER_PROTOCOL_VERSION,
+        cert: own_cert,
+        refusal,
+        sig_over_refusal: sig,
+    }
+}
+
+/// Server-side: what answers `hello`, refused with `error` at an endpoint that
+/// asks `trust`, where the server says why ([`HelloRefusal::said_of`]).
+#[must_use]
+pub fn server_refusal(
+    identity: &ServerIdentity<'_>,
+    trust: HandshakeTrust<'_>,
+    hello: &Hello,
+    error: &AuthError,
+) -> Option<HelloRefused> {
+    let refusal = HelloRefusal::said_of(error, &hello.cert, identity.own_user, trust)?;
+    Some(build_hello_refused(
+        identity.cert.clone(),
+        identity.key,
+        &hello.client_nonce,
+        refusal,
+    ))
+}
+
 /// Client-side: verify the server's `HelloAck` — checks the cert
 /// chain, expiry, policy admission (from *client's* point of view:
 /// the server must chain to our own user identity), revocation,
@@ -488,7 +669,7 @@ pub fn build_hello_ack(
 /// its device is revoked, or [`AuthError::BadChallengeSig`] if the
 /// nonce signature doesn't verify.
 pub fn verify_hello_ack(
-    ack: &HelloAck,
+    ack: &impl ServerProof,
     own_user_public_key: &[u8; 32],
     revocations: &RevocationList,
     now_ns: u64,
@@ -516,7 +697,7 @@ pub fn verify_hello_ack(
 /// [`AuthError::BadChallengeSig`] if the nonce signature doesn't
 /// verify.
 pub fn verify_pinned_host_ack(
-    ack: &HelloAck,
+    ack: &impl ServerProof,
     revocations: &RevocationList,
     now_ns: u64,
     challenge_client_nonce: &[u8; 32],
@@ -525,28 +706,28 @@ pub fn verify_pinned_host_ack(
 }
 
 fn verify_hello_ack_inner(
-    ack: &HelloAck,
+    ack: &impl ServerProof,
     expected_user_public_key: Option<&[u8; 32]>,
     revocations: &RevocationList,
     now_ns: u64,
     challenge_client_nonce: &[u8; 32],
 ) -> Result<AuthenticatedPeer, AuthError> {
     verify_hello_ack_cryptographic(ack, revocations, now_ns, challenge_client_nonce)?;
-    if !ack.cert.capabilities.can_own_workspaces {
+    if !ack.cert().capabilities.can_own_workspaces {
         return Err(AuthError::PolicyReject);
     }
     // A same-owner client pins the expected user root. A hosted-service
     // client instead pins the Iroh EndpointAddr and accepts any valid server
     // root, while still requiring proof of the certified device key.
     if let Some(expected) = expected_user_public_key
-        && &ack.cert.user_public_key != expected
+        && &ack.cert().user_public_key != expected
     {
         return Err(AuthError::PolicyReject);
     }
     Ok(AuthenticatedPeer {
-        cert: ack.cert.clone(),
-        user_public_key: ack.cert.user_public_key,
-        device_public_key: ack.cert.device_public_key,
+        cert: ack.cert().clone(),
+        user_public_key: ack.cert().user_public_key,
+        device_public_key: ack.cert().device_public_key,
     })
 }
 
@@ -560,20 +741,20 @@ fn verify_hello_ack_inner(
 /// governor, is current and non-revoked, can govern workspaces, and proves the
 /// challenge with its certified device key.
 pub fn verify_interactive_owner_ack(
-    ack: &HelloAck,
+    ack: &impl ServerProof,
     expected_governor: &DeviceCert,
     revocations: &RevocationList,
     now_ns: u64,
     challenge_client_nonce: &[u8; 32],
 ) -> Result<AuthenticatedPeer, AuthError> {
     verify_hello_ack_cryptographic(ack, revocations, now_ns, challenge_client_nonce)?;
-    if &ack.cert != expected_governor || !ack.cert.capabilities.can_own_workspaces {
+    if ack.cert() != expected_governor || !ack.cert().capabilities.can_own_workspaces {
         return Err(AuthError::PolicyReject);
     }
     Ok(AuthenticatedPeer {
-        cert: ack.cert.clone(),
-        user_public_key: ack.cert.user_public_key,
-        device_public_key: ack.cert.device_public_key,
+        cert: ack.cert().clone(),
+        user_public_key: ack.cert().user_public_key,
+        device_public_key: ack.cert().device_public_key,
     })
 }
 
@@ -588,7 +769,7 @@ pub fn verify_interactive_owner_ack(
 ///
 /// Returns [`AuthError`] unless every condition above holds.
 pub fn verify_own_device_ack(
-    ack: &HelloAck,
+    ack: &impl ServerProof,
     own_user_public_key: &[u8; 32],
     expected_device: &[u8; 32],
     revocations: &RevocationList,
@@ -596,32 +777,32 @@ pub fn verify_own_device_ack(
     challenge_client_nonce: &[u8; 32],
 ) -> Result<AuthenticatedPeer, AuthError> {
     verify_hello_ack_cryptographic(ack, revocations, now_ns, challenge_client_nonce)?;
-    if &ack.cert.user_public_key != own_user_public_key
-        || &ack.cert.device_public_key != expected_device
+    if &ack.cert().user_public_key != own_user_public_key
+        || &ack.cert().device_public_key != expected_device
     {
         return Err(AuthError::PolicyReject);
     }
     Ok(AuthenticatedPeer {
-        cert: ack.cert.clone(),
-        user_public_key: ack.cert.user_public_key,
-        device_public_key: ack.cert.device_public_key,
+        cert: ack.cert().clone(),
+        user_public_key: ack.cert().user_public_key,
+        device_public_key: ack.cert().device_public_key,
     })
 }
 
 fn verify_hello_ack_cryptographic(
-    ack: &HelloAck,
+    ack: &impl ServerProof,
     revocations: &RevocationList,
     now_ns: u64,
     challenge_client_nonce: &[u8; 32],
 ) -> Result<(), AuthError> {
-    verify_device_cert_at(&ack.cert, now_ns)?;
-    if revocations.refuses_at(&ack.cert, now_ns) {
+    verify_device_cert_at(ack.cert(), now_ns)?;
+    if revocations.refuses_at(ack.cert(), now_ns) {
         return Err(AuthError::Revoked);
     }
-    let vk = ed25519_dalek::VerifyingKey::from_bytes(&ack.cert.device_public_key)
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&ack.cert().device_public_key)
         .map_err(|_| AuthError::BadChallengeSig)?;
-    let digest = server_challenge_digest(challenge_client_nonce);
-    let sig = ed25519_dalek::Signature::from_bytes(&ack.sig_over_client_nonce);
+    let digest = ack.digest(challenge_client_nonce);
+    let sig = ed25519_dalek::Signature::from_bytes(ack.signature());
     vk.verify(&digest, &sig)
         .map_err(|_| AuthError::BadChallengeSig)
 }
@@ -1198,6 +1379,11 @@ mod tests {
     }
 
     fn alice_relay_and_bob() -> (Party, Party, Party, [u8; 32], SigningKey) {
+        alice_and_bob()
+    }
+
+    /// Alice's server and her laptop, Bob's laptop, Alice's root key and the secret of it.
+    fn alice_and_bob() -> (Party, Party, Party, [u8; 32], SigningKey) {
         let (alice_root, alice) = UserIdentity::generate("Alice", 1);
         let server = enrol(
             &alice_root,
@@ -1286,5 +1472,328 @@ mod tests {
             postcard::take_from_bytes::<u32>(&answer).unwrap(),
             (PEER_PROTOCOL_VERSION, &[][..])
         );
+    }
+
+    /// A [`HelloRefused`] with its reason by number, as a build that knows more reasons than
+    /// this one writes it.
+    #[derive(Serialize)]
+    struct Later<'a> {
+        protocol: u32,
+        cert: &'a DeviceCert,
+        refusal: u32,
+        #[serde(with = "serde_bytes")]
+        sig_over_refusal: [u8; 64],
+    }
+
+    /// `root`'s removal of `device`, in a list of its own.
+    fn removed(root: &SigningKey, device: &Party) -> RevocationList {
+        let mut entry = RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: device.cert.device_public_key,
+            revoked_at_ns: 500,
+            reason: RevocationReason::Retired,
+            signature: [0u8; 64],
+        };
+        sign_revocation_entry(&mut entry, root).unwrap();
+        let mut revocations = RevocationList::new();
+        revocations.insert(entry).unwrap();
+        revocations
+    }
+
+    tilo_test_env::scenario! {
+        fn a_refusal_says_why_only_where_the_refusal_already_tells;
+
+        phase a_removal_is_said_when_it_alone_refused_the_device;
+        {
+            let (server, laptop, member, alice, alice_root) = alice_and_bob();
+            let revocations = removed(&alice_root, &laptop);
+            let refused = |trust, party: &Party, revocations: &RevocationList| {
+                let error = server_begin(
+                    &identity(&server, &alice),
+                    trust,
+                    revocations,
+                    &hello(party),
+                    1000,
+                    [5; 32],
+                )
+                .unwrap_err();
+                let said = server_refusal(&identity(&server, &alice), trust, &hello(party), &error);
+                (error, said.map(|refused| refused.refusal))
+            };
+            // The person's own device, removed: every endpoint that would have admitted it
+            // says so.
+            let own_only = TrustPolicy::default();
+            for trust in [
+                HandshakeTrust::OwnerDevicesOnly,
+                HandshakeTrust::AnyCertifiedDevice,
+                HandshakeTrust::Live(&own_only),
+            ] {
+                let (error, said) = refused(trust, &laptop, &revocations);
+                assert!(matches!(error, AuthError::Revoked));
+                assert_eq!(said, Some(HelloRefusal::DeviceRevoked));
+            }
+            // A device nothing removed, of a person the endpoint does not admit, hears nothing:
+            // nor does one whose removal the server knows, since that person's other devices
+            // hear nothing here either.
+            let (error, said) = refused(HandshakeTrust::OwnerDevicesOnly, &member, &revocations);
+            assert!(matches!(error, AuthError::PolicyReject));
+            assert_eq!(said, None);
+            let (bob_root, _) = UserIdentity::generate("Bob", 1);
+            let stranger = enrol(
+                &bob_root,
+                bob_root.verifying_key().to_bytes(),
+                "bob-phone",
+                DeviceCapabilities::primary(),
+            );
+            let strangers = removed(&bob_root, &stranger);
+            let (error, said) = refused(HandshakeTrust::OwnerDevicesOnly, &stranger, &strangers);
+            assert!(matches!(error, AuthError::Revoked));
+            assert_eq!(said, None);
+            // Where that person is admitted, the removal alone refuses the device, and it is told.
+            let admitting = TrustPolicy::AllowList {
+                users: vec![hex::encode(stranger.cert.user_public_key)],
+            };
+            let (error, said) = refused(HandshakeTrust::Live(&admitting), &stranger, &strangers);
+            assert!(matches!(error, AuthError::Revoked));
+            assert_eq!(said, Some(HelloRefusal::DeviceRevoked));
+            // A certificate that does not verify is refused before a removal is looked at.
+            let mut forged = Party {
+                cert: laptop.cert.clone(),
+                sk: laptop.sk.clone(),
+            };
+            forged.cert.capabilities.can_administer_devices = true;
+            let (error, said) = refused(HandshakeTrust::OwnerDevicesOnly, &forged, &revocations);
+            assert!(matches!(error, AuthError::Cert(_)));
+            assert_eq!(said, None);
+            // No other refusal says anything, whatever the endpoint admits.
+            for error in [
+                AuthError::PolicyReject,
+                AuthError::BadChallengeSig,
+                AuthError::EndpointMismatch,
+            ] {
+                assert_eq!(
+                    HelloRefusal::said_of(
+                        &error,
+                        &laptop.cert,
+                        &alice,
+                        HandshakeTrust::AnyCertifiedDevice
+                    ),
+                    None
+                );
+            }
+        }
+
+        phase a_device_believes_a_refusal_where_it_would_believe_the_ack;
+        {
+            let (server, _, member, alice, _) = alice_and_bob();
+            let revs = RevocationList::new();
+            let nonce = [3u8; 32];
+            let refused = build_hello_refused(
+                server.cert.clone(),
+                &server.sk,
+                &nonce,
+                HelloRefusal::DeviceRevoked,
+            );
+            assert_eq!(refused.protocol, PEER_PROTOCOL_VERSION);
+            // Its server's, for this hello: believed by each check an ack passes.
+            let peer = verify_hello_ack(&refused, &alice, &revs, 1000, &nonce).unwrap();
+            assert_eq!(peer.device_public_key, server.cert.device_public_key);
+            verify_own_device_ack(
+                &refused,
+                &alice,
+                &server.cert.device_public_key,
+                &revs,
+                1000,
+                &nonce,
+            )
+            .unwrap();
+            // A refusal of another hello is none of this one.
+            assert!(matches!(
+                verify_hello_ack(&refused, &alice, &revs, 1000, &[4u8; 32]),
+                Err(AuthError::BadChallengeSig)
+            ));
+            // Another person's device refuses nobody in this server's name.
+            let foreign = build_hello_refused(
+                member.cert.clone(),
+                &member.sk,
+                &nonce,
+                HelloRefusal::DeviceRevoked,
+            );
+            assert!(matches!(
+                verify_hello_ack(&foreign, &alice, &revs, 1000, &nonce),
+                Err(AuthError::PolicyReject)
+            ));
+            assert!(matches!(
+                verify_own_device_ack(
+                    &foreign,
+                    &alice,
+                    &server.cert.device_public_key,
+                    &revs,
+                    1000,
+                    &nonce
+                ),
+                Err(AuthError::PolicyReject)
+            ));
+            // Nor does a key under this server's certificate that is not its own.
+            let mut forged = foreign;
+            forged.cert = server.cert;
+            assert!(matches!(
+                verify_hello_ack(&forged, &alice, &revs, 1000, &nonce),
+                Err(AuthError::BadChallengeSig)
+            ));
+        }
+
+        phase an_ack_is_no_refusal_and_a_refusal_no_ack;
+        {
+            let (server, _, _, alice, _) = alice_and_bob();
+            let revs = RevocationList::new();
+            let victim_nonce = [9u8; 32];
+            // A server acks whatever nonce a device it admits hands it. Neither the ack of the
+            // victim's own nonce, nor the ack of a nonce picked to be the refusal's digest, is a
+            // refusal of the victim's hello.
+            for asked in [
+                victim_nonce,
+                refusal_digest(&victim_nonce, HelloRefusal::DeviceRevoked),
+            ] {
+                let ack = build_hello_ack(server.cert.clone(), &server.sk, [3u8; 32], &asked);
+                let forged = HelloRefused {
+                    protocol: PEER_PROTOCOL_VERSION,
+                    cert: server.cert.clone(),
+                    refusal: HelloRefusal::DeviceRevoked,
+                    sig_over_refusal: ack.sig_over_client_nonce,
+                };
+                assert!(
+                    matches!(
+                        verify_hello_ack(&forged, &alice, &revs, 1000, &victim_nonce),
+                        Err(AuthError::BadChallengeSig)
+                    ),
+                    "an ack's signature must never verify as a refusal"
+                );
+            }
+            // And a refusal lets nobody in: its signature is no ack of the same hello.
+            let refused = build_hello_refused(
+                server.cert.clone(),
+                &server.sk,
+                &victim_nonce,
+                HelloRefusal::DeviceRevoked,
+            );
+            let forged = HelloAck {
+                protocol: PEER_PROTOCOL_VERSION,
+                cert: server.cert,
+                server_nonce: [4u8; 32],
+                sig_over_client_nonce: refused.sig_over_refusal,
+            };
+            assert!(
+                matches!(
+                    verify_hello_ack(&forged, &alice, &revs, 1000, &victim_nonce),
+                    Err(AuthError::BadChallengeSig)
+                ),
+                "a refusal's signature must never verify as an ack"
+            );
+        }
+
+        phase it_travels_whole_and_a_reason_nobody_knows_yet_does_not_read;
+        {
+            let (server, _, _, _, _) = alice_and_bob();
+            let refused = build_hello_refused(
+                server.cert.clone(),
+                &server.sk,
+                &[3u8; 32],
+                HelloRefusal::DeviceRevoked,
+            );
+            let frame = postcard::to_stdvec(&refused).unwrap();
+            let read: HelloRefused = decode_handshake(&frame).unwrap();
+            assert_eq!(read.refusal, HelloRefusal::DeviceRevoked);
+            assert_eq!(read.cert, refused.cert);
+            assert_eq!(read.sig_over_refusal, refused.sig_over_refusal);
+            assert_eq!(HelloRefusal::DeviceRevoked.code(), "device-revoked");
+
+            // The same frame with a reason added after this build: it does not decode, so a
+            // device takes it as a refusal with nothing said.
+            let later = postcard::to_stdvec(&Later {
+                protocol: PEER_PROTOCOL_VERSION,
+                cert: &server.cert,
+                refusal: 0,
+                sig_over_refusal: refused.sig_over_refusal,
+            })
+            .unwrap();
+            assert_eq!(later, frame, "the stand-in is the frame, reason by number");
+            let later = postcard::to_stdvec(&Later {
+                protocol: PEER_PROTOCOL_VERSION,
+                cert: &server.cert,
+                refusal: 1,
+                sig_over_refusal: refused.sig_over_refusal,
+            })
+            .unwrap();
+            assert!(matches!(
+                decode_handshake::<HelloRefused>(&later),
+                Err(HandshakeFrameError::Codec(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn an_entry_proves_its_key_before_its_certificate_is_judged() {
+        use crate::entering::{Entering, Entry, Through, entry_digest};
+        let (server, laptop, _, alice, alice_root) = alice_and_bob();
+        let revocations = removed(&alice_root, &laptop);
+        let binding = [7u8; 32];
+        let entering = Entering {
+            workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".to_owned(),
+            name: "Alice".to_owned(),
+            request_id: [2; 32],
+            through: Through::Entry,
+        };
+        let entry = |proof| {
+            Hello::entering(
+                laptop.cert.clone(),
+                [3; 32],
+                Entry {
+                    entering: entering.clone(),
+                    access: None,
+                    proof,
+                },
+            )
+        };
+        let enter = |hello: &Hello, revocations: &RevocationList| {
+            server_enter(
+                &identity(&server, &alice),
+                revocations,
+                hello,
+                &binding,
+                1000,
+                [5; 32],
+            )
+        };
+        let proof = laptop
+            .sk
+            .sign(&entry_digest(
+                &binding,
+                &laptop.cert.device_public_key,
+                &entering,
+            ))
+            .to_bytes();
+        // Proved and not removed: in.
+        enter(&entry(proof), &RevocationList::new()).unwrap();
+        // Proved and removed: refused as removed, which the server may then say.
+        let error = enter(&entry(proof), &revocations).unwrap_err();
+        assert!(matches!(error, AuthError::Revoked));
+        assert_eq!(
+            HelloRefusal::said_of(
+                &error,
+                &laptop.cert,
+                &alice,
+                HandshakeTrust::AnyCertifiedDevice
+            ),
+            Some(HelloRefusal::DeviceRevoked)
+        );
+        // Not proved: refused for that, removed or not, so nothing of the certificate is said
+        // to whoever only shows it.
+        for revocations in [&RevocationList::new(), &revocations] {
+            assert!(matches!(
+                enter(&entry([0; 64]), revocations).unwrap_err(),
+                AuthError::BadChallengeSig
+            ));
+        }
     }
 }

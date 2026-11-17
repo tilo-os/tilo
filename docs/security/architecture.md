@@ -164,6 +164,15 @@ a removal and not yet of its cut holds that device's operations undecided, and a
 lowered or erased. The device itself is refused everywhere from the instant its removal is known:
 at the handshake, for everything it asks after it, and for keys.
 
+At the handshake the device is also told so, and told nothing else. Where the removal alone refuses
+it, its certificate being valid and its person admitted there, the server answers its hello with
+that one reason, signed for that hello as an acknowledgement is. The device believes it only from
+the server it dialled, by the check it makes of that server's acknowledgement, stops asking, and
+tells its person that it was removed. Who removed it, when, for what reason and which other
+devices the person has are never said. The reason gives away no more than the refusal does:
+nothing else refuses that certificate there, and a device that enters through a workspace's entry
+is told only once its proof of its key verified.
+
 For a device that was stolen or compromised the person may also name the moment from which it is
 not to be trusted. What it wrote after that moment and before its removal was written down cannot
 be untaken, since devices merged it before anyone knew. It stays in its document marked as written

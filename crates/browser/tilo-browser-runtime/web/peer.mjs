@@ -1353,9 +1353,11 @@ async function connect({
           else if (current.phase === 'ready') finish(undefined, current);
           else if (shown && current.phase === 'admitting' && hasRecord(DESKTOP_APP, DESKTOP_RECORD)) finish(undefined, current);
           // A host never reached (`hostUnreached`) keeps its code: nothing it refused.
+          // So does a session its server stopped because this browser was removed from
+          // its person's devices (`device-revoked`): the page says that, and asks nothing again.
           else if (current.phase === 'failed') {
             finish(Object.assign(new Error(current.error ?? 'the host refused this device'),
-              current.errorCode === 'unanswered' ? {code: 'unanswered'} : {}));
+              ['unanswered', 'device-revoked'].includes(current.errorCode) ? {code: current.errorCode} : {}));
           }
           // The host answered the page's subscription with a no: the session
           // asks no more, so nothing comes of waiting on.

@@ -296,6 +296,12 @@ pub enum ClientError {
     /// hello; [`ServerClient::probe_handshake_version`] tells the two apart.
     #[error("the host closed the stream without answering: {0}")]
     NoHandshakeAnswer(String),
+    /// The server refused this device's hello and said why, under its own
+    /// signature, which this device checked as it checks that server's ack
+    /// ([`crate::auth::HelloRefusal`]). A refusal it could not check that
+    /// way is a [`Self::NoHandshakeAnswer`].
+    #[error("the server refused this device: {0}")]
+    Refused(crate::auth::HelloRefusal),
 }
 
 /// What a host answered a hello without a leading version

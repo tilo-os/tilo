@@ -6,6 +6,7 @@ import {memberText} from './json-text.mjs';
 import {forgetSiteHosts, nameSiteHost, STALE_SITE_HOST, staleSiteHost} from './site-host.mjs';
 import {failureCause} from './failure-screen.mjs';
 import {hostUnreachable} from './session-refusal.mjs';
+import {deviceRemoved} from './session-refusal.mjs';
 
 const WORKSPACE = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -470,6 +471,25 @@ test('a host that refuses the connection is said at once, not after a timeout, a
   runtime.peer.transport = 'offline';
   runtime.peer.emit('incomplete');
   assert.equal(peer.getSnapshot().phase, 'incomplete', 'a dropped connection of a session that was in is no unreachable host');
+  await peer.dispose();
+});
+
+test('a session its server stops because this browser was removed says so at once, by its code, and never as a server that is away', async () => {
+  const runtime = fakeRuntime({phase: 'authenticating'});
+  const peer = await connect(options(runtime, memoryStore()));
+  const began = Date.now();
+  const ready = peer.whenReady({timeoutMs: HANG_BOUND_MS, capMs: HANG_BOUND_MS});
+  // The server refused the session's first hello and said why (the handshake's own refusal):
+  // the session stops there, failed, and was at no moment offline.
+  runtime.peer.transport = 'failed';
+  Object.assign(runtime.peer, {error: 'This device was removed from your devices.', errorCode: 'device-revoked'});
+  runtime.peer.emit('failed');
+  const error = await ready.then(() => assert.fail('let in'), failed => failed);
+  assert.ok(Date.now() - began < 1000, 'known in well under the wait');
+  assert.equal(error.code, 'device-revoked');
+  assert.ok(deviceRemoved(error), 'the page tells the person, and waits for nothing');
+  assert.notEqual(failureCause(error), 'unreachable', error.message);
+  assert.deepEqual([peer.getSnapshot().phase, peer.getSnapshot().errorCode], ['failed', 'device-revoked'], 'the session keeps its own code');
   await peer.dispose();
 });
 

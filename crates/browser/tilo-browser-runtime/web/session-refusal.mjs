@@ -104,6 +104,13 @@ export function reachedHost({storage = globalThis.sessionStorage} = {}) {
   try { storage?.removeItem(UNREACHED); } catch { /* Nothing kept. */ }
 }
 
+/** Whether `error` says this browser was removed from its person's devices
+ * (`device-revoked`): its server's own word at the session's handshake, which
+ * a session that stopped for it before the page got in (`whenReady` in
+ * peer.mjs) and an entry that met it (`entryAnswered`) carry as their code.
+ * Nothing joins such a browser again: the person is told (`refusalText`). */
+export const deviceRemoved = error => error?.code === 'device-revoked';
+
 /** What the person is told when the host's refusal `code` cannot be undone
  * here, about the workspace `name` (or `null`). */
 export function refusalText(code, name = null) {

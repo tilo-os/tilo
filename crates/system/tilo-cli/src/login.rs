@@ -285,6 +285,7 @@ fn link_said(error: &LinkError) -> String {
         }
         LinkError::Malformed(_) | LinkError::PeerVersion { .. } => TOO_OLD.to_owned(),
         LinkError::Sign(_) => LOGIN_DAMAGED.to_owned(),
+        LinkError::DeviceRevoked => LOGIN_ENDED.to_owned(),
     }
 }
 
@@ -1144,6 +1145,7 @@ mod tests {
             CertifyError::Transport(LinkError::PeerVersion { theirs: 99 }),
             CertifyError::Transport(LinkError::HostChanged),
             CertifyError::Transport(LinkError::Sign("connect error".into())),
+            CertifyError::Transport(LinkError::DeviceRevoked),
             CertifyError::Codec("bad frame".into()),
             CertifyError::Iroh("connect error".into()),
             CertifyError::Auth(AuthError::Revoked),

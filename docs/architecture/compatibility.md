@@ -190,6 +190,14 @@ resumes by itself once both speak the same version:
   staged. A browser page behind its host says "This page is out of date.
   Reload it to keep working together."
 
+What is added to an interface within one version is something a side built
+before it reads as what it read before. The handshake's refusal that says why
+(`tilo_server_protocol::auth::HelloRefused`, added at peer version 53) stands
+behind an empty frame, which no handshake answer is: a device built before
+refuses that frame and reads the refusal as it always read one, a hello nobody
+answered, and a server built before sends none, which a newer device reads the
+same way.
+
 ## Stored data
 
 Stored formats change with the code. A layout change deletes the reader of the

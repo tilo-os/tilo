@@ -107,6 +107,23 @@ tilo_test_env::scenario! {
         assert!(!transient(&LinkError::Malformed("bad ack".into())));
         assert!(!transient(&LinkError::HostChanged));
         assert!(!transient(&LinkError::PeerVersion { theirs: 0 }));
+        assert!(!transient(&LinkError::DeviceRevoked));
+    }
+
+    phase a_removal_its_server_says_stops_the_session_at_once;
+    {
+        assert_eq!(
+            refusal(&LinkError::DeviceRevoked),
+            Refusal::Final(
+                "device-revoked",
+                "This device was removed from your devices.".to_owned()
+            ),
+        );
+        // A refusal with nothing said is counted before it stops anything.
+        assert_eq!(
+            refusal(&LinkError::Refused("the stream ended".into())),
+            Refusal::Unexplained,
+        );
     }
 
     phase retry_waits_double_with_jitter_and_stay_capped;
@@ -158,6 +175,17 @@ tilo_test_env::scenario! {
         assert_eq!(
             link_error(ClientError::Io(std::io::ErrorKind::UnexpectedEof.into())),
             LinkError::Refused("io: unexpected end of file".into()),
+        );
+        assert_eq!(
+            link_error(ClientError::NoHandshakeAnswer("the stream ended".into())),
+            LinkError::Refused("the stream ended".into()),
+        );
+        // The server said why, under its own signature: no guess, and nothing to try again.
+        assert_eq!(
+            link_error(ClientError::Refused(
+                tilo_server_protocol::auth::HelloRefusal::DeviceRevoked
+            )),
+            LinkError::DeviceRevoked,
         );
     }
 }

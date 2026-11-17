@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 
 import {followRefusal, hostUnreachable, reachedHost, REJOIN_WINDOW_MS, REJOINED, refusalText, rejoinedName, rejoinedRecently, retryUnreachable, UNREACHED} from './session-refusal.mjs';
+import {deviceRemoved} from './session-refusal.mjs';
 
 /** A peer whose snapshots the test sends; records recover requests. */
 function fakePeer({recover = async () => {}} = {}) {
@@ -140,4 +141,14 @@ test('only a host not answering at all is unreachable, never its refusal', () =>
   assert.ok(!hostUnreachable(Object.assign(new Error('needs an invitation'), {name: 'HostAdmissionError', code: 'invitation-only'})));
   assert.ok(!hostUnreachable(Object.assign(new Error('refused'), {name: 'AdmissionError', code: 'refused'})));
   assert.ok(!hostUnreachable(null));
+});
+
+test('a browser removed from its person’s devices is known by its session’s code, never by an error’s words', () => {
+  // What a session that stopped for it before the page got in rejects with (`whenReady` in peer.mjs).
+  const removed = Object.assign(new Error('This device was removed from your devices.'), {code: 'device-revoked'});
+  assert.ok(deviceRemoved(removed));
+  assert.ok(!deviceRemoved(Object.assign(new Error('connection refused or lost before https://h answered'), {code: 'unanswered'})));
+  assert.ok(!deviceRemoved(new Error('This device was removed from your devices.')), 'its code says it, never its words');
+  assert.ok(!deviceRemoved(null));
+  assert.equal(refusalText('device-revoked', 'Lounge'), 'This browser was removed from your devices, so it can’t open Lounge anymore.');
 });
