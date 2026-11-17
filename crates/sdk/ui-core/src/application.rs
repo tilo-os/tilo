@@ -154,6 +154,7 @@ pub struct HostContext {
     handoff: Option<PlaybackHandoff>,
     launch_options: Vec<LaunchOption>,
     private: bool,
+    embedded: bool,
     lent: Vec<Box<dyn std::any::Any>>,
 }
 
@@ -372,6 +373,7 @@ pub struct Reopener {
     workspace: Option<crate::record::workspace::WorkspaceRecords>,
     files: Option<crate::storage::AppFiles>,
     private: bool,
+    embedded: bool,
     replacement: Rc<RefCell<Option<PendingReplacement>>>,
     /// The window this reopener opens in place of: what serves its image stores serves the window
     /// opened in its place too.
@@ -421,6 +423,7 @@ impl Reopener {
         context.workspace.clone_from(&self.workspace);
         context.files.clone_from(&self.files);
         context.private = self.private;
+        context.embedded = self.embedded;
         crate::image_store::ImageStore::serve_successor(&self.window, &context.wake_handle());
         Ok((context, target))
     }
@@ -478,6 +481,7 @@ impl HostContext {
             workspace: self.workspace.clone(),
             files: self.files.clone(),
             private: self.private,
+            embedded: self.embedded,
             replacement: Rc::clone(&self.replacement),
             window: self.wake_handle(),
         }
@@ -636,6 +640,7 @@ impl HostContext {
             handoff: None,
             launch_options: Vec::new(),
             private: false,
+            embedded: false,
             lent: Vec::new(),
         })
     }
@@ -740,6 +745,15 @@ impl HostContext {
     /// Whether the instance is a private window.
     pub fn is_private(&self) -> bool {
         self.private
+    }
+    /// Prepare the instance as a view another app's window embeds ([`crate::window_share`]): it
+    /// stands in that window, with no bar of its own, showing the one thing the window asked for.
+    pub fn provide_embedded(&mut self) {
+        self.embedded = true;
+    }
+    /// Whether the instance is a view another app's window embeds.
+    pub fn is_embedded(&self) -> bool {
+        self.embedded
     }
     /// Explicit owner-bound producer capability, available before factory work.
     pub fn control_domain(&self) -> crate::ControlDomain {

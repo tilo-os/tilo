@@ -925,6 +925,8 @@ impl ChatApp {
             Hit::OpenResource { msg, attachment } => self.open_shared_resource(&msg, attachment),
             Hit::ReplayRecording(message) => self.replay_recording(&message),
             Hit::OpenShare(message) => self.open_share(&message),
+            Hit::GrowShare(message) => self.grow_share(&message),
+            Hit::ShrinkShare(message) => self.shrink_share(&message),
             Hit::StopShare(message) => self.stop_share(doc, &message),
             Hit::SwitchShare(message, access) => self.switch_share(doc, &message, access),
             Hit::ShareWindowPanel if self.can_participate() => self.open_share_panel(None),

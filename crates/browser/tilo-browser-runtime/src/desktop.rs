@@ -973,7 +973,13 @@ impl Tiles {
             .map_err(|error| error.to_string())?
             .map_or(RestoreInput::None, RestoreInput::Local);
         let component = self
-            .instantiate(definition, store, (target, named_new), tab.id, restore)
+            .instantiate(
+                definition,
+                store,
+                (target, named_new),
+                (tab.id, false),
+                restore,
+            )
             .map_err(|unbuilt| match unbuilt {
                 // The record the window shows is still on its way from the workspace: it is
                 // loading, not broken, and the window is built again once it is here.
@@ -1003,7 +1009,7 @@ impl Tiles {
         definition: &'static ApplicationDefinition,
         store: RecordStore,
         (target, named_new): (LaunchTarget, Option<DocumentId>),
-        instance: TabId,
+        (instance, embedded): (TabId, bool),
         restore: RestoreInput,
     ) -> Result<AppComponent, Unbuilt> {
         let inputs = HostContextInputs {
@@ -1022,6 +1028,10 @@ impl Tiles {
         .map_err(Unbuilt::of)?;
         context.provide_models(self.inputs.models.clone());
         context.provide_content(self.inputs.content.clone());
+        if embedded {
+            // A view another app's window embeds: its app shows the one thing asked for.
+            context.provide_embedded();
+        }
         // What another window handed this one to open, from the desktop's
         // content, where that window keeps it.
         let handed = self.shared.opened_content.borrow_mut().remove(&instance);
@@ -1115,7 +1125,7 @@ impl Tiles {
                 definition,
                 store,
                 (target, None),
-                embed_instance(view),
+                (embed_instance(view), true),
                 RestoreInput::None,
             )
             .map_err(|unbuilt| match unbuilt {

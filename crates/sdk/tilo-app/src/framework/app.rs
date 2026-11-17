@@ -1389,6 +1389,7 @@ fn start_record(
         // the workspace may hold it, so the view waits for what the workspace holds.
         None => Run::live(context.content().cloned())
             .in_private(context.is_private())
+            .in_embedded(context.is_embedded())
             .awaiting_workspace(
                 matches!(target, LaunchTarget::PrimaryNew).then(ui_core::workspace_sync::holdings),
             ),
