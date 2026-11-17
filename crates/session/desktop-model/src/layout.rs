@@ -188,7 +188,7 @@ enum RetiredMissingApp {
     Unavailable,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tab {
     pub id: TabId,
     /// What the tab shows: the name a person gave it, else what its window
@@ -318,7 +318,7 @@ impl Tab {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowGroup {
     pub id: GroupId,
     pub tabs: Vec<Tab>,
@@ -372,7 +372,7 @@ impl WindowGroup {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Strip {
     pub id: StripId,
     pub name: String,

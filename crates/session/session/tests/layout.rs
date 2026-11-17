@@ -493,6 +493,60 @@ fn a_restart_brings_back_the_shell_the_session_kept() {
     assert_eq!(width, 480, "at the width it was left");
 }
 
+/// A window the person sends to a workspace they are not looking at is in that workspace after a
+/// restart: the workspace it left and the one it went to are both written, though the person never
+/// went there.
+#[test]
+fn a_window_moved_to_a_workspace_behind_comes_back_there() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let (device, workspace_ids) = Device::with_layout(&mut home, &wide_shell());
+    let mail = device.id(200);
+
+    let mut session = session_keeping(&device.state, None);
+    laid_out(&mut session);
+    session
+        .handle()
+        .choose_window_menu(
+            mail,
+            &format!("{MOVE_TO_WORKSPACE}:{}", workspace_ids[1]),
+            None,
+        )
+        .expect("the person moves the window");
+    until(
+        &mut session,
+        "the window is in the workspace behind",
+        |session| workspace_of(session, mail) == Some(workspace_ids[1]),
+    );
+    assert_eq!(
+        session.handle().read(|tree| tree.active),
+        workspace_ids[0],
+        "the person stays where they are"
+    );
+    // A look writes what moved, and the session ends as a restart ends it.
+    session.step(Duration::from_millis(1)).expect("step");
+    drop(session);
+
+    let mut next = session_keeping(&device.state, None);
+    until(&mut next, "the window is back", |session| {
+        workspace_of(session, mail).is_some()
+    });
+    assert_eq!(
+        workspace_of(&next, mail),
+        Some(workspace_ids[1]),
+        "the window is in the workspace the person sent it to"
+    );
+    assert_eq!(
+        tile_of(&next, mail),
+        Some(TileContent::LocalApp {
+            app_id: "so.tilo.mail".into(),
+            label: "Mail".into(),
+            note: String::new(),
+        }),
+        "as the window it was"
+    );
+}
+
 #[test]
 fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
     let _settled = ui::motion::testing::settled();
@@ -881,7 +935,7 @@ fn two_workspaces() -> Layout {
 }
 
 /// The workspace the tab `id` stands in.
-fn workspace_of(session: &Session, id: TabId) -> Option<WorkspaceId> {
+pub(crate) fn workspace_of(session: &Session, id: TabId) -> Option<WorkspaceId> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()

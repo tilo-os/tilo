@@ -31,7 +31,9 @@ use automerge::transaction::Transactable as _;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, OpenedBy};
 use tilo_desktop_model::person_view::{self, PersonView};
 use tilo_desktop_model::shared_resource::{self, device};
-use tilo_desktop_model::{Layout, TileContent, Workspace, WorkspaceId, peer_salt_of};
+use tilo_desktop_model::{
+    Layout, Strip, TileContent, Workspace, WorkspaceId, WorkspaceLayout, peer_salt_of,
+};
 use ui::permissions::MemberId;
 use ui::state::UndoLog;
 
@@ -425,12 +427,13 @@ pub(crate) struct Layouts {
     /// of this device's that is not among them is one it opened since, which the layout has not
     /// taken in yet.
     recorded: RefCell<HashMap<WorkspaceId, BTreeSet<u64>>>,
-    /// The workspace that was in front at the last look.
-    front: Cell<Option<WorkspaceId>>,
-    /// The workspace the front left, whose layout is written before it stops being the one this
-    /// look captures: a strip made or a window moved in the turn the person switched away is
-    /// otherwise on a workspace no later look writes.
-    left: Cell<Option<WorkspaceId>>,
+    /// Each workspace's layout as the last look left it: one that differs on the next look was
+    /// changed here in between, in front or not, and is written.
+    shown: RefCell<HashMap<WorkspaceId, (Vec<Strip>, WorkspaceLayout)>>,
+    /// The workspaces whose change this device has not handed to a write yet: a window sent to a
+    /// workspace behind, or a strip made in the turn the person switched away, is on a workspace
+    /// the front's write never covers.
+    owed: RefCell<BTreeSet<WorkspaceId>>,
     /// This session's own revision at the last look.
     seen: Cell<Option<u64>>,
     /// A failure to read or write a record that the person has not heard yet.
@@ -581,6 +584,18 @@ impl Layouts {
     /// changed.
     pub(crate) fn follow(&self, engine: &Engine, device: &str, tree: &mut Layout) -> bool {
         let changed = self.follow_layout(engine, device, tree) | self.follow_view(engine, tree);
+        // What the workspaces' layouts laid in is theirs: only what changes here after it is
+        // this device's to write.
+        *self.shown.borrow_mut() = tree
+            .workspaces
+            .iter()
+            .map(|workspace| {
+                (
+                    workspace.id(),
+                    (workspace.strips.clone(), workspace.layout.clone()),
+                )
+            })
+            .collect();
         if self.device.borrow().as_str() != device {
             device.clone_into(&mut self.device.borrow_mut());
         }
@@ -598,10 +613,7 @@ impl Layouts {
     ) {
         self.wait_writes(patience);
         if let Some(person) = self.person.borrow().clone() {
-            if let Some(left) = self.left.get() {
-                self.capture_layout(engine, &person, tree, left, None);
-            }
-            self.capture_layout(engine, &person, tree, tree.active, None);
+            self.capture_layouts(engine, &person, tree);
             self.capture_view(engine, &person, tree, true);
         }
         self.wait_writes(patience);
@@ -912,28 +924,38 @@ impl Layouts {
             .collect()
     }
 
-    /// Write what this device changed about the layout of the workspace in front into that
-    /// workspace's layout, and the person's view of every workspace into theirs, and publish them:
-    /// the strips and windows it makes and arranges, and where the person here is looking. Returns
-    /// whether this look published the view.
+    /// Write what this device changed about the layout of each workspace into that workspace's
+    /// layout, and the person's view of every workspace into theirs, and publish them: the strips
+    /// and windows it makes and arranges, and where the person here is looking. Returns whether
+    /// this look published the view.
     pub(crate) fn capture(&self, engine: &Arc<Engine>, tree: &Layout) -> bool {
         let Some(person) = self.person.borrow().clone() else {
             return false;
         };
-        // The workspace the front leaves is written while the layout still holds it, and until that
-        // write is handed: a strip made or a window moved in the turn the person switched away is
-        // otherwise on a workspace no later look captures.
-        let front = self.front.replace(Some(tree.active));
-        if let Some(previous) = front.filter(|previous| *previous != tree.active) {
-            self.left.set(Some(previous));
-        }
-        if let Some(previous) = self.left.get()
-            && self.capture_layout(engine, &person, tree, previous, None)
-        {
-            self.left.set(None);
-        }
-        self.capture_layout(engine, &person, tree, tree.active, None);
+        self.capture_layouts(engine, &person, tree);
         self.capture_view(engine, &person, tree, false)
+    }
+
+    /// Write the layout of the workspace in front, and of every other workspace this device
+    /// changed since the last look or still owes a write: a window sent to a workspace behind
+    /// changes two layouts, and a restart reads both.
+    fn capture_layouts(&self, engine: &Arc<Engine>, person: &str, tree: &Layout) {
+        let owed = {
+            let shown = self.shown.borrow();
+            let mut owed = self.owed.borrow_mut();
+            owed.extend(tree.workspaces.iter().filter_map(|workspace| {
+                let was = shown.get(&workspace.id())?;
+                (was.0 != workspace.strips || was.1 != workspace.layout).then(|| workspace.id())
+            }));
+            owed.insert(tree.active);
+            owed.retain(|id| tree.workspaces.iter().any(|held| held.id() == *id));
+            owed.clone()
+        };
+        for workspace in owed {
+            if self.capture_layout(engine, person, tree, workspace, None) {
+                self.owed.borrow_mut().remove(&workspace);
+            }
+        }
     }
 
     /// Write this device's changes to the layout of `workspace` into that workspace's record, as

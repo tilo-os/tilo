@@ -1,6 +1,6 @@
 //! An app that is not Tilo's runs behind a keeper and stays running while the desktop restarts in
 //! place: the session that follows takes it back, and each of its windows returns to the tab it
-//! stood in, wherever the person had moved it. A logout ends it, and so does a start that follows
+//! stood in, in the workspace the person had moved it to. A logout ends it, and so does a start that follows
 //! no restart, and a restart whose keeper stopped answering: nobody would take such an app back.
 //!
 //! Everything is real but the launcher: the session's own spawner and restore, a keeper (this
@@ -23,8 +23,10 @@ use tilo_desktop_model::{Layout, Strip, StripId, TabId, TileContent, Workspace, 
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 
+use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
+
 use crate::common::window::{Client, KEY_A, WINDOW_BYTES};
-use crate::layout::{Device, tabs, tile_of, until};
+use crate::layout::{Device, tabs, tile_of, until, workspace_of};
 
 /// The kept app, by its desktop-file id and the id its windows announce.
 const APP: &str = "org.example.Kept";
@@ -98,11 +100,13 @@ fn kept_app() {
     }
 }
 
-/// A device whose layout has one workspace, the launcher that starts the kept app with the
+/// A device whose layout has three workspaces, the launcher that starts the kept app with the
 /// windows `titles` names, and the keepers' registry.
 struct Rig {
     home: tilo_test_env::TestHome,
     device: Device,
+    /// The device's workspaces: the first is in front.
+    workspaces: Vec<WorkspaceId>,
     /// The kept app's directory: what it opens, and what it reports.
     app: PathBuf,
     keeper: PathBuf,
@@ -129,14 +133,17 @@ impl Run {
 impl Rig {
     fn new(titles: &[&str]) -> Self {
         let mut home = tilo_test_env::TestHome::new().expect("a home");
-        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Home");
-        workspace.strips = vec![Strip::new(StripId(1), "Main")];
+        let workspaces = [(1, "Home"), (2, "Two"), (3, "Three")].map(|(n, name)| {
+            let mut workspace = Workspace::new(WorkspaceId::from_u128(n), name);
+            workspace.strips = vec![Strip::new(StripId(u64::try_from(n).unwrap()), name)];
+            workspace
+        });
         let tree = Layout {
-            active: workspace.id(),
-            workspaces: vec![workspace],
+            active: workspaces[0].id(),
+            workspaces: workspaces.into(),
             ..Layout::default()
         };
-        let (device, _) = Device::with_layout(&mut home, &tree);
+        let (device, workspaces) = Device::with_layout(&mut home, &tree);
         let app = home.home().join("app");
         fs::create_dir_all(&app).unwrap();
         fs::write(app.join("titles"), titles.join("\n")).unwrap();
@@ -167,6 +174,7 @@ impl Rig {
         Self {
             home,
             device,
+            workspaces,
             app,
             keeper,
             root,
@@ -308,6 +316,29 @@ fn shown_and_told(rig: &Rig, run: &mut Run, titles: &[&str]) -> Vec<(String, Tab
     placed
 }
 
+/// Send the window in `tab` to the workspace `to`, as its window menu does, and wait until it
+/// stands there.
+fn send(session: &mut Session, tab: TabId, to: WorkspaceId) {
+    session
+        .handle()
+        .choose_window_menu(tab, &format!("{MOVE_TO_WORKSPACE}:{to}"), None)
+        .expect("the person moves the window");
+    until(session, "the window is in the other workspace", |session| {
+        workspace_of(session, tab) == Some(to)
+    });
+}
+
+/// Where each window stands, by title: its tab and the workspace of that tab.
+fn places(
+    session: &Session,
+    shown: &[(String, TabId)],
+) -> Vec<(String, TabId, Option<WorkspaceId>)> {
+    shown
+        .iter()
+        .map(|(title, tab)| (title.clone(), *tab, workspace_of(session, *tab)))
+        .collect()
+}
+
 /// Whether `pid` is the process that started at `at`.
 fn running(pid: u32, at: u64) -> bool {
     let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
@@ -343,6 +374,21 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
     rig.launch(&first);
     let placed = shown_and_told(&rig, &mut first, &titles);
     let (dir, pid, at) = rig.kept();
+    // Each window to a workspace of its own, none of which the person goes to: the last one just
+    // before the desktop restarts, with no look after it.
+    send(&mut first.session, placed[1].1, rig.workspaces[1]);
+    assert_eq!(
+        shown_and_told(&rig, &mut first, &titles),
+        placed,
+        "a window keeps its tab as it changes workspace"
+    );
+    send(&mut first.session, placed[2].1, rig.workspaces[2]);
+    let placed = places(&first.session, &placed);
+    assert_eq!(
+        placed.iter().map(|(_, _, at)| *at).collect::<Vec<_>>(),
+        rig.workspaces.iter().copied().map(Some).collect::<Vec<_>>(),
+        "a window in each workspace"
+    );
 
     first.end(Teardown::InPlaceRestart);
     assert!(
@@ -352,7 +398,11 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
 
     let mut second = rig.run(true);
     let back = shown_and_told(&rig, &mut second, &titles);
-    assert_eq!(back, placed, "each window is back in the tab it stood in");
+    assert_eq!(
+        places(&second.session, &back),
+        placed,
+        "each window is back in the tab and the workspace it stood in"
+    );
     assert_eq!(tabs(&second.session).len(), 3, "no other tab opened");
     assert_eq!(rig.kept(), (dir.clone(), pid, at), "it is the same process");
     assert_eq!(rig.starts(), [pid], "the app was not started again");
