@@ -88,7 +88,7 @@ impl Disks {
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "disks.device")]
 pub enum DisksEffect {
-    #[effect(kind = "read")]
+    #[effect(job, returns, kind = "read")]
     Rescan,
     #[effect(kind = "read")]
     Select {
@@ -468,6 +468,45 @@ mod tests {
 
         fn view(cx: &mut ViewCx<Disks>) -> Element {
             window(cx, Store::sample())
+        }
+    }
+
+    /// A live window over this machine's storage. No storage service answers a test, so
+    /// its reading comes back saying the devices cannot be read.
+    struct SystemDisks;
+
+    impl ResourceApp for SystemDisks {
+        type Resource = Disks;
+        const ID: &'static str = ui::apps::DISKS;
+        const TITLE: &'static str = "Disks";
+
+        fn view(cx: &mut ViewCx<Disks>) -> Element {
+            window(cx, Store::system())
+        }
+    }
+
+    /// Rescan reads the machine again on a worker, so on this machine's storage it answers
+    /// later: through the api it runs as the job it declares, and answers with what the scan
+    /// found, as the sample machine's scan does at once.
+    #[test]
+    fn rescanning_is_a_job_that_answers_with_what_it_found() {
+        for found in [
+            TestApp::<SystemDisks>::new()
+                .unwrap()
+                .effect(&DisksEffect::Rescan),
+            TestApp::<SampleDisks>::new()
+                .unwrap()
+                .effect(&DisksEffect::Rescan),
+        ] {
+            let found = found.expect("the scan is carried out");
+            assert!(
+                found
+                    .value
+                    .as_ref()
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|said| !said.is_empty()),
+                "{found:?}"
+            );
         }
     }
 

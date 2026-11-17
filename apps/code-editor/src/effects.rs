@@ -20,7 +20,7 @@ pub enum CodeEditorEffect {
         file: String,
     },
     /// Show location.
-    #[effect(kind = "read")]
+    #[effect(job, kind = "read")]
     #[effect(icon = "locate-fixed")]
     Reveal {
         #[param("The file record's id, when the location is in a project file")]

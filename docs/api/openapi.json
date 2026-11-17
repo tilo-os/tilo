@@ -21776,6 +21776,12 @@
         "required": [],
         "description": ""
       },
+      "settings.root.inspect-display-configuration.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "settings.appearance.choose-theme.Arguments": {
         "type": "object",
         "properties": {
@@ -32233,6 +32239,12 @@
       "resource": "settings.root",
       "action": "inspect-calendar-choices",
       "arguments": "#/components/schemas/settings.root.inspect-calendar-choices.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
+      "action": "inspect-display-configuration",
+      "arguments": "#/components/schemas/settings.root.inspect-display-configuration.Arguments"
     },
     {
       "app": "so.tilo.settings",
