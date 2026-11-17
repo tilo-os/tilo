@@ -469,6 +469,8 @@ struct WorkspaceRecordsPlane {
     stores: Arc<WorkspaceStores>,
     /// The Browser this host places for its workspaces, when it places one.
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
+    /// The events this host runs for its people, once its workspaces are up.
+    events: Arc<std::sync::OnceLock<crate::workspace_bots::events::PersonEvents>>,
 }
 
 impl crate::AppServingPlane for WorkspaceRecordsPlane {
@@ -478,6 +480,14 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
         caller: &tilo_actions::remote::Caller,
         message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
+        // A person's events are the host's own to answer, for their device
+        // and their page as for their assistant's turn.
+        if crate::workspace_bots::events::addresses(&message) {
+            return match self.events.get() {
+                Some(events) => events.serve(workspace_id, caller, message),
+                None => crate::workspace_bots::events::not_served(message),
+            };
+        }
         let agents = match &message {
             tilo_actions::remote::RemoteActionMessage::CatalogueRequest { query, .. } => {
                 query.provider.as_deref() == Some(tilo_relay_protocol::agents::AGENTS_PROVIDER)
@@ -1029,20 +1039,51 @@ fn app_catalogue(
 /// # Errors
 /// Why the relay did not start.
 pub async fn start_serving_documents(
-    mut cfg: crate::RelayConfig,
+    cfg: crate::RelayConfig,
     identity: RelayIdentity,
     catalogue: Option<CatalogueFactory>,
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     shell: Option<Arc<HostShells>>,
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 ) -> Result<(Relay, WorkspaceActions), RelayError> {
+    start_serving_documents_and_events(cfg, identity, catalogue, feedback_reviewer, shell, browsers)
+        .await
+        .map(|(relay, actions, _)| (relay, actions))
+}
+
+/// [`start_serving_documents`], answering also with the events this host runs for its people
+/// ([`crate::workspace_bots::events`]): their scheduled work and what waits for something to
+/// happen, kept under the relay's state and run from its start, with no device of theirs on. The
+/// relay answers their actions for a person's device and page; whoever runs the people's agents
+/// hands the same events to their turns ([`crate::workspace_agents::HostAgents::with_events`]).
+/// None where the relay governs no workspaces.
+///
+/// # Errors
+/// Why the relay did not start.
+pub async fn start_serving_documents_and_events(
+    mut cfg: crate::RelayConfig,
+    identity: RelayIdentity,
+    catalogue: Option<CatalogueFactory>,
+    feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
+    shell: Option<Arc<HostShells>>,
+    browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
+) -> Result<
+    (
+        Relay,
+        WorkspaceActions,
+        Option<crate::workspace_bots::events::PersonEvents>,
+    ),
+    RelayError,
+> {
     let host_cert = identity.device_cert.clone();
     let catalogue = app_catalogue(catalogue, browsers.as_ref());
     cfg.services.app_serving = true;
+    let events_state = cfg.state_root.join("person-events");
     let plane = Arc::new(WorkspaceRecordsPlane {
         actions: WorkspaceActions::new(catalogue),
         stores: crate::content::stores(&cfg.state_root),
         browsers: browsers.clone(),
+        events: Arc::default(),
     });
     let web_entry = cfg.web_entry.clone();
     let relay = Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?;
@@ -1053,7 +1094,13 @@ pub async fn start_serving_documents(
         web_entry,
         (feedback_reviewer, shell, browsers),
     )?;
-    Ok((relay, plane.actions.clone()))
+    let events = relay.workspaces().cloned().map(|workspaces| {
+        crate::workspace_bots::events::PersonEvents::start(workspaces, events_state)
+    });
+    if let Some(events) = &events {
+        let _ = plane.events.set(events.clone());
+    }
+    Ok((relay, plane.actions.clone(), events))
 }
 
 /// The workspaces of `workspaces` that hold a notebook: those whose notes a pass brings into

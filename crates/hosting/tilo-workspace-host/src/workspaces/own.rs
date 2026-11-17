@@ -652,6 +652,14 @@ impl Workspaces {
                 .is_none_or(|scope| scope.reaches(workspace))
     }
 
+    /// Whether this host keeps workspaces of people's own: one that does
+    /// says whose each of them is ([`Self::owns`]); one that does not
+    /// governs its workspaces for its own person.
+    #[must_use]
+    pub fn keeps_own_workspaces(&self) -> bool {
+        self.own().is_some()
+    }
+
     /// Whether `workspace` is one of `person`'s own here.
     #[must_use]
     pub fn owns(&self, person: &[u8; 32], workspace: &str) -> bool {

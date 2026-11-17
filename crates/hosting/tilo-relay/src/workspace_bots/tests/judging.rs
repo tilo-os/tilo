@@ -1,0 +1,310 @@
+//! The host's own answer to a judgement a person's program asks
+//! ([`assistant::host_steps`]), through a program's real run: whose model is
+//! asked, with whose key, where its cost is counted, and what a run is told
+//! when no model answers.
+
+use super::*;
+use crate::workspaces::person_model::protocol::Content;
+use crate::workspaces::person_model::scripted::{Asked, Linking, Reply, ScriptedProvider};
+use crate::workspaces::person_model::{Interaction, ProviderProtocol};
+
+/// The id of the assistant a test's person keeps.
+const ASSISTANT: &str = "assistant";
+/// What the test's program asks its person's model.
+const QUESTION: &str = "Is this the first working day of the month?";
+
+/// `keeper` keeps an assistant in `workspace`, as their own device makes one:
+/// an agent in the workspace's record of its agents, with the most it may
+/// spend in a day.
+async fn keeps_an_assistant(
+    workspaces: &Workspaces,
+    workspace: &str,
+    cert: &DeviceCert,
+    keeper: &str,
+    limit_micros: Option<u64>,
+) {
+    use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
+    let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    // The record as their device writes it, made before anything is waited
+    // for.
+    let bytes = {
+        let mut made = tilo_resource::Replica::<WorkspaceAgents>::new().as_author(keeper);
+        made.apply(
+            WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                name: tilo_resource::NonBlank::parse("Assistant").unwrap(),
+                keeper: None,
+                id: Some(ASSISTANT.into()),
+                model: None,
+                colour: None,
+                mcp_client: None,
+            }),
+        )
+        .unwrap();
+        made.apply(WorkspaceAgents::SET_AGENT_SPEND_LIMIT.with(
+            workspace_agents::SetAgentSpendLimit {
+                agent: tilo_resource::Id::from_raw(ASSISTANT.to_owned()),
+                limit_micros,
+            },
+        ))
+        .unwrap();
+        std::mem::take(made.doc_mut()).save()
+    };
+    workspaces
+        .author_workspace_document(workspace, cert, (CHAT, record.as_str()), |doc| {
+            tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
+                .map(drop)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap();
+}
+
+/// A person's own program: at `at_ms`, ask their model [`QUESTION`] about
+/// the moment, and keep what it answered for the next run.
+fn keeping_what_was_judged(at_ms: i64) -> installed::InstalledBot {
+    use tilo_automation::{Binding, Step, StepKind};
+    at_a_moment(
+        at_ms,
+        vec![
+            Step::new(
+                "judge",
+                StepKind::Ai {
+                    prompt: QUESTION.into(),
+                    output: Some(serde_json::json!({"type": "boolean"})),
+                    input: Some(Binding::Template("{{input.event}}".into())),
+                },
+            ),
+            own_step(
+                "keep",
+                "keep",
+                vec![(
+                    "kept",
+                    Binding::Object(
+                        [("due".to_owned(), Binding::step("judge", ""))]
+                            .into_iter()
+                            .collect(),
+                    ),
+                )],
+            ),
+        ],
+    )
+}
+
+/// `person` linked a provider of their own with their key and chose its
+/// small model for judging; it answers as `replies` script it.
+fn their_own_model(
+    workspaces: &Workspaces,
+    person: &[u8; 32],
+    replies: Vec<Reply>,
+) -> std::sync::Arc<ScriptedProvider> {
+    let theirs = ScriptedProvider::answering(replies);
+    workspaces.answer_models_with(theirs.clone());
+    let provider = workspaces
+        .link_model_for(
+            person,
+            &Linking {
+                name: "Google",
+                protocol: ProviderProtocol::OpenAiCompatible,
+                endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
+                key: Some("sk-their-own"),
+                models: &["gemini-main", "gemini-small"],
+            },
+            true,
+        )
+        .unwrap();
+    workspaces
+        .choose_model_for(person, Interaction::Classifier, &provider, "gemini-small")
+        .unwrap();
+    theirs
+}
+
+/// The program [`keeping_what_was_judged`] at `at_ms`, run once for
+/// `person` with the host's own answers: its runner after the pass, and the
+/// pass's reports.
+async fn judged_once(
+    (workspaces, workspace, cert): (&Workspaces, &str, &DeviceCert),
+    person: &str,
+    at_ms: i64,
+    state: std::path::PathBuf,
+) -> (installed::BotRunner, Vec<tilo_automation::InvocationReport>) {
+    let mut runner = member_runner(
+        workspaces,
+        workspace,
+        cert,
+        keeping_what_was_judged(at_ms),
+        state,
+    )
+    .await
+    .runs_for(person.to_owned(), assistant::host_steps(workspaces.clone()));
+    runner.use_clock(std::sync::Arc::new(tilo_clock::ManualClock::new(
+        u64::try_from(at_ms).unwrap(),
+    )));
+    let reports = runner.step().await.unwrap();
+    (runner, reports)
+}
+
+/// What message `message` of `call` says in words.
+fn said(call: &Asked, message: usize) -> String {
+    call.request
+        .messages
+        .get(message)
+        .map(|message| {
+            message
+                .content
+                .iter()
+                .filter_map(|part| match part {
+                    Content::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The host's own answer to a judgement: the model its person chose for
+/// judging, asked with their key, and held to the shape the step asked for.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_judgement_is_answered_by_its_persons_own_model_with_their_own_key() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
+    // The person the workspace is of: an assistant lives in a workspace of
+    // its person's own.
+    let person = cert.user_public_key;
+    let theirs = their_own_model(
+        &workspaces,
+        &person,
+        vec![
+            Reply::text("It is.").costing(100),
+            Reply::text(r#"{"result": true}"#).costing(150),
+        ],
+    );
+
+    let (runner, reports) = judged_once(
+        (&workspaces, &workspace, &cert),
+        &hex::encode(person),
+        at_ms,
+        scratch.path().join("judged.json"),
+    )
+    .await;
+    assert_eq!(
+        reports.len(),
+        1,
+        "{reports:?}, not run: {:?}",
+        runner.dead_letters().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        reports[0].outcome,
+        tilo_automation::InvocationOutcome::Completed,
+        "{reports:?}"
+    );
+    assert_eq!(
+        runner.kept().read().note().kept,
+        serde_json::json!({"due": true}),
+        "the run goes on with what their model answered"
+    );
+    let asked = theirs.asked();
+    assert_eq!(
+        asked.len(),
+        2,
+        "an answer that did not fit its shape is asked again once: {asked:?}"
+    );
+    for call in &asked {
+        assert_eq!(
+            call.model, "gemini-small",
+            "the model they chose for judging"
+        );
+        assert_eq!(
+            call.key.as_deref(),
+            Some("sk-their-own"),
+            "with their own key"
+        );
+        assert!(call.request.tools.is_empty(), "a judgement acts on nothing");
+        assert!(said(call, 0).contains(QUESTION), "{}", said(call, 0));
+        assert!(
+            said(call, 1).contains(&at_ms.to_string()),
+            "it judges what fired the run: {}",
+            said(call, 1)
+        );
+    }
+}
+
+/// What a judgement costs is counted on the day of the assistant its person
+/// keeps, and a refusal is passed on in the words it has for them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_judgements_cost_is_on_its_persons_assistants_day_and_a_refusal_is_said_in_words() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
+    let person = cert.user_public_key;
+    let owner = hex::encode(person);
+    // Their provider charges 250 for the one answer, and their assistant
+    // may spend 250 in a day.
+    let theirs = their_own_model(
+        &workspaces,
+        &person,
+        vec![Reply::text(r#"{"result": true}"#).costing(250)],
+    );
+    keeps_an_assistant(&workspaces, &workspace, &cert, &owner, Some(250)).await;
+    let set = (&workspaces, workspace.as_str(), &cert);
+
+    let (runner, reports) =
+        judged_once(set, &owner, at_ms, scratch.path().join("first.json")).await;
+    assert_eq!(
+        reports.len(),
+        1,
+        "{reports:?}, not run: {:?}",
+        runner.dead_letters().collect::<Vec<_>>()
+    );
+    assert_eq!(theirs.asked().len(), 1);
+    drop(runner);
+
+    // The 250 are on their assistant's day: its limit is used, so the next
+    // judgement is refused before their provider is asked, in the words
+    // their settings have for it.
+    let (runner, _) = judged_once(
+        set,
+        &owner,
+        at_ms.saturating_add(60_000),
+        scratch.path().join("limit.json"),
+    )
+    .await;
+    let dead: Vec<_> = runner.dead_letters().collect();
+    assert_eq!(dead.len(), 1, "{dead:?}");
+    assert_eq!(dead[0].step.as_deref(), Some("judge"));
+    assert!(dead[0].reason.contains("has used today's"), "{dead:?}");
+    assert_eq!(theirs.asked().len(), 1, "nothing is asked past the limit");
+    assert_eq!(runner.kept().read().note().kept, Value::Null);
+    drop(runner);
+
+    // Someone who linked no model is told so. Nobody else's model answers
+    // for them, and the run guesses nothing.
+    let (runner, _) = judged_once(
+        set,
+        &hex::encode(MALLORY),
+        at_ms.saturating_add(120_000),
+        scratch.path().join("none.json"),
+    )
+    .await;
+    let dead: Vec<_> = runner.dead_letters().collect();
+    assert_eq!(dead.len(), 1, "{dead:?}");
+    assert_eq!(dead[0].step.as_deref(), Some("judge"));
+    assert!(
+        dead[0]
+            .reason
+            .contains("No model is linked for this kind of work"),
+        "{dead:?}"
+    );
+    assert_eq!(
+        theirs.asked().len(),
+        1,
+        "nobody else's model is asked for Mallory"
+    );
+    assert_eq!(runner.kept().read().note().kept, Value::Null);
+}

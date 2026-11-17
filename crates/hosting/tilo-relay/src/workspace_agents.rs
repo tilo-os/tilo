@@ -56,8 +56,10 @@ use tilo_relay_protocol::WorkspaceId;
 use tilo_resource::Resource as _;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
+use crate::workspace_bots::events::PersonEvents;
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::{Interaction, ModelRefusal, PersonModel, Spender};
+use tilo_actions::remote::person_events;
 
 mod going;
 mod summary;
@@ -97,12 +99,27 @@ const WRITE_WAIT: Duration = Duration::from_secs(30);
 pub struct WorkspaceActionHost {
     actions: WorkspaceActions,
     workspace: WorkspaceId,
+    /// The events this host runs for its people, where it runs any: what an agent sets up, pauses,
+    /// changes and removes for the person its turn is for.
+    events: Option<PersonEvents>,
 }
 
 impl WorkspaceActionHost {
     #[must_use]
     pub const fn new(actions: WorkspaceActions, workspace: WorkspaceId) -> Self {
-        Self { actions, workspace }
+        Self {
+            actions,
+            workspace,
+            events: None,
+        }
+    }
+
+    /// This host, answering also for `events`: the host's own actions on a person's scheduled
+    /// work and events, listed and taken beside the workspace's records.
+    #[must_use]
+    pub fn offering(mut self, events: Option<PersonEvents>) -> Self {
+        self.events = events;
+        self
     }
 
     fn serve(&self, caller: &Caller, message: RemoteActionMessage) -> Pending<RemoteActionMessage> {
@@ -129,6 +146,17 @@ impl ActionHost for WorkspaceActionHost {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        if let Some(events) = &self.events
+            && query.provider.as_deref() == Some(person_events::PROVIDER)
+        {
+            return Pending::ready(Ok(events.catalogue(self.workspace, caller, &query)));
+        }
+        // A listing of everything names the events' provider beside the records'.
+        let events = self
+            .events
+            .as_ref()
+            .filter(|_| query.provider.is_none())
+            .and_then(|events| events.provider(self.workspace, caller));
         self.serve(
             caller,
             RemoteActionMessage::CatalogueRequest {
@@ -137,7 +165,10 @@ impl ActionHost for WorkspaceActionHost {
             },
         )
         .map(|answer| match answer {
-            RemoteActionMessage::CatalogueResponse { result, .. } => result,
+            RemoteActionMessage::CatalogueResponse { result, .. } => result.map(|mut page| {
+                page.providers.extend(events);
+                page
+            }),
             _ => Err(unavailable()),
         })
     }
@@ -147,6 +178,11 @@ impl ActionHost for WorkspaceActionHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Some(events) = &self.events
+            && request.target.provider == person_events::PROVIDER
+        {
+            return Pending::ready(Ok(events.invoke(self.workspace, caller, &request)));
+        }
         self.serve(caller, RemoteActionMessage::Invoke(request))
             .map(|answer| match answer {
                 RemoteActionMessage::Receipt(receipt) => Ok(receipt),
@@ -238,6 +274,8 @@ pub struct HostAgents {
     /// The turns going now: one for each agent in each conversation, with what reaches it
     /// while it works.
     going: Arc<going::Turns>,
+    /// The events this host runs for its people, which a turn's tools reach for its person.
+    events: Option<PersonEvents>,
 }
 
 impl HostAgents {
@@ -248,7 +286,16 @@ impl HostAgents {
             actions,
             model,
             going: Arc::default(),
+            events: None,
         }
+    }
+
+    /// These agents, whose turns reach `events`: an agent sets its person's scheduled work and
+    /// events up, pauses, changes and removes them through the host's own actions.
+    #[must_use]
+    pub fn with_events(mut self, events: Option<PersonEvents>) -> Self {
+        self.events = events;
+        self
     }
 
     /// Look at every governed workspace now, then again whenever a member writes to a record an
@@ -601,7 +648,8 @@ impl HostAgents {
             .await
             .ok_or("the person who asked is admitted here on no device")?;
         Ok(Standing {
-            host: WorkspaceActionHost::new(self.actions.clone(), workspace_id),
+            host: WorkspaceActionHost::new(self.actions.clone(), workspace_id)
+                .offering(self.events.clone()),
             person: Caller::authenticated(person, device).in_workspace(workspace),
             workspace: workspace.to_owned(),
             workspace_id,
@@ -769,46 +817,61 @@ impl HostAgents {
         }
     }
 
-    /// Count `cost` against `agent`'s day on the workspace's record of its agents, for its keeper:
-    /// the host's model charged it, and the keeper's limit is read from it. The host writes it as
-    /// the workspace's governor, the count its keeper's own device would write for an agent it runs,
-    /// and as a change of Chat's: a host decides it against Chat's surface like any other.
+    /// Count `cost` against `agent`'s day ([`count_spend`]).
     async fn charge(&self, workspace: &str, agent: &Agent, day: &str, cost: u64) {
-        let keeper = agent.keeper.clone();
-        let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let (id, day) = (agent.id.0.clone(), day.to_owned());
-        let counted = self
-            .workspaces
-            .author_application(
-                workspace,
-                self.workspaces.governor(),
-                &tilo_agent_session::AppCatalogue::native(),
-                CHAT,
-                &record,
-                |doc| {
-                    let mut counting =
-                        tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                            .as_author(&keeper)
-                            .in_app(CHAT, "Chat");
-                    let applied = counting
-                        .apply(WorkspaceAgents::RECORD_AGENT_SPEND.with(
-                            tilo_workspace_agent::workspace_agents::RecordAgentSpend {
-                                agent: tilo_resource::Id::from_raw(id),
-                                day,
-                                cost_micros: cost,
-                            },
-                        ))
-                        .map(drop)
-                        .map_err(|error| error.to_string());
-                    std::mem::swap(doc, counting.doc_mut());
-                    applied
-                },
-            )
-            .await;
-        if let Err(error) = counted {
+        if let Err(error) = count_spend(&self.workspaces, workspace, agent, day, cost).await {
             tracing::warn!(%workspace, agent = %agent.id.0, %error, "an agent's spend is not counted");
         }
     }
+}
+
+/// Count `cost` against `agent`'s day on the workspace's record of its agents, for its keeper:
+/// a model the host asked for the agent charged it, and the keeper's limit is read from it. The
+/// host writes it as the workspace's governor, the count its keeper's own device would write for
+/// an agent it runs, and as a change of Chat's: a host decides it against Chat's surface
+/// like any other. Whatever the host asks a keeper's model for on their agent's behalf counts
+/// here: a turn's calls, and a judgement one of the agent's events asked.
+///
+/// # Errors
+/// Why the workspace's record did not take the count.
+pub(crate) async fn count_spend(
+    workspaces: &Workspaces,
+    workspace: &str,
+    agent: &Agent,
+    day: &str,
+    cost: u64,
+) -> Result<(), String> {
+    let keeper = agent.keeper.clone();
+    let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    let (id, day) = (agent.id.0.clone(), day.to_owned());
+    workspaces
+        .author_application(
+            workspace,
+            workspaces.governor(),
+            &tilo_agent_session::AppCatalogue::native(),
+            CHAT,
+            &record,
+            |doc| {
+                let mut counting =
+                    tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                        .as_author(&keeper)
+                        .in_app(CHAT, "Chat");
+                let applied = counting
+                    .apply(WorkspaceAgents::RECORD_AGENT_SPEND.with(
+                        tilo_workspace_agent::workspace_agents::RecordAgentSpend {
+                            agent: tilo_resource::Id::from_raw(id),
+                            day,
+                            cost_micros: cost,
+                        },
+                    ))
+                    .map(drop)
+                    .map_err(|error| error.to_string());
+                std::mem::swap(doc, counting.doc_mut());
+                applied
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// A turn's model calls, asked of the model its agent's keeper linked, with their own key.
@@ -1451,7 +1514,7 @@ async fn call_tool(
 }
 
 /// Today, `YYYY-MM-DD`, as an agent's keeper counts the days its spending is charged to.
-fn today() -> String {
+pub(crate) fn today() -> String {
     ui::clock::today().to_string()
 }
 
