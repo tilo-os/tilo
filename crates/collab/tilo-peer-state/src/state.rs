@@ -48,6 +48,14 @@ pub(crate) mod certificate_renewal;
 mod delegates;
 pub(crate) use bot_members::requests_in as bot_requests_in;
 pub use bot_members::{InstalledBot, RequestedBot};
+mod leases;
+pub use leases::{CLOCK_SKEW_NS, LEASES_KEY, Lease, LeaseClaim, unranked};
+mod bot_schedules;
+pub use bot_schedules::{BOT_SCHEDULES_KEY, trigger_mark};
+#[cfg(test)]
+mod bot_schedules_tests;
+#[cfg(test)]
+pub(crate) mod test_desktops;
 pub use delegates::{ActingAs, DelegateInactive, GovernedAgent, GovernedDelegateRow};
 mod agent_runs;
 mod local_admission;

@@ -217,6 +217,22 @@ pub fn pick(answers: impl IntoIterator<Item = ([u8; 32], Answer)>, work: &Work) 
     }
 }
 
+/// The willing device that ranks best among `answers`, by the same order
+/// [`pick`] uses, and what it was ranked by.
+///
+/// This is the ranking alone: a lease asks which of the devices that claim it
+/// is the better one for the work, not whether moving the work's inputs there
+/// beats running it where the lease was seen, so no transfer is weighed.
+#[must_use]
+pub fn best(answers: impl IntoIterator<Item = ([u8; 32], Answer)>) -> Option<([u8; 32], Rank)> {
+    answers
+        .into_iter()
+        .filter_map(|(device, answer)| answer.verdict.ok().map(|rank| (device, rank)))
+        .min_by(|(left, left_rank), (right, right_rank)| {
+            key(left_rank, *left).cmp(&key(right_rank, *right))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -59,6 +59,20 @@ power (external, charging, unknown, battery), then load as a fraction of
 capacity, then latency, and finally the device key, so equal candidates
 always resolve alike; a passed-over device carries its reason.
 
+**Work is leased, not owned.** State merges by itself; a side effect does not.
+A piece of the workspace's work that must happen once — a bot's scheduled
+trigger, an automation only one device should run — is taken under a lease kept
+in the workspace's own state, so a group of desktops with no server has it. A
+participant that wants the work writes its own claim with a deadline it pushes
+out while it works; claims rank by placement and the best live one of the
+latest term holds. Two participants that claim after a partition keep both
+claims until the merge, then agree on one winner on every device; the loser
+withdraws its claim and stops. A claim is over only a minute past its deadline,
+so devices whose clocks differ by less than that never disagree about whether
+the lease is free. What the work got to is workspace state too: a bot's
+schedule keeps the fire time it answered, so whichever participant holds the
+lease carries on from it and a time missed while none ran is caught up once.
+
 A host is not a different kind of node. "Workspace hosting" is a device with
 a large appetite, usually always on. Anyone can run it, with the same
 software and the same protocol as every other device.

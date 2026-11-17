@@ -1090,6 +1090,52 @@ impl Workspaces {
         Ok((GovernanceCompletion { generation }, added))
     }
 
+    /// Write `change` into `workspace`'s own state as `device`, this host's
+    /// own device, and publish it to the workspace's members. A lease or a
+    /// bot's schedule progress belongs there: it is the workspace's state
+    /// whichever participant holds the workspace, so a group of desktops with
+    /// no server keeps it as a hosted workspace does. The receiver decides the
+    /// change against `device`'s grants as any member's write; a governor's
+    /// device may make any undoable change.
+    ///
+    /// Answers what `change` answered. A change that wrote nothing is not
+    /// published.
+    ///
+    /// # Errors
+    /// Refuses a device other than this host's own, a change the workspace's
+    /// rules do not let `device` make, and a change that could not commit.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays locked until its change is committed and published"
+    )]
+    pub async fn author_own_workspace_state<R>(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        change: impl FnOnce(&mut tilo_peer_state::StatePeer) -> Result<R, String>,
+    ) -> Result<R, CollaborationError> {
+        if device.device_public_key != self.inner.host.cert.device_public_key {
+            return Err(CollaborationError::new(
+                "workspace state is written here only by this host's own device",
+            ));
+        }
+        let now = system_time(tilo_clock::unix_now_ns());
+        let workspace = self.workspace(workspace).await?;
+        let mut workspace = workspace.lock().await;
+        let key = self.inner.host.key.clone();
+        let mut candidate = workspace.peer().clone();
+        let before = candidate.workspace_heads().unwrap_or_default();
+        let answer = change(&mut candidate)?;
+        if candidate.workspace_heads().unwrap_or_default() == before {
+            return Ok(answer);
+        }
+        workspace.commit(candidate, &key, now, |record, _| {
+            Ok(record.collaboration.clone())
+        })?;
+        self.settle(&mut workspace).await?;
+        Ok(answer)
+    }
+
     /// Install a bot as a governed member of `workspace`, update its program,
     /// renew its delegation or uninstall it
     /// ([`WorkspaceMembershipCommand::InstallBot`],
