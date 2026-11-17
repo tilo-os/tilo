@@ -572,7 +572,9 @@ impl Spawner {
         app.kept = Some(Arc::clone(&kept));
         let cgroup = app.cgroup_dir();
         running(&self.running).insert(id, app);
-        tracing::info!(app = %launch.app, keeper, pid = ?description.app_pid, "adopted");
+        // What the app writes went to the run that started it, through its launcher; that run's
+        // log is gone, and nothing reattaches it, so it is no longer recorded.
+        tracing::info!(app = %launch.app, keeper, pid = ?description.app_pid, "adopted; its output is no longer recorded");
         let windows = description
             .windows
             .iter()

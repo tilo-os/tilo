@@ -36,9 +36,13 @@ impl App {
             .env("WAYLAND_DISPLAY", socket)
             .env_remove("WAYLAND_SOCKET")
             .process_group(0);
-        // SAFETY: only async-signal-safe calls between fork and exec: prctl, getppid and _exit.
+        // SAFETY: only async-signal-safe calls between fork and exec: signal, prctl, getppid and
+        // _exit.
         unsafe {
             command.pre_exec(move || {
+                // The keeper ignores SIGPIPE; the app starts with the default every program
+                // expects.
+                libc::signal(libc::SIGPIPE, libc::SIG_DFL);
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
                     return Err(io::Error::last_os_error());
                 }

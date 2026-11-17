@@ -26087,6 +26087,7 @@ version = "0.3.15"
 dependencies = [
  "cc",
  "downcast-rs 1.2.1",
+ "log",
  "rustix 1.1.6",
  "scoped-tls",
  "smallvec",

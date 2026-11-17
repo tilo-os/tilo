@@ -25,5 +25,8 @@ mod input;
 #[path = "keeper.rs"]
 mod keeper;
 
+#[path = "process.rs"]
+mod process;
+
 #[path = "text_input.rs"]
 mod text_input;

@@ -40,6 +40,8 @@ rustdoc-args = [
 ]
 
 [features]
+# Tilo patch: see TILO-PATCH.md.
+default = ["log"]
 client_system = [
     "wayland-sys/client",
     "dep:scoped-tls",

@@ -151,6 +151,13 @@ impl Keeper {
     /// Bind the keeper's sockets in `options.dir`. The app starts once the first desktop is
     /// attached, so it never sees a display without outputs or a seat.
     pub fn new(options: Options) -> io::Result<Self> {
+        // A write to a socket or pipe whose reader went (the desktop, a session, the launcher
+        // relaying the keeper's output) is an error to handle, never a signal that ends the
+        // keeper and with it the app. The app starts with the default again (`child.rs`).
+        // SAFETY: setting a signal's disposition takes plain integers.
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        }
         private_dir(&options.dir)?;
         let display = Display::<State>::new().map_err(io::Error::other)?;
         let dh = display.handle();
@@ -290,11 +297,20 @@ fn listen(path: &Path) -> io::Result<UnixListener> {
 fn insert<F: std::os::fd::AsFd + 'static>(
     handle: &LoopHandle<'static, Data>,
     source: F,
+    ready: impl FnMut(&F, &mut Data) + 'static,
+) -> io::Result<RegistrationToken> {
+    insert_for(handle, source, Interest::READ, ready)
+}
+
+fn insert_for<F: std::os::fd::AsFd + 'static>(
+    handle: &LoopHandle<'static, Data>,
+    source: F,
+    interest: Interest,
     mut ready: impl FnMut(&F, &mut Data) + 'static,
 ) -> io::Result<RegistrationToken> {
     handle
         .insert_source(
-            Generic::new(source, Interest::READ, Mode::Level),
+            Generic::new(source, interest, Mode::Level),
             move |_, source, data| {
                 ready(source, data);
                 Ok(PostAction::Continue)
@@ -334,13 +350,7 @@ impl Data {
                 return;
             }
         }
-        let conn = match Conn::new(stream) {
-            Ok(conn) => conn,
-            Err(error) => {
-                tracing::warn!(%error, "a control connection could not be set up");
-                return;
-            }
-        };
+        let conn = Conn::new(stream);
         let id = self.next_conn;
         self.next_conn = self.next_conn.wrapping_add(1);
         let token = match conn.stream.as_fd().try_clone_to_owned().and_then(|fd| {
@@ -377,17 +387,67 @@ impl Data {
     }
 
     fn close_session(&mut self, id: u64) {
-        if let Some((_, token)) = self.conns.remove(&id) {
+        if let Some((conn, token)) = self.conns.remove(&id) {
             self.handle.remove(token);
+            if let Some(writing) = conn.writing {
+                self.handle.remove(writing);
+            }
         }
     }
 
+    /// Send `message` to the session `id` without waiting: whether it reached the socket whole.
+    /// What does not fit waits for room; a session gone or too far behind is closed.
     fn send(&mut self, id: u64, message: &FromKeeper) -> bool {
         let Some((conn, _)) = self.conns.get_mut(&id) else {
             return false;
         };
-        match conn.send(message) {
-            Ok(()) => true,
+        let sent = conn.send(message);
+        self.sent(id, sent)
+    }
+
+    /// Write what the session `id` has pending, once its socket has room.
+    fn flush_session(&mut self, id: u64) {
+        let Some((conn, _)) = self.conns.get_mut(&id) else {
+            return;
+        };
+        let flushed = conn.flush();
+        self.sent(id, flushed);
+    }
+
+    /// Act on how a write to the session `id` went: whether all of it was written.
+    fn sent(&mut self, id: u64, sent: io::Result<bool>) -> bool {
+        let Some((conn, _)) = self.conns.get_mut(&id) else {
+            return false;
+        };
+        match sent {
+            Ok(true) => {
+                if let Some(writing) = conn.writing.take() {
+                    self.handle.remove(writing);
+                }
+                true
+            }
+            Ok(false) => {
+                if conn.writing.is_none() {
+                    let watched = conn.stream.as_fd().try_clone_to_owned().and_then(|fd| {
+                        insert_for(
+                            &self.handle,
+                            fd,
+                            Interest::WRITE,
+                            move |_, data: &mut Data| {
+                                data.flush_session(id);
+                            },
+                        )
+                    });
+                    match watched {
+                        Ok(token) => conn.writing = Some(token),
+                        Err(error) => {
+                            tracing::warn!(%error, "a control connection cannot be written later; closing it");
+                            self.close_session(id);
+                        }
+                    }
+                }
+                false
+            }
             Err(error) => {
                 tracing::warn!(%error, "a session stopped reading the keeper; closing it");
                 self.close_session(id);

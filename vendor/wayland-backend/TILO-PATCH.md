@@ -15,3 +15,13 @@ Observed on 2026-09-20 when ChatGPT OAuth launched a browser helper. The helper
 connected to Tilo's Wayland socket and disappeared during initial protocol
 setup; `wayland-backend-0.3.15/src/rs/server_impl/common_poll.rs` panicked at
 the child-map `unwrap`, terminating the desktop and then Xwayland.
+
+# Tilo patch: connection errors go to `log`, never straight to standard error
+
+Without its `log` feature this crate reports every connection error with
+`eprintln!`, which panics when standard error is a pipe nobody reads any more.
+An app keeper's standard error is such a pipe once the session that read it has
+restarted: the desktop going away made the keeper print `Io error: Broken pipe`,
+which ended the keeper and, with it, the app it kept. `log` is a default feature
+here, so the errors reach the program's own logging (`tracing`'s log bridge),
+whose writes fail quietly.

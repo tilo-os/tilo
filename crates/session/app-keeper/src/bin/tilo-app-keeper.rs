@@ -8,11 +8,16 @@
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     use std::ffi::OsString;
+    use std::io::Write as _;
     use std::process::ExitCode;
 
+    // The keeper's standard error is a pipe the launcher relays, which may close or fill with
+    // the session that read it; a log line that cannot be written is dropped, never a panic
+    // (the subscriber's own report of a failed write would itself fail).
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_target(false)
+        .log_internal_errors(false)
         .init();
     let mut args = std::env::args_os().skip(1);
     let mut dir = None;
@@ -54,7 +59,7 @@ fn main() -> std::process::ExitCode {
     match tilo_app_keeper::Keeper::new(options).and_then(tilo_app_keeper::Keeper::run) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("tilo-app-keeper: {error}");
+            let _ = writeln!(std::io::stderr(), "tilo-app-keeper: {error}");
             ExitCode::FAILURE
         }
     }

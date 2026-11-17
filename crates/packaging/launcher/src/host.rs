@@ -170,6 +170,7 @@ fn spawn_with(
 /// Run `launch` behind the keeper `keep` names, and answer how the app ended as the keeper
 /// recorded it (the keeper's own status when it recorded nothing: the app never started).
 fn spawn_kept(launch: &HostLaunch, keep: &Keep) -> Result<ExitStatus, HostError> {
+    use std::os::fd::AsFd as _;
     use std::os::unix::process::ExitStatusExt as _;
     let failed = |source| HostError::Spawn {
         program: keep.keeper.display().to_string(),
@@ -209,9 +210,18 @@ fn spawn_kept(launch: &HostLaunch, keep: &Keep) -> Result<ExitStatus, HostError>
         });
     }
     let mut child = keeper.spawn().map_err(failed)?;
+    let own = |stream: std::os::fd::BorrowedFd<'_>| stream.try_clone_to_owned().ok();
     let relays = [
-        child.stdout.take().map(|out| relay(out, std::io::stdout)),
-        child.stderr.take().map(|err| relay(err, std::io::stderr)),
+        child
+            .stdout
+            .take()
+            .zip(own(std::io::stdout().as_fd()))
+            .map(|(out, to)| relay(out, to)),
+        child
+            .stderr
+            .take()
+            .zip(own(std::io::stderr().as_fd()))
+            .map(|(err, to)| relay(err, to)),
     ];
     let status = child.wait().map_err(failed)?;
     for relay in relays.into_iter().flatten() {
@@ -234,26 +244,53 @@ fn spawn_kept(launch: &HostLaunch, keep: &Keep) -> Result<ExitStatus, HostError>
     Ok(raw.map_or(status, ExitStatus::from_raw))
 }
 
-/// Copy what `from` says to this process's own stream until it ends. A stream nobody reads any
-/// more (the session went away) loses what is written, and `from` is still read to its end.
-fn relay<R, W>(mut from: R, to: fn() -> W) -> std::thread::JoinHandle<()>
+/// Copy what `from` says to `to` (this process's own stream) until it ends.
+///
+/// `from` is always read on, so the keeper and the app writing into it never wait and never get
+/// a broken pipe. `to` is written only while it has room: the session reading it may have
+/// stopped (it is going away for a restart) or be gone, and what does not fit then is dropped.
+fn relay<R>(mut from: R, to: std::os::fd::OwnedFd) -> std::thread::JoinHandle<()>
 where
     R: std::io::Read + Send + 'static,
-    W: std::io::Write + 'static,
 {
     std::thread::spawn(move || {
+        // At most `PIPE_BUF`: a pipe with room takes a write this size whole, without waiting.
         let mut buffer = [0u8; 4096];
+        let mut open = true;
         loop {
             match from.read(&mut buffer) {
                 Ok(0) => return,
                 Ok(read) => {
-                    let _ = to().write_all(buffer.get(..read).unwrap_or_default());
+                    if open {
+                        open = write_if_room(&to, buffer.get(..read).unwrap_or_default());
+                    }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(_) => return,
             }
         }
     })
+}
+
+/// Write `bytes` to `to` if it has room now, else drop them: whether `to` still has a reader.
+fn write_if_room(to: &std::os::fd::OwnedFd, bytes: &[u8]) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let mut ready = libc::pollfd {
+        fd: to.as_raw_fd(),
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    // SAFETY: poll reads and writes the one pollfd it is given, and waits not at all.
+    if unsafe { libc::poll(&raw mut ready, 1, 0) } <= 0 {
+        return true;
+    }
+    if ready.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+        return false;
+    }
+    // SAFETY: write reads at most `bytes.len()` bytes from `bytes`; the launcher ignores
+    // SIGPIPE (Rust's runtime does), so a reader gone since the poll is an error.
+    let written = unsafe { libc::write(to.as_raw_fd(), bytes.as_ptr().cast(), bytes.len()) };
+    written >= 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::BrokenPipe
 }
 
 /// Put each host launch in its own session before its desktop entry is executed.
@@ -378,6 +415,25 @@ mod tests {
                 Some(&["--dir", kept.to_str().unwrap_or_default(), "--launch", "{\"app\":\"org.example.Kept\"}", "--"][..]),
                 "the keeper is told its directory and the launch, then the app's command"
             );
+        }
+
+        phase a_kept_launchs_output_never_holds_it_when_the_session_stops_reading_or_goes;
+        {
+            use std::io::Write as _;
+            // Gone: the session's end closed. Stalled: nobody reads, the pipe fills.
+            let (gone_reader, gone) = std::io::pipe().expect("a pipe");
+            drop(gone_reader);
+            let (_stalled_reader, stalled) = std::io::pipe().expect("a pipe");
+            for to in [gone, stalled] {
+                let (from, mut app) = std::io::pipe().expect("a pipe");
+                let relayed = relay(from, std::os::fd::OwnedFd::from(to));
+                let chunk = [b'x'; 64 * 1024];
+                for _ in 0..64 {
+                    app.write_all(&chunk).expect("the app writes on");
+                }
+                drop(app);
+                relayed.join().expect("the relay reads to the end");
+            }
         }
 
         phase a_refused_or_unjoined_scope_never_costs_the_launch;

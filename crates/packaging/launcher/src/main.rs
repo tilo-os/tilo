@@ -1298,6 +1298,9 @@ fn init_tracing() {
         .with_env_filter(env)
         .with_target(false)
         .with_writer(std::io::stderr)
+        // A launcher relaying a kept app outlives the session reading its standard error: a line
+        // it cannot write is dropped, never a panic of the subscriber's own report.
+        .log_internal_errors(false)
         .try_init();
 }
 
