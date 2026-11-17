@@ -181,6 +181,43 @@ impl Scratch {
     }
 }
 
+/// A note, left at a place.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Note {
+    #[model(label)]
+    pub text: String,
+    pub place: String,
+}
+
+/// Notes left at places. Its notes are the record's only collection, and a
+/// place is none of them.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Wall {
+    pub notes: Collection<Note>,
+}
+
+#[resource(kind = "test.wall", params = wall, catalogue = "tests/locales")]
+impl Wall {
+    /// Leave a note at a place.
+    #[action]
+    pub fn leave(&mut self, cx: &mut ActionCx, place: Id, text: String) {
+        self.notes.push(
+            cx.id(),
+            Note {
+                text,
+                place: place.as_str().to_owned(),
+            },
+        );
+    }
+
+    /// Take a note down.
+    #[action]
+    pub fn take_down(&mut self, note: Id) -> Result<(), Refusal> {
+        self.notes.remove(&note).ok_or("no such note")?;
+        Ok(())
+    }
+}
+
 fn published(replica: &Replica<Shelf>) -> tilo_actions::ResourceSpec {
     tilo_resource::publish::<Shelf>("shelf", "Shelf", &replica.state().unwrap())
 }
@@ -339,6 +376,36 @@ tilo_test_env::scenario! {
             .to_string();
         assert!(why.contains("no card named Milk"), "{why}");
         assert!(why.contains("Tea"), "what there is follows: {why}");
+    }
+
+    phase an_id_that_names_no_item_is_handed_to_the_verb_as_written;
+    {
+        // The wall keeps notes alone and a place is none of them: the verb is
+        // handed the place as written, while no note is there yet and also
+        // where a note reads as the place is called.
+        let mut wall = Replica::<Wall>::new();
+        wall.apply(Wall::LEAVE.with((Id::from_raw("lobby"), "kitchen".to_owned())))
+            .unwrap();
+        wall.apply(Wall::LEAVE.with((Id::from_raw("kitchen"), "Mind the step".to_owned())))
+            .unwrap();
+        let places: Vec<String> = wall
+            .state()
+            .unwrap()
+            .notes
+            .values()
+            .map(|note| note.place.clone())
+            .collect();
+        assert_eq!(places, ["lobby", "kitchen"]);
+        // A note is still named by what it says, as any item is, and one
+        // that is not there is refused with the notes there are.
+        wall.apply(Wall::TAKE_DOWN.with(Id::from_raw("Mind the step")))
+            .unwrap();
+        let why = wall
+            .apply(Wall::TAKE_DOWN.with(Id::from_raw("Wet paint")))
+            .expect_err("no note says so")
+            .to_string();
+        assert!(why.contains("no note named Wet paint"), "{why}");
+        assert!(why.contains("kitchen"), "what there is follows: {why}");
     }
 
     phase a_verb_with_an_outbox_reaches_outside;
