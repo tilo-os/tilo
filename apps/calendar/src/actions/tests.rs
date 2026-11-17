@@ -24,9 +24,7 @@ fn read(doc: &ui::automerge::AutoCommit) -> Calendar {
 }
 
 fn registry() -> ActionRegistry {
-    let mut registry = ActionRegistry::new();
-    Calendar::register(&mut registry);
-    registry
+    ActionRegistry::with(ui::tilo_resource::group::register::<Calendar>)
 }
 
 fn encoded(invoke: &Invoke<Calendar>) -> EncodedAction {
