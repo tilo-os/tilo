@@ -364,7 +364,7 @@ reason = "The app instance's host: the method a window's instance answers, and t
 words = ["host"]
 identifiers = ["host", "Host"]
 paths = [
-    "crates/platform/tilolang-host/src/presence.rs",
+    "crates/platform/tilolang-process/src/presence.rs",
     "crates/sdk/ui-core/src/app/bound_component_tests.rs",
 ]
 

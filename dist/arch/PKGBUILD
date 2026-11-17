@@ -47,7 +47,7 @@ package_tilo-session() {
   )
   optdepends=('vulkan-driver: hardware-appropriate Vulkan ICD' 'greetd: display manager')
   cd "$srcdir/payload"
-  install -Dm755 bin/tilo-session bin/tilo bin/tilolang-host bin/tilo-import-folders -t "$pkgdir/usr/bin"
+  install -Dm755 bin/tilo-session bin/tilo bin/tilolang-process bin/tilo-import-folders -t "$pkgdir/usr/bin"
   # The launcher's path is pinned where the session and its units start it, on
   # every distribution; the old name on PATH links to it.
   install -Dm755 bin/tilo-launcher -t "$pkgdir/usr/libexec/tilo"

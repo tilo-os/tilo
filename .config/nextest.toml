@@ -59,7 +59,8 @@ command = ["bash", "tools/test-env-setup.sh", "root"]
 
 # The programs the session's tests start beside their own: the lock screen,
 # the on-screen keyboard and the quick-settings panel are apps of other
-# packages, which Cargo builds for no test. The harness builds them before any
+# packages, and tilolang-process runs a task's programs; Cargo builds none of them
+# for a test. The harness builds them before any
 # test starts, in one Cargo invocation (tools/build-sibling-binaries.sh), and
 # hands each path to the run's tests as TILO_SIBLING_BIN_<bin>, which
 # tilo_test_env::sibling_binary answers with. A test starts only programs its
@@ -74,6 +75,7 @@ command = [
     "bash", "tools/build-sibling-binaries.sh",
     "tilo-lock-screen:tilo-lock-screen", "osk:osk",
     "tilo-quick-settings:tilo-quick-settings",
+    "tilolang-process:tilolang-process",
 ]
 
 [[profile.default.scripts]]

@@ -100,11 +100,11 @@ impl crate::TaskHosts for TaskHosts {
     }
 }
 
-/// The task host's program: `tilolang-host` beside this program, as a build or an install puts
+/// The task host's program: `tilolang-process` beside this program, as a build or an install puts
 /// them, or beside the directory it is in, as Cargo keeps a test's program.
 #[cfg(target_os = "linux")]
 fn program() -> io::Result<std::path::PathBuf> {
-    const NAME: &str = "tilolang-host";
+    const NAME: &str = "tilolang-process";
     let exe = std::env::current_exe()?;
     let dir = exe.parent();
     [dir, dir.and_then(std::path::Path::parent)]
@@ -115,7 +115,7 @@ fn program() -> io::Result<std::path::PathBuf> {
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                "no tilolang-host is installed beside this program to run a task's programs",
+                "no tilolang-process is installed beside this program to run a task's programs",
             )
         })
 }
