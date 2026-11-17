@@ -72,6 +72,8 @@ mod held_document_keys;
 mod host_order;
 #[path = "invitation_entry.rs"]
 mod invitation_entry;
+#[path = "kept_after_kill.rs"]
+mod kept_after_kill;
 #[path = "late_join.rs"]
 mod late_join;
 #[path = "lifecycle_states.rs"]
