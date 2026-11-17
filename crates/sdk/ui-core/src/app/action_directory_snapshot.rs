@@ -471,7 +471,9 @@ impl App {
             saved.borrowed.revision.clone(),
         ));
         self.actions.action_directory_snapshot = Some(std::rc::Rc::clone(&saved.borrowed.snapshot));
-        self.actions.action_directory_cursors = saved.borrowed.cursors.clone();
+        self.actions
+            .action_directory_cursors
+            .clone_from(&saved.borrowed.cursors);
         Some(saved)
     }
 

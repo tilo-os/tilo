@@ -345,6 +345,7 @@ pub mod history;
 mod kinds;
 mod launch;
 mod live;
+mod made;
 mod opening;
 pub mod page_part;
 mod people;

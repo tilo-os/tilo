@@ -45,6 +45,7 @@ use ui_core::widget::Edits;
 
 use super::chain::{CHAIN_ACTION_TYPE, WorkspaceResources};
 use super::live::Live;
+use super::made::answering;
 use super::resources::ResourceApi;
 
 /// The operation type a child's own actions are carried out under on the
@@ -1166,7 +1167,7 @@ impl<C: ChildResource> ChildrenState<C> {
                     let address = child_resource_id::<C>(&child);
                     (child.to_string(), address)
                 });
-                Ok(answering(created.into_iter().collect()))
+                Ok(answering(None, &created.into_iter().collect::<Vec<_>>()))
             }
             CHILD_ACTION_TYPE => {
                 let request: ChildAction = tilo_actions::decode_json(&action.payload)
@@ -1184,23 +1185,10 @@ impl<C: ChildResource> ChildrenState<C> {
                 let created = self
                     .apply_to(&request.child, &typed, invoker)
                     .map_err(|error| error.to_string())?;
-                Ok(answering(created))
+                Ok(answering(None, &created))
             }
             other => Err(format!("{} take no `{other}` action", C::LABEL)),
         }
-    }
-}
-
-/// What a container's action answers: every item it made, with its id and the
-/// address it is published under, beside whatever the action itself answered
-/// (`made`, `minted`), and the addresses a caller follows
-/// ([`tilo_actions::ActionOutput::resources`]).
-fn answering(created: Vec<(String, String)>) -> tilo_actions::ActionOutput {
-    let minted: Vec<String> = created.iter().map(|(id, _)| id.clone()).collect();
-    let resources = created.iter().map(|(_, address)| address.clone()).collect();
-    tilo_actions::ActionOutput {
-        value: ui_core::bound_dispatch::with_made(None, &minted, &created),
-        resources,
     }
 }
 
