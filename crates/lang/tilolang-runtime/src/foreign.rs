@@ -255,6 +255,25 @@ impl Foreign {
         self.waiting.borrow_mut().insert(error.to_owned());
     }
 
+    /// Why a read of `target` found nothing: no reading of it arrived yet, kept as a read
+    /// waiting on one.
+    fn not_arrived(&self, target: &ResourceRef) -> String {
+        let why = format!(
+            "no reading of `{}` arrived yet: its app publishes it through the session",
+            target.id_string()
+        );
+        self.remember_waiting(&why);
+        why
+    }
+
+    /// Ask the host for `target`'s reading, kept under `at`, once until it is forgotten.
+    fn want(&mut self, at: String, target: &ResourceRef) {
+        if self.asked.insert(at.clone()) {
+            self.wanted
+                .insert(at, (target.id_string(), target.ty.clone()));
+        }
+    }
+
     /// What links to `target`, each with how, as the reading of it says (`$links`): a resource
     /// of another app carries its links in its reading, as it carries its fields, because the
     /// store that keeps them runs where the app's code runs, not here.
@@ -268,12 +287,7 @@ impl Foreign {
     ) -> Result<Vec<(ResourceRef, crate::store::LinkHow)>, String> {
         let at = Self::key(target);
         if !self.arrive(target)? {
-            let why = format!(
-                "no reading of `{}` arrived yet: its app publishes it through the session",
-                target.id_string()
-            );
-            self.remember_waiting(&why);
-            return Err(why);
+            return Err(self.not_arrived(target));
         }
         let Some((json, _)) = self.source(&at) else {
             return Ok(Vec::new());
@@ -308,16 +322,8 @@ impl Foreign {
         let at = Self::key(target);
         if !self.arrive(target)? {
             // The host is asked for its reading, as a field read of one yet to arrive asks.
-            if self.asked.insert(at.clone()) {
-                self.wanted
-                    .insert(at, (target.id_string(), target.ty.clone()));
-            }
-            let why = format!(
-                "no reading of `{}` arrived yet: its app publishes it through the session",
-                target.id_string()
-            );
-            self.remember_waiting(&why);
-            return Err(why);
+            self.want(at, target);
+            return Err(self.not_arrived(target));
         }
         Ok(self
             .source(&at)
@@ -342,10 +348,7 @@ impl Foreign {
         if !self.arrive(target).unwrap_or(false) {
             // The host is asked for the resource's reading, as a field read of one yet to arrive
             // asks for it; the boundary runs again when it comes.
-            if self.asked.insert(key.clone()) {
-                self.wanted
-                    .insert(key, (target.id_string(), target.ty.clone()));
-            }
+            self.want(key, target);
             return None;
         }
         let generation = self.generation(target);
@@ -452,10 +455,7 @@ impl Foreign {
             // reading, and until it comes the record reads as it would start. The view that
             // read it runs again when it does.
             None if runs_here(target, registry) => {
-                if self.asked.insert(at.clone()) {
-                    self.wanted
-                        .insert(at, (target.id_string(), target.ty.clone()));
-                }
+                self.want(at, target);
                 // The record reads as it would start, and the read is one waiting on its
                 // reading where that has no start to give (`Step`'s `task`, a required
                 // record): the turn's caller shows the place its waiting state, not a fault.
@@ -474,14 +474,7 @@ impl Foreign {
                     }
                 }
             }
-            None => {
-                let why = format!(
-                    "no reading of `{}` arrived yet: its app publishes it through the session",
-                    target.id_string()
-                );
-                self.remember_waiting(&why);
-                return Err(why);
-            }
+            None => return Err(self.not_arrived(target)),
         };
         let Some((step, json)) = found else {
             // A record the reading leaves out (a device without Wi-Fi publishes its network

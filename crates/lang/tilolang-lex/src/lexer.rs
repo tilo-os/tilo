@@ -657,7 +657,7 @@ impl Lexer<'_> {
         }
         self.pos += 1;
         let id_start = self.pos;
-        self.id_chars();
+        self.doc_chars();
         // An item of a document is written `doc/item`; a `/field:item` step names its last item.
         while self.at(0) == Some(b'/') && self.step_follows() {
             self.pos += 1;
@@ -694,6 +694,26 @@ impl Lexer<'_> {
             version,
         };
         self.push(Tok::Ref(lit), start);
+    }
+
+    /// A reference's document: an id, or the dotted name of the record an app publishes
+    /// (`notes.notebook`) when an item of it follows (`notes.notebook/a1`). A dot after a
+    /// document no item follows reads a field of the resource.
+    fn doc_chars(&mut self) {
+        let start = self.pos;
+        let mut end = start;
+        while self
+            .bytes
+            .get(end)
+            .is_some_and(|b| is_ident_char(*b) || *b == b'-' || *b == b'.')
+        {
+            end += 1;
+        }
+        self.pos = end;
+        if end == start || self.bytes.get(end - 1) == Some(&b'.') || !self.step_follows() {
+            self.pos = start;
+            self.id_chars();
+        }
     }
 
     fn id_chars(&mut self) {
@@ -925,5 +945,35 @@ fn written_as(ch: char) -> &'static str {
         '!' => "; tilolang writes `not x` (and `!=` for not equal)",
         '&' => "; tilolang writes `a and b`",
         _ => "",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reference(src: &str) -> RefLit {
+        let (tokens, diagnostics) = lex(src);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        tokens
+            .into_iter()
+            .find_map(|token| match token.tok {
+                Tok::Ref(lit) => Some(lit),
+                _ => None,
+            })
+            .expect("a reference")
+    }
+
+    /// An item of a record an app publishes is written under the record's dotted name, and a
+    /// field read after it stays a field read.
+    #[test]
+    fn an_item_of_a_dotted_record_is_one_reference() {
+        let lit = reference("@notes.Page:notes.notebook/a1-b2.title");
+        assert_eq!(lit.id, "notes.notebook/a1-b2");
+        assert_eq!(
+            reference("@notes.Notebook:notes.notebook.pages").id,
+            "notes"
+        );
+        assert_eq!(reference("@todo.TodoList:01J8ZK4T.items").id, "01J8ZK4T");
     }
 }

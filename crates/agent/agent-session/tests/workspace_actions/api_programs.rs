@@ -128,7 +128,8 @@ fn said(said: tilolang_cli::repl::Said) -> String {
 /// `tilolang repl` as the person, with the key this computer holds of theirs: in process, through
 /// the client `tilo` uses. Its entries are one program session of `POST …/programs`: a `let`
 /// holds for the entries after it, a bulk change waits for `confirm`, `undo` takes the last step
-/// back, and a second REPL is a session of its own.
+/// back, a page an entry read is named by its reference in the next, and a second REPL is a
+/// session of its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_repl_works_in_a_workspace_as_its_person() {
     let on_server = api_on_server(ISSUER).await;
@@ -200,6 +201,29 @@ async fn the_repl_works_in_a_workspace_as_its_person() {
     assert!(undone.contains("undone:"), "{undone}");
     let history = said(repl.entry("history task").await);
     assert!(history.contains("(undone)"), "{history}");
+
+    // A program reads another app's records: the notebook's pages, each shown with a
+    // reference a following entry names it by.
+    let pages = said(repl.entry("notes.notebook.pages").await);
+    let groceries = pages
+        .lines()
+        .find(|line| line.contains("Groceries"))
+        .and_then(|line| line.split_whitespace().next())
+        .unwrap_or_else(|| panic!("the notebook's pages are read: {pages}"))
+        .to_owned();
+    assert!(
+        groceries.starts_with('p') && groceries != "Groceries",
+        "a page is shown by a short reference: {pages}"
+    );
+    assert!(
+        !pages.contains("Bins"),
+        "the undone notes are gone: {pages}"
+    );
+    let title = said(repl.entry(&format!("{groceries}.title")).await);
+    assert_eq!(
+        title, "Groceries",
+        "a following entry names the page: {pages}"
+    );
 
     // Another REPL is a session of its own: the first one's `let`s and references are not
     // there.

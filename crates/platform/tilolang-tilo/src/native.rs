@@ -189,12 +189,15 @@ impl<'a> NativeReads<'a> {
                 "{app} keeps `{doc}`; the document a program reads is `{record}`"
             ));
         }
-        let content = if rest.is_none() {
+        let (content, key) = if rest.is_none() {
             let (_, root_ty) = self.root(app)?;
             if ty != root_ty {
                 return Err(format!("{record} is a {root_ty}, not a {ty}"));
             }
-            self.content(app, &self.document_row(app)?)?
+            (
+                self.content(app, &self.document_row(app)?)?,
+                record.to_owned(),
+            )
         } else {
             // A program's id names the item, not the collection it sits in: two collections of
             // one type are told apart by asking the app each in turn.
@@ -203,33 +206,61 @@ impl<'a> NativeReads<'a> {
             let Some(first) = candidates.next() else {
                 return Ok(json!({"missing": true}));
             };
-            let mut found = self.content(app, first);
+            let mut found = self.content(app, first).map(|content| (content, first));
             for row in candidates {
                 if found.is_ok() {
                     break;
                 }
-                found = self.content(app, row);
+                found = self.content(app, row).map(|content| (content, row));
             }
-            found?
+            let (content, row) = found?;
+            (content, row.key.clone().unwrap_or_else(|| row.held.clone()))
         };
-        self.read_values(app, ty, &content)
+        self.read_values(app, ty, &content, &key)
     }
 
-    /// `content`, the app's answer for a resource of the type `ty`, as a read of it values it.
-    fn read_values(&self, app: &str, ty: &str, content: &Json) -> Result<Json, String> {
+    /// `content`, the app's answer for the resource of the type `ty` its directory lists by
+    /// `key`, as a read of it values it: its collections are what the directory lists under it.
+    fn read_values(&self, app: &str, ty: &str, content: &Json, key: &str) -> Result<Json, String> {
         if !content.is_object() {
             return Err(format!(
                 "{app} answered a {ty} read of no fields: {content}"
             ));
         }
+        let mut fields = self.fields(ty, content)?;
+        for field in lookup(ty)
+            .into_iter()
+            .flat_map(|schema| &schema.fields)
+            .filter(|field| field.kind == MergeKind::Collection)
+        {
+            let items = self.listed(app, key, key_of(&field.id))?;
+            fields.insert(field.id.clone(), FieldValue::Items(items));
+        }
         Ok(json!({
             "type": ty,
-            "fields": self
-                .fields(ty, content)?
+            "fields": fields
                 .into_iter()
                 .map(|(id, value)| (id, field_json(&value)))
                 .collect::<serde_json::Map<String, Json>>(),
         }))
+    }
+
+    /// The items of the collection `field` of the resource the app's directory lists by `key`,
+    /// in the order the directory lists them: each by its own id, which a program holds it by
+    /// after the record's ([`held_id`]).
+    fn listed(&self, app: &str, key: &str, field: &str) -> Result<Vec<String>, String> {
+        let under = format!("{key}/{field}/");
+        let published = self.published(app)?;
+        let mut items: Vec<String> = Vec::new();
+        for row in self.calls.children(app, &published)? {
+            let Some(item) = keyed(&row).and_then(|key| key.strip_prefix(&under)) else {
+                continue;
+            };
+            if !item.is_empty() && !item.contains('/') && !items.iter().any(|seen| seen == item) {
+                items.push(item.to_owned());
+            }
+        }
+        Ok(items)
     }
 
     /// What the app `app` answers to a program's `request` to read it.
