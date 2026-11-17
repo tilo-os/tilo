@@ -40,7 +40,7 @@ pub use many::{ListedIssue, MAX_MANY};
 pub use projects::{Tracker, tracker};
 pub use tracker_area::{Kind, Person, TrackerArea};
 pub use work::{
-    BudgetBy, MAX_ADDRESS_CHARS, MAX_LINE_CHARS, MAX_WAITS, MOST_LOST_RUNS, Resumed, Stopped,
+    BudgetBy, MAX_ADDRESS_CHARS, MAX_LINE_CHARS, MAX_WAITS, MOST_LOST_SESSIONS, Resumed, Stopped,
     StoppedWhy, TaskState, WaitFor, WaitKind, Work, checked_address, checked_folder, checked_line,
     checked_waits, task_state,
 };

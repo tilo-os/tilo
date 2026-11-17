@@ -4,7 +4,7 @@
 //! cause is a person giving an issue to the agent (its `assign` action), a person writing in the
 //! thread of an issue the agent has, the issue being told to go on (`resume`), or its wait running
 //! out; the issue's thread is the conversation, and the agent's answer is its own message there
-//! after the ask. Nothing is kept beside the record: whoever runs the agent reads the same asks
+//! after the ask. Nothing is kept beside the issue: whatever works as the agent reads the same asks
 //! from it, also after a restart.
 //!
 //! An issue that waits asks nothing until the wait ends, and one whose work stopped asks nothing
@@ -49,7 +49,7 @@ pub struct IssueAsk {
 }
 
 /// Every open issue of `issues` whose agent has a person's ask it has not answered: the newest
-/// ask on each. No wait has run out: an issue that waits asks only once it is told to go on or a
+/// ask on each. No wait has ended: an issue that waits asks only once it is told to go on or a
 /// person writes in it ([`agent_asks_at`] reads the clock too).
 #[must_use]
 pub fn agent_asks<'a>(issues: impl IntoIterator<Item = (&'a Id, &'a Issue)>) -> Vec<IssueAsk> {

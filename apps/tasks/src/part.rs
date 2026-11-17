@@ -260,14 +260,14 @@ fn closed() -> Refusal {
     Refusal::new("This issue is closed")
 }
 
-/// Refuse `by` unless it is the agent `issue` is assigned to: its runs are its
+/// Refuse `by` unless it is the agent `issue` is assigned to: its sessions are its
 /// own to count.
 fn its_agent(issue: &Issue, by: &tilo_resource::MemberId) -> Result<(), Refusal> {
     if by.is_agent() && issue.assigned_member().as_ref() == Some(by) {
         Ok(())
     } else {
         Err(Refusal::new(
-            "Only the agent an issue is assigned to counts its runs",
+            "Only the agent an issue is assigned to counts its sessions",
         ))
     }
 }
@@ -654,7 +654,7 @@ impl IssuePart {
     ///
     /// Say where an issue's working material is kept: a folder in the
     /// workspace's files, and the note its plan, its findings and what is
-    /// still open are written in. A later run of whoever works on it starts
+    /// still open are written in. A later session of whoever works on it starts
     /// from them.
     ///
     /// # Errors
@@ -679,7 +679,7 @@ impl IssuePart {
 
     /// Wait
     ///
-    /// Let an issue wait: for a reply, a record to change, a person's answer,
+    /// Let an issue wait: for a reply, a resource to change, a person's answer,
     /// several people, or only a moment. Any one of them ends the wait, and
     /// the moment always does. Nothing works on it while it waits.
     ///
@@ -760,7 +760,7 @@ impl IssuePart {
 
     /// Set budget
     ///
-    /// Say what an issue may cost over all its runs, in money, in working
+    /// Say what an issue may cost over all its sessions, in money, in working
     /// time, or both; what is left out stays as it was. A person sets and
     /// raises it. The agent working on it may propose one where none is set
     /// and may lower one, and holds itself to it.
@@ -774,9 +774,8 @@ impl IssuePart {
         issue: &Id,
         #[param("What the whole issue may cost, in millionths of the currency")]
         money_micros: Option<u64>,
-        #[param("How long it may be worked on over all its runs, in milliseconds")] time_ms: Option<
-            u64,
-        >,
+        #[param("How long it may be worked on over all its sessions, in milliseconds")]
+        time_ms: Option<u64>,
     ) -> Result<(), Refusal> {
         if money_micros.is_none() && time_ms.is_none() {
             return Err(Refusal::new("Give the money or the time it may take"));
@@ -806,44 +805,44 @@ impl IssuePart {
         Ok(())
     }
 
-    /// Run began
+    /// Session began
     ///
-    /// The agent an issue is assigned to says a run of it on the issue began:
-    /// the issue no longer waits and is no longer stopped. A run that began
+    /// The agent an issue is assigned to says a session of it on the issue began:
+    /// the issue no longer waits and is no longer stopped. A session that began
     /// before and never ended is counted as lost.
     ///
     /// # Errors
     /// Refuses anyone but the agent the issue is assigned to.
     #[action(item = issues, step = "edit", audience = "agents", writes = issues)]
-    pub fn run_began(&mut self, cx: &mut ActionCx, issue: &Id) -> Result<(), Refusal> {
+    pub fn session_began(&mut self, cx: &mut ActionCx, issue: &Id) -> Result<(), Refusal> {
         let now = cx.now_ms();
         let by = author(cx)?;
         let target = self.issue_mut(issue)?;
         its_agent(target, &by)?;
         let work = target.work.get_or_insert_default();
-        if work.running_since_ms.is_some() {
+        if work.session_since_ms.is_some() {
             work.lost = work.lost.saturating_add(1);
         }
-        work.runs = work.runs.saturating_add(1);
-        work.running_since_ms = Some(now);
+        work.sessions = work.sessions.saturating_add(1);
+        work.session_since_ms = Some(now);
         work.end_wait();
         work.stopped = None;
         Ok(())
     }
 
-    /// Run ended
+    /// Session ended
     ///
-    /// The agent an issue is assigned to says its run ended, what it cost and
+    /// The agent an issue is assigned to says its session ended, what it cost and
     /// how long it worked: both count against the issue's budget.
     ///
     /// # Errors
     /// Refuses anyone but the agent the issue is assigned to.
     #[action(item = issues, step = "edit", audience = "agents", writes = issues)]
-    pub fn run_ended(
+    pub fn session_ended(
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        #[param("What the run cost, in millionths of the currency")] cost_micros: u64,
+        #[param("What the session cost, in millionths of the currency")] cost_micros: u64,
         #[param("How long it worked, in milliseconds")] worked_ms: u64,
     ) -> Result<(), Refusal> {
         let by = author(cx)?;
@@ -852,7 +851,7 @@ impl IssuePart {
         let work = target.work.get_or_insert_default();
         work.spent_micros = work.spent_micros.saturating_add(cost_micros);
         work.worked_ms = work.worked_ms.saturating_add(worked_ms);
-        work.running_since_ms = None;
+        work.session_since_ms = None;
         work.lost = 0;
         Ok(())
     }
@@ -882,7 +881,7 @@ impl IssuePart {
         }
         let work = target.work.get_or_insert_default();
         work.end_wait();
-        work.running_since_ms = None;
+        work.session_since_ms = None;
         work.stopped = Some(Stopped {
             why,
             words,
@@ -1411,8 +1410,8 @@ fn item_of_mut(action: &mut IssuePartAction) -> Option<&mut Id> {
         | IssuePartAction::Wait(verb::Wait { issue, .. })
         | IssuePartAction::Resume(verb::Resume { issue, .. })
         | IssuePartAction::SetBudget(verb::SetBudget { issue, .. })
-        | IssuePartAction::RunBegan(verb::RunBegan { issue })
-        | IssuePartAction::RunEnded(verb::RunEnded { issue, .. })
+        | IssuePartAction::SessionBegan(verb::SessionBegan { issue })
+        | IssuePartAction::SessionEnded(verb::SessionEnded { issue, .. })
         | IssuePartAction::Stop(verb::Stop { issue, .. }) => Some(issue),
         _ => None,
     }
@@ -1438,8 +1437,8 @@ pub fn item_of(action: &IssuePartAction) -> Option<&Id> {
         | IssuePartAction::Wait(verb::Wait { issue, .. })
         | IssuePartAction::Resume(verb::Resume { issue, .. })
         | IssuePartAction::SetBudget(verb::SetBudget { issue, .. })
-        | IssuePartAction::RunBegan(verb::RunBegan { issue })
-        | IssuePartAction::RunEnded(verb::RunEnded { issue, .. })
+        | IssuePartAction::SessionBegan(verb::SessionBegan { issue })
+        | IssuePartAction::SessionEnded(verb::SessionEnded { issue, .. })
         | IssuePartAction::Stop(verb::Stop { issue, .. }) => Some(issue),
         // A field edit of one issue (its title, its description) names it
         // in its path.

@@ -26795,7 +26795,7 @@
         ],
         "description": ""
       },
-      "tasks.issues.run-began.Arguments": {
+      "tasks.issues.session-began.Arguments": {
         "type": "object",
         "properties": {
           "issue": {
@@ -26807,7 +26807,7 @@
         ],
         "description": ""
       },
-      "tasks.issues.run-ended.Arguments": {
+      "tasks.issues.session-ended.Arguments": {
         "type": "object",
         "properties": {
           "issue": {
@@ -34106,14 +34106,14 @@
     {
       "app": "so.tilo.tasks",
       "resource": "tasks.issues",
-      "action": "run-began",
-      "arguments": "#/components/schemas/tasks.issues.run-began.Arguments"
+      "action": "session-began",
+      "arguments": "#/components/schemas/tasks.issues.session-began.Arguments"
     },
     {
       "app": "so.tilo.tasks",
       "resource": "tasks.issues",
-      "action": "run-ended",
-      "arguments": "#/components/schemas/tasks.issues.run-ended.Arguments"
+      "action": "session-ended",
+      "arguments": "#/components/schemas/tasks.issues.session-ended.Arguments"
     },
     {
       "app": "so.tilo.tasks",
