@@ -15496,6 +15496,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-durable-writer",
  "tilo-files",
  "tilo-lock",
  "tilo-paths",

@@ -1891,9 +1891,16 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     let signalled_namespace = Arc::clone(&namespace);
     #[cfg(target_os = "linux")]
     let signalled_availability = availability.clone();
+    // Content that documents projected as files refer to lives in the same store as file content,
+    // so what the mount keeps is what the daemon serves to apps and peers.
+    let document_content = fs::document_content::DaemonContent::new(
+        Arc::clone(&hydrator.store),
+        tokio::runtime::Handle::current(),
+    )
+    .into_store();
     let fs = QuickFS::new(namespace, hydrator, heuristics)
         .with_checked_history_workspace(checked_history_workspace)
-        .with_document_content(tilo_content_device::for_app());
+        .with_document_content(document_content);
     let fs = if allow_history_baseline {
         fs
     } else {
@@ -2325,7 +2332,11 @@ async fn seed_from_dir(
     store: &Arc<ContentStore>,
     root: &Path,
 ) -> Result<()> {
-    let document_content = tilo_content_device::for_app();
+    let document_content = fs::document_content::DaemonContent::new(
+        Arc::clone(store),
+        tokio::runtime::Handle::current(),
+    )
+    .into_store();
     let mut stack = vec![(ROOT_INO, root.to_path_buf())];
     while let Some((parent_ino, dir)) = stack.pop() {
         for entry in std::fs::read_dir(&dir)? {

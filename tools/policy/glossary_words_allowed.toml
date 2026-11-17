@@ -388,3 +388,8 @@ paths = ["crates/collab/tilo-action-broker/src/collab_app_broker/execution_activ
 reason = "CSS's own property and keyword names (white-space, space-between) in the styles the HTML presenter writes."
 words = ["space"]
 paths = ["crates/browser/tilo-browser-runtime/web/view-present.mjs"]
+
+[[allow]]
+reason = "The standard library's blocking hand-off between threads."
+words = ["channel"]
+identifiers = ["sync_channel"]

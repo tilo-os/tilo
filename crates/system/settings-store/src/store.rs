@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
@@ -515,7 +515,14 @@ impl Store {
 
     fn show(&self, document: Arc<Map<String, Value>>) {
         self.publish(document);
-        writer().schedule(&self.me);
+        // Saved on the device's one state writer, off the caller's thread; a save of this profile
+        // that has not started yet is replaced by this one, which saves everything unsaved.
+        let me = self.me.clone();
+        tilo_durable_writer::global().submit(self.root.clone(), move || {
+            if let Some(store) = me.upgrade() {
+                store.save();
+            }
+        });
     }
 
     fn take_changes(&self, changes: &socket::Changes) -> std::io::Result<()> {
@@ -901,7 +908,8 @@ impl SettingsSource for Store {
     }
 
     fn flush_pending(&self) {
-        writer().flush(self);
+        tilo_durable_writer::global().flush();
+        self.save();
     }
 
     fn take_deferred_failures(&self) -> Vec<crate::DeferredFailure> {
@@ -910,87 +918,6 @@ impl SettingsSource for Store {
 
     fn changes(&self) -> &crate::ChangeSignal {
         &self.changes
-    }
-}
-
-struct Writer {
-    queue: Mutex<WriterQueue>,
-    wake: Condvar,
-}
-
-#[derive(Default)]
-struct WriterQueue {
-    scheduled: Vec<Weak<Store>>,
-    busy: bool,
-    running: bool,
-}
-
-fn writer() -> &'static Writer {
-    static WRITER: OnceLock<Writer> = OnceLock::new();
-    WRITER.get_or_init(|| Writer {
-        queue: Mutex::new(WriterQueue::default()),
-        wake: Condvar::new(),
-    })
-}
-
-impl Writer {
-    fn schedule(&'static self, store: &Weak<Store>) {
-        let mut queue = self.queue.lock_recover();
-        if !queue.scheduled.iter().any(|known| known.ptr_eq(store)) {
-            queue.scheduled.push(store.clone());
-        }
-        if !queue.running {
-            let started = tilo_rt::spawn_thread("tilo-settings-writer", move || self.run());
-            if started.is_err() {
-                queue.scheduled.retain(|known| !known.ptr_eq(store));
-                drop(queue);
-                if let Some(store) = store.upgrade() {
-                    store.save();
-                }
-                return;
-            }
-            queue.running = true;
-        }
-        drop(queue);
-        self.wake.notify_all();
-    }
-
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the queue's lock is let go around each save and held only to take the next"
-    )]
-    fn run(&self) {
-        let mut queue = self.queue.lock_recover();
-        loop {
-            if queue.scheduled.is_empty() {
-                queue = self
-                    .wake
-                    .wait(queue)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                continue;
-            }
-            let next = queue.scheduled.remove(0);
-            queue.busy = true;
-            drop(queue);
-            if let Some(store) = next.upgrade() {
-                store.save();
-            }
-            queue = self.queue.lock_recover();
-            queue.busy = false;
-            self.wake.notify_all();
-        }
-    }
-
-    fn flush(&self, store: &Store) {
-        let mut queue = self.queue.lock_recover();
-        while queue.busy || queue.scheduled.iter().any(|known| known.ptr_eq(&store.me)) {
-            queue = self
-                .wake
-                .wait(queue)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
-        drop(queue);
-        store.save();
     }
 }
 
