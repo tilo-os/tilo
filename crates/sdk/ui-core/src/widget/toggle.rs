@@ -433,7 +433,7 @@ pub fn toggle_face_colors(theme: &Theme, on: bool, interact: Interaction) -> Tog
     // light one, so a white knob always stands out from it.
     let off_track = colors.lift_on(colors.surfaces.content, 1.0);
     let track = if on {
-        colors.intent.on_state
+        colors.on_fill(!interact.disabled)
     } else {
         off_track
     };
@@ -1143,6 +1143,19 @@ mod tests {
                     "off-track is the neutral lift off the window ground, not a ramp slot"
                 );
                 assert_ne!(on.track, off.track, "on and off tracks must differ");
+                let locked = toggle_face_colors(
+                    &theme,
+                    true,
+                    Interaction {
+                        disabled: true,
+                        ..Interaction::default()
+                    },
+                );
+                assert_ne!(
+                    locked.track, on.track,
+                    "a switch nobody here can flip is not painted in the on colour"
+                );
+                assert_ne!(locked.track, off.track, "and still reads as on");
             }
 
             // Case `toggle_knob_is_white_on_and_a_raised_object_off_in_light`.

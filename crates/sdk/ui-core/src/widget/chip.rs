@@ -364,6 +364,9 @@ pub(crate) struct PillPaint<'a> {
     pub lead: ChipLead,
     pub style: ChipStyle,
     pub selected: bool,
+    /// How far a chip turning chosen (or back) has come, `0..=1`, while it moves: its fill and
+    /// edge pass between the two looks instead of jumping.
+    pub selecting: Option<f32>,
     pub hovered: bool,
     pub remove: Option<bool>,
     pub menu: bool,
@@ -386,6 +389,7 @@ impl<'a> PillPaint<'a> {
             lead: ChipLead::None,
             style,
             selected: false,
+            selecting: None,
             hovered: false,
             remove: None,
             menu: false,
@@ -411,9 +415,33 @@ pub(crate) fn paint_pill(
     let fade = |c: Color| c.with_alpha_factor(pill.opacity);
     let metrics = PillMetrics::of(theme, pill.role);
     let ground = theme.tokens.colors.surfaces.content;
-    let colors = pill
-        .style
-        .colors(theme, ground, pill.selected, pill.hovered);
+    let colors = match pill.selecting {
+        Some(level) => {
+            let (off, on) = (
+                pill.style.colors(theme, ground, false, pill.hovered),
+                pill.style.colors(theme, ground, true, pill.hovered),
+            );
+            let mix = |a: Color, b: Color| mix8(a, b, level);
+            ChipColors {
+                fill: mix(off.fill, on.fill),
+                edge: match (off.edge, on.edge) {
+                    (Some(a), Some(b)) => Some(mix(a, b)),
+                    (a, b) => {
+                        if level < 0.5 {
+                            a
+                        } else {
+                            b
+                        }
+                    }
+                },
+                ink: if level < 0.5 { off.ink } else { on.ink },
+                lead: if level < 0.5 { off.lead } else { on.lead },
+            }
+        }
+        None => pill
+            .style
+            .colors(theme, ground, pill.selected, pill.hovered),
+    };
     let radius = f64::from(theme.tokens.radii.full).min(rect.height() / 2.0);
     if !pill.bare {
         scene.fill(
@@ -601,6 +629,8 @@ pub struct Chip {
     face: String,
     selectable: bool,
     selected: bool,
+    /// How chosen the chip shows: it eases between the looks when a person picks it.
+    chosen: Option<crate::motion::Mark>,
     removable: bool,
     menu: bool,
     lead: ChipLead,
@@ -668,6 +698,7 @@ impl Chip {
             face: String::new(),
             selectable: false,
             selected: false,
+            chosen: None,
             removable: false,
             menu: false,
             lead: ChipLead::None,
@@ -841,6 +872,13 @@ impl Chip {
     pub fn style(mut self, style: ChipStyle) -> Self {
         self.style = style;
         self
+    }
+
+    /// Whether the chip is easing between chosen and not.
+    fn choosing(&self) -> bool {
+        self.chosen
+            .as_ref()
+            .is_some_and(|mark| mark.is_moving(crate::motion::frame_now()))
     }
 
     pub fn is_selected(&self) -> bool {
@@ -1179,11 +1217,27 @@ impl Widget for Chip {
         // `cursor_shape` test, so feedback and behaviour agree in the bands
         // above and below the glyph.
         let remove_hovered = self.remove_hit_rect().contains(self.last_cursor);
+        let chosen = self.shows_chosen();
+        let now = crate::motion::frame_now();
+        let selecting = match &mut self.chosen {
+            // The first look is the chip's own; a change after it moves.
+            None => {
+                self.chosen = Some(crate::motion::Mark::at(chosen));
+                None
+            }
+            Some(mark) => {
+                if mark.is_on() != chosen {
+                    mark.set(chosen, theme.motion(), crate::motion::input_source(), now);
+                }
+                mark.is_moving(now).then(|| mark.level(now))
+            }
+        };
         paint_pill(
             &PillPaint {
                 face: &self.face,
                 lead: self.lead,
-                selected: self.shows_chosen(),
+                selected: chosen,
+                selecting,
                 hovered: self.pressable() && self.hovered && !remove_hovered,
                 remove: self.removable.then_some(remove_hovered),
                 menu: self.menu,
@@ -1283,7 +1337,10 @@ impl Widget for Chip {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        crate::widget::redraw_or_children(self.dirty || self.choosing(), self)
+    }
+    fn needs_animation_frame(&self) -> bool {
+        self.choosing()
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
@@ -1715,6 +1772,24 @@ mod tests {
             assert!(!idle.shows_chosen());
             assert!(Chip::new("Liked").selected(true).shows_chosen());
             assert!(!Chip::new("Liked").selected(false).shows_chosen());
+        }
+
+        phase a_chip_a_person_picks_eases_into_its_chosen_look;
+        {
+            let mut c = Chip::new("Rust").selectable();
+            lay_out(&mut c);
+            draw(&mut c);
+            assert!(!c.needs_animation_frame(), "the first look is not a change");
+            let center = c.get_rect().center();
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            dispatch(&mut c, &cursor(center));
+            dispatch(&mut c, &mouse_press());
+            assert!(c.is_selected());
+            draw(&mut c);
+            assert!(
+                c.needs_animation_frame(),
+                "picking the chip eases its fill rather than swapping it"
+            );
         }
 
         phase chip_pointer_toggles_and_removes_by_kind;

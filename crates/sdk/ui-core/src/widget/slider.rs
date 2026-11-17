@@ -1201,7 +1201,9 @@ impl Widget for Slider {
                 ink,
                 transform.pre_translate(
                     (
-                        self.rect.x1 - f64::from(width),
+                        // Leading in its lane, beside the knob's end of travel: the value reads
+                        // with the track rather than off at the row's far edge.
+                        self.rect.x1 - widest.max(f64::from(width)),
                         self.rect.y0 + (self.rect.height() - f64::from(height)) / 2.0,
                     )
                         .into(),

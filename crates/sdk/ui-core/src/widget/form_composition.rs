@@ -272,6 +272,16 @@ impl FormSection {
         /// How deep forms are looked for: a page's part, a section, its pane, the form.
         const DEPTH: usize = 6;
         fn each(widget: &mut dyn Widget, depth: usize, f: &mut dyn FnMut(&mut FormSection)) {
+            use super::capability::{capability, capability_mut};
+            use super::decorator::{Decorated, DecoratedMut};
+            // A wrapper (a language view's pane round the form it shows) answers as itself, and
+            // its children are its inner widget's: the form it wraps is reached through it.
+            if capability::<dyn Decorated>(widget).is_some() {
+                if let Some(decorated) = capability_mut::<dyn DecoratedMut>(widget) {
+                    each(decorated.decorated_mut(), depth, f);
+                }
+                return;
+            }
             if let Some(section) = widget
                 .as_any_mut()
                 .and_then(|any| any.downcast_mut::<FormSection>())
@@ -281,7 +291,9 @@ impl FormSection {
                 }
                 return;
             }
+            // A page inside the page keeps a column of its own.
             if depth == 0
+                || widget.readable_column().is_some()
                 || widget
                     .layout_info()
                     .is_some_and(|info| matches!(info, LayoutInfo::Page(_)))
@@ -358,6 +370,9 @@ pub struct Field {
     stacked_gap: f32,
     help_gap: f32,
     first_line: f32,
+    /// The least target the window offers a control: a coarse pointer's controls stand taller
+    /// than a large control, and a beside label still sits on their line.
+    least_target: f32,
     comfortable_control: f32,
 }
 impl Field {
@@ -462,6 +477,7 @@ impl Field {
             stacked_gap: 0.0,
             help_gap: 0.0,
             first_line: 0.0,
+            least_target: 0.0,
             comfortable_control: 0.0,
         }
     }
@@ -990,6 +1006,13 @@ impl Widget for Field {
         self.effective_layout().map(LayoutInfo::Field)
     }
     retained_parts!("Field");
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.least_target = environment.minimum_target();
+        super::defaults::set_interaction_environment(self.children_mut(), environment);
+    }
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -1002,7 +1025,8 @@ impl Widget for Field {
         // A beside label sits on the control's first line: a one-line
         // control is at most a large control high, so a taller one (a
         // multi-line entry, a list) keeps its label on its first line.
-        self.first_line = crate::num::f32_of_f64(super::ControlSize::Large.height(theme));
+        self.first_line =
+            crate::num::f32_of_f64(super::ControlSize::Large.height(theme)).max(self.least_target);
         self.comfortable_control = theme.tokens.metrics.chooser_width
             * crate::tokens::Metrics::text_growth(theme.text_scale);
         let placement = self.label_placement.map_or_else(

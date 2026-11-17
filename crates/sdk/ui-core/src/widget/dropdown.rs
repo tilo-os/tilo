@@ -251,6 +251,8 @@ impl Dropdown {
             .map(f64::to_bits)
             .hash(&mut hasher);
         self.list.is_scrollbar_active().hash(&mut hasher);
+        // The chevron turns with the list's arrival.
+        self.appear.progress().to_bits().hash(&mut hasher);
         (self.filter_selection.anchor, self.filter_selection.cursor).hash(&mut hasher);
         crate::i18n::I18nManager::revision().hash(&mut hasher);
         hasher.finish()
@@ -1330,6 +1332,7 @@ impl Widget for Dropdown {
                 label: (!filtering).then_some((label.as_str(), placeholder)),
                 size: self.control_size,
                 open: self.open,
+                turn: self.appear.progress(),
                 hovered: self.is_hovered,
                 focused: self.is_focused,
                 disabled,
@@ -1797,6 +1800,8 @@ struct FacePaint<'a> {
     label: Option<(&'a str, bool)>,
     size: crate::widget::ControlSize,
     open: bool,
+    /// How far the chevron has turned toward open, `0..=1`: it turns with the list's arrival.
+    turn: f64,
     hovered: bool,
     focused: bool,
     disabled: bool,
@@ -1898,13 +1903,13 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
     let slot_center = Point::new(face.field.x1 - CHEVRON_W / 2.0, face.field.center().y);
     crate::icons::draw_icon(
         ctx.scene,
-        ctx.transform,
+        ctx.transform
+            * Affine::rotate_about(
+                std::f64::consts::PI * face.turn.clamp(0.0, 1.0),
+                slot_center,
+            ),
         Rect::from_center_size(slot_center, (edge, edge)),
-        if face.open {
-            crate::icons::Icon::ChevronUp
-        } else {
-            crate::icons::Icon::ChevronDown
-        },
+        crate::icons::Icon::ChevronDown,
         theme.text_dim,
         crate::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
@@ -2088,6 +2093,7 @@ impl<'a> DropdownFace<'a> {
                 label: Some((label, placeholder)),
                 size: self.size,
                 open: self.open,
+                turn: if self.open { 1.0 } else { 0.0 },
                 hovered: self.hovered,
                 focused: self.focused,
                 disabled: self.disabled,

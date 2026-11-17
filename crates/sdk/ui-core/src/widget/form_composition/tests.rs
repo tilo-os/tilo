@@ -1135,3 +1135,50 @@ fn the_forms_of_a_pages_sections_share_one_label_column_and_name_their_controls(
         );
     }
 }
+
+/// What a language view wraps each form in: a pane that answers as itself and shows the form.
+struct Shown(Element);
+
+impl crate::widget::Decorator for Shown {
+    type Inner = dyn Widget;
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.0.as_ref()
+    }
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.0.as_mut()
+    }
+}
+
+#[test]
+fn a_language_pages_forms_share_one_label_column_through_the_panes_they_are_shown_in() {
+    use crate::widget::Section;
+    use crate::widget::arrange::{Page as Arranged, Stack};
+    let form = |label: &str, id: &str| -> Element {
+        Box::new(Shown(Box::new(FormSection::untitled().field(
+            Field::custom(label, Box::new(TextInput::local().with_id(id))),
+        ))))
+    };
+    let page = Arranged::new().push(Box::new(
+        Stack::stack()
+            .push(Box::new(Section::titled(
+                "Numbers",
+                vec![form("Share of the time", "share")],
+            )))
+            .push(Box::new(Section::titled(
+                "Choices",
+                vec![form("Room", "room")],
+            ))),
+    ));
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(page),
+        (1280, 800),
+        Theme::light(),
+    );
+    let root = harness.inspection().root;
+    let (share, room) = (named(&root, "share").rect, named(&root, "room").rect);
+    assert!(
+        (share[0] - room[0]).abs() < 0.5,
+        "one label column across the page's forms: {share:?} {room:?}"
+    );
+}
