@@ -394,20 +394,6 @@ fn workspace_settings_gives_and_revokes_a_permission() {
     );
 }
 
-/// Have `app` hold a capability here, so the workspace shows it and the sheet offers it.
-fn app_here(session: &Session, app: &str) {
-    let mut tree = session.handle().read(Clone::clone);
-    let workspace = tree.active_workspace_mut().expect("a workspace in front");
-    workspace.grant_app(
-        "ada",
-        app,
-        &tilo_desktop_model::Capability::Camera {
-            scope: tilo_desktop_model::GRANT_SESSION,
-        },
-    );
-    session.handle().replace_tree(tree);
-}
-
 /// The answer the review shows for changes in `app`, by its place among Allow, Ask first and Deny,
 /// and whether the agent's bound sets the app's answers.
 fn changes_answer(session: &Session, app: &str) -> (usize, bool) {
@@ -500,8 +486,9 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     settings_offer_a_model();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
+    // Nothing of Notes is open or held here: an installed app is answered for before an agent
+    // ever reaches for it.
     own_workspace(&session, &[]);
-    app_here(&session, "so.tilo.notes");
     invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
     session.step(Duration::from_millis(1)).unwrap();
     let mut app = sheet(&session);
@@ -543,7 +530,7 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
             .apps
             .iter()
             .any(|row| row.scope == "app:so.tilo.notes"),
-        "the review lists the app: {review:?}"
+        "the review lists the installed app though no window of it is open: {review:?}"
     );
     choose(&mut app, "Notes Changes", "Ask first");
     settle(&mut session, &mut app);

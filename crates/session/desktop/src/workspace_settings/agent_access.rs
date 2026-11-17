@@ -114,8 +114,8 @@ pub fn answer_at(
     }
 }
 
-/// The apps an agent's answers are offered for: every app the workspace shows or holds
-/// capabilities for, and every app its bound names, by display name.
+/// The apps an agent's answers are offered for: every app installed for the workspace, every app
+/// it shows or holds capabilities for, and every app its bound names, by display name.
 #[must_use]
 pub fn agent_access_rows(
     ws: &Workspace,
@@ -128,6 +128,9 @@ pub fn agent_access_rows(
         .filter(|candidate| candidate.kind == super::SubjectKind::App)
         .map(|candidate| candidate.id)
         .collect();
+    // Every app installed here is answered for, not only those with a window open: a person sets
+    // what the agent may do in an app before it first reaches for it.
+    ids.extend(apps.installed_apps());
     ids.extend(
         admission
             .iter()

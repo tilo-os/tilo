@@ -37,6 +37,11 @@ pub use people_pane::member_row_offers;
 pub trait AppDirectory {
     /// The name a person knows `app_id` by, when the host knows the app.
     fn app_display_name(&self, app_id: &str) -> Option<String>;
+    /// The apps installed for the workspace, by id: each one an agent may be given answers for
+    /// before it ever touches the app, whether or not a window of it is open.
+    fn installed_apps(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// Applications that can open a kind of resource, for the Apps tab.
     fn default_app_candidates(&self) -> Vec<desktop_policy::AppCandidate> {
         Vec::new()
