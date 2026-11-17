@@ -2022,9 +2022,14 @@ impl Widget for ToggleGroup {
                 option
             })
             .collect();
+        // A strip of views is a tab list, a setting's strip a radio group.
+        let (list, item) = match self.style {
+            SegmentedStyle::Tabs => ("tablist", "tab"),
+            SegmentedStyle::Segmented | SegmentedStyle::Quiet => ("radiogroup", "radio"),
+        };
         cx.control(Control::Choices {
-            list: "radiogroup",
-            item: "radio",
+            list,
+            item,
             label: None,
             options,
         });
