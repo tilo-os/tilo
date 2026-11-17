@@ -86,7 +86,7 @@ final class TiloSourceTests: XCTestCase {
         state: {$variant: 'active'}, created_at: 1794900000000, ...more});
       // Chat's own document of the workspace, as its server names what it offers of one, and
       // what a person's device asked of the server: `chat read`, `tilo.models list`.
-      const CHAT = 'record:so.tilo.chat:@tilo:package-primary';
+      const CHAT = 'record:so.tilo.chat:';
       window.asks = [];
       const noAgents = () => { throw Object.assign(new Error('No such action is offered'), {code: 'unknown_action'}); };
       // As the page that asks before it pairs: its card, its sentences, its two buttons.
@@ -137,10 +137,15 @@ final class TiloSourceTests: XCTestCase {
               return done({provider: listed});
             }
             case CHAT + ' read': {
+              // A server whose answer never comes (`window.hangs`).
+              if (window.hangs) return new Promise(() => {});
               if (!window.agents) noAgents();
               const one = target.address.resource.split('/')[2];
               // A server that lists the agents and lets nobody read one of them (`window.rowsOnly`).
               if (one && window.rowsOnly) noAgents();
+              // A server that says each agent whole in its list and offers no read of one agent
+              // (`window.wholeRows`): what main's server answered on 17 November 2026.
+              if (window.wholeRows) { if (one) noAgents(); return done({agents: window.agents}); }
               if (one) return done(window.agents.find(agent => agent.id === one) ?? null);
               return done({kind: 'chat.agent', agents: window.agents.map(agent => ({item: 'chat.agent/agents/' + agent.id, name: agent.name}))});
             }
@@ -148,7 +153,8 @@ final class TiloSourceTests: XCTestCase {
               if (!window.agents) noAgents();
               if (window.mayNotMake) throw Object.assign(new Error('Your role in this workspace may not make an agent'), {code: 'not_permitted'});
               window.madeWith = argument;
-              window.agents.push(window.kept(argument.name.toLowerCase(), {name: argument.name, created_at: 1794900009000 + window.agents.length}));
+              window.agents.push(window.kept(argument.name.toLowerCase(), {name: argument.name, created_at: 1794900009000 + window.agents.length,
+                ...(window.wholeRows ? {keeper: ADA, state: 'active'} : {})}));
               return done(null);
             case CHAT + ' set-agent-on-host':
               // What was asked is kept on the agent as it was said: which agent, and the flag.
@@ -644,6 +650,62 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(sent, [["kind": "agent", "id": "reed", "name": "Reed"]])
         let changed = try await page("return JSON.stringify(window.asks.filter(what => what.startsWith('chat ') && !what.endsWith(' read')))")
         XCTAssertEqual(changed, "[]")
+    }
+
+    /// As the second site's server answered on 17 November 2026: its list holds each agent
+    /// whole, the keeper a bare key and the state a bare word, and it offers no read of one agent.
+    func testAServerThatSaysEachAgentWholeInItsListIsTakenAtItsWordAndTheAssistantIsMade() async throws {
+        try await start(.assistant)
+        try await enter(device: true, """
+            window.byKind = true; window.wholeRows = true;
+            window.agents = [kept('scout', {keeper: 'ff'.repeat(32), state: 'active'})]
+            """)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        // None of hers was listed, so one was made and set to be answered by her server.
+        let asked = try await page("return JSON.stringify(window.asks.filter(what => what.startsWith('chat ')).map(what => what.split(' ')[1]))")
+        XCTAssertEqual(JSON(text: asked)?.array?.compactMap(\.string).filter { $0 != "read" }, ["create-agent", "set-agent-on-host"])
+        let kept = try await agentsKept()
+        XCTAssertEqual(kept, #"[["scout",false],["assistant",true]]"#)
+        try await source.send(Draft(text: "Good morning"), to: .main)
+        let sent = try await sentTo()
+        XCTAssertEqual(sent, [["kind": "agent", "id": "assistant", "name": "Assistant"]])
+    }
+
+    func testAServerThatSaysEachAgentWholeInItsListIsTakenAtItsWordAndTheAssistantIsFound() async throws {
+        try await start(.assistant)
+        try await enter(device: true, """
+            window.byKind = true; window.wholeRows = true;
+            window.agents = [kept('reed', {name: 'Reed', keeper: ADA, state: 'active'}),
+              kept('gone', {keeper: ADA, state: 'retired', created_at: 1794800000000})]
+            """)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        try await source.send(Draft(text: "Hello"), to: .main)
+        let sent = try await sentTo()
+        XCTAssertEqual(sent, [["kind": "agent", "id": "reed", "name": "Reed"]])
+        // Nothing was made, and no agent's own read was asked for.
+        let asked = try await page("return JSON.stringify(window.asks.filter(what => what.startsWith('chat ') && !what.endsWith(' read')))")
+        XCTAssertEqual(asked, "[]")
+    }
+
+    /// As main's page does once after it let a device in: it starts over while its server is asked.
+    func testAPageThatStartsOverWhileItsServerIsAskedLeavesNoWrongSentenceAndIsAskedAgainOnceItIsIn() async throws {
+        try await start(.assistant)
+        try await run("window.byKind = true; window.hangs = true; window.agents = [kept('reed', {name: 'Reed'})]; location.hash = '#/w/ws-1/so.tilo.chat'; enter(true)")
+        try await until("her server is asked for the agents") {
+            (try? await self.page("return String(window.asks.includes('chat read'))")) == "true"
+        }
+        XCTAssertEqual(setups.last, .findingAssistant)
+        // The page starts over under the ask, and is in again a moment later.
+        try await run("document.documentElement.dataset.entry = ''; document.documentElement.dataset.arrival = 'load'")
+        try await until("the page is on its way in again") { if case .arriving = self.source.engine.state { true } else { false } }
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(setups.last, .findingAssistant, "nothing is said while the page is on its way in")
+        try await run("window.hangs = false; enter(true)")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(setups.contains { if case .noAssistant = $0 { true } else { false } })
+        try await source.send(Draft(text: "Hello"), to: .main)
+        let sent = try await sentTo()
+        XCTAssertEqual(sent, [["kind": "agent", "id": "reed", "name": "Reed"]])
     }
 
     func testWhereTheServerRefusesToMakeOneTheMainChatSaysWhyAndAskingAgainMakesIt() async throws {

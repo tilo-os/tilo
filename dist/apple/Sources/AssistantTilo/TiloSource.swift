@@ -413,6 +413,9 @@ public final class TiloSource: AssistantSource {
         } catch TiloEngine.Problem.refused {
             // An older page or an older server: what the page holds is read below.
         } catch {
+            // A page that just let a device in starts over once more, and what it was asked
+            // then is never answered. Nothing is wrong: it is asked again once it is in.
+            if startedOver { return }
             setups.set(.noAssistant(TiloSource.notAnswered))
             return
         }
@@ -420,7 +423,14 @@ public final class TiloSource: AssistantSource {
             take(found, of: me)
             return
         }
+        if startedOver { return }
         setups.set(.noAssistant(TiloSource.agentsNotOffered))
+    }
+
+    /// Whether the page is on its way in again. What it was asked before it started over is
+    /// asked anew when it is in, so nothing is said of an ask that ended with it.
+    private var startedOver: Bool {
+        if case .arriving = engine.state { true } else { false }
     }
 
     /// This agent is the person's assistant: the main chat is their conversation with it.

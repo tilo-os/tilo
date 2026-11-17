@@ -164,7 +164,8 @@ final class AssistantDrive {
             once("session", ["is": "asked", "heading": .string(ask.heading), "said": .array(ask.said.map(JSON.string)),
                              "go": .string(ask.go), "stop": .string(ask.stop)])
         case .pairing: once("session", ["is": "pairing"])
-        case .confirming(let code): once("session", ["is": "confirming", "code": .string(code)])
+        // The code itself goes into --code-file and is never printed.
+        case .confirming: once("session", ["is": "confirming"])
         case .signedIn(let person):
             once("session", ["is": "signedIn", "name": .string(person.name), "workspace": .string(person.workspace),
                              "person": .string(String(person.id.value.prefix(6)))])

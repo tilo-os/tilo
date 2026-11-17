@@ -790,16 +790,16 @@ final class EngineTests: XCTestCase {
             XCTAssertEqual(problem, .refused(code: "unknown_action", reason: "No such action is offered"))
         }
         _ = try? await engine.askAgents("read", agent: "scout")
-        // The document is named as the page that shows it names it.
+        // Whatever record the page says it shows, the server is asked for the workspace's own.
         try await run("globalThis.tiloMount.state = () => ({record: 'uuid:1f0e'})")
         _ = try? await engine.askAgents("create-agent", ["name": "Assistant"])
         let targets = try await said("return JSON.stringify(window.asked.map(one => [one.target.provider, one.target.address.resource, one.target.address.action, one.argument]))")
-        // Chat's own document of the workspace, as its server names what it offers of one.
-        let chat = "record:so.tilo.chat:"
+        // Chat's own document of the workspace, as its server names it: the app and nothing after it.
+        let chat = JSON.string("record:so.tilo.chat:")
         XCTAssertEqual(JSON(text: targets), [
-            [.string(chat + "@tilo:package-primary"), "chat.agent", "read", .null],
-            [.string(chat + "@tilo:package-primary"), "chat.agent/agents/scout", "read", .null],
-            [.string(chat + "uuid:1f0e"), "chat.agent", "create-agent", ["name": "Assistant"]],
+            [chat, "chat.agent", "read", .null],
+            [chat, "chat.agent/agents/scout", "read", .null],
+            [chat, "chat.agent", "create-agent", ["name": "Assistant"]],
         ])
         // Any other action, an action on one agent, a name that is none, and a script without
         // the engine's pass: the server is not asked at all.

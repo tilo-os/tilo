@@ -334,9 +334,9 @@ public enum EngineScript {
           const named = item === null || item === undefined || (typeof item === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(item));
           if (!holds(given) || !agentActions.has(action) || !named || (item && action !== 'read')) return unknown('chat.agent', action);
           if (!device) return noDevice();
-          // Chat's own document of the workspace, as the page that shows it names it.
-          const shown = mount?.state?.()?.record;
-          const provider = `record:so.tilo.chat:${typeof shown === 'string' && shown ? shown : '@tilo:package-primary'}`;
+          // Chat's own document of the workspace, as the workspace's server names it: the app
+          // and nothing after it. Under any longer name the server offers nothing of it.
+          const provider = 'record:so.tilo.chat:';
           try {
             const answer = await device.invoke({provider, address: {resource: item ? `chat.agent/agents/${item}` : 'chat.agent', action}},
               argument && Object.keys(argument).length ? argument : null);
