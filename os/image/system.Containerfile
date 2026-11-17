@@ -103,10 +103,10 @@ COPY \
     os/usr/lib/systemd/user/tilo-runtime-resident.path \
     /usr/lib/systemd/user/
 COPY \
-    os/usr/lib/systemd/system/tilo-relay.service \
+    os/usr/lib/systemd/system/tilo-server.service \
     os/usr/lib/systemd/system/tilo-fs-replica.service \
-    os/usr/lib/systemd/system/tilo-relay-firstboot.service \
-    os/usr/lib/systemd/system/tilo-relay-state-migrate.service \
+    os/usr/lib/systemd/system/tilo-server-firstboot.service \
+    os/usr/lib/systemd/system/tilo-server-state-migrate.service \
     os/usr/lib/systemd/system/tilo-network-start.service \
     os/usr/lib/systemd/system/tilo-network-start.target \
     /usr/lib/systemd/system/
@@ -116,7 +116,7 @@ COPY os/usr/lib/NetworkManager/conf.d/20-tilo-wake.conf \
     /usr/lib/NetworkManager/conf.d/20-tilo-wake.conf
 COPY os/usr/lib/NetworkManager/conf.d/25-tilo-dns-cache.conf \
     /usr/lib/NetworkManager/conf.d/25-tilo-dns-cache.conf
-COPY os/usr/libexec/tilo-relay-firstboot os/usr/libexec/tilo-relay-state-migrate /usr/libexec/
+COPY os/usr/libexec/tilo-server-firstboot os/usr/libexec/tilo-server-state-migrate /usr/libexec/
 COPY \
     os/usr/share/polkit-1/actions/org.tilo.home-peer.policy \
     os/usr/share/polkit-1/actions/org.tilo.disk-unlock.policy \
@@ -385,7 +385,7 @@ COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-o
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
 # this is the only sanctioned way to materialise persistent dirs.
-COPY os/usr/lib/tmpfiles.d/tilo.conf os/usr/lib/tmpfiles.d/tilo-relay.conf os/usr/lib/tmpfiles.d/tilo-device-vpn.conf /usr/lib/tmpfiles.d/
+COPY os/usr/lib/tmpfiles.d/tilo.conf os/usr/lib/tmpfiles.d/tilo-server.conf os/usr/lib/tmpfiles.d/tilo-device-vpn.conf /usr/lib/tmpfiles.d/
 # systemd-tmpfiles --user reads /usr/share/user-tmpfiles.d, not /usr/lib.
 COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf /usr/share/user-tmpfiles.d/
 
@@ -393,7 +393,7 @@ COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpf
 # the identity directory can be created with it. See the snippet for why
 # the device key is group-owned rather than owned by one component.
 # The relay's static account: a desktop set up as a node runs the relay
-# (tilo-node-relay@) under it, as the host image runs tilo-relay.service. Its
+# (tilo-node-relay@) under it, as the host image runs tilo-server.service. Its
 # snippet ships with the relay component (os/components.toml), which arrives
 # with the compiled binaries, so the account is made from the source file here.
 COPY \
@@ -401,10 +401,10 @@ COPY \
     os/usr/lib/sysusers.d/tilo-identity.conf \
     os/usr/lib/sysusers.d/tilo-ntfs.conf \
     /usr/lib/sysusers.d/
-RUN --mount=type=bind,source=os/usr/lib/sysusers.d/tilo-relay.conf,target=/run/tilo-relay-sysusers.conf,ro \
+RUN --mount=type=bind,source=os/usr/lib/sysusers.d/tilo-server.conf,target=/run/tilo-server-sysusers.conf,ro \
     systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf \
- && systemd-sysusers /run/tilo-relay-sysusers.conf \
+ && systemd-sysusers /run/tilo-server-sysusers.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-ntfs.conf
 
 # xdg-desktop-portal backend registration.

@@ -141,7 +141,7 @@ budget.
 
 `crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs` puts native macOS
 apps, headless Chrome pages and a host agent in one workspace of a local
-`tilo-relay dev` host on spare ports, and checks what a person would see: the
+`tilo-server dev` host on spare ports, and checks what a person would see: the
 same record on every side; edits native to browser, browser to native and
 browser to browser, with the time until the other side shows them; named
 cursors and carets both ways; a page that joins late; an agent's edit and
@@ -153,7 +153,7 @@ spawned from a page. It writes `summary.json` and `summary.md` (a check-by-app
 table) under `--out` and stops everything it started.
 
 ```sh
-cargo build --release -p tilo-relay --features web,agents
+cargo build --release -p tilo-server --features web,agents
 cargo build -p tilo-runtime --bin tilo-runtime-mcp -p notes -p sheets -p scratchpad
 crates/browser/tilo-browser-runtime/scripts/build.sh /abs/bundle --bundle desktop
 node crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs --bundle /abs/bundle \
@@ -175,7 +175,7 @@ on one. Each page's channel state (`peer.channelDiagnostics()`) is saved as
 ## The first visit, with a real agent
 
 `crates/browser/tilo-web-desktop/scripts/agent-shell.mjs` walks the first
-visit a person makes on a hosted Tilo, on this machine: a `tilo-relay workspace`
+visit a person makes on a hosted Tilo, on this machine: a `tilo-server workspace`
 host with a workspace of its own for each person, the site in front of it (the
 desktop bundle with a deployment's `entry.json`), and a first visit in headless
 Chrome. It presses "Set up with your agent", reads the code out of the prompt

@@ -25,7 +25,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tokio::sync::Notify;
 use tokio::time::Instant;
 
@@ -165,8 +165,8 @@ impl PresenceMailbox {
 mod tests {
     use super::*;
 
-    fn workspace() -> tilo_relay_protocol::WorkspaceId {
-        tilo_relay_protocol::WorkspaceId::from_u128(7)
+    fn workspace() -> tilo_server_protocol::WorkspaceId {
+        tilo_server_protocol::WorkspaceId::from_u128(7)
     }
 
     fn bytes(text: &str) -> Arc<[u8]> {

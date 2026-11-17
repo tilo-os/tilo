@@ -1,6 +1,6 @@
 /**
  * Setting up a machine: making a Tilo node that waits for its owner
- * (`tilo-relay run --web … --install-token-file PATH`) the person's own,
+ * (`tilo-server run --web … --install-token-file PATH`) the person's own,
  * from a page that holds their root.
  *
  * The node prints its device key (`{"event": "awaiting_certificate",
@@ -19,7 +19,7 @@ import {IdentityError, installNode} from './identity.mjs';
 export const SET_UP = Object.freeze({id: 'set-up-machine', title: 'Set up a machine',
   subtitle: 'Make a Tilo node yours, with its address, key and install token'});
 
-/** The node's shortest install token (`tilo-relay` refuses shorter ones). */
+/** The node's shortest install token (`tilo-server` refuses shorter ones). */
 const MIN_TOKEN = 16;
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 

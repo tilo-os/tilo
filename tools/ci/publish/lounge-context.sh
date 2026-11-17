@@ -10,11 +10,11 @@ out=${1:?$usage}
 binaries=${2:?$usage}
 fonts=${3:?$usage}
 cd "$repo_root"
-[[ -x $binaries/tilo-relay && -x $binaries/discord-worker ]] || die "no Lounge programs in $binaries"
+[[ -x $binaries/tilo-server && -x $binaries/discord-worker ]] || die "no Lounge programs in $binaries"
 [[ -f $fonts/manifest.toml ]] || die "no product font catalog in $fonts"
 rm -rf "$out"
 mkdir -p "$out/bin" "$out/bots" "$out/fonts"
-cp "$binaries/tilo-relay" "$binaries/discord-worker" "$out/bin/"
+cp "$binaries/tilo-server" "$binaries/discord-worker" "$out/bin/"
 cp -a "$fonts/." "$out/fonts/"
 cp apps/discord/bridge/program.json "$out/bots/discord-bridge.json"
 # Every version of each built-in app's surface.toml the apps' history holds, one

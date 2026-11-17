@@ -208,7 +208,7 @@ impl Session {
             },
         };
         let email = match text("email").filter(|email| !email.is_empty()) {
-            Some(email) => match tilo_relay_protocol::workspaces::contact_address(email) {
+            Some(email) => match tilo_server_protocol::workspaces::contact_address(email) {
                 Ok(email) => Some(email),
                 Err(why) => return failed("invalid_arguments", why, "pass one email address"),
             },

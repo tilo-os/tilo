@@ -1,7 +1,7 @@
 //! A computer joins a real workspace service: the composition its deployment
 //! runs, started from this tree, with nothing of its join path stood in for.
 //!
-//! The service is `tilo-relay workspace --persistent` as the Lounge image starts
+//! The service is `tilo-server workspace --persistent` as the Lounge image starts
 //! it: a governed workspace on a temporary state volume, a generated owner
 //! root, the members' desktop shared, people taken by invitation. It names its
 //! site in an `entry.json` written as the web entry image writes one — the home
@@ -43,8 +43,8 @@ use tilo_desktop_model::{
     WorkspaceId,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
-use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
+use tilo_server_client::Host;
+use tilo_server_protocol::operator::{OperatorCommand, OperatorEvent};
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
@@ -66,7 +66,7 @@ use crate::common::publisher;
 /// dials it there.
 const ORIGIN: &str = "https://127.0.0.1";
 
-/// A workspace service as its deployment runs it: `tilo-relay workspace --persistent` with the
+/// A workspace service as its deployment runs it: `tilo-server workspace --persistent` with the
 /// deployment's own routes beside it, spoken to over its stdin as the operator (whose input a
 /// deployment leaves closed).
 struct WorkspaceService {
@@ -100,7 +100,7 @@ impl Drop for WorkspaceService {
 
 impl WorkspaceService {
     /// The service as eu1 runs it: the Lounge image's own entrypoint, given the deployment's
-    /// environment. The entrypoint maps it to the host's flags and execs `tilo-relay` , so the test
+    /// environment. The entrypoint maps it to the host's flags and execs `tilo-server` , so the test
     /// starts exactly what the image starts and cannot drift from it.
     fn start() -> Self {
         Self::with_admission("invite")
@@ -123,7 +123,7 @@ impl WorkspaceService {
         let mut command = Command::new("sh");
         command
             .arg(&entrypoint)
-            // `exec tilo-relay` finds the binary the run built beside the test's own programs.
+            // `exec tilo-server` finds the binary the run built beside the test's own programs.
             .env("PATH", relay_on_path())
             // eu1's environment, as apps/tilo-eu1/deployment.yaml sets it.
             .env("TILO_WORKSPACES_PERSISTENT", "lounge")
@@ -132,7 +132,7 @@ impl WorkspaceService {
             // The origin the ingress publishes. The listeners below stand where it forwards to,
             // each on a port the kernel picks: the plain one's is announced once the service has bound
             // it, and the live session's is the service's own origin host and that port.
-            .env("TILO_WORKSPACES_RELAY_ORIGIN", ORIGIN)
+            .env("TILO_WORKSPACES_SERVER_ORIGIN", ORIGIN)
             .env("TILO_WORKSPACES_PUBLIC_API", ORIGIN)
             .env("TILO_WORKSPACES_WEB_ENTRY", "https://tilo.sh/")
             .env(
@@ -148,7 +148,7 @@ impl WorkspaceService {
                 state.path().join("tilo-workspaces"),
             )
             .env("TILO_WORKSPACES_WEB", "127.0.0.1:0")
-            .env("TILO_WORKSPACES_RELAY_PLAIN", "127.0.0.1:0")
+            .env("TILO_WORKSPACES_SERVER_PLAIN", "127.0.0.1:0")
             .env("TILO_WORKSPACES_LIVE", "127.0.0.1:0")
             .env("TILO_WORKSPACES_HTTP", "127.0.0.1:0")
             // The service's state volume, where the host keeps its secrets.
@@ -156,7 +156,7 @@ impl WorkspaceService {
                 "TILO_SECRETS_DIR",
                 state.path().join("tilo-workspaces/secrets"),
             )
-            .env("TILO_RELAY_LOG", "warn")
+            .env("TILO_SERVER_LOG", "warn")
             .env(
                 "TILO_SOURCE_REVISION",
                 "0123456789abcdef0123456789abcdef01234567",
@@ -258,10 +258,10 @@ fn entrypoint() -> std::path::PathBuf {
         })
 }
 
-/// A PATH holding the relay the run built, so the image's `exec tilo-relay` runs it: the run's own
+/// A PATH holding the relay the run built, so the image's `exec tilo-server` runs it: the run's own
 /// programs beside the test binary, then this machine's.
 fn relay_on_path() -> std::ffi::OsString {
-    let relay = tilo_test_env::sibling_binary("tilo-relay", "tilo-relay");
+    let relay = tilo_test_env::sibling_binary("tilo-server", "tilo-server");
     let programs = relay.parent().expect("the relay's directory").to_path_buf();
     let mut paths = vec![programs];
     paths.extend(std::env::split_paths(
@@ -285,8 +285,8 @@ fn random_key() -> [u8; 32] {
 /// Plain HTTP/1.1 to the service's plain listener: a page's `fetch` .
 struct Plain(String);
 
-impl tilo_relay_client::HttpClient for Plain {
-    fn post(&self, path: &str, body: Vec<u8>) -> tilo_relay_client::HttpFuture<'_> {
+impl tilo_server_client::HttpClient for Plain {
+    fn post(&self, path: &str, body: Vec<u8>) -> tilo_server_client::HttpFuture<'_> {
         let url = format!("{}{path}", self.0);
         Box::pin(async move {
             let client = client()?;
@@ -321,9 +321,9 @@ fn client() -> Result<tilo_net::Client, String> {
 fn host_info(
     runtime: &tokio::runtime::Runtime,
     plain: &str,
-) -> Result<tilo_relay_protocol::web::HostInfo, String> {
+) -> Result<tilo_server_protocol::web::HostInfo, String> {
     runtime
-        .block_on(tilo_relay_client::https::host_info(&Plain(
+        .block_on(tilo_server_client::https::host_info(&Plain(
             plain.to_owned(),
         )))
         .map_err(|error| error.to_string())
@@ -341,7 +341,7 @@ fn page(service: &WorkspaceService, member: &Member) -> Link {
             revocations: tilo_user_identity::RevocationList::new(),
             entering: None,
         },
-        Arc::new(member.key.clone()) as Arc<dyn tilo_relay_client::DeviceSigner>,
+        Arc::new(member.key.clone()) as Arc<dyn tilo_server_client::DeviceSigner>,
         Arc::new(MemoryPeerStore::default()),
     );
     page.join_placed(&service.workspace, "Lounge")
@@ -516,7 +516,7 @@ fn wait_until_their_pointer(
     what: &str,
 ) {
     let workspace_id =
-        tilo_relay_protocol::WorkspaceId::parse(&service.workspace).expect("a workspace id");
+        tilo_server_protocol::WorkspaceId::parse(&service.workspace).expect("a workspace id");
     let deadline = Instant::now()
         .checked_add(tilo_test_env::hang_bound())
         .expect("the wait's bound fits in an Instant");
@@ -604,24 +604,26 @@ fn the_pointer_follows(session: &mut Session, member_page: &Link, service: &Work
 /// host's session, made by a member of the workspace.
 fn invite(service: &WorkspaceService, member_page: &Link, person: [u8; 32]) -> String {
     let reply = member_page
-        .ask_workspaces(tilo_relay_protocol::workspaces::WorkspacesRequest::Invite {
-            workspace: service.workspace.clone(),
-            request_id: random_key(),
-            role: tilo_relay_protocol::workspaces::Role::Editor,
-            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
-            inviter_name: Some("The Lounge".to_owned()),
-            wait_list_entry: None,
-            // The invitation names the person it is for: a workspace taking people by
-            // invitation answers its entry with it when they ask.
-            recipient: Some(person),
-            administrator: false,
-        })
+        .ask_workspaces(
+            tilo_server_protocol::workspaces::WorkspacesRequest::Invite {
+                workspace: service.workspace.clone(),
+                request_id: random_key(),
+                role: tilo_server_protocol::workspaces::Role::Editor,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+                inviter_name: Some("The Lounge".to_owned()),
+                wait_list_entry: None,
+                // The invitation names the person it is for: a workspace taking people by
+                // invitation answers its entry with it when they ask.
+                recipient: Some(person),
+                administrator: false,
+            },
+        )
         .expect("the member's page asks the host to invite");
     let reply = reply
         .recv_timeout(Duration::from_secs(60))
         .expect("the host answers the invite")
         .expect("the host takes the invitation");
-    let tilo_relay_protocol::workspaces::WorkspacesReply::Invitation {
+    let tilo_server_protocol::workspaces::WorkspacesReply::Invitation {
         signed_invitation, ..
     } = reply
     else {

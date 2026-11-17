@@ -10,11 +10,11 @@ use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
 };
-use tilo_relay_client::login::Admission;
+use tilo_server_client::login::Admission;
 #[cfg(not(target_arch = "wasm32"))]
-use tilo_relay_client::login::{Entry, SignIn};
-use tilo_relay_client::{CertifyError, DeviceSigner};
-use tilo_relay_session::workspaces::{
+use tilo_server_client::login::{Entry, SignIn};
+use tilo_server_client::{CertifyError, DeviceSigner};
+use tilo_server_session::workspaces::{
     CREATE_OWN_WORKSPACE, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
     KEEP_PERSONAL, LIST_PERSONAL, PersonalList, WorkspaceLabels, WorkspaceListing,
 };
@@ -25,7 +25,7 @@ use crate::remote::SessionActions;
 use crate::session::{HOST_ITSELF, PeerConfig};
 use crate::{Cmd, Link, Outbox, TransportPhase};
 use crate::{MemoryPeerStore, PeerStore};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// How long joining a workspace waits for its host to admit this device.
 const ADMITTING: Wait = Wait::from_secs(20);
@@ -117,7 +117,7 @@ impl Device {
     fn entering(
         sign_in: &SignIn,
         signer: Arc<dyn DeviceSigner>,
-        entering: Option<tilo_relay_protocol::entering::Entering>,
+        entering: Option<tilo_server_protocol::entering::Entering>,
     ) -> Self {
         Self::over(
             PeerConfig {
@@ -148,14 +148,14 @@ impl Device {
         WorkspaceId::parse(&workspace)
             .ok_or_else(|| CertifyError::Request("the link names no workspace".to_string()))?;
         let entering = entry.and_then(Entry::workspace).map(|workspace| {
-            tilo_relay_protocol::entering::Entering {
+            tilo_server_protocol::entering::Entering {
                 workspace,
-                name: tilo_relay_protocol::web::kept(
+                name: tilo_server_protocol::web::kept(
                     &sign_in.agent,
-                    tilo_relay_protocol::web::MAX_DISPLAY_NAME_CHARS,
+                    tilo_server_protocol::web::MAX_DISPLAY_NAME_CHARS,
                 ),
                 request_id: rand::random(),
-                through: tilo_relay_protocol::entering::Through::Entry,
+                through: tilo_server_protocol::entering::Through::Entry,
             }
         });
         let through_entry = entering.is_some();
@@ -677,7 +677,7 @@ pub async fn entering_certificate(
             entry: None,
         });
     };
-    tilo_relay_client::invite::guest_certificate(root, device.device_public_key(), label, now_ns)
+    tilo_server_client::invite::guest_certificate(root, device.device_public_key(), label, now_ns)
         .await
         .map_err(|error| HostRefusal {
             code: HostRefusal::NO_CERTIFICATE.to_owned(),
@@ -714,7 +714,7 @@ pub async fn invitation_entry(
     invitation: &[u8],
     device: &dyn DeviceSigner,
     entering: Entering<'_>,
-) -> Result<(DeviceCert, tilo_relay_protocol::entering::Entering), HostRefusal> {
+) -> Result<(DeviceCert, tilo_server_protocol::entering::Entering), HostRefusal> {
     let entry =
         invitation_entering(invitation, entering.name, entering.token).map_err(|message| {
             HostRefusal {
@@ -744,18 +744,18 @@ fn invitation_entering(
     invitation: &[u8],
     name: &str,
     token: Option<&[u8]>,
-) -> Result<tilo_relay_protocol::entering::Entering, String> {
+) -> Result<tilo_server_protocol::entering::Entering, String> {
     let workspace =
         tilo_peer_state::join_log::invitation_workspace(invitation, tilo_clock::unix_now_ns())
             .map_err(|error| format!("This invitation cannot be used: {error}"))?;
-    Ok(tilo_relay_protocol::entering::Entering {
+    Ok(tilo_server_protocol::entering::Entering {
         workspace: workspace.to_string(),
-        name: tilo_relay_protocol::web::kept(
+        name: tilo_server_protocol::web::kept(
             name,
-            tilo_relay_protocol::web::MAX_DISPLAY_NAME_CHARS,
+            tilo_server_protocol::web::MAX_DISPLAY_NAME_CHARS,
         ),
         request_id: rand::random(),
-        through: tilo_relay_protocol::entering::Through::Invitation {
+        through: tilo_server_protocol::entering::Through::Invitation {
             invitation: invitation.to_vec(),
             token: token.map(<[u8]>::to_vec),
         },
@@ -764,10 +764,10 @@ fn invitation_entering(
 
 /// What a workspace said as it admitted a device, or why it did not.
 fn admission(
-    entered: tilo_relay_protocol::entering::Entered,
-) -> Result<Admission, tilo_relay_protocol::entering::EnterRefusal> {
+    entered: tilo_server_protocol::entering::Entered,
+) -> Result<Admission, tilo_server_protocol::entering::EnterRefusal> {
     match entered {
-        tilo_relay_protocol::entering::Entered::Admitted {
+        tilo_server_protocol::entering::Entered::Admitted {
             workspace,
             workspace_id,
             name,
@@ -779,7 +779,7 @@ fn admission(
             name,
             role,
         }),
-        tilo_relay_protocol::entering::Entered::Refused(refusal) => Err(refusal),
+        tilo_server_protocol::entering::Entered::Refused(refusal) => Err(refusal),
     }
 }
 
@@ -796,7 +796,7 @@ pub async fn entry_request(
     workspace: &str,
     device: &dyn DeviceSigner,
     entering: Entering<'_>,
-) -> Result<(DeviceCert, tilo_relay_protocol::entering::Entering), HostRefusal> {
+) -> Result<(DeviceCert, tilo_server_protocol::entering::Entering), HostRefusal> {
     let cert = entering_certificate(
         entering.held,
         host,
@@ -806,14 +806,14 @@ pub async fn entry_request(
         tilo_clock::unix_now_ns(),
     )
     .await?;
-    let entry = tilo_relay_protocol::entering::Entering {
+    let entry = tilo_server_protocol::entering::Entering {
         workspace: workspace.to_owned(),
-        name: tilo_relay_protocol::web::kept(
+        name: tilo_server_protocol::web::kept(
             entering.name,
-            tilo_relay_protocol::web::MAX_DISPLAY_NAME_CHARS,
+            tilo_server_protocol::web::MAX_DISPLAY_NAME_CHARS,
         ),
         request_id: rand::random(),
-        through: tilo_relay_protocol::entering::Through::Entry,
+        through: tilo_server_protocol::entering::Through::Entry,
     };
     Ok((cert, entry))
 }
@@ -824,7 +824,7 @@ pub async fn entry_request(
 /// The entry or the workspace refused (the entry's own code: `banned`, `removed`,
 /// `invitation-only`, `full` with the wait it asked for, `refused`), or no answer came in time.
 pub async fn entered(peer: &Link) -> Result<Admission, HostRefusal> {
-    let waits = ADMITTING.max(tilo_relay_protocol::entering::ENTERING_DEADLINE);
+    let waits = ADMITTING.max(tilo_server_protocol::entering::ENTERING_DEADLINE);
     peer.until(waits, |status| {
         match &status.entry {
             Some(crate::Entry::Admitted {
@@ -890,7 +890,7 @@ pub struct HostRefusal {
     /// The entry's own refusal, when a workspace's entry turned the device away: what it says
     /// about a wait list the workspace keeps, which its page offers.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub entry: Option<tilo_relay_protocol::directory::EntryRefused>,
+    pub entry: Option<tilo_server_protocol::directory::EntryRefused>,
 }
 
 impl HostRefusal {
@@ -975,7 +975,7 @@ impl HostRefusal {
     /// `reason` as the host said it, typed where it is a [`Refusal`]'s text, or the refusal of
     /// the site's entry when the host turned away a person it never let in.
     fn said(code: &str, reason: &str) -> Self {
-        if let Some(entry) = tilo_relay_protocol::directory::EntryRefused::from_reason(reason) {
+        if let Some(entry) = tilo_server_protocol::directory::EntryRefused::from_reason(reason) {
             return Self {
                 code: Self::NOT_ADMITTED.to_owned(),
                 message: entry.error.clone(),
@@ -1048,7 +1048,7 @@ pub async fn session_as_agent(peer: &Link, label: &str) -> Result<(), String> {
     let label: String = label
         .chars()
         .filter(|character| !character.is_control())
-        .take(tilo_relay_protocol::transport::MAX_AGENT_LABEL_CHARS)
+        .take(tilo_server_protocol::transport::MAX_AGENT_LABEL_CHARS)
         .collect();
     let (done, receive) = crate::answer();
     peer.send(Cmd::AgentSession(label, done))?;
@@ -1171,7 +1171,7 @@ mod tests {
         // A host turning away a person its site never let in says it as the site's entry does: the
         // refusal reads as not admitted, with the entry's wait list for whoever shows it.
         {
-            use tilo_relay_protocol::directory::{EntryRefusalCode, EntryRefused};
+            use tilo_server_protocol::directory::{EntryRefusalCode, EntryRefused};
             let entry = EntryRefused {
                 code: EntryRefusalCode::InvitationOnly,
                 error: "tilo.test takes people by invitation".into(),

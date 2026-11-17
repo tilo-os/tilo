@@ -17,7 +17,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::WorkspaceShell;
 use crate::host::HostEndpoint;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The host's own device, as the service takes part in its workspaces: a
 /// member of each workspace's documents like any other device. It opens only

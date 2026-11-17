@@ -571,7 +571,7 @@ fn install_joined_device_presented(
         cert.device_public_key,
     )?;
     // Beside the peer lists the shell reads it with.
-    let workspaces_dest = tilo_relay_protocol::home_peer_registry_path(
+    let workspaces_dest = tilo_server_protocol::home_peer_registry_path(
         target_system
             .user_pubkey
             .parent()
@@ -742,7 +742,7 @@ fn copy_home_peers(
     joined_device: [u8; 32],
 ) -> io::Result<()> {
     let identity_id = hex::encode(local_cert.user_public_key);
-    let entries = tilo_relay_protocol::read_home_peers(source)?;
+    let entries = tilo_server_protocol::read_home_peers(source)?;
     let own: Vec<_> = entries
         .into_iter()
         .filter(|entry| entry.user_public_key == identity_id)
@@ -757,16 +757,16 @@ fn copy_home_peers(
                 "target identity root is missing",
             )
         })?;
-    tilo_relay_protocol::write_home_peers(
-        &tilo_relay_protocol::home_peer_registry_path(parent),
+    tilo_server_protocol::write_home_peers(
+        &tilo_server_protocol::home_peer_registry_path(parent),
         &own,
     )?;
-    tilo_relay_protocol::remember_personal_device(
-        &tilo_relay_protocol::personal_device_peer_path(parent),
+    tilo_server_protocol::remember_personal_device(
+        &tilo_server_protocol::personal_device_peer_path(parent),
         local_cert.device_public_key,
     )?;
     let local_peers = source.with_file_name("personal-device-peers.json");
-    tilo_relay_protocol::remember_personal_device(&local_peers, joined_device)?;
+    tilo_server_protocol::remember_personal_device(&local_peers, joined_device)?;
     Ok(())
 }
 
@@ -1828,8 +1828,8 @@ mod tests {
     )]
     fn installed_device_joins_the_setup_fleet_without_the_root_secret() {
         use ed25519_dalek::Signer;
-        use tilo_relay_protocol::HomePeerRegistration;
-        use tilo_relay_protocol::WorkspaceId;
+        use tilo_server_protocol::HomePeerRegistration;
+        use tilo_server_protocol::WorkspaceId;
 
         let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let local_device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1964,14 +1964,14 @@ mod tests {
                 .any(|item| { item.device_public_key == cert.device_public_key })
         );
         let copied: Vec<HomePeerRegistration> = serde_json::from_slice(
-            &std::fs::read(tilo_relay_protocol::home_peer_registry_path(
+            &std::fs::read(tilo_server_protocol::home_peer_registry_path(
                 &dir.path().join("var/lib/tilo"),
             ))
             .unwrap(),
         )
         .unwrap();
         assert_eq!(copied[0].user_public_key, identity_id);
-        let service = hex::encode(tilo_relay_protocol::relay_service_node_id(
+        let service = hex::encode(tilo_server_protocol::relay_service_node_id(
             &local_device.to_bytes(),
         ));
         assert!(
@@ -1982,7 +1982,7 @@ mod tests {
         );
         let direct: Vec<String> = serde_json::from_slice(
             &std::fs::read(
-                tilo_relay_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
+                tilo_server_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
                     .with_file_name("personal-device-peers.json"),
             )
             .unwrap(),
@@ -1996,14 +1996,14 @@ mod tests {
         assert_eq!(local_direct, vec![hex::encode(cert.device_public_key)]);
         let workspaces: Vec<String> = serde_json::from_slice(
             &std::fs::read(
-                tilo_relay_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
+                tilo_server_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
                     .with_file_name("personal-workspaces.json"),
             )
             .unwrap(),
         )
         .unwrap();
         assert_eq!(workspaces, vec!["11111111-1111-4111-8111-111111111111"]);
-        let peers_bytes = std::fs::read(tilo_relay_protocol::home_peer_registry_path(
+        let peers_bytes = std::fs::read(tilo_server_protocol::home_peer_registry_path(
             &dir.path().join("var/lib/tilo"),
         ))
         .unwrap();
@@ -2037,8 +2037,8 @@ mod tests {
 
     #[test]
     fn enroll_from_local_identity_signs_with_the_active_person_not_a_copied_root() {
-        use tilo_relay_protocol::HomePeerRegistration;
-        use tilo_relay_protocol::WorkspaceId;
+        use tilo_server_protocol::HomePeerRegistration;
+        use tilo_server_protocol::WorkspaceId;
 
         let dir = tempfile::tempdir().unwrap();
         let local_identity = dir.path().join("local-identity");

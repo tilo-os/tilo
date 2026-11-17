@@ -16,8 +16,8 @@ use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
 };
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
-use tilo_relay_protocol::workspaces::JoinReply;
-use tilo_relay_session::workspaces::{
+use tilo_server_protocol::workspaces::JoinReply;
+use tilo_server_session::workspaces::{
     CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, HOST_ACTIONS_PROVIDER,
     HOST_WORKSPACES_RESOURCE, Refusal,
 };
@@ -190,13 +190,13 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     assert_eq!(
         offers,
         [
-            tilo_relay_session::workspaces::BRANCH_OWN_WORKSPACE,
+            tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE,
             CREATE_OWN_WORKSPACE,
             DELETE_WORKSPACE,
-            tilo_relay_session::workspaces::LIST_WORKSPACES,
-            tilo_relay_session::workspaces::LIST_PERSONAL,
-            tilo_relay_session::workspaces::KEEP_PERSONAL,
-            tilo_relay_session::workspaces::PERSONAL_DEVICE_NAME,
+            tilo_server_session::workspaces::LIST_WORKSPACES,
+            tilo_server_session::workspaces::LIST_PERSONAL,
+            tilo_server_session::workspaces::KEEP_PERSONAL,
+            tilo_server_session::workspaces::PERSONAL_DEVICE_NAME,
         ],
         "a stranger makes, branches, deletes and lists the workspaces of their own, keeps and \
          reads their list, and nothing else"
@@ -342,8 +342,8 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
     // Their listing names every one, and is looked up by their own workspaces
     // rather than by reading the ones the host keeps.
     let mut ask = own_request(json!({}));
-    ask.target.address.action = tilo_relay_session::workspaces::LIST_WORKSPACES.into();
-    let listed: Vec<tilo_relay_session::workspaces::WorkspaceListing> =
+    ask.target.address.action = tilo_server_session::workspaces::LIST_WORKSPACES.into();
+    let listed: Vec<tilo_server_session::workspaces::WorkspaceListing> =
         serde_json::from_value(invoke(&host, &guest, ask).await.unwrap()).unwrap();
     assert_eq!(listed.len(), HUNDREDS, "{listed:?}");
     assert!(
@@ -700,7 +700,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     // host's others.
     workspaces.create("Someone else's").await.unwrap();
     let mut list = own_request(json!({}));
-    list.target.address.action = tilo_relay_session::workspaces::LIST_WORKSPACES.into();
+    list.target.address.action = tilo_server_session::workspaces::LIST_WORKSPACES.into();
     let listed = settled(host.as_host(&all).invoke(&agent, list))
         .await
         .unwrap();
@@ -897,7 +897,7 @@ async fn own_as_key(
 /// `verb` of `workspace`'s governance with `argument`, asked by `cert`'s key.
 async fn govern(
     host: &HostWorkspaceActions,
-    workspace: &tilo_relay_session::workspaces::WorkspaceListing,
+    workspace: &tilo_server_session::workspaces::WorkspaceListing,
     cert: &DeviceCert,
     verb: &str,
     argument: Value,
@@ -1122,7 +1122,7 @@ async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in(
 async fn entered(
     host: &HostWorkspaceActions,
     workspaces: &Workspaces,
-    workspace: &tilo_relay_session::workspaces::WorkspaceListing,
+    workspace: &tilo_server_session::workspaces::WorkspaceListing,
     person: &SigningKey,
 ) -> DeviceCert {
     let key = certified(
@@ -1138,7 +1138,7 @@ async fn entered(
 /// `cert` asks the host to add `person` to `workspace` as `role`, named "Someone".
 async fn add_member(
     host: &HostWorkspaceActions,
-    workspace: &tilo_relay_session::workspaces::WorkspaceListing,
+    workspace: &tilo_server_session::workspaces::WorkspaceListing,
     cert: &DeviceCert,
     person: &SigningKey,
     role: &str,
@@ -1162,9 +1162,9 @@ async fn add_member(
 async fn listed_for(
     host: &HostWorkspaceActions,
     device: &DeviceCert,
-) -> Vec<tilo_relay_session::workspaces::WorkspaceListing> {
+) -> Vec<tilo_server_session::workspaces::WorkspaceListing> {
     let mut ask = own_request(json!({}));
-    ask.target.address.action = tilo_relay_session::workspaces::LIST_WORKSPACES.into();
+    ask.target.address.action = tilo_server_session::workspaces::LIST_WORKSPACES.into();
     serde_json::from_value(invoke(host, device, ask).await.unwrap()).unwrap()
 }
 
@@ -1458,7 +1458,7 @@ async fn held_host() -> (
     tilo_user_identity::DeviceCert,
     tempfile::TempDir,
 ) {
-    use tilo_relay_protocol::workspaces::Role;
+    use tilo_server_protocol::workspaces::Role;
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
@@ -1476,7 +1476,7 @@ async fn held_host() -> (
         .publish(
             &lounge,
             &owner,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Coffee and tea".into(),
                 default_role: Role::Editor,
             },
@@ -1488,7 +1488,7 @@ async fn held_host() -> (
         .await
         .unwrap();
     assert!(
-        workspaces.offer_wait_list(tilo_relay_protocol::directory::EntryWaitList {
+        workspaces.offer_wait_list(tilo_server_protocol::directory::EntryWaitList {
             contact: Some("hello@tilo.example".into()),
             mail: true,
         })
@@ -1519,7 +1519,7 @@ async fn held_host() -> (
 /// anyone.
 #[tokio::test]
 async fn the_owners_own_device_is_let_in_past_an_invitation_only_entry() {
-    use tilo_relay_protocol::directory::EntryJoin;
+    use tilo_server_protocol::directory::EntryJoin;
 
     let (key, owner) = governor();
     let dir = tempfile::tempdir().unwrap();
@@ -1533,9 +1533,9 @@ async fn the_owners_own_device_is_let_in_past_an_invitation_only_entry() {
         .publish(
             &lounge,
             &owner,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Coffee and tea".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await
@@ -1560,7 +1560,7 @@ async fn the_owners_own_device_is_let_in_past_an_invitation_only_entry() {
 /// the strength of an address, and says it keeps one.
 #[tokio::test]
 async fn the_wait_list_holds_the_entry_and_lets_nobody_in_on_an_address() {
-    use tilo_relay_protocol::directory::EntryJoin;
+    use tilo_server_protocol::directory::EntryJoin;
 
     let (_, workspaces, lounge, stranger, _state) = held_host().await;
     let refused = workspaces
@@ -1595,7 +1595,7 @@ async fn the_wait_list_holds_the_entry_and_lets_nobody_in_on_an_address() {
 /// The wait list's refusal `result` carries: the entry's own, offering the
 /// wait list it keeps, as the host refuses a person it never let in.
 fn waits(result: &Result<impl std::fmt::Debug, ActionHostError>) {
-    use tilo_relay_protocol::directory::{EntryRefusalCode, EntryRefused};
+    use tilo_server_protocol::directory::{EntryRefusalCode, EntryRefused};
     let Err(ActionHostError::Refused { reason }) = result else {
         panic!("a person never let in is refused: {result:?}");
     };
@@ -1644,7 +1644,7 @@ async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
         .await,
     );
     let mut keep = own_request(json!({"list": {"workspaces": []}}));
-    keep.target.address.action = tilo_relay_session::workspaces::KEEP_PERSONAL.into();
+    keep.target.address.action = tilo_server_session::workspaces::KEEP_PERSONAL.into();
     waits(&invoke(&host, &stranger, keep).await);
     for person in [stranger.user_public_key, root.verifying_key().to_bytes()] {
         assert!(
@@ -1771,7 +1771,7 @@ async fn an_invited_member_enters_what_they_were_invited_into() {
     assert_eq!(entered.workspace.workspace, created.workspace.workspace);
     // Their workspace list is kept: they take part here.
     let mut keep = own_request(json!({"list": {"workspaces": []}}));
-    keep.target.address.action = tilo_relay_session::workspaces::KEEP_PERSONAL.into();
+    keep.target.address.action = tilo_server_session::workspaces::KEEP_PERSONAL.into();
     invoke(&host, &stranger, keep).await.unwrap();
     // Invited into a workspace here, they are past the site's invite-only
     // sign-up: a workspace of their own is theirs to make too.
@@ -1808,7 +1808,7 @@ async fn subscribe(
     workspace: &str,
     device: &DeviceCert,
 ) -> Result<(), crate::workspace_access::DenyReason> {
-    let id = tilo_relay_protocol::WorkspaceId::parse(workspace).unwrap();
+    let id = tilo_server_protocol::WorkspaceId::parse(workspace).unwrap();
     let runtime = workspaces
         .inner
         .host

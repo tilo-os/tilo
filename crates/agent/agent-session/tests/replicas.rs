@@ -358,7 +358,7 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
         .presence()
         .expect("the append leaves the agent somewhere");
     let (key, start, end) =
-        tilo_relay_protocol::live::read_presence_anchors(&anchor, &head).unwrap();
+        tilo_server_protocol::live::read_presence_anchors(&anchor, &head).unwrap();
     let last = agent
         .read(|doc| {
             let state = <word_processor::model::Document as ui::tilo_resource::Resource>::read(doc)

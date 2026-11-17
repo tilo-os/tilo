@@ -40,8 +40,8 @@ async fn main() -> Result<(), String> {
         );
     }
     let client = builder.build().map_err(|error| error.to_string())?;
-    let host = tilo_relay_client::https::Origin::new(&client, &relay);
-    let info = tilo_relay_client::https::host_info(&host)
+    let host = tilo_server_client::https::Origin::new(&client, &relay);
+    let info = tilo_server_client::https::host_info(&host)
         .await
         .map_err(|error| format!("the relay: {error}"))?;
     let address = info.address.ok_or("the relay takes no device sessions")?;
@@ -83,7 +83,7 @@ async fn main() -> Result<(), String> {
         .map_err(|refused| format!("{name}: {}", refused.message))?;
         let session = tilo_session_client::start_session(
             tilo_session_client::PeerConfig {
-                host: tilo_relay_client::Host::published(&address),
+                host: tilo_server_client::Host::published(&address),
                 cert,
                 host_cert: info.host_cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),

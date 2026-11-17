@@ -13,8 +13,8 @@
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
-use tilo_relay_protocol::{DocumentAnswer, WorkspaceId};
+use tilo_server_client::Host;
+use tilo_server_protocol::{DocumentAnswer, WorkspaceId};
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
@@ -100,9 +100,9 @@ async fn a_page_names_its_own_record_and_another_member_is_told_it_is_not_theirs
         .publish(
             &lounge.workspace,
             &host_device.cert,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await

@@ -1,5 +1,5 @@
 //! Cheap per-workspace counters — accessible via
-//! `tilo-relay-admin status` and eventually a Prometheus endpoint.
+//! `tilo-server-admin status` and eventually a Prometheus endpoint.
 //!
 //! These are `AtomicU64` counters with no external client; a peer
 //! only observes them if it explicitly asks (`admin status`).
@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Coarse global metrics for the daemon.
 #[derive(Default, Debug)]
@@ -328,7 +328,7 @@ impl<W: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for EgressWrite<W> 
 }
 
 /// The persisted counter schema, shared with status readers.
-pub use tilo_relay_protocol::metrics::{MetricsSnapshot, WorkspaceEgress};
+pub use tilo_server_protocol::metrics::{MetricsSnapshot, WorkspaceEgress};
 
 #[cfg(test)]
 mod tests {

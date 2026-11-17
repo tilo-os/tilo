@@ -81,7 +81,7 @@ mod tests {
     )]
 
     use super::*;
-    use tilo_relay_protocol::live::LiveResource;
+    use tilo_server_protocol::live::LiveResource;
 
     const WORKSPACE: &str = "6b3f9a10-0000-4000-8000-00000000000c";
 

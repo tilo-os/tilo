@@ -12,7 +12,7 @@ use super::{
     StateCommit, StateSource, Step, StoreError, WorkLimit, live_budget, test_point,
     trace_native_publication,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 pub(super) async fn enqueue_state(
     workspace: &SharedWorkspace,
@@ -46,7 +46,7 @@ struct StateAdmissionTrace {
 
 impl StateAdmissionTrace {
     fn new(envelope: &Envelope) -> Option<Self> {
-        if !tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
+        if !tracing::enabled!(target: "tilo_server::native_publication", tracing::Level::DEBUG) {
             return None;
         }
         let Envelope::Delta {
@@ -74,7 +74,7 @@ impl StateAdmissionTrace {
     }
 
     fn emit(&self, phase: &str) {
-        tracing::debug!(target: "tilo_relay::native_publication",
+        tracing::debug!(target: "tilo_server::native_publication",
             phase, id = %self.id, kind = self.kind,
             workspace_id = %self.workspace_id,
             author = %hex::encode(self.author),

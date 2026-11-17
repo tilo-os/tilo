@@ -23,8 +23,8 @@ use tilo_actions::remote::person_accounts::{
     StartedSend,
 };
 use tilo_actions::remote::{ActionHost, ActionHostError, Caller, CatalogueQuery, ReceiptStatus};
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::super::HostWorkspaceActions;

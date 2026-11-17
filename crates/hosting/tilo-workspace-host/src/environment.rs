@@ -62,7 +62,7 @@ use serde::{Deserialize, Serialize};
 use tilo_lock::RwLockRecover as _;
 
 use crate::workspace_access::WorkspaceOperation;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The record's channel on the state protocol: [`neighbour_wire::app_document_channel`]
 /// for the record's app and id. The state protocol names a record by this alone;
@@ -598,8 +598,8 @@ fn load(path: &Path) -> Result<HashMap<[u8; 32], Kept>, Unreadable> {
 mod tests {
     use super::*;
 
-    fn workspace() -> tilo_relay_protocol::WorkspaceId {
-        tilo_relay_protocol::WorkspaceId::from_u128(7)
+    fn workspace() -> tilo_server_protocol::WorkspaceId {
+        tilo_server_protocol::WorkspaceId::from_u128(7)
     }
 
     fn scope() -> EnvironmentScope {
@@ -627,7 +627,7 @@ mod tests {
     fn an_environment_reaches_its_workspace_and_no_other() {
         assert!(scope().admits(workspace(), WorkspaceOperation::State));
         assert!(!scope().admits(
-            tilo_relay_protocol::WorkspaceId::from_u128(8),
+            tilo_server_protocol::WorkspaceId::from_u128(8),
             WorkspaceOperation::State
         ));
     }

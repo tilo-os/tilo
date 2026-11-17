@@ -1671,7 +1671,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// The workspace refused `changes` (Automerge hashes) of this window's
     /// record, `reason` what a person is told (a host replicating the
     /// record reads it from the workspace's words with
-    /// `tilo_relay_protocol::refusal::Refusal::plain`): withdraw them and what
+    /// `tilo_server_protocol::refusal::Refusal::plain`): withdraw them and what
     /// was built on them, as that host does, and run the frame that tells
     /// the app. Whether anything was withdrawn.
     pub fn refused_by_workspace(

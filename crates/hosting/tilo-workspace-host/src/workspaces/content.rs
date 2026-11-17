@@ -32,7 +32,7 @@ use tilo_peer_state::peer_handle;
 
 use super::{CollaborationError, Workspaces};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The bytes of one piece, as members answer.
 const PIECE_BYTES: usize = 192 * 1024;

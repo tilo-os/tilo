@@ -8,8 +8,8 @@ use super::{
 };
 use crate::member_limits::Ownership;
 use crate::workspace_access::WorkspaceOperation;
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_protocol::refusal::Refusal;
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::refusal::Refusal;
 
 /// Spends `peer`'s budget for one change as its `ownership` is, unless the
 /// relay's own user sent it: the host device and the bots a host-held root

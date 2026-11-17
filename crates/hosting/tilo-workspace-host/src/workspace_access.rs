@@ -93,7 +93,7 @@ use crate::peer::AgentRegistry;
 use crate::policy::TrustPolicy;
 use crate::workspace::WorkspaceRuntime;
 use tilo_lock::RwLockRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// How a workspace admits devices beyond its exact membership.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -258,8 +258,8 @@ pub enum DenyReason {
 impl DenyReason {
     /// The refusal a device is sent for it.
     #[must_use]
-    pub fn refusal(self) -> tilo_relay_protocol::refusal::Refusal {
-        use tilo_relay_protocol::refusal::Refusal;
+    pub fn refusal(self) -> tilo_server_protocol::refusal::Refusal {
+        use tilo_server_protocol::refusal::Refusal;
         match self {
             Self::OutOfEnvironmentScope => Refusal::NotAllowed(self.reason().into()),
             _ => Refusal::NotAMember(self.reason().into()),
@@ -387,7 +387,7 @@ impl RelayTrust<'_> {
         device: &[u8; 32],
         workspace_id: WorkspaceId,
         now_ns: u64,
-    ) -> Option<tilo_relay_protocol::delegation::Delegation> {
+    ) -> Option<tilo_server_protocol::delegation::Delegation> {
         self.agents
             .read_recover()
             .get(device)

@@ -1,11 +1,11 @@
 //! This session's part in the calls of the workspaces it joined.
 //!
-//! The host governs each call (see [`tilo_relay_protocol::voice`]); the
+//! The host governs each call (see [`tilo_server_protocol::voice`]); the
 //! session keeps at most one participation per workspace alive for its consumer:
 //! it joins, repeats the join with its participation every
-//! [`HEARTBEAT`](tilo_relay_protocol::voice::HEARTBEAT) and after every
+//! [`HEARTBEAT`](tilo_server_protocol::voice::HEARTBEAT) and after every
 //! reconnect, joins afresh once when the host forgot the participation
-//! (a reconnect after [`PARTICIPATION_TTL`](tilo_relay_protocol::voice::PARTICIPATION_TTL)),
+//! (a reconnect after [`PARTICIPATION_TTL`](tilo_server_protocol::voice::PARTICIPATION_TTL)),
 //! and leaves. Each grant the host sends is handed on as
 //! a [`VoiceEvent::Granted`]: this participation's directions in the call and
 //! its roster, which the host refreshes whenever either changes.
@@ -13,9 +13,9 @@
 use std::collections::HashMap;
 
 use crate::VoiceEvent;
-use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_protocol::voice::Showing;
+use tilo_server_protocol::Envelope;
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::voice::Showing;
 
 struct Joined {
     call: [u8; 32],
@@ -252,7 +252,7 @@ impl Participations {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_relay_protocol::voice::{Directions, VoiceGrant};
+    use tilo_server_protocol::voice::{Directions, VoiceGrant};
 
     fn workspace() -> WorkspaceId {
         WorkspaceId::from_u128(7)

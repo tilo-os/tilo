@@ -26,7 +26,7 @@ COPY os/usr/share/licenses/tilo-speech-worker/LICENSE /tilo-components/usr/share
 COPY os/usr/share/tilo/system-interfaces.toml /tilo-components/usr/share/tilo/system-interfaces.toml
 # Relay component metadata travels with the same component in images and updates.
 COPY os/usr/lib/tilo/node-relay.toml /tilo-components/usr/lib/tilo/node-relay.toml
-COPY os/usr/lib/sysusers.d/tilo-relay.conf /tilo-components/usr/lib/sysusers.d/tilo-relay.conf
+COPY os/usr/lib/sysusers.d/tilo-server.conf /tilo-components/usr/lib/sysusers.d/tilo-server.conf
 COPY os/usr/lib/systemd/system/tilo-node-relay@.service \
     os/usr/lib/systemd/system/tilo-node-session-key@.service \
     os/usr/lib/systemd/system/tilo-node-session@.service \

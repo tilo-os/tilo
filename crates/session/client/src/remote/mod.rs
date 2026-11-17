@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
-use tilo_relay_protocol::refusal::Refusal;
+use tilo_server_protocol::refusal::Refusal;
 
 use collab_types::WorkspaceId;
 use tilo_actions::remote::{

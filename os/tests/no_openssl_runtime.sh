@@ -297,7 +297,7 @@ fi
 for manifest in \
   "$repo/os/Containerfile" \
   "$repo/os/kernel/Containerfile" \
-  "$repo/os/containers/tilo-relay/Containerfile" \
+  "$repo/os/containers/tilo-server/Containerfile" \
   "$repo/dist/arch/PKGBUILD" \
   "$repo/dist/nix/package.nix"; do
   if sed -e '/^[[:space:]]*#/d' \
@@ -309,8 +309,8 @@ for manifest in \
   fi
 done
 
-relay_container="$repo/os/containers/tilo-relay/Containerfile"
-relay_entrypoint="$repo/os/containers/tilo-relay/tilo-home-peer"
+relay_container="$repo/os/containers/tilo-server/Containerfile"
+relay_entrypoint="$repo/os/containers/tilo-server/tilo-home-peer"
 relay_binaries="$repo/tools/ci/publish/server-binaries.sh"
 if grep -Fq 'openssl-libs coreutils dnf5' "$relay_container" \
   && grep -Fq -- "-name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl" "$relay_container" \

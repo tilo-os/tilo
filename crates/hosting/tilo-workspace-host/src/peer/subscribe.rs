@@ -9,7 +9,7 @@ use super::{
     session_peer_authorized, unix_now_ns,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// How a subscriber's replay capture finished.
 enum SubscribeReplayCompletion {
@@ -283,7 +283,7 @@ async fn admit_subscription(
     {
         return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
             workspace_id,
-            refusal: tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted,
+            refusal: tilo_server_protocol::refusal::Refusal::WorkspaceDeleted,
         }));
     }
     // An agent outside its delegation never gets a workspace bound for it.
@@ -313,9 +313,9 @@ async fn admit_subscription(
         return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
             workspace_id,
             refusal: if known {
-                tilo_relay_protocol::refusal::Refusal::NotReady
+                tilo_server_protocol::refusal::Refusal::NotReady
             } else {
-                tilo_relay_protocol::refusal::Refusal::NotAdmitted
+                tilo_server_protocol::refusal::Refusal::NotAdmitted
             },
         }));
     };

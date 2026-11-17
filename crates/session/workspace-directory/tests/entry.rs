@@ -8,8 +8,8 @@
 )]
 
 use test_http::{Reply, Responder};
-use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage};
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::directory::{DirectoryEntry, DirectoryPage};
+use tilo_server_protocol::workspaces::Role;
 use tilo_workspace_directory::{Way, client, fetch_directory, read_site, through_entry};
 
 /// The workspace every test in this file joins.

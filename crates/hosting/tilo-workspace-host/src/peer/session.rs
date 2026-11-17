@@ -15,7 +15,7 @@ use super::{
 };
 use crate::metrics::EgressWrite;
 use reader::{ReaderQueues, SessionReaderLoop};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use wire::{Heartbeats, Wire};
 use writer::{SessionWriter, WriterQueues};
 

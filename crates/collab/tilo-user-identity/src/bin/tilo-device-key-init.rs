@@ -73,7 +73,7 @@ mod branch {
     use tilo_user_identity::persist::IdentityPaths;
 
     /// Where the relay keeps its state, its workspaces' group state among it.
-    const RELAY_STATE: &str = "/var/lib/tilo-relay";
+    const RELAY_STATE: &str = "/var/lib/tilo-server";
     /// Each person's Secret Service, which re-seals their vault as them.
     const SECRET_SERVICE: &str = "/usr/libexec/tilo/tilo-secret-service";
     const PASSWD: &str = "/etc/passwd";
@@ -337,7 +337,7 @@ mod branch {
                 std::fs::write(
                     &passwd,
                     "root:x:0:0:root:/root:/bin/bash\n\
-                 tilo-relay:x:985:985::/var/lib/tilo-relay:/sbin/nologin\n\
+                 tilo-server:x:985:985::/var/lib/tilo-server:/sbin/nologin\n\
                  you:x:1000:1000:You:/var/home/you:/bin/bash\n\
                  broken:x:abc:1000::/home/broken:/bin/sh\n\
                  nobody:x:65534:65534:Kernel Overflow User:/:/sbin/nologin\n",
@@ -464,7 +464,7 @@ mod tests {
         );
         for before in [
             "fs.service",
-            "tilo-relay.service",
+            "tilo-server.service",
             "greetd.service",
             "NetworkManager.service",
             "sshd-keygen.target",

@@ -363,7 +363,7 @@ TEST_SHARD_APART = (
     frozenset({
         "tilo-action-broker",
         "tilo-peer-state",
-        "tilo-relay",
+        "tilo-server",
     }),
 )
 

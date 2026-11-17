@@ -11,8 +11,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
+use tilo_server_protocol::Envelope;
+use tilo_server_protocol::voice::{CallOperation, VoiceGrant};
 use tilo_session_client::{Cmd, Event, Events, Outbox, VoiceEvent};
 
 use crate::call::{GovernedCall, native, operate};

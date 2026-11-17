@@ -99,7 +99,7 @@ fn person() -> Person {
             now.saturating_add(3_600_000_000_000),
         )
         .expect("this device may enroll another of the person's");
-    let phone_key = test_relay::signing_key(0x52);
+    let phone_key = test_server::signing_key(0x52);
     let phone_cert = store
         .complete_enrollment(
             &profile.id,
@@ -198,7 +198,7 @@ impl Devices {
                     continuity: Continuity::default(),
                     wake: Arc::new(|| {}),
                     fabric: None,
-                    relays: test_relay::loopback(),
+                    relays: test_server::loopback(),
                     lan: None,
                 },
                 None,
@@ -222,7 +222,7 @@ impl Devices {
                     continuity: Continuity::default(),
                     wake: Arc::new(|| {}),
                     fabric: None,
-                    relays: test_relay::loopback(),
+                    relays: test_server::loopback(),
                     lan: None,
                 },
                 None,

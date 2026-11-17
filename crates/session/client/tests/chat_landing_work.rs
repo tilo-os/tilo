@@ -38,8 +38,8 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_client::Host;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
@@ -262,9 +262,9 @@ async fn a_guest_takes_in_a_crowded_chat_as_a_snapshot_and_the_writes_since() {
         .publish(
             &lounge.workspace,
             &host_device.cert,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await

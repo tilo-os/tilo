@@ -118,7 +118,7 @@ head_of() { curl -sS --max-time 20 -A "$browser" -o /dev/null -D - "${@:2}" "htt
 # Portable (BSD sed has no \L): lowercase each header's name, not the status line.
 lower_names() { awk '{ i = index($0, ":"); if (i) $0 = tolower(substr($0, 1, i)) substr($0, i + 1); print }'; }
 
-# Who a home host is and where its page dials it, as `tilo-relay page-host` prints it, and
+# Who a home host is and where its page dials it, as `tilo-server page-host` prints it, and
 # as entry.json carries it: a JSON string.
 info='{"hostCert":{"device_label":"Commons workspace host","issued_at_ns":1},"address":{"endpointAddr":{"id":"ab12","addrs":[]},"relayUrl":"https://live.workspaces.example/"}}'
 info_text=${info//\"/\\\"}

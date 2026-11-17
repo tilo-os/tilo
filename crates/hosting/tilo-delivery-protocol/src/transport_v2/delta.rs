@@ -20,8 +20,8 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use tilo_relay_client::frame::FrameError;
-use tilo_relay_protocol::transport::Envelope;
+use tilo_server_client::frame::FrameError;
+use tilo_server_protocol::transport::Envelope;
 
 use super::{CODED_DELTA_KIND, UNSIGNED_DELTA_KIND};
 use collab_types::WorkspaceId;

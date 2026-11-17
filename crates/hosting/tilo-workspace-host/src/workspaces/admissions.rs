@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceNotice};
+use tilo_server_protocol::workspaces::{PreAdmission, WorkspaceNotice};
 
 /// Notices a workspace keeps; the oldest go first.
 const MAX_NOTICES: usize = 256;
@@ -214,7 +214,7 @@ fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
 mod tests {
     use super::*;
     use tilo_files::native::migration::assert_golden_bytes;
-    use tilo_relay_protocol::workspaces::Role;
+    use tilo_server_protocol::workspaces::Role;
 
     fn grant(token: &[u8], expires_at_ns: u64) -> PreAdmission {
         PreAdmission {

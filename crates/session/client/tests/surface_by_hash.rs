@@ -23,7 +23,7 @@ use collab_types::{
     DocumentMutation, Ed25519PublicKey, OpKind, SignedOp, document_artifact_id,
     document_attestation_id,
 };
-use tilo_relay::workspaces::WorkspaceContent;
+use tilo_server::workspaces::WorkspaceContent;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::native::NativeDevice;

@@ -336,7 +336,7 @@ up() {
   # The host itself: privileged for KVM, the cgroup tree, user namespaces and
   # the jail helper's mounts, with its state disk as a raw block device and
   # its member identity on a read-only mount, as the cloud's StatefulSet runs
-  # it. TILO_VM_RELAY_ENDPOINT is where a workspace's browser session reaches
+  # it. TILO_VM_SERVER_ENDPOINT is where a workspace's browser session reaches
   # the relay, the one address besides the internet a VM may reach.
   podman rm -f "$host_container" >/dev/null 2>&1 || true
   podman run -d --name "$host_container" --hostname "$pod" --network host --privileged \
@@ -350,7 +350,7 @@ up() {
     -e TILO_VM_MEMORY_MIB="$memory_mib" \
     -e TILO_VM_STATUS_LISTEN="127.0.0.1:$status_port" \
     -e TILO_VM_GUEST_REF="$guest_ref" \
-    -e TILO_VM_RELAY_ENDPOINT="$relay_iroh" \
+    -e TILO_VM_SERVER_ENDPOINT="$relay_iroh" \
     -e TILO_TAKE_WORK_RELAY="$relay_iroh" \
     -e TILO_TAKE_WORK_DEVICE="$relay_key" \
     -e TILO_TAKE_WORK_ENDPOINT="$relay_endpoint" \

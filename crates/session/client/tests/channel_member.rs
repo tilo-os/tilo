@@ -23,7 +23,7 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 use key_group::{Access, GroupPeer};
 use neighbour_wire::NeighbourMsg;
-use tilo_relay::{Inbound, RelayCoeditSession};
+use tilo_server::{Inbound, RelayCoeditSession};
 use tilo_session_client::PeerStore as _;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -288,7 +288,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     host.relay.shutdown().await;
 
     let store = std::sync::Arc::new(tilo_session_client::MemoryPeerStore::default());
-    let start = |host: tilo_relay_client::Host| {
+    let start = |host: tilo_server_client::Host| {
         start_peer_with_store(
             host,
             browser.cert.clone(),

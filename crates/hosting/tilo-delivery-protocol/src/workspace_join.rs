@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::future::Future;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_join::{
     JoinBootstrap, JoinTransportRequest, JoinTransportResponse,

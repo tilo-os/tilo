@@ -3,7 +3,7 @@
 //! doing anything while it is asked.
 use super::*;
 use tilo_actions::remote::{ActionHost as _, Caller};
-use tilo_relay::{
+use tilo_server::{
     workspace_agents as turns, workspace_join,
     workspaces::{IssueInvitationRequest, Workspaces},
 };
@@ -288,7 +288,7 @@ impl Served {
         )
         .unwrap();
         let endpoint =
-            test_relay::endpoint(iroh::SecretKey::from_bytes(&device.key.to_bytes())).await;
+            test_server::endpoint(iroh::SecretKey::from_bytes(&device.key.to_bytes())).await;
         workspace_join::WorkspaceJoinClient::new(endpoint)
             .redeem_hint(
                 verified.grant().transport.first().unwrap(),

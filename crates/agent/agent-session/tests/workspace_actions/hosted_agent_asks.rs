@@ -61,7 +61,7 @@ async fn chat_action(
     action: &str,
     arguments: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    use tilo_relay::workspace_agents;
+    use tilo_server::workspace_agents;
     let host = workspace_agents::WorkspaceActionHost::new(
         actions.clone(),
         WorkspaceId::parse(workspace).unwrap(),
@@ -249,7 +249,7 @@ async fn until(what: &str, mut ready: impl FnMut() -> bool) {
 
 /// The agent's reply to `message`, once its work ended.
 async fn ended(
-    workspaces: &tilo_relay::workspaces::Workspaces,
+    workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
     message: &Id,
 ) -> chat::chat::Message {
@@ -286,7 +286,7 @@ fn end_of(reply: &chat::chat::Message) -> Option<chat::agent_stream::AgentFinish
 async fn dies_at(
     agents: &HostAgents,
     workspace: &str,
-    turn: &tilo_relay::workspace_agents::Turn,
+    turn: &tilo_server::workspace_agents::Turn,
     asked: &Arc<Mutex<Vec<ModelRequest>>>,
     calls: usize,
 ) {
@@ -544,7 +544,7 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_stop_reaches_a_turn_that_is_going() {
-    use tilo_relay::workspaces::person_model::{
+    use tilo_server::workspaces::person_model::{
         ProviderProtocol,
         scripted::{Linking, Reply, ScriptedProvider},
     };

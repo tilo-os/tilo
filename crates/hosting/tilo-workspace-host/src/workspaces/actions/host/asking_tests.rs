@@ -16,7 +16,7 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::super::HostWorkspaceActions;

@@ -11,7 +11,7 @@ use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::presence;
 use tilo_live::presence::{Board, Device};
-use tilo_relay_protocol::live::{LiveAnchor, LiveResource};
+use tilo_server_protocol::live::{LiveAnchor, LiveResource};
 
 /// What this session says of itself here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

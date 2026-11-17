@@ -93,7 +93,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Event, Link, Outbox};
 

@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 use tilo_peer_state::join::Role;
-use tilo_relay::workspaces::IssueInvitationRequest;
+use tilo_server::workspaces::IssueInvitationRequest;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -62,7 +62,7 @@ fn certificate(
 
 /// The relay tilo.sh runs: a certified host of its operator, governing the
 /// workspaces it creates.
-async fn relay(state: &Path, operator: &SigningKey) -> tilo_relay::Relay {
+async fn relay(state: &Path, operator: &SigningKey) -> tilo_server::Relay {
     let key = SigningKey::from_bytes(&tilo_test_env::node_key());
     // It owns the workspaces it governs, so it takes part in their channels
     // and their records are sealed.
@@ -82,15 +82,15 @@ async fn relay(state: &Path, operator: &SigningKey) -> tilo_relay::Relay {
         .bind()
         .await
         .unwrap();
-    tilo_relay::Relay::start_on_endpoint_with_protocols(
-        tilo_relay::RelayConfig {
+    tilo_server::Relay::start_on_endpoint_with_protocols(
+        tilo_server::RelayConfig {
             state_root: state.join("state"),
             identity_root: state.join("identity"),
             full_replica_status: state.join("replica/status.json"),
             home_peer_bundle: state.join("home-peer.toml"),
             ..Default::default()
         },
-        tilo_relay::daemon::RelayIdentity {
+        tilo_server::daemon::RelayIdentity {
             user_public_key: operator.verifying_key().to_bytes(),
             device_signing_key: key,
             device_cert: cert,
@@ -106,7 +106,7 @@ async fn relay(state: &Path, operator: &SigningKey) -> tilo_relay::Relay {
 /// An editor's invitation to `workspace`, as text, that the operator's own
 /// device `shell` issues; for anyone's device when `person` is `None`.
 async fn invitation(
-    relay: &tilo_relay::Relay,
+    relay: &tilo_server::Relay,
     workspace: &str,
     shell: &DeviceCert,
     person: Option<[u8; 32]>,
@@ -337,7 +337,7 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
     // The device that joins last: a runtime of its own that joins the
     // workspace and holds its files until the test stops it.
     let _ = tracing_subscriber::fmt()
-        .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug,tilo_relay=debug")
+        .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug,tilo_server=debug")
         .with_writer(std::io::stderr)
         .try_init();
     if let Some(invitation) = std::env::var_os(JOINER_INVITATION) {
@@ -405,7 +405,7 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
     // still here: the member leaves entirely before anything reads them again.
     let kept = state
         .join("state")
-        .join(tilo_relay::content::DIRECTORY)
+        .join(tilo_server::content::DIRECTORY)
         .join(&workspace);
     let written = u64::try_from(report.len() + build.len()).unwrap();
     wait_for_kept(
@@ -461,7 +461,7 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
 #[test]
 fn content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away() {
     let _ = tracing_subscriber::fmt()
-        .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug,tilo_relay=debug")
+        .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug,tilo_server=debug")
         .with_writer(std::io::stderr)
         .try_init();
     let Some(profile) = isolated_root(RETURN_TEST) else {
@@ -519,7 +519,7 @@ fn content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away() {
         })
         .collect();
     let past_the_grace = std::time::SystemTime::now() + Duration::from_secs(60);
-    let collected = run(tilo_relay::content::collection::collect(
+    let collected = run(tilo_server::content::collection::collect(
         workspaces,
         &relay.content(),
         &workspace,

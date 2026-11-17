@@ -106,7 +106,7 @@ enum Route {
     /// It opened this device's pairing link, and waits at the host the link names.
     Host {
         origin: String,
-        host: tilo_relay_client::Host,
+        host: tilo_server_client::Host,
         person: [u8; 32],
         device: [u8; 32],
     },
@@ -467,7 +467,7 @@ fn answer(
 /// Blocks on the host.
 fn answer_at_host(
     local: &DeviceId,
-    host: tilo_relay_client::Host,
+    host: tilo_server_client::Host,
     person: [u8; 32],
     digest: [u8; 32],
     approve: bool,
@@ -478,8 +478,9 @@ fn answer_at_host(
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(async {
-        let approver = tilo_relay_client::MemberApprover::new(host);
-        let answered = tilo_relay_client::answer_pairing(&approver, &signer, digest, approve).await;
+        let approver = tilo_server_client::MemberApprover::new(host);
+        let answered =
+            tilo_server_client::answer_pairing(&approver, &signer, digest, approve).await;
         approver.close().await;
         answered.map(drop).map_err(|error| error.to_string())
     })
@@ -543,14 +544,14 @@ fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), 
     runtime.block_on(async {
         let client = tilo_workspace_directory::client()
             .map_err(|error| tilo_sheets::directory::said(&error))?;
-        let info = tilo_relay_client::https::host_info(&tilo_relay_client::https::Origin::new(
+        let info = tilo_server_client::https::host_info(&tilo_server_client::https::Origin::new(
             &client, origin,
         ))
         .await
         .map_err(|error| error.to_string())?;
         let address = info.address.ok_or("the host takes no device connections")?;
-        let host = tilo_relay_client::Host::published(&address);
-        let approver = tilo_relay_client::MemberApprover::new(host.clone());
+        let host = tilo_server_client::Host::published(&address);
+        let approver = tilo_server_client::MemberApprover::new(host.clone());
         let mut known = Vec::new();
         let waited = loop {
             let until_ms = with_state(local, |state| {
@@ -560,7 +561,7 @@ fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), 
                 break Ok(());
             }
             let pending =
-                match tilo_relay_client::next_pairings(&approver, &signer, known.clone()).await {
+                match tilo_server_client::next_pairings(&approver, &signer, known.clone()).await {
                     Ok(pending) => pending,
                     Err(error) => break Err(error.to_string()),
                 };
@@ -578,9 +579,9 @@ fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), 
 fn follow_host(
     local: &DeviceId,
     origin: &str,
-    host: &tilo_relay_client::Host,
+    host: &tilo_server_client::Host,
     person: [u8; 32],
-    pending: Vec<tilo_relay_protocol::certify::PendingCertification>,
+    pending: Vec<tilo_server_protocol::certify::PendingCertification>,
 ) {
     let expired = expired_before();
     with_state(local, |state| {
@@ -1521,7 +1522,7 @@ mod tests {
     async fn person_host(
         root: &Arc<runtime_identity::SigningIdentity>,
         state: &std::path::Path,
-    ) -> (tilo_relay::daemon::Relay, tilo_relay::web::WebHandle) {
+    ) -> (tilo_server::daemon::Relay, tilo_server::web::WebHandle) {
         let person = root.person();
         let host_key = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
         let mut host_cert = DeviceCert {
@@ -1541,25 +1542,25 @@ mod tests {
         tilo_user_identity::sign_device_cert_async(&mut host_cert, &root_signer)
             .await
             .unwrap();
-        let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
-            tilo_relay::RelayConfig {
+        let relay = tilo_server::daemon::Relay::start_with_relay_mode(
+            tilo_server::RelayConfig {
                 state_root: state.join("host"),
-                ..tilo_relay::RelayConfig::default()
+                ..tilo_server::RelayConfig::default()
             },
-            tilo_relay::daemon::RelayIdentity {
+            tilo_server::daemon::RelayIdentity {
                 user_public_key: person,
                 device_signing_key: host_key,
                 device_cert: host_cert,
                 revocations: tilo_user_identity::RevocationList::new(),
             },
-            test_relay::relay_mode(),
+            test_server::relay_mode(),
         )
         .await
         .unwrap();
         let web = relay
-            .serve_web(tilo_relay::web::WebConfig {
+            .serve_web(tilo_server::web::WebConfig {
                 listen: "127.0.0.1:0".parse().unwrap(),
-                tls: tilo_relay::web::TlsSource::Development {
+                tls: tilo_server::web::TlsSource::Development {
                     hosts: vec!["localhost".into(), "127.0.0.1".into()],
                     store: Some(state.join("web-dev-identity")),
                 },
@@ -1625,7 +1626,7 @@ mod tests {
 
         // The phone opens it: it names the person and the host, and the phone asks there.
         let phone = ed25519_dalek::SigningKey::from_bytes(&[0x64; 32]);
-        let link = tilo_relay_client::login::PairingLink::parse(&shown.link).unwrap();
+        let link = tilo_server_client::login::PairingLink::parse(&shown.link).unwrap();
         assert_eq!(link.user_public_key, person);
         assert_eq!(link.host_origin, origin);
         let (code_shown, code) = std::sync::mpsc::channel();
@@ -1633,8 +1634,8 @@ mod tests {
             let phone = phone.clone();
             async move {
                 let client = tilo_workspace_directory::client().unwrap();
-                let at = tilo_relay_client::https::Origin::new(&client, &link.host_origin);
-                tilo_relay_client::login::sign_in(&at, &link, "phone", "Phone", &phone, |code| {
+                let at = tilo_server_client::https::Origin::new(&client, &link.host_origin);
+                tilo_server_client::login::sign_in(&at, &link, "phone", "Phone", &phone, |code| {
                     let _ = code_shown.send(code.to_owned());
                 })
                 .await

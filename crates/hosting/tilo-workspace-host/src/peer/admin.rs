@@ -9,7 +9,7 @@
 use super::{PeerError, SessionCtx};
 use crate::auth::AuthenticatedPeer;
 use crate::transport::Envelope;
-use tilo_relay_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
+use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
 
 /// Answer the [`WorkspacesRequest`] in `frame`, asked as `request_id`.
 pub(super) async fn handle_workspaces(

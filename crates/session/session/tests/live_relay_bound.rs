@@ -170,8 +170,8 @@ fn told_refused(device: &Device, workspace: &str) -> usize {
 
 /// An endpoint of nobody's on this machine's loopback relay, as the devices' sessions are.
 async fn anybody() -> iroh::Endpoint {
-    let key = test_relay::fresh_signing_key("an endpoint that says nothing");
-    test_relay::endpoint(iroh::SecretKey::from_bytes(&key.to_bytes())).await
+    let key = test_server::fresh_signing_key("an endpoint that says nothing");
+    test_server::endpoint(iroh::SecretKey::from_bytes(&key.to_bytes())).await
 }
 
 /// The code the other end closed a connection with, when it closed it.
@@ -212,7 +212,7 @@ impl Held {
         // A device's session is reached on its device key, through the relay its profile names.
         let id = iroh::EndpointId::from_bytes(&relay.cert.device_public_key)
             .expect("a device key names an endpoint");
-        let through: iroh::RelayUrl = test_relay::loopback_url()
+        let through: iroh::RelayUrl = test_server::loopback_url()
             .parse()
             .expect("the loopback relay's address");
         let at = iroh::EndpointAddr::new(id).with_relay_url(through);

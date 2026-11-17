@@ -20,8 +20,8 @@ use std::{
     },
 };
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
-pub(super) use tilo_relay_store::frames::{equal_files, frame_bytes};
+use tilo_server_protocol::WorkspaceId;
+pub(super) use tilo_server_store::frames::{equal_files, frame_bytes};
 
 pub(crate) const DEFAULT_BATCH_FRAMES: usize = 64;
 pub(crate) const DEFAULT_BATCH_BYTES: usize = 1024 * 1024;

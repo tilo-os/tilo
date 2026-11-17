@@ -34,7 +34,7 @@ inside setpriv --help >/dev/null || die 'no setpriv'
 inside bootc --version >/dev/null || die 'no bootc'
 
 # The programs, at the paths their units and scripts name.
-for bin in usr/libexec/tilo/tilo-relay usr/libexec/tilo/tilo-relay-admin \
+for bin in usr/libexec/tilo/tilo-server usr/libexec/tilo/tilo-server-admin \
   usr/libexec/tilo/tilo-enroll usr/bin/fs usr/libexec/tilo/tilo-api \
   usr/libexec/tilo/tilo-legacy usr/libexec/tilo-esp-write \
   usr/libexec/tilo-image-policy-check usr/libexec/tilo-board-successor \
@@ -81,7 +81,7 @@ grep -q '^tilo-api:x:65532:' "$root/etc/passwd" || die 'no tilo-api account at 6
 # service, the API (inert), and the assessment that rolls a bad update back,
 # judged by this image's own server probe.
 wants=$root/etc/systemd/system
-for unit in tilo-relay.service tilo-fs-replica.service tilo-relay-firstboot.service \
+for unit in tilo-server.service tilo-fs-replica.service tilo-server-firstboot.service \
   tilo-hosted.service tilo-api.service; do
   [[ -L $wants/multi-user.target.wants/$unit ]] || die "$unit is not enabled"
 done

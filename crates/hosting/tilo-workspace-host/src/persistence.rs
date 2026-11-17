@@ -143,7 +143,7 @@ impl Group {
     }
 }
 
-/// [`Group::flush`] as a barrier hook ([`tilo_relay_store::with_barrier_hook`]).
+/// [`Group::flush`] as a barrier hook ([`tilo_server_store::with_barrier_hook`]).
 fn flush_hook(
     records: crate::store::retained::SharedGroup,
 ) -> impl FnMut() -> std::io::Result<()> + 'static {
@@ -1484,7 +1484,7 @@ where
                                 // Whatever this quantum makes durable is
                                 // ordered after every record its group holds.
                                 let hook = flush_hook(state.group.records());
-                                let result = tilo_relay_store::with_barrier_hook(hook, || {
+                                let result = tilo_server_store::with_barrier_hook(hook, || {
                                     loop {
                                         let result = operation(&mut state, &mut prepared);
                                         if !matches!(result, Ok(Step::More))
@@ -1568,12 +1568,12 @@ pub(crate) async fn receipt<T>(
     rx.await.map_err(|e| error(e.to_string()))?
 }
 pub(crate) fn diagnostics() -> bool {
-    std::env::var_os("TILO_RELAY_PHASE_DIAGNOSTICS").is_some()
+    std::env::var_os("TILO_SERVER_PHASE_DIAGNOSTICS").is_some()
 }
 
 /// Low-volume payload-free event correlation, independent of per-quantum logs.
 pub(crate) fn correlated_diagnostics() -> bool {
-    std::env::var_os("TILO_RELAY_CORRELATED_DIAGNOSTICS").is_some()
+    std::env::var_os("TILO_SERVER_CORRELATED_DIAGNOSTICS").is_some()
 }
 
 /// Shared live deliveries charge their single Arc payload once process-wide.
@@ -1625,7 +1625,7 @@ pub(crate) async fn blocking<T: Send + 'static>(
 )]
 mod tests {
     use super::*;
-    use tilo_relay_protocol::WorkspaceId;
+    use tilo_server_protocol::WorkspaceId;
 
     fn test_persistence(
         root: &std::path::Path,

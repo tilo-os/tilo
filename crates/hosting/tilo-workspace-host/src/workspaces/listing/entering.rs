@@ -1,20 +1,20 @@
 //! A device entering a workspace on its session
-//! ([`tilo_relay_protocol::entering`]): through the entry, which lets the
+//! ([`tilo_server_protocol::entering`]): through the entry, which lets the
 //! person in as its HTTP form did and issues the invitation, or with an
 //! invitation of its own; the workspace admits the device, which proved it
 //! holds its key on the session's connection, with that invitation.
 
-use tilo_relay_protocol::directory::EntryJoin;
-use tilo_relay_protocol::entering::{EnterRefusal, Entered, Entry, Through};
-use tilo_relay_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
-use tilo_relay_protocol::workspaces::JoinReply;
+use tilo_server_protocol::directory::EntryJoin;
+use tilo_server_protocol::entering::{EnterRefusal, Entered, Entry, Through};
+use tilo_server_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
+use tilo_server_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
 use crate::handshake::{Admit, EntryFuture};
 use crate::workspace_access::person_device;
 use crate::workspaces::pages::Presented;
 use crate::workspaces::{Carried, Workspaces};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// A refusal of the join itself, after the entry let the person in.
 const fn refused(reason: String) -> EnterRefusal {
@@ -421,10 +421,10 @@ mod tests {
         reason = "the relay handle a test binds is a shared handle it keeps until the test ends"
     )]
     use ed25519_dalek::SigningKey;
-    use tilo_relay_protocol::directory::{EntryJoin, Listing};
-    use tilo_relay_protocol::entering::{Entered, Entering, Entry, Through};
-    use tilo_relay_protocol::workspaces::{JoinReply, Role};
-    use tilo_relay_session::workspaces::RemoveMemberRequest;
+    use tilo_server_protocol::directory::{EntryJoin, Listing};
+    use tilo_server_protocol::entering::{Entered, Entering, Entry, Through};
+    use tilo_server_protocol::workspaces::{JoinReply, Role};
+    use tilo_server_session::workspaces::RemoveMemberRequest;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
 
     use crate::handshake::Admit;

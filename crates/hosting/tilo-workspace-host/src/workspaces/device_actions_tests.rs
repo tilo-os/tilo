@@ -368,7 +368,7 @@ async fn the_workspaces_permission_for_the_action_decides_who_runs_work_here() {
     use tilo_actions::InvocationUpdate;
     use tilo_actions::remote::ActionHostError;
     use tilo_peer_state::actions::OFFER_DEADLINE;
-    use tilo_relay_protocol::workspaces::Role;
+    use tilo_server_protocol::workspaces::Role;
 
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();

@@ -38,7 +38,7 @@ fn entering<'a>(
 ) -> Entering<'a> {
     Entering {
         held,
-        root: root.map(|root| root as &dyn tilo_relay_client::DeviceSigner),
+        root: root.map(|root| root as &dyn tilo_server_client::DeviceSigner),
         label: "Firefox on Linux",
         name: "Bob",
         token: Some(token),
@@ -216,7 +216,7 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
         .issue(
             &beta.workspace,
             &host_device.cert,
-            tilo_relay::workspaces::IssueInvitationRequest {
+            tilo_server::workspaces::IssueInvitationRequest {
                 request_id: [9; 32],
                 role: tilo_peer_state::join::Role::Editor,
                 recipient_user_public_key: Some(user),
@@ -242,7 +242,7 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
     // Spent, it admits nobody again.
     let again = device.redeem(&issued, "Bob").await.unwrap_err();
     assert!(
-        matches!(again, tilo_relay_client::CertifyError::Denied(_)),
+        matches!(again, tilo_server_client::CertifyError::Denied(_)),
         "{again:?}"
     );
     device.close();
@@ -259,7 +259,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
     let bob = new_key();
     let page = new_key();
     let now = 1_000_000_000_000_u64;
-    let cert = tilo_relay_client::invite::guest_certificate(
+    let cert = tilo_server_client::invite::guest_certificate(
         &bob,
         page.verifying_key().to_bytes(),
         "Firefox on Linux",
@@ -281,7 +281,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
                 &host,
                 &page,
                 root.as_ref()
-                    .map(|root| root as &dyn tilo_relay_client::DeviceSigner),
+                    .map(|root| root as &dyn tilo_server_client::DeviceSigner),
                 "Firefox on Linux",
                 now,
             )
@@ -381,7 +381,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
         None,
         &host,
         &page,
-        Some(&bob as &dyn tilo_relay_client::DeviceSigner),
+        Some(&bob as &dyn tilo_server_client::DeviceSigner),
         "Firefox on Linux",
         now,
     )

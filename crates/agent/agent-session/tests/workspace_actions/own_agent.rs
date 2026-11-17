@@ -93,7 +93,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         state.path(),
         Options {
             shell: Some(
-                tilo_relay::agents::host_shells(shell_state.path().join("shells")).unwrap(),
+                tilo_server::agents::host_shells(shell_state.path().join("shells")).unwrap(),
             ),
             ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
         },

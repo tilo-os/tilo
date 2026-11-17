@@ -46,7 +46,7 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::selection::logical_resource_id;
-use tilo_relay_protocol::hosted::Material;
+use tilo_server_protocol::hosted::Material;
 
 use crate::Shared;
 
@@ -946,7 +946,7 @@ async fn invitation(material: &Material) -> Result<String, String> {
         .await
         .map_err(|error| format!("the session reached no network: {error}"))?;
     let joined = async {
-        let client = tilo_relay_session::RelayClient::connect(
+        let client = tilo_server_session::RelayClient::connect(
             endpoint.clone(),
             material.relay.clone(),
             material.user_public_key,
@@ -956,7 +956,7 @@ async fn invitation(material: &Material) -> Result<String, String> {
         )
         .await
         .map_err(|error| format!("the session could not reach its relay: {error}"))?;
-        tilo_relay_session::workspaces::enter_invitation(
+        tilo_server_session::workspaces::enter_invitation(
             &client,
             &material.workspace,
             ENTER_INVITATION_SECONDS,
@@ -1084,7 +1084,7 @@ fn holds_windows(shared: &Shared, workspace: &str) -> bool {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use tilo_relay_protocol::WorkspaceId;
+    use tilo_server_protocol::WorkspaceId;
 
     /// What a relay hands a session: a device of the workspace's person that
     /// the host certified with its stand-in.

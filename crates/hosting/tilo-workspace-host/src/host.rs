@@ -30,7 +30,7 @@ use crate::metrics::Metrics;
 use crate::peer::{PeerContext, WorkspaceAutobind, WorkspaceRegistry, run_peer_until};
 use crate::policy::TrustPolicy;
 use crate::transport::{ALPN, MAX_FRAME_BYTES};
-use tilo_relay_protocol::{WorkSetting, WorkspaceId};
+use tilo_server_protocol::{WorkSetting, WorkspaceId};
 
 /// How much an in-process session buffers each way before its writer waits.
 const LOCAL_SESSION_BUFFER: usize = 1 << 20;
@@ -1095,7 +1095,7 @@ pub struct RelayProtocol {
     /// ([`crate::attach::Arrivals`]).
     pub(crate) arrivals: crate::attach::Arrivals,
     /// Whether this host's work setting takes workspaces of people other
-    /// than its own to hold ([`tilo_relay_protocol::WorkFrom::takes_others`]):
+    /// than its own to hold ([`tilo_server_protocol::WorkFrom::takes_others`]):
     /// their governing hosts, whom nothing here admits yet, then open a
     /// session to hand them over. Every workspace such a session reaches
     /// still asks the live policy, which admits none of theirs.
@@ -1176,7 +1176,7 @@ impl RelayProtocol {
                 "home peer is decommissioned",
             )));
         }
-        let connection = tilo_relay_client::link::Link::iroh(connection);
+        let connection = tilo_server_client::link::Link::iroh(connection);
         let binding = connection.offer_binding().await;
         let first = connection
             .accept_bi()
@@ -1215,7 +1215,7 @@ impl RelayProtocol {
     /// Serve every session `link` carries, each on a stream of its own, until
     /// it closes: what a WebTransport session at the session path is, as a
     /// connection on the relay ALPN is.
-    pub async fn serve_link(&self, link: tilo_relay_client::link::Link) {
+    pub async fn serve_link(&self, link: tilo_server_client::link::Link) {
         let binding = link.offer_binding().await;
         let Ok(first) = link.accept_bi().await else {
             return;
@@ -1227,14 +1227,14 @@ impl RelayProtocol {
 /// Serve every session `connection` carries, `first` (already accepted)
 /// first, each on a stream of its own, until the connection closes. An entry
 /// on any of them is bound to `binding`
-/// ([`tilo_relay_client::link::Link::offer_binding`]).
+/// ([`tilo_server_client::link::Link::offer_binding`]).
 async fn serve_streams(
     ctx: RelayProtocol,
-    connection: tilo_relay_client::link::Link,
+    connection: tilo_server_client::link::Link,
     binding: Option<[u8; 32]>,
     first: (
-        tilo_relay_client::link::LinkSend,
-        tilo_relay_client::link::LinkRecv,
+        tilo_server_client::link::LinkSend,
+        tilo_server_client::link::LinkRecv,
     ),
 ) {
     let sessions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1330,7 +1330,7 @@ where
         // it and nothing else.
         let admitted = matches!(
             entered,
-            tilo_relay_protocol::entering::Entered::Admitted { .. }
+            tilo_server_protocol::entering::Entered::Admitted { .. }
         );
         let frame = tilo_delivery_protocol::transport_v2::encode(
             &tilo_delivery_protocol::transport_v2::EnvelopeV2::State(

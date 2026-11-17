@@ -2,7 +2,7 @@
 //! each window shows, and the screen the person's windows are laid out on.
 
 use tilo_desktop_surface::host::records::{app_of, wire_document};
-use tilo_relay_protocol::live::{LiveLayout, LiveResource};
+use tilo_server_protocol::live::{LiveLayout, LiveResource};
 use ui::resource::DocumentId;
 
 /// Who each window of this session is, by tab, as presence names records: the app and record each

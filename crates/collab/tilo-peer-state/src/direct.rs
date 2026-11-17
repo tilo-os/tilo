@@ -53,7 +53,7 @@ use iroh::{Endpoint, EndpointAddr};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
-use tilo_relay_protocol::refusal::Refusal;
+use tilo_server_protocol::refusal::Refusal;
 use tokio::sync::{broadcast, watch};
 use web_time::SystemTime;
 

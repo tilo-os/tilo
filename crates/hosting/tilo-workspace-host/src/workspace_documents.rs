@@ -21,7 +21,7 @@ use crate::coedit::CoeditPayload;
 use crate::peer::WorkspaceRegistry;
 use crate::transport::Envelope;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// One retained document body of a workspace, as its author signed it.
 #[derive(Clone, Debug, PartialEq, Eq)]

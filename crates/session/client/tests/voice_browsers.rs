@@ -29,8 +29,8 @@ use tilo_live::live_session::Heard;
 use tilo_live::live_session::{Join, LiveSession};
 use tilo_live::roster::Roster;
 use tilo_live::video::{Codec, Layer, Source, VideoObject};
-use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
+use tilo_server_protocol::Envelope;
+use tilo_server_protocol::voice::{CallOperation, VoiceGrant};
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
 /// One tick of the native member: a page publishes its pictures as its
@@ -272,7 +272,7 @@ impl Native {
     /// camera picture, and take what the page sent.
     fn step(
         &mut self,
-        client: &tilo_relay::RelayClient,
+        client: &tilo_server::RelayClient,
         workspace_id: WorkspaceId,
         call: [u8; 32],
         participation: [u8; 32],

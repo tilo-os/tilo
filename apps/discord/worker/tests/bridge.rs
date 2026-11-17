@@ -25,9 +25,9 @@ use fake_discord::{CHANNEL_GENERAL, FakeDiscord, GUILD, TOKEN, User};
 use serde_json::Value;
 use tilo_agent_session::AppCatalogue;
 use tilo_connector::{BlobAccess, ConnectorProcess, WorkerCommand};
-use tilo_relay::workspace_bots::installed::{self, BotRunner};
-use tilo_relay::workspace_bots::membership::{HostRootCertifier, keep_member};
-use tilo_relay::workspaces::Workspaces;
+use tilo_server::workspace_bots::installed::{self, BotRunner};
+use tilo_server::workspace_bots::membership::{HostRootCertifier, keep_member};
+use tilo_server::workspaces::Workspaces;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use ui::tilo_actions::ActionContext;
 use ui::tilo_resource::{Id, Invoke, Replica, Resource as _};
@@ -388,7 +388,7 @@ struct Bridge {
     /// The Chat channel Discord's #general is bridged to.
     general: String,
     ada: String,
-    _relay: tilo_relay::daemon::Relay,
+    _relay: tilo_server::daemon::Relay,
     _packet_relay: tilo_test_env::relay::Relay,
     _scratch: tempfile::TempDir,
 }
@@ -421,18 +421,18 @@ impl Bridge {
         // The host decides what members and the bot change against the
         // surfaces of the apps it runs, as a workspace host does.
         let _ = AppCatalogue::native();
-        tilo_relay::surfaces::decide_receipt(&scratch.path().join("relay").join("surfaces"));
+        tilo_server::surfaces::decide_receipt(&scratch.path().join("relay").join("surfaces"));
         // The host takes a packet relay on this machine's loopback as its
         // home. A host told to use no relay still waits out the whole relay
         // probe before it opens its workspaces: five seconds in which nothing
         // of the bridge runs.
         let packet_relay = tilo_test_env::relay::relay().await;
-        let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
-            tilo_relay::RelayConfig {
+        let relay = tilo_server::daemon::Relay::start_with_relay_mode(
+            tilo_server::RelayConfig {
                 state_root: scratch.path().join("relay"),
                 ..Default::default()
             },
-            tilo_relay::daemon::RelayIdentity {
+            tilo_server::daemon::RelayIdentity {
                 user_public_key: cert.user_public_key,
                 device_signing_key: key.clone(),
                 device_cert: cert.clone(),

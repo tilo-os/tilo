@@ -15,7 +15,7 @@ use tilo_actions::{
     Acting, ActionAddress, ActionApp, ActionResource, INTERACTION_VERSION, InteractionAction,
     InteractionAnchor, InteractionPhase, InvocationId, SemanticInteraction,
 };
-use tilo_relay_protocol::live::SemanticFrame;
+use tilo_server_protocol::live::SemanticFrame;
 
 /// The instance a narration names as its source: an agent acts through the
 /// workspace's host, in no app instance of its own.

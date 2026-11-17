@@ -1,7 +1,7 @@
 //! `--share` for `run --platform web` and `dev --platform web`: the app in a
 //! workspace other people join from their own browser.
 //!
-//! The workspace's host is the SDK's own, `tilo-relay workspace --persistent`, on
+//! The workspace's host is the SDK's own, `tilo-server workspace --persistent`, on
 //! this machine: it governs the workspace, so it keys every record's channel
 //! and what one person does reaches everyone else. The workspace is listed in
 //! the host's directory at its default role, so its entry admits each person
@@ -25,8 +25,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::directory::entry_path;
-use tilo_relay_protocol::web::API_PREFIX;
+use tilo_server_protocol::directory::entry_path;
+use tilo_server_protocol::web::API_PREFIX;
 use tilo_workspace_directory::web_origin;
 
 use super::Project;
@@ -145,8 +145,8 @@ impl SharedWorkspace {
             .args(["--web-plain", "127.0.0.1:0"])
             .args(["--allowed-origin", pages_origin])
             .env(
-                "TILO_RELAY_LOG",
-                std::env::var("TILO_RELAY_LOG").unwrap_or_else(|_| "error".into()),
+                "TILO_SERVER_LOG",
+                std::env::var("TILO_SERVER_LOG").unwrap_or_else(|_| "error".into()),
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -305,9 +305,9 @@ fn relay_binary(project: &Project) -> Result<PathBuf> {
     } else {
         project.target_dir.join("tilo-app/relay")
     };
-    let binary = target.join("debug").join(exe("tilo-relay"));
+    let binary = target.join("debug").join(exe("tilo-server"));
     eprintln!(
-        "[tilo-app] building the workspace's host (tilo-relay); the first build takes a few minutes"
+        "[tilo-app] building the workspace's host (tilo-server); the first build takes a few minutes"
     );
     let mut command = ProcessCommand::new(super::cargo_program());
     command
@@ -315,9 +315,9 @@ fn relay_binary(project: &Project) -> Result<PathBuf> {
             "build",
             "--locked",
             "-p",
-            "tilo-relay",
+            "tilo-server",
             "--bin",
-            "tilo-relay",
+            "tilo-server",
         ])
         .args(["--features", "web,agents"])
         .arg("--manifest-path")

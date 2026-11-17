@@ -97,7 +97,7 @@ struct Payload {
     certificate: DeviceCert,
     public_record: Vec<u8>,
     fleet: DeviceFleet,
-    home_peers: Vec<tilo_relay_protocol::HomePeerRegistration>,
+    home_peers: Vec<tilo_server_protocol::HomePeerRegistration>,
 }
 impl Drop for Payload {
     fn drop(&mut self) {
@@ -188,7 +188,7 @@ fn validate_fleet(fleet: &DeviceFleet, cert: &DeviceCert) -> io::Result<()> {
     Ok(())
 }
 fn validate_peers(
-    peers: &[tilo_relay_protocol::HomePeerRegistration],
+    peers: &[tilo_server_protocol::HomePeerRegistration],
     root: [u8; 32],
 ) -> io::Result<()> {
     if peers.len() > 128 {
@@ -197,7 +197,7 @@ fn validate_peers(
     for peer in peers {
         let cert = peer.device_cert.as_ref().ok_or_else(invalid)?;
         verify_device_cert(cert).map_err(|_| invalid())?;
-        if peer.schema_version != tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA
+        if peer.schema_version != tilo_server_protocol::HomePeerRegistration::CURRENT_SCHEMA
             || cert.user_public_key != root
             || peer.user_public_key != hex::encode(root)
             || peer.device_node_id != hex::encode(cert.device_public_key)

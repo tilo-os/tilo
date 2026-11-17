@@ -20,7 +20,7 @@ use tilo_desktop_surface::page_code::{PAGE, PageHandle};
 use ui::widget::{TileContent, TileHost};
 
 use crate::peer_sync;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Payloads one page keeps while the page view's code is on its way: the
 /// first whole frame and what follows it, not a page's history.

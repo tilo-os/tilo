@@ -78,7 +78,7 @@ class RpmBuildGraphTest(unittest.TestCase):
         expected = {
             "imager",
             "fs",
-            "tilo-relay-admin",
+            "tilo-server-admin",
             "tilo-enroll",
             "tilo-legacy",
         }
@@ -130,7 +130,7 @@ class RpmBuildGraphTest(unittest.TestCase):
                         ):
                             expected.add(source.parent.name)
         self.assertEqual(seen, SUPPORT)
-        self.assertEqual(packages, SUPPORT | {"imager", "tilo-relay", "legacy-vm"})
+        self.assertEqual(packages, SUPPORT | {"imager", "tilo-server", "legacy-vm"})
         self.assertEqual(bins, expected)
         self.assertEqual(support[:4], ["build", "--release", "--locked", "--lib"])
         self.assertEqual(

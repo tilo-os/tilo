@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::host::{HostConfig, HostIdentity, WorkspaceHost};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
@@ -67,7 +67,7 @@ pub(crate) fn guest_device() -> (SigningKey, DeviceCert) {
 
 #[tokio::test]
 async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_refused_alone() {
-    use tilo_relay_protocol::workspaces::JoinReply;
+    use tilo_server_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -158,7 +158,7 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
 /// still admits its guest.
 #[tokio::test]
 async fn a_crowds_shared_writes_hold_each_invitation_grant_across_a_restart() {
-    use tilo_relay_protocol::workspaces::JoinReply;
+    use tilo_server_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -1372,7 +1372,7 @@ async fn a_renamed_workspace_shows_its_new_name_to_members_and_after_a_restart()
     reason = "the relay stays live until its consuming shutdown"
 )]
 async fn the_owner_bans_and_unbans_and_a_stranger_cannot() {
-    use tilo_relay_session::workspaces::RemoveMemberRequest;
+    use tilo_server_session::workspaces::RemoveMemberRequest;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -1429,7 +1429,7 @@ async fn the_owner_bans_and_unbans_and_a_stranger_cannot() {
     reason = "the relay stays live until its consuming shutdown"
 )]
 async fn the_owner_restricts_until_a_time_and_lifts_it() {
-    use tilo_relay_session::workspaces::RemoveMemberRequest;
+    use tilo_server_session::workspaces::RemoveMemberRequest;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -2399,9 +2399,9 @@ async fn a_listed_workspace_keeps_sharing_its_windows_after_a_restart() {
         .publish(
             &workspace,
             &cert,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Come in".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await
@@ -2850,7 +2850,7 @@ async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
             max_workspace_grants: None,
             ..HostConfig::new(
                 dir.path().to_owned(),
-                tilo_relay_protocol::WorkSetting::own_person(),
+                tilo_server_protocol::WorkSetting::own_person(),
             )
         },
         HostIdentity {

@@ -14,7 +14,7 @@ use ui::feedback::Destination;
 use ui::feedback::{Error, Receipt, Submission};
 
 use super::{AppCatalogue, DocumentRoute, HostDevice, WorkspaceDocumentsLink, reads, resource_of};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 fn unavailable(reason: &(impl ToString + ?Sized)) -> ActionHostError {
     ActionHostError::Unavailable {

@@ -55,7 +55,7 @@ use tilo_actions::remote::{
     RemoteActionMessage, UpdateMark,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::{Whose, WorkspaceId};
+use tilo_server_protocol::{Whose, WorkspaceId};
 use web_time::SystemTime;
 
 /// ALPN of the device-to-device action service.

@@ -1,6 +1,6 @@
 //! What a person's agent asks them through the API server on a relay, as a
 //! tilo.sh tab holding the person's root answers it: the page's approver
-//! session ([`tilo_relay_client::questions`]), each command signed by the
+//! session ([`tilo_server_client::questions`]), each command signed by the
 //! root, as the browser runtime runs it. Allowed, the agent's call runs;
 //! refused, it fails with the refusal; either way the question leaves the
 //! sheet once the host stops asking it.
@@ -9,9 +9,9 @@ use super::api_on_relay::{api_on_relay, approved_key};
 use super::*;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
-use tilo_relay_client::MemberApprover;
-use tilo_relay_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
-use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+use tilo_server_client::MemberApprover;
+use tilo_server_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tokio::sync::mpsc;
 
 /// What the page's sheet saw: each question asked, and each taken away.
@@ -80,7 +80,7 @@ async fn answered_by_page(
 /// a page holding their root, a page or computer paired to them.
 async fn answered_on(
     mcp: &mut Mcp<'_>,
-    mut host: impl tilo_relay_client::questions::QuestionHost,
+    mut host: impl tilo_server_client::questions::QuestionHost,
     answer: ConfirmationAnswer,
 ) -> (Value, Seen) {
     let seen = Seen::default();
@@ -193,7 +193,7 @@ async fn a_device_paired_to_the_person_answers_what_the_agent_asks() {
         .bind()
         .await
         .unwrap();
-    let approver = tilo_relay_client::Approver::connect(
+    let approver = tilo_server_client::Approver::connect(
         &endpoint,
         on_relay.hosted.relay.node_addr(),
         computer.cert.clone(),

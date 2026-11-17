@@ -19,9 +19,9 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tilo_relay_client::CertifyError;
-use tilo_relay_client::https::{self, Origin};
-use tilo_relay_session::workspaces::{Refusal as WorkspaceRefusal, WorkspaceLabels};
+use tilo_server_client::CertifyError;
+use tilo_server_client::https::{self, Origin};
+use tilo_server_session::workspaces::{Refusal as WorkspaceRefusal, WorkspaceLabels};
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::{Device, HostRefusal};
 
@@ -55,7 +55,7 @@ pub struct Workspace {
     pub unattended: bool,
     /// Where its host is reached, as the person's list says.
     #[serde(skip)]
-    pub address: Option<tilo_relay_session::workspaces::WorkspaceHostAddress>,
+    pub address: Option<tilo_server_session::workspaces::WorkspaceHostAddress>,
 }
 
 /// Why the relay did not answer what was asked.
@@ -94,7 +94,7 @@ impl std::fmt::Display for RelayError {
                 tracing::info!(reason, "the relay refused a call");
                 match tilo_actions::remote::host_account::Refusal::from_reason(reason) {
                     Some(refusal) => f.write_str(&refusal.message),
-                    None => f.write_str(tilo_relay_protocol::refusal::PLAIN_REFUSED),
+                    None => f.write_str(tilo_server_protocol::refusal::PLAIN_REFUSED),
                 }
             }
             Self::Unavailable(reason) => {
@@ -193,7 +193,7 @@ impl Relay {
         let host = info
             .address
             .as_ref()
-            .map(tilo_relay_client::Host::published)
+            .map(tilo_server_client::Host::published)
             .ok_or_else(|| {
                 tracing::warn!(
                     relay = self.name(),
@@ -367,7 +367,7 @@ impl Relay {
         labels: &WorkspaceLabels,
         id: Option<uuid::Uuid>,
     ) -> Result<Workspace, RelayError> {
-        if tilo_relay_protocol::WorkspaceId::parse(source).is_none() {
+        if tilo_server_protocol::WorkspaceId::parse(source).is_none() {
             return Err(RelayError::NotFound);
         }
         let branch = id.unwrap_or_else(uuid::Uuid::new_v4).to_string();
@@ -381,7 +381,7 @@ impl Relay {
         let output = connection
             .device
             .host_action(
-                tilo_relay_session::workspaces::BRANCH_OWN_WORKSPACE,
+                tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE,
                 arguments,
             )
             .await
@@ -389,8 +389,8 @@ impl Relay {
                 RelayError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => RelayError::NotFound,
                 other => other,
             })?;
-        let made: tilo_relay_session::workspaces::CreatedWorkspace = serde_json::from_value(output)
-            .map_err(|error| {
+        let made: tilo_server_session::workspaces::CreatedWorkspace =
+            serde_json::from_value(output).map_err(|error| {
                 RelayError::Unavailable(format!("the relay answered no branch: {error}"))
             })?;
         Ok(connection.workspace(&made.workspace))
@@ -403,14 +403,14 @@ impl Relay {
     /// Not one of the person's own workspaces ([`RelayError::NotFound`]),
     /// or the relay refused or was not reached.
     pub async fn delete(&self, connection: &Connection, workspace: &str) -> Result<(), RelayError> {
-        if tilo_relay_protocol::WorkspaceId::parse(workspace).is_none() {
+        if tilo_server_protocol::WorkspaceId::parse(workspace).is_none() {
             return Err(RelayError::NotFound);
         }
         let mut arguments = Map::new();
         arguments.insert("workspace".into(), json!(workspace));
         connection
             .device
-            .host_action(tilo_relay_session::workspaces::DELETE_WORKSPACE, arguments)
+            .host_action(tilo_server_session::workspaces::DELETE_WORKSPACE, arguments)
             .await
             .map_err(|refusal| match RelayError::from(refusal) {
                 RelayError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => RelayError::NotFound,
@@ -432,7 +432,7 @@ impl Relay {
         workspace: &str,
     ) -> Result<WorkspaceId, RelayError> {
         if !connection.key.scope().reaches(workspace)
-            || tilo_relay_protocol::WorkspaceId::parse(workspace).is_none()
+            || tilo_server_protocol::WorkspaceId::parse(workspace).is_none()
         {
             return Err(RelayError::NotFound);
         }
@@ -555,7 +555,7 @@ impl Connection {
         }
     }
 
-    fn workspace(&self, listing: &tilo_relay_session::workspaces::WorkspaceListing) -> Workspace {
+    fn workspace(&self, listing: &tilo_server_session::workspaces::WorkspaceListing) -> Workspace {
         Workspace {
             id: listing.workspace.clone(),
             name: listing.name.clone(),

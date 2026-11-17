@@ -1,7 +1,7 @@
 //! Dialling the host: the session, and the links beside it.
 //!
 //! Every link goes through one [`Dialer`] the session keeps for its host, over
-//! the host's carrier ([`tilo_relay_client::link`]): iroh on a native device,
+//! the host's carrier ([`tilo_server_client::link`]): iroh on a native device,
 //! the browser's WebTransport in a page.
 //!
 //! Over iroh a device that holds its key dials as its device key. A device
@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
-use tilo_relay_client::Carrier;
-use tilo_relay_client::link::{Dialer, Purpose};
+use tilo_server_client::Carrier;
+use tilo_server_client::link::{Dialer, Purpose};
 
 use super::{DeviceSigner, LinkError, PeerConfig, RelayClient, Task};
 
@@ -141,9 +141,9 @@ impl Task {
     /// own.
     pub(super) fn ask_member(
         &self,
-        approval: Box<tilo_relay_protocol::certify::MemberApproval>,
+        approval: Box<tilo_server_protocol::certify::MemberApproval>,
         done: crate::Answer<
-            Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError>,
+            Result<tilo_server_protocol::certify::ApproverReply, tilo_server_client::CertifyError>,
         >,
     ) {
         let Some((dialer, _)) = self.dial.live_session() else {
@@ -156,7 +156,7 @@ impl Task {
         n0_future::task::spawn(async move {
             let asked = async {
                 let link = dialer.link(Purpose::Certify).await?;
-                let reply = tilo_relay_client::ask_member(&link, &approval).await;
+                let reply = tilo_server_client::ask_member(&link, &approval).await;
                 link.close("");
                 reply
             };
@@ -230,14 +230,14 @@ async fn connect_entering(
         link,
         Some(config.host_cert.user_public_key),
         Some(config.host_cert.device_public_key),
-        tilo_relay_session::ClientCredentials {
+        tilo_server_session::ClientCredentials {
             cert: config.cert.clone(),
             signer,
             revocations: config.revocations.clone(),
             entering: config
                 .entering
                 .clone()
-                .map(|entering| tilo_relay_session::Entry {
+                .map(|entering| tilo_server_session::Entry {
                     entering,
                     access,
                     host_cert: config.host_cert.clone(),
@@ -307,11 +307,11 @@ pub(super) fn connect_backoff(attempt: u32) -> std::time::Duration {
 /// this device away without saying why (`Refused`, which fails the session
 /// after `REFUSALS_BEFORE_FAILING` in a row). Every variant is named, so a new
 /// client error must be classified here rather than fall into a default.
-pub(super) fn link_error(error: tilo_relay_session::ClientError) -> LinkError {
-    use tilo_relay_session::ClientError;
+pub(super) fn link_error(error: tilo_server_session::ClientError) -> LinkError {
+    use tilo_server_session::ClientError;
     match error {
         ClientError::UnsupportedProtocol => {
-            LinkError::Unavailable("host does not speak tilo-relay/1".into())
+            LinkError::Unavailable("host does not speak tilo-server/1".into())
         }
         ClientError::Transport(reason) => LinkError::Unavailable(reason),
         ClientError::Sign(reason) => LinkError::Sign(reason),
@@ -340,14 +340,14 @@ pub fn member_host(link: &crate::Link) -> SessionMemberHost {
     SessionMemberHost(std::sync::Arc::clone(link.outbox()))
 }
 
-impl tilo_relay_client::MemberHost for SessionMemberHost {
+impl tilo_server_client::MemberHost for SessionMemberHost {
     fn ask(
         &self,
-        approval: &tilo_relay_protocol::certify::MemberApproval,
+        approval: &tilo_server_protocol::certify::MemberApproval,
     ) -> impl std::future::Future<
         Output = Result<
-            tilo_relay_protocol::certify::ApproverReply,
-            tilo_relay_client::CertifyError,
+            tilo_server_protocol::certify::ApproverReply,
+            tilo_server_client::CertifyError,
         >,
     > + Send {
         let (done, answer) = crate::answer();

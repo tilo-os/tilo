@@ -53,12 +53,12 @@ impl Linked {
     ///
     /// The connection ends badly, or either device is no longer in the
     /// workspace's roster.
-    pub async fn run(self) -> Result<(), tilo_relay_protocol::refusal::Refusal> {
+    pub async fn run(self) -> Result<(), tilo_server_protocol::refusal::Refusal> {
         match self.host {
             Host::Dialled(dialed) => dialed.run(&self.link).await,
             Host::Paired(host) => DirectSync::pair(&self.link, &host)
                 .await
-                .map_err(tilo_relay_protocol::refusal::Refusal::Other),
+                .map_err(tilo_server_protocol::refusal::Refusal::Other),
         }
     }
 }

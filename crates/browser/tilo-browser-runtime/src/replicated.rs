@@ -22,7 +22,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use durable_store::MemoryStore;
-use tilo_relay_protocol::workspaces::WorkspacesRequest;
+use tilo_server_protocol::workspaces::WorkspacesRequest;
 use tilo_session::platform::records::{Changes, Since};
 use ui::automerge::AutoCommit;
 use ui::resource::ResourceStore;
@@ -56,7 +56,7 @@ pub(crate) type Ask = Box<dyn FnOnce(&str) -> WorkspacesRequest>;
 
 /// Where the host's answer to an [`Ask`] goes.
 pub(crate) type Answer =
-    Box<dyn FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>)>;
+    Box<dyn FnOnce(Result<tilo_server_protocol::workspaces::WorkspacesReply, String>)>;
 
 /// What a page without a peer answers when it is asked about the workspace it
 /// replicates: it replicates none.

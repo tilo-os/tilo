@@ -1,9 +1,9 @@
-//! A session's entry through a workspace's entry ([`tilo_relay_protocol::entering`]), and what
+//! A session's entry through a workspace's entry ([`tilo_server_protocol::entering`]), and what
 //! a failed connection says about this device: the host's answer to the entry, kept in the
 //! session's status, the failure each refusal stops the session with, and the wait before the
 //! next attempt.
 
-use tilo_relay_client::LinkError;
+use tilo_server_client::LinkError;
 
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ use crate::remote::NOT_CONNECTED;
 
 /// Where the host's answer to another entry goes ([`Cmd::Enter`]).
 pub(super) type EntryCompletion =
-    crate::Answer<Result<tilo_relay_protocol::entering::Entered, LinkError>>;
+    crate::Answer<Result<tilo_server_protocol::entering::Entered, LinkError>>;
 
 /// What a failed connection says about this device.
 #[derive(Debug, PartialEq, Eq)]
@@ -49,7 +49,7 @@ pub(super) fn refusal(error: &LinkError) -> Refusal {
         // (docs/architecture/compatibility.md). This page is the host's
         // build, so a newer host means a reload brings it up to date.
         LinkError::PeerVersion { theirs }
-            if tilo_relay_protocol::auth::this_device_is_behind(*theirs) =>
+            if tilo_server_protocol::auth::this_device_is_behind(*theirs) =>
         {
             Refusal::Final(
                 "update-required",
@@ -67,10 +67,10 @@ pub(super) fn refusal(error: &LinkError) -> Refusal {
 /// reads it, or `not-admitted` when the workspace refused the device the entry
 /// let in.
 pub(super) const fn refusal_code(
-    refusal: &tilo_relay_protocol::entering::EnterRefusal,
+    refusal: &tilo_server_protocol::entering::EnterRefusal,
 ) -> &'static str {
-    use tilo_relay_protocol::directory::EntryRefusalCode;
-    use tilo_relay_protocol::entering::EnterRefusal;
+    use tilo_server_protocol::directory::EntryRefusalCode;
+    use tilo_server_protocol::entering::EnterRefusal;
     match refusal {
         EnterRefusal::Workspace(_) => NOT_ADMITTED.0,
         EnterRefusal::Entry { refused, .. } => match refused.code {
@@ -84,8 +84,8 @@ pub(super) const fn refusal_code(
 }
 
 /// The entry `refusal` refused, as the session's status keeps it.
-fn refused_entry(refusal: &tilo_relay_protocol::entering::EnterRefusal) -> Entry {
-    use tilo_relay_protocol::entering::EnterRefusal;
+fn refused_entry(refusal: &tilo_server_protocol::entering::EnterRefusal) -> Entry {
+    use tilo_server_protocol::entering::EnterRefusal;
     Entry::Refused {
         code: refusal_code(refusal),
         message: refusal.reason().to_owned(),
@@ -107,9 +107,9 @@ impl Task {
     /// member's from here and enters no more; refused, it stops.
     pub(super) fn entered(
         &mut self,
-        entered: tilo_relay_protocol::entering::Entered,
+        entered: tilo_server_protocol::entering::Entered,
     ) -> Option<Exit> {
-        use tilo_relay_protocol::entering::Entered;
+        use tilo_server_protocol::entering::Entered;
         match entered {
             Entered::Admitted {
                 workspace,
@@ -172,11 +172,11 @@ impl Task {
     /// `done` gets the host's answer.
     pub(super) fn enter(
         &self,
-        entering: tilo_relay_protocol::entering::Entering,
+        entering: tilo_server_protocol::entering::Entering,
         done: EntryCompletion,
-        client: Option<&tilo_relay_session::RelayClient>,
+        client: Option<&tilo_server_session::RelayClient>,
     ) {
-        let Some(entrance) = client.and_then(tilo_relay_session::RelayClient::entrance) else {
+        let Some(entrance) = client.and_then(tilo_server_session::RelayClient::entrance) else {
             let _ = done.send(Err(LinkError::Unavailable(NOT_CONNECTED.to_owned())));
             return;
         };
@@ -184,7 +184,7 @@ impl Task {
         let revocations = self.config.revocations.clone();
         n0_future::task::spawn(async move {
             let answer = n0_future::time::timeout(
-                tilo_relay_protocol::entering::ENTERING_DEADLINE,
+                tilo_server_protocol::entering::ENTERING_DEADLINE,
                 entrance.enter(&cert, signer.as_ref(), revocations, entering),
             )
             .await

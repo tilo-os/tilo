@@ -26,9 +26,9 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use key_group::{ContentKeys, KeyGroup, MemberKey};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::{Carrier, Host, answer_pairing, certify, pending_pairings};
-use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::voice::VoiceGrant;
+use tilo_server_client::{Carrier, Host, answer_pairing, certify, pending_pairings};
+use tilo_server_protocol::Envelope;
+use tilo_server_protocol::voice::VoiceGrant;
 use tilo_session_client::MemoryPeerStore;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, UserIdentity,
@@ -47,7 +47,7 @@ macro_rules! over_each_carrier {
             $(
                 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
                 async fn $scenario() {
-                    super::$scenario(tilo_relay_client::Carrier::Direct).await;
+                    super::$scenario(tilo_server_client::Carrier::Direct).await;
                 }
             )*
         }
@@ -55,7 +55,7 @@ macro_rules! over_each_carrier {
             $(
                 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
                 async fn $scenario() {
-                    super::$scenario(tilo_relay_client::Carrier::Relay).await;
+                    super::$scenario(tilo_server_client::Carrier::Relay).await;
                 }
             )*
         }
@@ -64,7 +64,7 @@ macro_rules! over_each_carrier {
             $(
                 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
                 async fn $scenario() {
-                    super::$scenario(tilo_relay_client::Carrier::WebTransport).await;
+                    super::$scenario(tilo_server_client::Carrier::WebTransport).await;
                 }
             )*
         }
@@ -290,7 +290,7 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
         signature: [0; 64],
     };
     sign_revocation_entry(&mut entry, &ada.root).unwrap();
-    tilo_relay::store::save_revocations(ada.state.path(), &[entry]).unwrap();
+    tilo_server::store::save_revocations(ada.state.path(), &[entry]).unwrap();
     let failed = wait_for("the page to be refused", || {
         let snapshot = page.snapshot();
         async move { (snapshot.phase == "failed").then_some(snapshot) }

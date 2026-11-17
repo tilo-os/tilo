@@ -5,7 +5,7 @@
 //! conversation, and the pause and stop switches its member obeys
 //! before every step. [`AgentSupervisor`] holds every approved delegation
 //! (Cloud's grant offers) and every running agent, and answers the
-//! vocabulary in `tilo_relay_protocol::agents` through [`ActionHost`], so a
+//! vocabulary in `tilo_server_protocol::agents` through [`ActionHost`], so a
 //! browser steers agents over the same remote-action frames it uses for
 //! apps. Only devices of the delegating user may steer; an agent may not.
 
@@ -26,15 +26,15 @@ use tilo_actions::{
     OperationKind,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_protocol::agents::{
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::agents::{
     AGENT_KIND, AgentGrant, AgentInfo, AgentMessage, AgentStatus, AgentStep, AgentTask,
     AgentsStatus, CANCEL_TASK_ACTION, GrantRequest, GrantState, MESSAGE_ACTION, MessageRole,
     PAUSE_ACTION, REQUEST_GRANT_ACTION, RESUME_ACTION, REVOKE_ACTION, SPAWN_ACTION, STATUS_ACTION,
     STOP_ACTION, SUPERVISOR_KIND, SUPERVISOR_RESOURCE, TaskState, agent_resource, color_hex,
     parse_color_hex,
 };
-use tilo_relay_protocol::delegation::{
+use tilo_server_protocol::delegation::{
     Delegate, DelegateProposal, DelegateScope, Delegation, MAX_DELEGATE_TEXT_BYTES,
     MAX_DELEGATED_APPS, MAX_DELEGATED_WORKSPACES,
 };
@@ -1358,7 +1358,7 @@ impl AgentSupervisor {
         } else {
             let id = address
                 .resource
-                .strip_prefix(tilo_relay_protocol::agents::AGENT_RESOURCE_PREFIX)
+                .strip_prefix(tilo_server_protocol::agents::AGENT_RESOURCE_PREFIX)
                 .ok_or(ActionHostError::UnknownAction)?;
             if address.action == REVOKE_ACTION {
                 self.revoke(id)
@@ -1513,8 +1513,8 @@ fn row(
     input: InputSpec,
 ) -> CatalogueRow {
     CatalogueRow {
-        provider: tilo_relay_protocol::agents::AGENTS_PROVIDER.into(),
-        app_id: tilo_relay_protocol::agents::AGENTS_PROVIDER.into(),
+        provider: tilo_server_protocol::agents::AGENTS_PROVIDER.into(),
+        app_id: tilo_server_protocol::agents::AGENTS_PROVIDER.into(),
         parent_resource: String::new(),
         resource: CatalogueResource {
             id: resource.into(),
@@ -1557,7 +1557,7 @@ fn refused(reason: String) -> ActionHostError {
 }
 
 /// [`ActionHost`] over a shared [`AgentSupervisor`]; wrap it in
-/// `tilo_relay::ActionHostServer` to answer browsers through the host.
+/// `tilo_server::ActionHostServer` to answer browsers through the host.
 #[derive(Clone)]
 pub struct SupervisorHost(pub Arc<AgentSupervisor>);
 
@@ -1641,7 +1641,7 @@ pub(crate) mod tests {
         let delegation = Delegation::sign(
             root,
             device,
-            tilo_relay_protocol::delegation::Delegate::Agent {
+            tilo_server_protocol::delegation::Delegate::Agent {
                 agent_id: "writer".into(),
             },
             "Writer helper",
@@ -1698,7 +1698,7 @@ pub(crate) mod tests {
             on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
-                provider: tilo_relay_protocol::agents::AGENTS_PROVIDER.into(),
+                provider: tilo_server_protocol::agents::AGENTS_PROVIDER.into(),
                 address: ActionAddress::new(resource, action),
             },
             argument,

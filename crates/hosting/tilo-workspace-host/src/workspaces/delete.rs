@@ -1,5 +1,5 @@
 //! Deleting a governed workspace, as its owner asks
-//! ([`tilo_relay_session::workspaces::DELETE_WORKSPACE`]): final, and with
+//! ([`tilo_server_session::workspaces::DELETE_WORKSPACE`]): final, and with
 //! everything this host keeps of it.
 //!
 //! Releasing a workspace ([`Workspaces::release`]) stops serving it and keeps
@@ -31,13 +31,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tilo_peer_state::GovernedAccess;
-use tilo_relay_protocol::refusal::Refusal;
+use tilo_server_protocol::refusal::Refusal;
 
 use super::Workspaces;
 use tilo_lock::MutexRecover as _;
 #[cfg(feature = "agents")]
 use tilo_lock::RwLockRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The extension of the marker of a workspace this host deleted.
 pub(super) const DELETED: &str = "deleted";
@@ -208,7 +208,7 @@ pub(super) fn passed_over(
     let stem = path.file_stem().and_then(|stem| stem.to_str());
     match path.extension().and_then(|extension| extension.to_str()) {
         Some(DELETED) => {
-            if let Some(workspace_id) = stem.and_then(tilo_relay_protocol::WorkspaceId::parse) {
+            if let Some(workspace_id) = stem.and_then(tilo_server_protocol::WorkspaceId::parse) {
                 direct.delete(workspace_id);
             }
             true
@@ -254,7 +254,7 @@ pub(super) fn remove_files(dir: &Path, workspace: &str) {
     paths.push(dir.join(workspace).with_extension("workspace"));
     if let (Some(state), Some(workspace_id)) = (
         dir.parent(),
-        tilo_relay_protocol::WorkspaceId::parse(workspace),
+        tilo_server_protocol::WorkspaceId::parse(workspace),
     ) {
         paths.push(state.join("workspaces").join(workspace_id.to_string()));
         paths.push(
@@ -288,7 +288,7 @@ impl Workspaces {
     /// Whether `branch` is a branch this host began and never finished: never
     /// answered to anyone, so it may be discarded and made again.
     pub(super) fn unfinished_branch(&self, branch: &str) -> bool {
-        tilo_relay_protocol::WorkspaceId::parse(branch).is_some()
+        tilo_server_protocol::WorkspaceId::parse(branch).is_some()
             && self.branching_marker(branch).exists()
     }
 
@@ -306,7 +306,7 @@ impl Workspaces {
             || ["workspace", DELETED, super::RELEASED]
                 .iter()
                 .any(|extension| record.with_extension(extension).exists());
-        if held || tilo_relay_protocol::WorkspaceId::parse(branch).is_none() {
+        if held || tilo_server_protocol::WorkspaceId::parse(branch).is_none() {
             return Err("this host has that workspace already".to_owned());
         }
         let marker = self.branching_marker(branch);
@@ -346,7 +346,7 @@ impl Workspaces {
     ///
     /// `branch` is not an unfinished branch, or its machine or files stay.
     pub(super) async fn discard_unfinished(&self, branch: &str) -> Result<(), String> {
-        let workspace_id = tilo_relay_protocol::WorkspaceId::parse(branch)
+        let workspace_id = tilo_server_protocol::WorkspaceId::parse(branch)
             .filter(|_| self.unfinished_branch(branch))
             .ok_or("that is no branch being made here")?;
         self.delete_machine(branch).await?;

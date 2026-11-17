@@ -17,12 +17,12 @@ use std::sync::Arc;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tokio::sync::Semaphore;
 
-fn workspace() -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::from_u128(7)
+fn workspace() -> tilo_server_protocol::WorkspaceId {
+    tilo_server_protocol::WorkspaceId::from_u128(7)
 }
 const CHANNEL: [u8; 32] = [9; 32];
 /// Set by `a_killed_writer_loses_no_acknowledged_edit` for its child.
-const KILLED_WRITER_ROOT: &str = "TILO_RELAY_TEST_KILLED_WRITER_ROOT";
+const KILLED_WRITER_ROOT: &str = "TILO_SERVER_TEST_KILLED_WRITER_ROOT";
 /// The child reports each commit after it returned, as `acked <index> <seq>`.
 const ACKED: &str = "acked ";
 
@@ -568,7 +568,7 @@ fn a_barrier_after_a_group_makes_the_group_durable_first() {
     let records = state.group.records();
     let hook = super::flush_hook(records.clone());
     // Any later barrier, here an ungrouped edit's, orders after the group.
-    tilo_relay_store::with_barrier_hook(hook, || {
+    tilo_server_store::with_barrier_hook(hook, || {
         let sequence = state.next_sequence_at(NOW).unwrap();
         commit(&state, sequence, 2);
     });
@@ -771,16 +771,16 @@ fn a_replacement_generation_syncs_the_journaled_records_it_keeps_once() {
     let scratch = dir.path().join("linked");
     std::fs::create_dir(&scratch).unwrap();
     let before = crate::store::thread_fsyncs();
-    tilo_relay_store::durable::link(&journaled, &scratch.join("a")).unwrap();
+    tilo_server_store::durable::link(&journaled, &scratch.join("a")).unwrap();
     assert_eq!(
         crate::store::thread_fsyncs() - before,
         1,
         "a record durable only through its journal is synced before it is linked"
     );
     let before = crate::store::thread_fsyncs();
-    tilo_relay_store::durable::link(&journaled, &scratch.join("b")).unwrap();
+    tilo_server_store::durable::link(&journaled, &scratch.join("b")).unwrap();
     let synced = active_generation(&state.store).join(format!("{:016x}.delta", 1));
-    tilo_relay_store::durable::link(&synced, &scratch.join("c")).unwrap();
+    tilo_server_store::durable::link(&synced, &scratch.join("c")).unwrap();
     assert_eq!(
         crate::store::thread_fsyncs() - before,
         0,

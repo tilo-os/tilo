@@ -1701,8 +1701,8 @@ fn desktop_running(app: &str) -> (DesktopHandle, tilo_desktop_model::TabId) {
 }
 
 /// The record `app`'s window shows, as presence names records to the others.
-fn resource_of(app: &str) -> tilo_relay_protocol::live::LiveResource {
-    tilo_relay_protocol::live::LiveResource {
+fn resource_of(app: &str) -> tilo_server_protocol::live::LiveResource {
+    tilo_server_protocol::live::LiveResource {
         app: app.to_owned(),
         record: "0f1e2d3c4b5a6978".to_owned(),
     }
@@ -1714,7 +1714,7 @@ fn narration_of(
     run: &str,
     app: &str,
     speaker: EndpointId,
-) -> ([u8; 32], tilo_relay_protocol::live::SemanticFrame) {
+) -> ([u8; 32], tilo_server_protocol::live::SemanticFrame) {
     let action = tilo_actions::ActionAddress::new("note", "write");
     let event = tilo_session_client::narration::frame(
         &tilo_session_client::narration::Narrated {
@@ -1776,8 +1776,8 @@ tilo_test_env::scenario! {
         sync.hear(Event::Live {
             ws: topic(WORKSPACE),
             from,
-            frame: tilo_relay_protocol::live::LiveFrame::Ops(
-                tilo_relay_protocol::live::OpsFrame::Semantic {
+            frame: tilo_server_protocol::live::LiveFrame::Ops(
+                tilo_server_protocol::live::OpsFrame::Semantic {
                     record: resource_of("so.tilo.notes"),
                     event: event.clone(),
                 },

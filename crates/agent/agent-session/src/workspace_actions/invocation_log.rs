@@ -35,7 +35,7 @@ pub(super) struct Entry {
     pub(super) about: Option<Box<super::bounded::About>>,
     /// The workspace it was asked in, once admitted there: what a listing of
     /// that workspace's invocations reads it by ([`super::invocations`]).
-    pub(super) workspace: Option<tilo_relay_protocol::WorkspaceId>,
+    pub(super) workspace: Option<tilo_server_protocol::WorkspaceId>,
     /// When it was asked for, in milliseconds since the Unix epoch.
     pub(super) started_ms: i64,
     /// When the host first saw it ended ([`InvocationLog::stamp_ended`]).

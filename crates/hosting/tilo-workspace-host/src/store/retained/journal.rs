@@ -11,7 +11,7 @@
 //! size is taken as whole; after a reboot its bytes are compared.
 //!
 //! The journal is collected with its generation. A replacement generation
-//! hard-links survivors through [`tilo_relay_store::durable::link`], which
+//! hard-links survivors through [`tilo_server_store::durable::link`], which
 //! syncs a record durable only here before its file outlives the journal.
 use super::{StoreError, current, sync_dir};
 use std::{
@@ -20,7 +20,7 @@ use std::{
     io::{self, Read as _, Seek as _, Write as _},
     path::{Path, PathBuf},
 };
-pub(crate) use tilo_relay_store::durable::JOURNAL;
+pub(crate) use tilo_server_store::durable::JOURNAL;
 
 const MAGIC: [u8; 4] = *b"tgj1";
 /// Magic, name length, body length, body digest, boot.
@@ -208,7 +208,7 @@ fn recover_generation(generation: &Path) -> Result<(), StoreError> {
             // Read back after a reboot, it is on disk; otherwise it may be
             // in the page cache only.
             if entry.boot == boot() || boot() == [0; 16] {
-                tilo_relay_store::durable::journaled(&record);
+                tilo_server_store::durable::journaled(&record);
             }
             continue;
         }

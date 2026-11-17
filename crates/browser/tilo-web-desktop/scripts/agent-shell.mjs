@@ -1,6 +1,6 @@
 // The tilo.sh happy path, shot end to end with a real agent.
 //
-// One run: a local hosted Tilo (a `tilo-relay workspace` host: its own user root, a
+// One run: a local hosted Tilo (a `tilo-server workspace` host: its own user root, a
 // listed workspace whose entry lets a person in, the records served), the site
 // in front of it (the desktop bundle, with the `entry.json` a deployment
 // writes and the host's routes behind it at one origin, as an ingress puts
@@ -38,7 +38,7 @@
 //          [--widths 1280,390] [--themes light,dark] [--[no-]video] [--build]
 //   --bundle  build.sh --bundle desktop output (with --build and no --bundle:
 //             built into $CARGO_TARGET_DIR/agent-shell/bundle, --profile quick)
-//   --relay   tilo-relay with features web,agents (default: target/debug, then
+//   --relay   tilo-server with features web,agents (default: target/debug, then
 //             target/release, below $CARGO_TARGET_DIR)
 //   --tilo    the tilo CLI (the same directories)
 //   --out     the shots, recordings and the run's logs (default:
@@ -183,7 +183,7 @@ const cargo = args => {
   if (result.status !== 0) throw new Error(`cargo ${args.join(' ')} failed`);
 };
 if (flag('--build')) {
-  cargo(['build', '-p', 'tilo-relay', '--features', 'web,agents', '--bin', 'tilo-relay']);
+  cargo(['build', '-p', 'tilo-server', '--features', 'web,agents', '--bin', 'tilo-server']);
   cargo(['build', '-p', 'tilo-cli', '--bin', 'tilo']);
 }
 let bundle = option('--bundle');
@@ -208,7 +208,7 @@ if (!bundle || !existsSync(join(bundle, 'pkg/tilo_browser_runtime.js'))) {
 }
 bundle = resolve(bundle);
 const firstOf = (name, dirs) => dirs.map(dir => join(dir, name)).find(existsSync);
-const relayBin = resolve(option('--relay', firstOf('tilo-relay', [join(target, 'debug'), join(target, 'release')]) ?? 'tilo-relay'));
+const relayBin = resolve(option('--relay', firstOf('tilo-server', [join(target, 'debug'), join(target, 'release')]) ?? 'tilo-server'));
 const tiloBin = resolve(option('--tilo', firstOf('tilo', [join(target, 'debug'), join(target, 'release')]) ?? 'tilo'));
 for (const bin of [relayBin, tiloBin]) if (!existsSync(bin)) throw new Error(`missing ${bin}; pass --build, or --relay and --tilo`);
 // The builder's build container carries Chromium where CI's CHROME points.
@@ -478,7 +478,7 @@ const host = detached('host', relayBin, ['workspace', '--state', join(work, 'wor
   // beside the workspace's records.
   '--seed-app', 'so.tilo.notes', '--seed-app', 'so.tilo.sheets', '--seed-app', 'so.tilo.chat',
   '--seed-app', 'so.tilo.terminal'],
-{env: {...homeDirs(hostHome), TILO_RELAY_LOG: process.env.AGENT_SHELL_RELAY_LOG ?? 'tilo_relay=info,warn',
+{env: {...homeDirs(hostHome), TILO_SERVER_LOG: process.env.AGENT_SHELL_RELAY_LOG ?? 'tilo_server=info,warn',
   // A machine with no keychain to unlock keeps its secrets in files here.
   TILO_SECRETS_DIR: secretsDir}, stdin: 'pipe', logTo: browserDir});
 let stopped = null;

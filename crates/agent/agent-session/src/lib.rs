@@ -6,7 +6,7 @@
 //! - **Identity.** Its own device key, a capability-less `DeviceCert`
 //!   issued under the user's root by ordinary device certification (the
 //!   approving device is where consent is given), and a root-signed
-//!   `tilo_relay_protocol::delegation::Delegation` naming its label, cursor
+//!   `tilo_server_protocol::delegation::Delegation` naming its label, cursor
 //!   colour, workspaces and apps. The host confines the device to those workspaces and
 //!   treats it as its own actor ([`control::AgentIdentity`]).
 //! - **Apps.** Each record the agent works in is a replica of the app's

@@ -1,5 +1,5 @@
 # The Lounge's own programs run directly, for a test of a page against them:
-# the image's entrypoint with a deployment's environment, the tilo-relay the
+# the image's entrypoint with a deployment's environment, the tilo-server the
 # image carries on its PATH, and the web entry served beside it. No image or
 # micro-VM is built around them, so a change to the page or the relay is tried
 # in minutes; the image's own test (test-image.sh) boots the built image.
@@ -10,7 +10,7 @@
 # a test that needs one starts a stack.sh stack instead.
 # `restart_lounge` stops the Lounge alone and starts it again on the volume it
 # kept, the site left serving, as a deployment's restart does. It needs node,
-# chromium, curl, and TILO_RELAY_BIN and TILO_CRYPTO_BIN naming built programs,
+# chromium, curl, and TILO_SERVER_BIN and TILO_CRYPTO_BIN naming built programs,
 # and TILO_FONTS_DIR the product's font catalog. The caller's EXIT trap must
 # call `stop_lounge`.
 #
@@ -58,9 +58,9 @@ run_lounge() {
     TILO_WORKSPACES_RESEND_KEY_FILE="${LOUNGE_RESEND_KEY_FILE:-}" \
     TILO_WORKSPACES_RESEND_URL="${LOUNGE_RESEND_URL:-}" \
     TILO_WORKSPACES_MAIL_TEMPLATES="${LOUNGE_MAIL_TEMPLATES:-}" \
-    TILO_WORKSPACES_RELAY_ORIGIN="$relay_origin" \
+    TILO_WORKSPACES_SERVER_ORIGIN="$relay_origin" \
     TILO_WORKSPACES_LIVE="127.0.0.1:$lounge_live_port" \
-    TILO_WORKSPACES_RELAY_PLAIN="127.0.0.1:$lounge_plain_port" \
+    TILO_WORKSPACES_SERVER_PLAIN="127.0.0.1:$lounge_plain_port" \
     TILO_WORKSPACES_HTTP="127.0.0.1:$lounge_http_port" \
     TILO_WORKSPACES_WEB="127.0.0.1:$lounge_web_port" \
     TILO_WORKSPACES_WEB_ENTRY="$site_origin/" \
@@ -94,7 +94,7 @@ await_lounge() {
 start_lounge() {
   local started=$SECONDS
   local bundle=${1:?start_lounge BUNDLE WORK} work=${2:?start_lounge BUNDLE WORK}
-  local relay_bin=${TILO_RELAY_BIN:?TILO_RELAY_BIN names the relay to run}
+  local relay_bin=${TILO_SERVER_BIN:?TILO_SERVER_BIN names the relay to run}
   local crypto=${TILO_CRYPTO_BIN:?TILO_CRYPTO_BIN names the certificate mint}
   local fonts=${TILO_FONTS_DIR:?TILO_FONTS_DIR names the product font catalog}
   log=$work/lounge.log
@@ -121,7 +121,7 @@ start_lounge() {
   # The relay as the image carries it: the product's font catalog beside the
   # program, which is where a Tilo binary finds it outside the image (its apps
   # lay text out, and a host that seeds them has no system fonts).
-  cp "$relay_bin" "$work/bin/tilo-relay"
+  cp "$relay_bin" "$work/bin/tilo-server"
   cp -R "$fonts" "$work/bin/fonts"
 
   lounge_volume=$volume lounge_bin=$work/bin lounge_home=$work
@@ -134,7 +134,7 @@ start_lounge() {
   # (TILO_WEB_HOME_HOST_INFO), so the page dials it without asking it first.
   local info
   info=$("$relay_bin" page-host "http://127.0.0.1:$lounge_plain_port") \
-    || lounge_fail 'the relay did not say who it is (tilo-relay page-host)'
+    || lounge_fail 'the relay did not say who it is (tilo-server page-host)'
   node "$lounge_here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
     "$relay_origin" "http://127.0.0.1:$lounge_plain_port" Lounge \
     "$relay_origin/peer/v1/directory/$workspace/" "$site_port" "$info" c_feedback >> "$site_log" 2>&1 &

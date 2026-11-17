@@ -47,7 +47,7 @@ fn bot_device(
     workspace: &str,
     seed: u8,
 ) -> tilo_peer_state::workspace_membership::BotDevice {
-    use tilo_relay_protocol::delegation::{Delegate, DelegateScope, Delegation};
+    use tilo_server_protocol::delegation::{Delegate, DelegateScope, Delegation};
     let installer = SigningKey::from_bytes(&[1; 32]);
     let device = SigningKey::from_bytes(&[seed; 32]);
     let mut cert = DeviceCert {

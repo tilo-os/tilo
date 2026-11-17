@@ -77,7 +77,7 @@ impl IdentityStore for Files {
                     .user_pubkey
                     .parent()
                     .and_then(std::path::Path::parent)
-                    .map(tilo_relay_protocol::home_peer_registry_path)
+                    .map(tilo_server_protocol::home_peer_registry_path)
                     .and_then(|registry| registry.parent().map(std::path::Path::to_path_buf)),
             )
             .collect();

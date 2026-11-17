@@ -165,7 +165,7 @@ pub(crate) struct Personal {
     unreadable: bool,
     /// The list as the person's keys read it, last kept on the hosts of their workspaces and handed
     /// to this device's API: kept again when it moves.
-    kept: Option<tilo_relay_session::workspaces::PersonalList>,
+    kept: Option<tilo_server_session::workspaces::PersonalList>,
     /// Whether `kept` was handed to the hosts too: a session's broker reaches them only once it
     /// serves, so a list said before then is kept on them once it does.
     kept_on_hosts: bool,
@@ -830,7 +830,7 @@ impl Personal {
     pub(crate) fn readable(
         &self,
         hint: impl Fn(&str) -> Option<Vec<u8>>,
-    ) -> tilo_relay_session::workspaces::PersonalList {
+    ) -> tilo_server_session::workspaces::PersonalList {
         let mut listed = self.directory.list_workspaces();
         listed.sort_by(|a, b| {
             a.order
@@ -843,19 +843,19 @@ impl Personal {
             .map(|meta| {
                 let workspace = meta.id;
                 let host = hint(&workspace.to_string()).and_then(|hint| {
-                    tilo_relay_session::workspaces::WorkspaceHostAddress::of_hint(&hint)
+                    tilo_server_session::workspaces::WorkspaceHostAddress::of_hint(&hint)
                 });
-                tilo_relay_session::workspaces::PersonalWorkspace {
+                tilo_server_session::workspaces::PersonalWorkspace {
                     name: meta.name,
                     host,
                     role: meta.governor.is_none().then(|| "owner".to_owned()),
                     workspace: workspace.to_string(),
-                    labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
+                    labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
                     unattended: false,
                 }
             })
             .collect();
-        tilo_relay_session::workspaces::PersonalList {
+        tilo_server_session::workspaces::PersonalList {
             workspaces,
             devices: Vec::new(),
         }
@@ -1550,7 +1550,7 @@ impl crate::Shared {
                 &engine.identity().device_cert.user_public_key,
             )
             .into_iter()
-            .map(|cert| tilo_relay_session::workspaces::PersonalDevice {
+            .map(|cert| tilo_server_session::workspaces::PersonalDevice {
                 cert,
                 // The person names their devices where the record is kept.
                 name: None,

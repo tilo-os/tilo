@@ -139,7 +139,7 @@ test('the click copies exactly the prompt shown, inside the click, and only then
 });
 
 test('the code is followed before the clipboard holds it: the host knows it when an agent asks', async () => {
-  // The host keeps a code only from its tab's first follow (tilo-relay's login
+  // The host keeps a code only from its tab's first follow (tilo-server's login
   // codes), and the prompt is on the clipboard the moment the click returns: an
   // agent handed it at once asks for a code the host must already have. The
   // shown code is followed as soon as it is on the screen; the click follows it

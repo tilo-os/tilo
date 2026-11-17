@@ -10,7 +10,7 @@
 //! apart from it; a key for one workspace neither turns on nor uses another's.
 //!
 //! The person is a tilo.sh tab holding their root: the page's approver session
-//! ([`tilo_relay_client::questions`]) shows each question the relay asks them,
+//! ([`tilo_server_client::questions`]) shows each question the relay asks them,
 //! and the test answers it there, as they would.
 
 use super::api::ISSUER;
@@ -21,9 +21,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tilo_api::Server;
-use tilo_relay_client::MemberApprover;
-use tilo_relay_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
-use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+use tilo_server_client::MemberApprover;
+use tilo_server_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tokio::sync::mpsc;
 
 /// A key's calls of `/v1`.
@@ -155,7 +155,7 @@ impl Person {
 
 /// `call`, while the person's page keeps its session with the relay.
 pub(super) async fn beside<T>(
-    page: &mut Pin<&mut impl Future<Output = tilo_relay_client::CertifyError>>,
+    page: &mut Pin<&mut impl Future<Output = tilo_server_client::CertifyError>>,
     call: impl Future<Output = T>,
 ) -> T {
     tokio::select! {
@@ -166,7 +166,7 @@ pub(super) async fn beside<T>(
 
 /// Wait, beside the page, until it was asked `count` questions in all.
 pub(super) async fn asked(
-    page: &mut Pin<&mut impl Future<Output = tilo_relay_client::CertifyError>>,
+    page: &mut Pin<&mut impl Future<Output = tilo_server_client::CertifyError>>,
     person: &Person,
     count: usize,
 ) {
@@ -372,7 +372,7 @@ async fn own_key_runs_unasked_only_while_let() {
 /// The Terminal session of `workspace` and the id of a run it recorded, as
 /// `key` reads them.
 async fn recorded_run(
-    page: &mut Pin<&mut impl Future<Output = tilo_relay_client::CertifyError>>,
+    page: &mut Pin<&mut impl Future<Output = tilo_server_client::CertifyError>>,
     key: &Key<'_>,
     workspace: &str,
 ) -> (String, String) {

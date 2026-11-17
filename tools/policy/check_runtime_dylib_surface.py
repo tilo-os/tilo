@@ -71,7 +71,7 @@ DENIED = {
     "iroh": "the peer transport, owned by the runtime daemon",
     "iroh-blobs": "the content store's transfer protocol",
     "tilo-runtime": "the per-user runtime daemon",
-    "tilo-relay": "the relay service",
+    "tilo-server": "the relay service",
     "ush": "the user shell daemon",
     "compat-service": "the Windows compatibility service",
     "tilo-model-gateway": "the model service implementation (apps use tilo-model-client)",

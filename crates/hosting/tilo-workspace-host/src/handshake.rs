@@ -22,7 +22,7 @@ use crate::auth::{
 use crate::frame::{read_frame, write_frame};
 use crate::policy::TrustPolicy;
 use tilo_lock::RwLockRecover as _;
-use tilo_relay_protocol::entering::{ENTERING_DEADLINE, Entered, Entry, MAX_ENTERING};
+use tilo_server_protocol::entering::{ENTERING_DEADLINE, Entered, Entry, MAX_ENTERING};
 
 /// The most bytes a pre-authentication frame may declare. The session's
 /// 64 MiB limit would let a few hundred idle peers pin the host's memory.
@@ -799,11 +799,11 @@ mod tests {
             identity.cert.clone(),
             [1; 32],
             Entry {
-                entering: tilo_relay_protocol::entering::Entering {
+                entering: tilo_server_protocol::entering::Entering {
                     workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".to_owned(),
                     name: "Stranger".to_owned(),
                     request_id: [2; 32],
-                    through: tilo_relay_protocol::entering::Through::Entry,
+                    through: tilo_server_protocol::entering::Through::Entry,
                 },
                 access: None,
                 proof: [0; 64],

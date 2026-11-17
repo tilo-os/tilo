@@ -11,9 +11,9 @@ set -euo pipefail
 out=${1:?usage: tilo-sh-programs.sh OUT}
 cd "$repo_root"
 target=${CARGO_TARGET_DIR:-$repo_root/target}
-bins=(tilo-relay discord-worker tilo-api fake-discord tilo)
+bins=(tilo-server discord-worker tilo-api fake-discord tilo)
 rm -rf "$out"
 mkdir -p "$out"
-cargo build --locked --profile lounge-check --features tilo-relay/agents \
-  -p tilo-relay -p discord-worker -p tilo-api -p fake-discord -p tilo-cli "${bins[@]/#/--bin=}"
+cargo build --locked --profile lounge-check --features tilo-server/agents \
+  -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p tilo-cli "${bins[@]/#/--bin=}"
 for bin in "${bins[@]}"; do cp "$target/lounge-check/$bin" "$out/"; done

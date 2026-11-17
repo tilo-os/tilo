@@ -6,12 +6,12 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use tilo_lock::MutexRecover as _;
-use tilo_relay_client::CoeditPayload;
-use tilo_relay_protocol::Envelope;
-use tilo_relay_session::RelayClient;
+use tilo_server_client::CoeditPayload;
+use tilo_server_protocol::Envelope;
+use tilo_server_session::RelayClient;
 
 use super::Task;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The channels' workspace transport over the host session: what they say
 /// waits here for the session to send it, newest per workspace, until the host

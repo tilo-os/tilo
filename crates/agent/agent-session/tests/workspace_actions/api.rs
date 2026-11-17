@@ -487,7 +487,7 @@ async fn a_backend_past_its_budget_is_told_when_to_ask_again() {
     const BURST: u32 = 3;
     let on_relay = api_on_relay_limiting(
         ISSUER,
-        Some(tilo_relay::member_limits::MemberLimitsConfig {
+        Some(tilo_server::member_limits::MemberLimitsConfig {
             owner_burst: BURST,
             owner_changes_per_window: 10,
             window_secs: 1,
@@ -566,7 +566,7 @@ async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
     // person's server key spends the owner budget, which guests never reach.
     let on_relay = api_on_relay_limiting(
         ISSUER,
-        Some(tilo_relay::member_limits::MemberLimitsConfig::default()),
+        Some(tilo_server::member_limits::MemberLimitsConfig::default()),
     )
     .await;
     let api = Arc::clone(&on_relay.api);
@@ -869,7 +869,7 @@ const MADE_MEANWHILE: usize = 200;
 async fn workspaces_joined_at_once_each_answer_their_first_catalogue() {
     let on_relay = api_on_relay_limiting(
         ISSUER,
-        Some(tilo_relay::member_limits::MemberLimitsConfig::default()),
+        Some(tilo_server::member_limits::MemberLimitsConfig::default()),
     )
     .await;
     let api = Arc::clone(&on_relay.api);

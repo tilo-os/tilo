@@ -35,7 +35,7 @@ pub const DEFAULT_WS_TOPIC: tilo_desktop_model::WorkspaceId =
 /// A workspace host connection's error, as the actor reports it. A host at
 /// another peer protocol version is also the person's to know about: one of
 /// the two devices has to update ([`services::Services::peer_version`]).
-fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError) -> String {
+fn relay_error(host: &iroh::EndpointId, error: &tilo_server_session::ClientError) -> String {
     if let Some(theirs) = error.peer_version() {
         services::peer_version(host.to_string(), theirs);
     }
@@ -57,7 +57,7 @@ use std::time::{Duration, Instant};
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use tilo_relay_session::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
+use tilo_server_session::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
@@ -210,7 +210,7 @@ pub enum NetCmd {
     OpenDocument {
         ws: WorkspaceId,
         channel: [u8; 32],
-        own: Option<tilo_relay_protocol::OwnedChannel>,
+        own: Option<tilo_server_protocol::OwnedChannel>,
     },
     /// Hold an enrolled workspace's relay session over the iroh endpoint its
     /// hint names.
@@ -396,7 +396,7 @@ pub enum NetEvent {
     HostRecordOpened {
         ws: WorkspaceId,
         channel: [u8; 32],
-        answer: tilo_relay_protocol::DocumentAnswer,
+        answer: tilo_server_protocol::DocumentAnswer,
     },
     Msg {
         ws: WorkspaceId,
@@ -618,7 +618,7 @@ enum HostEvent {
     /// record's frames before this event, or that it is not this device's.
     DocumentOpened {
         channel: [u8; 32],
-        answer: tilo_relay_protocol::DocumentAnswer,
+        answer: tilo_server_protocol::DocumentAnswer,
     },
     /// A member joined or left the host's live session.
     Member {
@@ -2852,7 +2852,7 @@ async fn run(
         )
         .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol)
         .accept(
-            tilo_relay_protocol::transport::SIBLING_ALPN,
+            tilo_server_protocol::transport::SIBLING_ALPN,
             device_sessions::SiblingProtocol(internal_tx.clone()),
         );
     // This device's workspace host answers here once it opens: until then its
@@ -3474,7 +3474,7 @@ impl HostRouteScheduler<'_> {
     reason = "the async write extension is local to the detached filesystem-registration worker and kept beside its only use"
 )]
 async fn register_content_peer(
-    registration: tilo_relay_protocol::transport::ContentPeerRegistration,
+    registration: tilo_server_protocol::transport::ContentPeerRegistration,
 ) -> bool {
     if cfg!(any(test, feature = "test-support"))
         && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none()
@@ -3650,7 +3650,7 @@ fn host_event(
 /// reads its records from. Each write is decided by its place in that
 /// order, never by when it arrived.
 fn opened_resource(data: &[u8], session: &RelayCoeditSession) -> bool {
-    tilo_relay_session::retention_metadata(data)
+    tilo_server_session::retention_metadata(data)
         .is_some_and(|(channel, _)| session.opened_resource(&channel))
 }
 
@@ -3775,7 +3775,7 @@ fn spawn_direct_pump(
                 },
                 result = &mut running => {
                     if let Err(reason) = result {
-                        deleted = reason == tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted;
+                        deleted = reason == tilo_server_protocol::refusal::Refusal::WorkspaceDeleted;
                         tracing::debug!(ws = %ws, %reason, "a workspace's link ended");
                     }
                     break;

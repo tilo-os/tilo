@@ -449,7 +449,7 @@ impl Session {
     async fn device_address(
         &self,
         workspace: &str,
-    ) -> Option<tilo_relay_session::workspaces::WorkspaceHostAddress> {
+    ) -> Option<tilo_server_session::workspaces::WorkspaceHostAddress> {
         let address = self
             .connection
             .relay()

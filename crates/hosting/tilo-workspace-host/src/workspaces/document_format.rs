@@ -12,7 +12,7 @@ use tilo_peer_state::join_log::{
     AdministrationRecord, InvitationEntry, JoinChallengeRecord, JoinCompletionRecord, JoinLog,
     MembershipChallengeRecord,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::{DOCUMENT_VERSION, Publication};

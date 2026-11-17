@@ -34,10 +34,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use tilo_content::ContentStore;
-use tilo_relay_client::Host;
+use tilo_server_client::Host;
 
 use tilo_content::WorkspaceStores;
-use tilo_relay_protocol::agents::AgentStatus;
+use tilo_server_protocol::agents::AgentStatus;
 use tilo_user_identity::DeviceCert;
 
 use crate::apps::AppCatalogue;
@@ -524,7 +524,7 @@ mod tests {
 
     use super::*;
     use ed25519_dalek::SigningKey;
-    use tilo_relay_protocol::agents::GrantState;
+    use tilo_server_protocol::agents::GrantState;
     use tilo_test_env::wait_until;
 
     fn grant_state(file: &Path) -> Option<GrantState> {

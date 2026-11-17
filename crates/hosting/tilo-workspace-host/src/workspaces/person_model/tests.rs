@@ -546,7 +546,7 @@ async fn a_picture_goes_only_to_a_model_that_reads_pictures() {
     let provider = workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
     let model = workspaces
         .person_model(ADA, Interaction::Request)
-        .working_in(tilo_relay_protocol::WorkspaceId::default());
+        .working_in(tilo_server_protocol::WorkspaceId::default());
     let mut pictured = asking("What is this?");
     pictured.messages[0].content.push(Content::Image {
         media_type: "image/png".into(),

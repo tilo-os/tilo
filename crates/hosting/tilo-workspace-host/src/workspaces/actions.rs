@@ -10,7 +10,7 @@
 //! desktop administers the workspaces it holds this way too.
 //!
 //! Beside it, two providers carry what is not one workspace's governance
-//! (`tilo_relay_session::workspaces` names them):
+//! (`tilo_server_session::workspaces` names them):
 //!
 //! - the holder's own operations ([`HOST_ACTIONS_PROVIDER`], `host`):
 //!   creating, listing and entering workspaces and letting an app author one,
@@ -66,8 +66,8 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType, RiskLevel,
 };
 use tilo_peer_state::join::Role;
-use tilo_relay_protocol::voice::{CallOperation, Directions};
-use tilo_relay_session::workspaces::HOST_ACTIONS_PROVIDER;
+use tilo_server_protocol::voice::{CallOperation, Directions};
+use tilo_server_session::workspaces::HOST_ACTIONS_PROVIDER;
 use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -88,7 +88,7 @@ use super::{
 };
 use crate::app_serving::AppActionServer;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Listing the invitations still redeemable: part of inviting.
 pub(crate) const INVITATIONS: &str = "invitation.list";
@@ -168,7 +168,7 @@ const SECOND_NS: u64 = 1_000_000_000;
 
 /// Derives each invocation's idempotency key, so a retry of one invocation
 /// is the same request to the workspace's request records.
-const REQUEST_ID_CONTEXT: &str = "tilo-relay workspace governance action request v1";
+const REQUEST_ID_CONTEXT: &str = "tilo-server workspace governance action request v1";
 
 const ROLES: [&str; 6] = [
     "viewer",
@@ -1301,7 +1301,7 @@ impl Workspaces {
         match (request.target.provider.as_str(), workspace_id) {
             (WORKSPACE_GOVERNANCE_PROVIDER, Some(workspace_id))
                 if request.target.address.action
-                    == tilo_relay_session::workspaces::RUN_UNATTENDED =>
+                    == tilo_server_session::workspaces::RUN_UNATTENDED =>
             {
                 self.unattended_invoke(workspace_id, caller, certificate, request)
                     .await
@@ -1588,7 +1588,7 @@ impl Workspaces {
             args,
             ..
         } = call;
-        let listed = |listing: Option<tilo_relay_protocol::directory::Listing>| match listing {
+        let listed = |listing: Option<tilo_server_protocol::directory::Listing>| match listing {
             Some(listing) => json!({
                 "public": true,
                 "description": listing.description,
@@ -1606,7 +1606,7 @@ impl Workspaces {
                             "a public workspace hands out viewer, commenter or editor, not `{text}`"
                         ))
                     })?;
-                let listing = tilo_relay_protocol::directory::Listing {
+                let listing = tilo_server_protocol::directory::Listing {
                     description: args.text("description")?.unwrap_or_default().to_owned(),
                     default_role,
                 };

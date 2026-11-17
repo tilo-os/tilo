@@ -2,7 +2,7 @@
 //! page actions.
 
 use tilo_actions::remote::{Caller, Pending, RemoteActionMessage};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 use super::WorkspaceActions;
 
@@ -24,7 +24,7 @@ impl HostActions {
         caller: &Caller,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
-        use tilo_relay_protocol::agents::AGENTS_PROVIDER;
+        use tilo_server_protocol::agents::AGENTS_PROVIDER;
         let supervisor = match &message {
             RemoteActionMessage::FeedbackRequest { .. }
             | RemoteActionMessage::ContentPutRequest { .. }

@@ -44,7 +44,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionOutput, EffectReceiptStatus, InvocationId, InvocationUpdate};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use ui::history_source::words::HistoryWords;
 
 use super::invocation_log::Entry;

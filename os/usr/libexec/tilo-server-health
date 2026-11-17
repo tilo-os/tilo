@@ -11,11 +11,11 @@
 #
 # A server that serves means, in order:
 #
-#   1. The relay is serving: tilo-relay.service is active. It is Type=notify and
+#   1. The relay is serving: tilo-server.service is active. It is Type=notify and
 #      notifies READY only after its iroh endpoint is bound and accepting, so an
 #      active relay is one peers can dial, and its metrics snapshot is one it
 #      wrote since this boot began.
-#   2. The store opens: `tilo-relay-admin status` opens every durable workspace
+#   2. The store opens: `tilo-server-admin status` opens every durable workspace
 #      store on the state root and reads its membership and retained changes.
 #      A generation whose store cannot be opened is one no workspace can reach.
 #   3. The filesystem replica, when this machine runs one (/etc/tilo/home-peer.toml
@@ -23,7 +23,7 @@
 #      its endpoints only with a ready, fresh proof, so peers get the files they
 #      ask for rather than a relay address that serves none of them.
 #
-# A server that has not been paired yet has no relay: tilo-relay-firstboot waits
+# A server that has not been paired yet has no relay: tilo-server-firstboot waits
 # on the console for the pairing token from the person's own device, and until
 # then multi-user.target is everything the machine can do. That boot is judged by
 # the target alone, as an always-on board with no account yet is, so a fresh
@@ -36,10 +36,10 @@ warn() { printf 'tilo-server-health: WARNING: %s\n' "$*" >&2; }
 RELAY_CONFIG="${TILO_SERVER_HEALTH_RELAY_CONFIG:-/etc/tilo/relay.toml}"
 CERT="${TILO_SERVER_HEALTH_CERT:-/var/lib/tilo/device/cert.bin}"
 HOME_PEER="${TILO_SERVER_HEALTH_HOME_PEER:-/etc/tilo/home-peer.toml}"
-ADMIN="${TILO_SERVER_HEALTH_ADMIN:-/usr/libexec/tilo/tilo-relay-admin}"
-# tilo-relay.service's own default state root (os/usr/lib/systemd/system/
-# tilo-relay.service reads /etc/tilo/relay.toml; this is the image's default).
-STATE_ROOT="${TILO_SERVER_HEALTH_STATE_ROOT:-/var/lib/tilo-relay}"
+ADMIN="${TILO_SERVER_HEALTH_ADMIN:-/usr/libexec/tilo/tilo-server-admin}"
+# tilo-server.service's own default state root (os/usr/lib/systemd/system/
+# tilo-server.service reads /etc/tilo/relay.toml; this is the image's default).
+STATE_ROOT="${TILO_SERVER_HEALTH_STATE_ROOT:-/var/lib/tilo-server}"
 # How long a serving generation may take to come up: the relay's own
 # TimeoutStartSec plus firstboot's enrollment wait, which has already run by the
 # time this unit is asked.
@@ -55,7 +55,7 @@ if [ -r "$RELAY_CONFIG" ]; then
 fi
 
 final_state() {
-  systemctl status --no-pager --lines=20 tilo-relay.service tilo-fs-replica.service 2>&1 \
+  systemctl status --no-pager --lines=20 tilo-server.service tilo-fs-replica.service 2>&1 \
     | sed 's/^/tilo-server-health:   /' >&2
 }
 
@@ -84,14 +84,14 @@ replica=no
 # part failed rather than only that the boot did.
 serving() {
   local reason= applies
-  if ! systemctl is-active --quiet tilo-relay.service; then
-    reason="tilo-relay.service is not active"
+  if ! systemctl is-active --quiet tilo-server.service; then
+    reason="tilo-server.service is not active"
   elif [ ! -r "$STATE_ROOT/metrics.json" ]; then
     reason="the relay has written no metrics snapshot in $STATE_ROOT"
   elif [ $(( $(date +%s) - $(stat -c %Y "$STATE_ROOT/metrics.json") )) -gt "$FRESH" ]; then
     reason="the relay's metrics snapshot in $STATE_ROOT is older than ${FRESH}s: it is not serving now"
   elif ! applies="$("$ADMIN" --config "$RELAY_CONFIG" status 2>&1)"; then
-    reason="tilo-relay-admin status cannot open this state root: $applies"
+    reason="tilo-server-admin status cannot open this state root: $applies"
   elif [ "$replica" = yes ] && ! systemctl is-active --quiet tilo-fs-replica.service; then
     reason="tilo-fs-replica.service is not active, so the filesystem this machine publishes is not served"
   elif [ "$replica" = yes ] && ! grep -qx 'full_content_replication: true' <<<"$applies"; then
@@ -102,7 +102,7 @@ serving() {
     return 1
   fi
   log 'the relay is serving'
-  log 'the store opens (tilo-relay-admin status read every durable workspace)'
+  log 'the store opens (tilo-server-admin status read every durable workspace)'
   if [ "$replica" = yes ]; then
     log 'the filesystem replica publishes complete content to peers'
   else
@@ -114,8 +114,8 @@ serving() {
 end=$(( $(date +%s) + DEADLINE ))
 while :; do
   # A unit that has already failed will not start serving by waiting.
-  if systemctl is-failed --quiet tilo-relay.service; then
-    warn 'tilo-relay.service FAILED, so this boot does not count as a success and the'
+  if systemctl is-failed --quiet tilo-server.service; then
+    warn 'tilo-server.service FAILED, so this boot does not count as a success and the'
     warn 'boot loader keeps its spent try'
     final_state
     exit 1

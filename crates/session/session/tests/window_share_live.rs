@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::workspaces::Role;
 
 use crate::common::people::{
     Device, Person, Site, log_sessions_at, share_the_fleet, two_devices_of_one_person,

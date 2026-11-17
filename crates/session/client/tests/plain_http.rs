@@ -6,7 +6,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_relay::web::{TlsSource, WebConfig};
+use tilo_server::web::{TlsSource, WebConfig};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 

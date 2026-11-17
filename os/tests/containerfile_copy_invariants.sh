@@ -122,7 +122,7 @@ done
 # dry run cannot prove that the build context supplies the installed bytes.
 for path in \
   usr/lib/tilo/node-relay.toml \
-  usr/lib/sysusers.d/tilo-relay.conf \
+  usr/lib/sysusers.d/tilo-server.conf \
   usr/lib/systemd/system/tilo-node-relay@.service \
   usr/lib/systemd/system/tilo-node-session-key@.service \
   usr/lib/systemd/system/tilo-node-session@.service \

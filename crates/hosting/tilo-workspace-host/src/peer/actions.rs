@@ -7,7 +7,7 @@ use super::{
     unavailable_target,
 };
 use tilo_lock::RwLockRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Where an inbound [`Envelope::RemoteAction`] asked to go.
 pub(super) struct RemoteActionRoute {
@@ -556,9 +556,9 @@ fn asks_to_hold(message: &tilo_actions::remote::RemoteActionMessage) -> bool {
     matches!(
         message,
         tilo_actions::remote::RemoteActionMessage::Invoke(invoke)
-            if invoke.target.provider == tilo_relay_session::workspaces::HOST_ACTIONS_PROVIDER
+            if invoke.target.provider == tilo_server_session::workspaces::HOST_ACTIONS_PROVIDER
                 && invoke.target.address.action
-                    == tilo_relay_session::workspaces::HOST_WORKSPACE
+                    == tilo_server_session::workspaces::HOST_WORKSPACE
     )
 }
 
@@ -574,10 +574,10 @@ pub(super) fn session_caller(
         .cloned();
     let caller = match agent {
         Some(Some(delegation)) => match delegation.delegate {
-            tilo_relay_protocol::delegation::Delegate::Agent { agent_id } => {
+            tilo_server_protocol::delegation::Delegate::Agent { agent_id } => {
                 Caller::delegated_agent(agent_id, peer.user_public_key, peer.device_public_key)
             }
-            tilo_relay_protocol::delegation::Delegate::Bot { installation } => {
+            tilo_server_protocol::delegation::Delegate::Bot { installation } => {
                 Caller::bot(installation, peer.user_public_key, peer.device_public_key)
             }
         },

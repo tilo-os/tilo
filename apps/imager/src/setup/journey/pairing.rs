@@ -36,7 +36,7 @@ impl Pairing {
         if !imager_backend::pairing::Pairing::supported() {
             return Err("installer-pairing-helper-unavailable");
         }
-        let lease = tilo_relay_protocol::ProcessLease::capture(std::process::id())
+        let lease = tilo_server_protocol::ProcessLease::capture(std::process::id())
             .map_err(|_| "installer-pairing-failed")?;
         self.actor.start(label, lease.pid(), lease.start_time())
     }

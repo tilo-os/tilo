@@ -571,23 +571,23 @@ files = [
 name = "relay"
 kind = "userspace"
 scope = "vm"
-packages = ["tilo-relay"]
+packages = ["tilo-server"]
 # As the image builds it: the relay serves browsers (`run --web`, a node).
-features = ["tilo-relay/web"]
-bins = ["tilo-relay", "tilo-relay-admin", "tilo-enroll", "tilo-home-peer-control"]
-units = ["tilo-relay.service"]
+features = ["tilo-server/web"]
+bins = ["tilo-server", "tilo-server-admin", "tilo-enroll", "tilo-home-peer-control"]
+units = ["tilo-server.service"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-relay", to = "/usr/libexec/tilo/tilo-relay", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-relay" },
-  { from = "tilo-relay-admin", to = "/usr/libexec/tilo/tilo-relay-admin", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-relay-admin" },
+  { from = "tilo-server", to = "/usr/libexec/tilo/tilo-server", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-server" },
+  { from = "tilo-server-admin", to = "/usr/libexec/tilo/tilo-server-admin", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-server-admin" },
   { from = "tilo-enroll", to = "/usr/libexec/tilo/tilo-enroll", mode = "0755" },
   { link = "tilo", to = "/usr/bin/tilo-enroll" },
   { from = "tilo-home-peer-control", to = "/usr/libexec/tilo-home-peer-control", mode = "0755" },
   # A node.
   { from = "@manifest/usr/lib/tilo/node-relay.toml", to = "/usr/lib/tilo/node-relay.toml", mode = "0644" },
-  { from = "@manifest/usr/lib/sysusers.d/tilo-relay.conf", to = "/usr/lib/sysusers.d/tilo-relay.conf", mode = "0644" },
+  { from = "@manifest/usr/lib/sysusers.d/tilo-server.conf", to = "/usr/lib/sysusers.d/tilo-server.conf", mode = "0644" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-relay@.service", to = "/usr/lib/systemd/system/tilo-node-relay@.service", mode = "0644" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session-key@.service", to = "/usr/lib/systemd/system/tilo-node-session-key@.service", mode = "0644" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.service", to = "/usr/lib/systemd/system/tilo-node-session@.service", mode = "0644" },

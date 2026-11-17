@@ -37,7 +37,7 @@ fn redemption(
 ) {
     let signed = join::issue_invitation(
         join::InviteGrant {
-            workspace_id: tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap(),
+            workspace_id: tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap(),
             issuer: governor.clone(),
             role: join::Role::Editor,
             nonce: [nonce; 16],
@@ -138,7 +138,7 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
     let governor = certificate(&root, &governor_key, "Lounge host");
     let device_key = SigningKey::from_bytes(&[123; 32]);
     let device = certificate(&SigningKey::from_bytes(&[124; 32]), &device_key, "Joining");
-    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
+    let workspace_id = tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
     let hint = WorkspaceDeviceHintV1 {
         version: 1,
         holds_keys: true,

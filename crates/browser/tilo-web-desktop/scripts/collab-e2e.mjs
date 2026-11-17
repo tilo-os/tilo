@@ -1,5 +1,5 @@
 // Collaboration end to end: native macOS apps, headless Chrome pages and a
-// host agent in one workspace of a local `tilo-relay dev` host.
+// host agent in one workspace of a local `tilo-server dev` host.
 //
 // For each app it starts the native shell in the workspace (TILO_COLLAB_HOST), two
 // Chrome pages (two certified devices), later a third, and an agent spawned
@@ -26,7 +26,7 @@
 //          [--out DIR] [--relay BIN] [--bin-dir DIR] [--no-agent] [--build]
 //   --bundle   build.sh --bundle desktop output (with --build and no
 //              --bundle: built into OUT/bundle with --profile dev)
-//   --relay    tilo-relay with features web,agents (default: target/release,
+//   --relay    tilo-server with features web,agents (default: target/release,
 //              else target/debug)
 //   --bin-dir  tilo-runtime-mcp and the app binaries (default: target/debug)
 //   --build    cargo build the relay, runtime and apps first
@@ -156,7 +156,7 @@ const cargo = args => {
   if (result.status !== 0) throw new Error(`cargo ${args.join(' ')} failed`);
 };
 if (flag('--build')) {
-  cargo(['build', '-p', 'tilo-relay', '--bin', 'tilo-relay', '--features', 'web,agents']);
+  cargo(['build', '-p', 'tilo-server', '--bin', 'tilo-server', '--features', 'web,agents']);
   cargo(['build', '-p', 'tilo-runtime', '--bin', 'tilo-runtime-mcp', ...appNames.flatMap(a => ['-p', APPS[a].bin, '--bin', APPS[a].bin])]);
 }
 let bundle = option('--bundle');
@@ -167,7 +167,7 @@ if (!bundle && flag('--build')) {
 }
 if (!bundle || !existsSync(join(bundle, 'pkg/tilo_browser_runtime.js'))) throw new Error('--bundle DIR (build.sh --bundle desktop output) is required');
 bundle = resolve(bundle);
-const relayBin = resolve(option('--relay', [join(repo, 'target/release/tilo-relay'), join(repo, 'target/debug/tilo-relay')].find(existsSync) ?? 'tilo-relay'));
+const relayBin = resolve(option('--relay', [join(repo, 'target/release/tilo-server'), join(repo, 'target/debug/tilo-server')].find(existsSync) ?? 'tilo-server'));
 const runtimeBin = join(binDir, 'tilo-runtime-mcp');
 for (const bin of [relayBin, runtimeBin, ...appNames.map(a => join(binDir, APPS[a].bin))]) {
   if (!existsSync(bin)) throw new Error(`missing ${bin}; build it or pass --build`);
@@ -239,7 +239,7 @@ const relayPort = await freePort();
 const relayState = join(out, 'relay-state');
 const relay = detached('relay', relayBin, ['dev', '--state', relayState, '--web', `127.0.0.1:${relayPort}`,
   '--allowed-origin', pagesOrigin, ...(withAgent ? ['--agents', '--agent-model', 'scripted'] : [])],
-{env: {TILO_RELAY_LOG: process.env.COLLAB_E2E_RELAY_LOG ?? 'tilo_relay=info,warn'}});
+{env: {TILO_SERVER_LOG: process.env.COLLAB_E2E_RELAY_LOG ?? 'tilo_server=info,warn'}});
 const hostLine = await until(async () => read(relay.stdout).split('\n').find(l => l.startsWith('{')), 120000, 200);
 if (!hostLine) throw new Error(`the relay did not start: ${read(relay.stderr).slice(-600)}`);
 const host = JSON.parse(hostLine);

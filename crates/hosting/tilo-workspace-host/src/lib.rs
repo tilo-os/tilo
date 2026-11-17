@@ -59,13 +59,13 @@ tilo_automerge_isolate::test_worker!();
 #[cfg(all(test, feature = "agents"))]
 tilo_agent_session::app_worker!();
 
-use tilo_relay_client::frame;
-use tilo_relay_protocol::{auth, policy};
-use tilo_relay_session::{client, coedit, position};
+use tilo_server_client::frame;
+use tilo_server_protocol::{auth, policy};
+use tilo_server_session::{client, coedit, position};
 
 mod transport {
     pub(crate) use crate::frame::{decode, encode};
-    pub(crate) use tilo_relay_protocol::transport::*;
+    pub(crate) use tilo_server_protocol::transport::*;
 }
 
 #[cfg(all(test, feature = "agents"))]

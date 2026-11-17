@@ -47,9 +47,9 @@ tilo-session-client = { path = "../../session/client" }
 # Documents are applied in a confined worker: this program started again as
 # it, which `main` hands over to first thing.
 tilo-automerge-isolate.workspace = true
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-server-protocol = { path = "../../hosting/tilo-server-protocol" }
 # HTTPS to a site and a host, as every client of the relay makes its requests.
-tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+tilo-server-client = { path = "../../hosting/tilo-server-client" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 # Reads the PEM certificates a test names for HTTPS to trust (`tilo login`).
@@ -91,7 +91,7 @@ iroh-blobs.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "registry", "std"] }
 # The person's workspace list, as the peer asks for the folders it keeps.
-tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+tilo-server-session = { path = "../../hosting/tilo-server-session" }
 # A workspace's name as a folder name, composed as macOS and Linux read it back.
 unicode-normalization = "0.1.25"
 

@@ -31,15 +31,15 @@ use tilo_actions::remote::{
 };
 
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
-use tilo_relay_protocol::agents::{
+use tilo_server_client::Host;
+use tilo_server_protocol::agents::{
     AGENTS_PROVIDER, AgentsStatus, STATUS_ACTION, SUPERVISOR_RESOURCE,
 };
 use tilo_session_client::remote::Heard;
 
 use super::hosted::Hosted;
 use crate::support::{Device, WORKSPACE, admitted_to, ready, start_peer};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// A record as it stood when a write landed: its author, and the record saved.
 pub type Checkpoint = ([u8; 32], Vec<u8>);
@@ -66,7 +66,7 @@ pub struct Page {
     /// The semantic work narrated here that the board admits, in order:
     /// the record it was on and the work.
     pub narrated: Vec<(
-        tilo_relay_protocol::live::LiveResource,
+        tilo_server_protocol::live::LiveResource,
         tilo_actions::SemanticInteraction,
     )>,
 }
@@ -91,12 +91,12 @@ impl Page {
     /// [`Self::open_workspace`] on any host `relay` runs, whatever serves
     /// its records.
     pub async fn open_at(
-        relay: &tilo_relay::daemon::Relay,
+        relay: &tilo_server::daemon::Relay,
         device: &Device,
         host: &Device,
         cluster_id: &str,
     ) -> Self {
-        let workspace = tilo_relay_protocol::WorkspaceId::parse(cluster_id).unwrap();
+        let workspace = tilo_server_protocol::WorkspaceId::parse(cluster_id).unwrap();
         let peer = start_peer(
             Host::at(relay.node_addr()),
             device.cert.clone(),
@@ -111,7 +111,7 @@ impl Page {
         } else {
             ready(&[&peer]).await;
             let answer = peer
-                .ask_workspaces(tilo_relay_protocol::workspaces::WorkspacesRequest::Enter {
+                .ask_workspaces(tilo_server_protocol::workspaces::WorkspacesRequest::Enter {
                     workspace: cluster_id.into(),
                 })
                 .unwrap();
@@ -120,7 +120,7 @@ impl Page {
                     .await
                     .unwrap()
                     .unwrap(),
-                tilo_relay_protocol::workspaces::WorkspacesReply::Workspace(_)
+                tilo_server_protocol::workspaces::WorkspacesReply::Workspace(_)
             ));
             peer.send(Cmd::Join(workspace)).unwrap();
         }
@@ -139,7 +139,7 @@ impl Page {
         host: &Device,
         cluster_id: &str,
     ) -> Self {
-        let workspace = tilo_relay_protocol::WorkspaceId::parse(cluster_id).unwrap();
+        let workspace = tilo_server_protocol::WorkspaceId::parse(cluster_id).unwrap();
         let mut board = tilo_live::presence::Board::new(cluster_id, device.cert.device_public_key);
         board.set_host(Some(host.cert.device_public_key));
         Self {
@@ -178,9 +178,9 @@ impl Page {
             frame,
         } = &event
             && *workspace_id == self.workspace
-            && let Ok(tilo_relay_protocol::live::LiveFrame::Ops(
-                tilo_relay_protocol::live::OpsFrame::Semantic { record, event },
-            )) = tilo_relay_protocol::live::LiveFrame::decode(frame)
+            && let Ok(tilo_server_protocol::live::LiveFrame::Ops(
+                tilo_server_protocol::live::OpsFrame::Semantic { record, event },
+            )) = tilo_server_protocol::live::LiveFrame::decode(frame)
         {
             let here = self.here();
             if let Some(work) = tilo_session_client::narration::admit(&here, *from, &event) {

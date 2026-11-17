@@ -82,7 +82,7 @@ tilo-copy-lint = { path = "../../dev/copy-lint" }
 tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
 # Members' pointers are placed through the live session's layout mapping
 # against the windows and strip a desktop shows.
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-server-protocol = { path = "../../hosting/tilo-server-protocol" }
 # `scenario!`: the cases of one subject in one test function.
 tilo-test-env = { path = "../../dev/test-env" }
 

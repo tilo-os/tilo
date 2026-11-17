@@ -2,7 +2,7 @@
 //! ([`tilo_actions::remote::identity_admin`]).
 //!
 //! The list is the person's record on the host the page's peer is with
-//! ([`tilo_relay_session::workspaces::LIST_PERSONAL`]): every key their root
+//! ([`tilo_server_session::workspaces::LIST_PERSONAL`]): every key their root
 //! certified, which each device that signs one adds there, marked where a
 //! revocation the host keeps refuses it. Taking a device back is the person's
 //! root's to sign, and the root is in this tab: a revoke is handed to the page
@@ -38,7 +38,7 @@ use tilo_actions::{ActionAddress, ActionOutput};
 #[cfg(target_arch = "wasm32")]
 use tilo_desktop_surface::session::DesktopSession;
 #[cfg(target_arch = "wasm32")]
-use tilo_relay_session::workspaces::{
+use tilo_server_session::workspaces::{
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL, PERSONAL_DEVICE_NAME,
 };
 #[cfg(target_arch = "wasm32")]
@@ -446,7 +446,7 @@ impl PageIdentity {
     }
 }
 
-/// The person's record `value` (`tilo_relay_session::workspaces::PersonalList`),
+/// The person's record `value` (`tilo_server_session::workspaces::PersonalList`),
 /// as the devices it lists ([`identity_admin::FleetDevice`]), `own` marked
 /// as this page's. Read from the answer's JSON, each certificate by the
 /// fields its JSON form names, rather than parsed whole: a page only shows

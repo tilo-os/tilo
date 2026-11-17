@@ -13,7 +13,7 @@
 //! ```
 //!
 //! The workspace is linked to the server as a hosted workspace links it
-//! (`tilo_relay::workspace_bots::discord`), and the worker runs with the settings
+//! (`tilo_server::workspace_bots::discord`), and the worker runs with the settings
 //! that link gives it.
 //!
 //! The token file has a `DISCORD_TOKEN=` line; the token goes to the worker
@@ -44,11 +44,11 @@ use serde_json::{Value, json};
 use tilo_agent_session::AppCatalogue;
 use tilo_connector::{BlobAccess, ConnectorProcess, WorkerCommand};
 use tilo_net::Method;
-use tilo_relay::workspace_bots::discord::{self, DiscordLink};
-use tilo_relay::workspace_bots::installed::{self, BotRunner};
-use tilo_relay::workspace_bots::membership::{HostRootCertifier, keep_member};
-use tilo_relay::workspace_bots::workspace_resource;
-use tilo_relay::workspaces::Workspaces;
+use tilo_server::workspace_bots::discord::{self, DiscordLink};
+use tilo_server::workspace_bots::installed::{self, BotRunner};
+use tilo_server::workspace_bots::membership::{HostRootCertifier, keep_member};
+use tilo_server::workspace_bots::workspace_resource;
+use tilo_server::workspaces::Workspaces;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use ui::tilo_actions::ActionContext;
 use ui::tilo_resource::{Id, Invoke, Resource as _};
@@ -431,13 +431,13 @@ async fn live(token: String, guild_id: String) -> usize {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let _ = AppCatalogue::native();
-    tilo_relay::surfaces::decide_receipt(&scratch.path().join("relay").join("surfaces"));
-    let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
-        tilo_relay::RelayConfig {
+    tilo_server::surfaces::decide_receipt(&scratch.path().join("relay").join("surfaces"));
+    let relay = tilo_server::daemon::Relay::start_with_relay_mode(
+        tilo_server::RelayConfig {
             state_root: scratch.path().join("relay"),
             ..Default::default()
         },
-        tilo_relay::daemon::RelayIdentity {
+        tilo_server::daemon::RelayIdentity {
             user_public_key: cert.user_public_key,
             device_signing_key: key.clone(),
             device_cert: cert.clone(),

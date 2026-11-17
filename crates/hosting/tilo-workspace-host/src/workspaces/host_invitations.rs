@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::Role;
-use tilo_relay_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
+use tilo_server_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
 use tilo_user_identity::DeviceCert;
 
 use super::{CollaborationError, Workspaces};
@@ -280,8 +280,8 @@ mod tests {
     use super::*;
     use crate::workspaces::listing::entry_tests::walk_in_as;
     use crate::workspaces::tests::{governor, guest_device, test_host};
-    use tilo_relay_protocol::directory::{EntryJoin, Listing};
-    use tilo_relay_protocol::workspaces::{
+    use tilo_server_protocol::directory::{EntryJoin, Listing};
+    use tilo_server_protocol::workspaces::{
         JoinReply, Workspace, WorkspacesReply, WorkspacesRequest,
     };
 

@@ -100,7 +100,7 @@ Everything listens on `127.0.0.1`. Ports start at `TILO_SH_PORT_BASE`
 
 | Service | Production | Locally |
 | --- | --- | --- |
-| Lounge relay | `eu1.tilo.sh` and `live-eu1.tilo.sh`, image `lounge` | `tilo-relay` through the image's entrypoint, laid out by the image's context script, behind production's Caddy at `127.0.0.1:24100` and `127.0.0.1:24106`; its entry takes people by invitation and keeps a wait list (`TILO_SH_ADMISSION=open` admits anyone as a guest, which the checks ask for) |
+| Lounge relay | `eu1.tilo.sh` and `live-eu1.tilo.sh`, image `lounge` | `tilo-server` through the image's entrypoint, laid out by the image's context script, behind production's Caddy at `127.0.0.1:24100` and `127.0.0.1:24106`; its entry takes people by invitation and keeps a wait list (`TILO_SH_ADMISSION=open` admits anyone as a guest, which the checks ask for) |
 | Mail (wait-list confirmations, invitations) | Resend | a sink that keeps each mail as a file at `127.0.0.1:24123`; `stack.sh mail` lists them with their links |
 | API server (MCP, `/v1`, keys, OAuth) | `mcp.tilo.sh`, image `api` | `tilo-api` at `http://localhost:24110` |
 | Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's desktop bundle, laid out and precompressed as the image does it, on `127.0.0.1:24121` behind the same Caddy at `http://tilo.localhost:24120`; `/releases/latest` serves this checkout's `tilo` command, signed with the stack's own key, which the site's installer downloads and trusts instead of Tilo's release key |
@@ -263,8 +263,8 @@ the previous release's own state (`relay-upgrade`).
    Lounge's operator socket (`<new state>/lounge/operator.sock`), then runs
 
    ```sh
-   tilo-relay release-people export --state <old state> --out <new state>/release-people/people.json
-   tilo-relay release-people import --socket <new state>/lounge/operator.sock \
+   tilo-server release-people export --state <old state> --out <new state>/release-people/people.json
+   tilo-server release-people import --socket <new state>/lounge/operator.sock \
      --file <new state>/release-people/people.json
    ```
 

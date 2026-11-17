@@ -18,7 +18,7 @@
 use super::*;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
 use tilo_peer_state::owner::testing::{LateAdmission, late_admission_at};
-use tilo_relay_protocol::DocumentAnswer;
+use tilo_server_protocol::DocumentAnswer;
 
 #[test]
 fn the_same_record_opened_in_two_workspaces_is_answered_as_each_ones_own() {
@@ -29,7 +29,7 @@ fn the_same_record_opened_in_two_workspaces_is_answered_as_each_ones_own() {
     } = late_admission_at(web_time::SystemTime::now());
     let host = bootstrap.host;
     let config = PeerConfig {
-        host: tilo_relay_client::Host::through(
+        host: tilo_server_client::Host::through(
             iroh_base::EndpointAddr::new(
                 iroh_base::EndpointId::from_bytes(&host.device_public_key).unwrap(),
             ),
@@ -78,7 +78,7 @@ fn the_same_record_opened_in_two_workspaces_is_answered_as_each_ones_own() {
     // no later subscription, and the second's as before.
     task.inbound(Envelope::NotAuthorised {
         workspace_id: first,
-        refusal: tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted,
+        refusal: tilo_server_protocol::refusal::Refusal::WorkspaceDeleted,
     });
     assert_eq!(task.opened_records.len(), 1);
     for workspace in [first, second] {

@@ -1,5 +1,5 @@
 /**
- * The page as a certified device of one tilo-relay workspace, in one call:
+ * The page as a certified device of one tilo-server workspace, in one call:
  * `connectRelayPeer` opens this profile's device key (`device-key.mjs`),
  * loads the runtime and connects `peer.mjs`'s certified peer to `workspace`.
  * Pages written for the relay peer of the runtime this one replaced keep
@@ -12,7 +12,7 @@
  *   pointer and caret while it is the mount acted in last;
  * - `live`: the workspace's live layer.
  *
- * A workspace on a loopback `http:` origin (local review, `tilo-relay workspace
+ * A workspace on a loopback `http:` origin (local review, `tilo-server workspace
  * --web-plain`) is accepted: the page then needs no certificate exception.
  */
 import * as host from './host.mjs';
@@ -27,7 +27,7 @@ import {idbStorage, openDeviceKey} from './device-key.mjs';
  * `getSnapshot().phase`, or `whenReady()`).
  */
 export async function connectRelayPeer({
-  origin, userPublicKey, workspace, label = 'Browser', profile = `tilo-relay:${workspace}`, device = 'relay',
+  origin, userPublicKey, workspace, label = 'Browser', profile = `tilo-server:${workspace}`, device = 'relay',
   displayName = label, onPairingCode, onStatus, signal, fetch: fetcher, live = true,
 }) {
   if (!origin || !userPublicKey || !workspace) throw new TypeError('origin, userPublicKey and workspace are required');

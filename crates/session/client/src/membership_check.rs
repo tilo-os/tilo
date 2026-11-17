@@ -6,7 +6,7 @@
 //! over its own transport.
 //!
 //! A session's [`PeerStore`] is what a peer keeps between sessions. The device key itself never passes through here: it lives behind a
-//! [`DeviceSigner`](tilo_relay_client::DeviceSigner) (a non-extractable
+//! [`DeviceSigner`](tilo_server_client::DeviceSigner) (a non-extractable
 //! `WebCrypto` key in the page, a `SigningKey` natively). A [`PeerStore`]
 //! keeps only public material — the device's certificate, the pinned host
 //! certificate — and the commit outbox that must survive a reload.
@@ -48,7 +48,7 @@ pub struct PeerEntry {
 
 /// Persistence for a [`PeerEntry`]. The page implements it over `IndexedDB`
 /// (strict durability); a save counts only once it is durable.
-pub trait PeerStore: tilo_relay_client::MaybeSendSync {
+pub trait PeerStore: tilo_server_client::MaybeSendSync {
     fn load(&self) -> Option<PeerEntry>;
     /// Replace the stored record.
     fn save(&self, record: &PeerEntry) -> Result<(), String>;

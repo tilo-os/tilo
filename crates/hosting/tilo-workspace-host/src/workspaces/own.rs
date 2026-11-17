@@ -40,8 +40,8 @@ use tilo_actions::remote::host_account::{
 use tilo_lock::MutexRecover as _;
 
 use super::Workspaces;
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_session::workspaces::WorkspaceLabels;
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_session::workspaces::WorkspaceLabels;
 
 /// The file beside the workspaces' records that says whose each own
 /// workspace is.
@@ -613,9 +613,9 @@ impl Workspaces {
     /// What a person [`Self::let_in`] does not admit hears: the refusal of
     /// the site's entry, offering its wait list when it takes people by
     /// invitation, carried as the action's refusal reason
-    /// ([`tilo_relay_protocol::directory::EntryRefused::to_reason`]).
-    pub(super) async fn not_let_in(&self) -> tilo_relay_protocol::directory::EntryRefused {
-        use tilo_relay_protocol::directory::{EntryRefusalCode, EntryRefused};
+    /// ([`tilo_server_protocol::directory::EntryRefused::to_reason`]).
+    pub(super) async fn not_let_in(&self) -> tilo_server_protocol::directory::EntryRefused {
+        use tilo_server_protocol::directory::{EntryRefusalCode, EntryRefused};
         let host = self
             .own()
             .map_or_else(String::new, |own| own.offer().host.clone());

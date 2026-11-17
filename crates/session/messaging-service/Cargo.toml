@@ -25,7 +25,7 @@ service = [
     "dep:tilo-messaging-protocol",
     "dep:tilo-identity-host",
     "dep:collab-types",
-    "dep:tilo-relay-protocol",
+    "dep:tilo-server-protocol",
     "dep:tilo-files",
     "dep:tilo-paths",
     "dep:tilo-rt",
@@ -64,7 +64,7 @@ package-store = { path = "../../packaging/package-store", features = ["store"], 
 tilo-messaging-protocol = { path = "../../system/messaging-protocol", default-features = false, features = ["signal-broker", "whatsapp-sdk", "sms-dbus"], optional = true }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host", optional = true }
 collab-types = { path = "../../collab/collab-types", optional = true }
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol", optional = true }
+tilo-server-protocol = { path = "../../hosting/tilo-server-protocol", optional = true }
 tilo-files = { path = "../../platform/tilo-files", optional = true }
 tilo-paths = { workspace = true, optional = true }
 tilo-rt = { workspace = true, optional = true }

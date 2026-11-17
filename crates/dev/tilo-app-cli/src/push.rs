@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value, json};
-use tilo_relay_session::workspaces::govern::{self, WorkspaceLink};
+use tilo_server_session::workspaces::govern::{self, WorkspaceLink};
 
 #[derive(clap::Args)]
 pub struct PushArgs {

@@ -29,10 +29,10 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-session-client = { path = "../../session/client" }
-tilo-relay-protocol = { path = "../tilo-relay-protocol" }
+tilo-server-protocol = { path = "../tilo-server-protocol" }
 # HTTPS to the relay and the site, as every client of the relay makes its requests.
-tilo-relay-client = { path = "../tilo-relay-client" }
-tilo-relay-session = { path = "../tilo-relay-session" }
+tilo-server-client = { path = "../tilo-server-client" }
+tilo-server-session = { path = "../tilo-server-session" }
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 tilo-mcp = { path = "../../runtime/tilo-mcp" }
 serde = { workspace = true, features = ["derive"] }

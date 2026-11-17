@@ -16,7 +16,7 @@ async fn pre_admitted_join(
     cert: &DeviceCert,
     workspace: &str,
     device_cert: DeviceCert,
-) -> tilo_relay_protocol::workspaces::JoinReply {
+) -> tilo_server_protocol::workspaces::JoinReply {
     let token: [u8; 8] = rand::random();
     let issued = workspaces
         .pre_admit(
@@ -49,7 +49,7 @@ async fn pre_admitted_join(
 /// (`workspaces.mjs` `joinViaHost`).
 #[tokio::test]
 async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_one_is_refused() {
-    use tilo_relay_protocol::workspaces::JoinReply;
+    use tilo_server_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;

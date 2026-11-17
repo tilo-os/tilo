@@ -13,7 +13,7 @@
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use collab_types::DocumentMutation;
-use tilo_relay_protocol::workspaces::WorkspacesRequest;
+use tilo_server_protocol::workspaces::WorkspacesRequest;
 use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 

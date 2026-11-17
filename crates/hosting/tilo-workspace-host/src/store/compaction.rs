@@ -348,7 +348,7 @@ impl WorkspaceStore {
             let kept = archive.join(lineage.file_name().unwrap_or_default());
             fs::create_dir_all(&kept)?;
             for name in &names {
-                tilo_relay_store::durable::link(&active.join(name), &kept.join(name))?;
+                tilo_server_store::durable::link(&active.join(name), &kept.join(name))?;
             }
             sync_dir(&kept)?;
             rewrite(self, &lineage, &[], &[], 0)?;
@@ -390,7 +390,7 @@ impl WorkspaceStore {
                     continue;
                 }
                 fs::create_dir_all(&kept)?;
-                tilo_relay_store::durable::link(&path, &kept.join(&name))?;
+                tilo_server_store::durable::link(&path, &kept.join(&name))?;
                 linked = true;
                 archived = archived.saturating_add(1);
             }
@@ -447,7 +447,7 @@ fn rewrite(
         } else {
             generation.join(format!("{:016x}.delta", index.saturating_add(offset)))
         };
-        tilo_relay_store::durable::link(source, &target)?;
+        tilo_server_store::durable::link(source, &target)?;
     }
     sync_dir(&generation)?;
     durable_write(&lineage.join("CURRENT"), name.as_bytes())?;
@@ -464,7 +464,7 @@ fn rewrite(
 mod tests {
     use super::*;
     use crate::coedit::CoeditPayload;
-    use tilo_relay_protocol::WorkspaceId;
+    use tilo_server_protocol::WorkspaceId;
 
     fn frame(author: u8, checkpoint: bool, body: &[u8]) -> Vec<u8> {
         let payload = if checkpoint {

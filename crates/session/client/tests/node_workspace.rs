@@ -3,7 +3,7 @@
 //! root behind a passkey with the production `identity.mjs`. A node is
 //! provisioned with a device key and an install token and no certificate;
 //! the root certifies it and the page installs the certificate through the
-//! node's install route, as `tilo-relay run --web … --install-token-file`
+//! node's install route, as `tilo-server run --web … --install-token-file`
 //! serves it. With it the root certifies the session beside the node, which
 //! runs the person's apps and agents with a key of its own: the node vouches
 //! for that key, and the session becomes one of her devices, never a host. The node then starts as the founder's host and the governor of
@@ -39,16 +39,16 @@ use neighbour_wire::NeighbourMsg;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::RelayConfig;
-use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::install::{InstallListener, SessionDevice};
-use tilo_relay::web::{TlsSource, WebConfig};
-use tilo_relay_client::https::invitation as invitation_offer;
-use tilo_relay_client::invite::guest_certificate;
-use tilo_relay_client::{
+use tilo_server::RelayConfig;
+use tilo_server::daemon::{Relay, RelayIdentity};
+use tilo_server::web::install::{InstallListener, SessionDevice};
+use tilo_server::web::{TlsSource, WebConfig};
+use tilo_server_client::https::invitation as invitation_offer;
+use tilo_server_client::invite::guest_certificate;
+use tilo_server_client::{
     DeviceSigner, Host, IssuedRole, SignError, SignFuture, certify_with_root, issue_device_cert,
 };
-use tilo_relay_protocol::workspaces::{
+use tilo_server_protocol::workspaces::{
     JoinReply, PreAdmission, Role, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::{IdentityPaths, RevocationList, persist};
@@ -252,7 +252,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     assert_eq!(delivered.user_public_key, root.public_key);
     assert!(!delivered.capabilities.can_admit_devices);
 
-    // It starts as `tilo-relay run` then does: the person's host, on the
+    // It starts as `tilo-server run` then does: the person's host, on the
     // identity it was installed with.
     let relay = Relay::start(
         RelayConfig {
@@ -550,7 +550,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
 /// A session of `cert`'s device whose first message carries `invitation` (with the pre-admission
 /// `token` where there is one), and what the workspace answered it.
 async fn enters(
-    host: tilo_relay_client::Host,
+    host: tilo_server_client::Host,
     host_cert: &tilo_user_identity::DeviceCert,
     (cert, key): (&tilo_user_identity::DeviceCert, &SigningKey),
     invitation: &[u8],
@@ -558,7 +558,7 @@ async fn enters(
     name: &str,
 ) -> (
     tilo_session_client::Link,
-    Result<tilo_relay_client::login::Admission, tilo_session_client::device::HostRefusal>,
+    Result<tilo_server_client::login::Admission, tilo_session_client::device::HostRefusal>,
 ) {
     let held = tilo_session_client::device::Held {
         cert: cert.clone(),

@@ -14,7 +14,7 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_actions::remote::{person_accounts, person_models, person_vault};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::super::HostWorkspaceActions;

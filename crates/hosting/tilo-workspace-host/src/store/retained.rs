@@ -19,17 +19,17 @@ use std::{
 };
 use tilo_automerge_isolate::{Applied, Dependencies};
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_store::durable::SELECTION_PREFIX;
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_store::durable::SELECTION_PREFIX;
 #[cfg(unix)]
-pub(crate) use tilo_relay_store::durable::stamp;
+pub(crate) use tilo_server_store::durable::stamp;
 #[cfg(feature = "agents")]
-use tilo_relay_store::durable::sync_file_once;
-pub(crate) use tilo_relay_store::durable::{
+use tilo_server_store::durable::sync_file_once;
+pub(crate) use tilo_server_store::durable::{
     GenerationGc, create_dir, current, durable_write, sync_dir, sync_dir_once,
 };
-use tilo_relay_store::frames::framed_envelope;
-pub(crate) use tilo_relay_store::frames::{body_of, complete_coedit_payload, payload};
+use tilo_server_store::frames::framed_envelope;
+pub(crate) use tilo_server_store::frames::{body_of, complete_coedit_payload, payload};
 
 mod group;
 pub(crate) mod journal;
@@ -70,7 +70,7 @@ fn checkpoint_key(bytes: &[u8], workspace: WorkspaceId) -> Option<blake3::Hash> 
         return None;
     };
     let mut hash = blake3::Hasher::new();
-    hash.update(b"tilo-relay-retained-checkpoint-body-v1\0");
+    hash.update(b"tilo-server-retained-checkpoint-body-v1\0");
     hash.update(&author);
     hash.update(&channel);
     hash.update(&body);
@@ -423,7 +423,7 @@ fn barriers(
         return Ok(());
     };
     // Helpers have no barrier hook: what it holds is due before any of them.
-    tilo_relay_store::before_barrier()?;
+    tilo_server_store::before_barrier()?;
     std::thread::scope(|scope| {
         let others: Vec<_> = rest
             .iter_mut()
@@ -504,7 +504,7 @@ fn commit_generation(
         durable_write(&generation.join("checkpoint.delta"), bytes)?;
     }
     for (index, entry) in retained.iter().enumerate() {
-        tilo_relay_store::durable::link(
+        tilo_server_store::durable::link(
             &entry.path,
             &generation.join(format!("{index:016x}.delta")),
         )?;
@@ -1019,7 +1019,7 @@ impl RetainBuild {
                         let source = record.path.clone();
                         drop(record);
                         self.staged_synced = false;
-                        tilo_relay_store::durable::link(&source, &destination)?;
+                        tilo_server_store::durable::link(&source, &destination)?;
                     }
                 }
             }
@@ -2579,7 +2579,7 @@ pub(super) mod tests {
             fs::read_dir(&lineage)
                 .unwrap()
                 .filter(|entry| {
-                    tilo_relay_store::durable::selection_generation(
+                    tilo_server_store::durable::selection_generation(
                         &entry.as_ref().unwrap().file_name().to_string_lossy(),
                     )
                     .is_some()

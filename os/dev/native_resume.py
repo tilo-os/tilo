@@ -59,8 +59,8 @@ def derive_recipe(original, retained, required, *, thin_cache_approval_sha256=No
         anchor = '    && cp /tilo-resume/partial/* target/release/ \\\n'
         text = replace_once(text, anchor, anchor +
             '    && python3 /tilo-thin-cache/restore-thin-cache.py --approval-sha256 ' + thin_cache_approval_sha256 + ' \\\n')
-    before = '       cargo build --release ${RELEASE_ARGS} -p tilo-relay --bins ${BROWSER_PKG}'
-    command = ('cargo build --release ${RELEASE_ARGS} -p tilo-relay ' +
+    before = '       cargo build --release ${RELEASE_ARGS} -p tilo-server --bins ${BROWSER_PKG}'
+    command = ('cargo build --release ${RELEASE_ARGS} -p tilo-server ' +
                ' '.join('--bin ' + name for name in release) + ' ${BROWSER_PKG}') if release else 'true'
     text = replace_once(text, before, '       ' + command)
     before = '       cargo build --release -p windows-vm \\\n         --bin tilo-windows-vm-control --bin tilo-windows-rail'

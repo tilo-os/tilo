@@ -4,7 +4,7 @@
 
 use super::{first_turn, model_endpoint, planning_agent, run_task, session, tool_call};
 use tilo_agent_session::{ModelPlanner, OpenAiModel};
-use tilo_relay_protocol::agents::TaskState;
+use tilo_server_protocol::agents::TaskState;
 
 const WRITER: &str = "so.tilo.word-processor";
 
@@ -45,7 +45,7 @@ fn png(width: u32, height: u32) -> Vec<u8> {
 async fn on_the_scan(
     action: &str,
     allowed: bool,
-) -> (tilo_relay_protocol::agents::AgentTask, Vec<String>) {
+) -> (tilo_server_protocol::agents::AgentTask, Vec<String>) {
     let (root, host_device, _state, host) = session().await;
     let store = tilo_content::ContentStore::memory();
     let scan = format!("tilo.content:{}", store.put(&png(1600, 1200)).unwrap());

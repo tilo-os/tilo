@@ -1,5 +1,5 @@
 //! Commands a key runs in a workspace's machine without the person being
-//! asked each time ([`tilo_relay_session::workspaces::RUN_UNATTENDED`]).
+//! asked each time ([`tilo_server_session::workspaces::RUN_UNATTENDED`]).
 //!
 //! An agent's key asks its person before each command it runs in a workspace's
 //! machine. A person may let the keys that reach one workspace of their own,
@@ -24,9 +24,9 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionHostError, Caller, InvokeArgument, InvokeRequest};
 use tilo_lock::RwLockRecover as _;
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
-use tilo_relay_session::workspaces::Refusal;
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+use tilo_server_session::workspaces::Refusal;
 use tilo_user_identity::{AgentScope, DeviceCert};
 
 use super::Workspaces;
@@ -46,7 +46,7 @@ const ANSWERED_WITHIN: std::time::Duration = std::time::Duration::from_millis(50
 /// holding its answer open; `None` for anything else.
 pub(super) fn asks_first(request: &InvokeRequest) -> Option<std::time::Duration> {
     (request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
-        && request.target.address.action == tilo_relay_session::workspaces::RUN_UNATTENDED)
+        && request.target.address.action == tilo_server_session::workspaces::RUN_UNATTENDED)
         .then_some(ANSWERED_WITHIN)
 }
 

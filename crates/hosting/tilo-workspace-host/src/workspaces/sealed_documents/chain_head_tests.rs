@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use super::fixtures::{SealingMember, member_device};
 use super::tests::{Lounge, lounge_with_client, seal_and_send_title, title};
 use crate::CoeditPayload;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The chain the members write, of the lounge's app.
 const CHAIN: &str = "messages";
@@ -108,7 +108,7 @@ async fn open_head(
             match guest.recv().await {
                 Some(crate::Envelope::DocumentOpened {
                     channel,
-                    answer: tilo_relay_protocol::DocumentAnswer::Sent { frames },
+                    answer: tilo_server_protocol::DocumentAnswer::Sent { frames },
                     ..
                 }) if channel == head => return (sent, frames),
                 Some(envelope) => sent.extend(frame_channel(&envelope)),
@@ -147,9 +147,9 @@ async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
         .publish(
             workspace,
             &lounge.governor,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await
@@ -233,7 +233,7 @@ async fn a_chain_with_no_part_answers_its_head_with_nothing() {
         loop {
             if let Some(crate::Envelope::DocumentOpened {
                 channel,
-                answer: tilo_relay_protocol::DocumentAnswer::Sent { frames },
+                answer: tilo_server_protocol::DocumentAnswer::Sent { frames },
                 ..
             }) = guest.recv().await
                 && channel == head

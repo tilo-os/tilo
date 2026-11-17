@@ -13,7 +13,7 @@ use crate::peer::{
 use std::collections::VecDeque;
 
 use super::{SessionLoop, inbound_bytes};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// How often a lagging connection checks whether its queues drained.
 const LAG_POLL: std::time::Duration = std::time::Duration::from_millis(20);

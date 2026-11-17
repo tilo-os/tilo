@@ -5,7 +5,7 @@
 use super::{
     Arc, AuthenticatedPeer, Decision, Envelope, PeerError, SessionCtx, WorkspaceOperation,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Handle `RetiredLiveJoin`: add a subscribed device to the workspace's live
 /// live session and send it one `LiveMember` per member already present.
@@ -15,7 +15,7 @@ pub(super) async fn handle_live_join(
     subscribed: &[WorkspaceId],
     workspace_id: WorkspaceId,
 ) -> Result<Option<Envelope>, PeerError> {
-    let refused = |refusal: tilo_relay_protocol::refusal::Refusal| {
+    let refused = |refusal: tilo_server_protocol::refusal::Refusal| {
         Ok(Some(Envelope::NotAuthorised {
             workspace_id,
             refusal,
@@ -26,18 +26,18 @@ pub(super) async fn handle_live_join(
     if !subscribed.contains(&workspace_id) {
         match subscription_refusal(session, peer, workspace_id).await? {
             Some(refusal) => return refused(refusal),
-            None => return refused(tilo_relay_protocol::refusal::Refusal::NotReady),
+            None => return refused(tilo_server_protocol::refusal::Refusal::NotReady),
         }
     }
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
-        return refused(tilo_relay_protocol::refusal::Refusal::NotReady);
+        return refused(tilo_server_protocol::refusal::Refusal::NotReady);
     };
     let members = ws
         .lock()
         .await
         .live_join(peer.device_public_key, workspace_id);
     let Some(members) = members else {
-        return refused(tilo_relay_protocol::refusal::Refusal::NotReady);
+        return refused(tilo_server_protocol::refusal::Refusal::NotReady);
     };
     for device in members {
         // Live state is never authority: a member notice lost to a full
@@ -60,7 +60,7 @@ async fn subscription_refusal(
     session: &SessionCtx<'_>,
     peer: &AuthenticatedPeer,
     workspace_id: WorkspaceId,
-) -> Result<Option<tilo_relay_protocol::refusal::Refusal>, PeerError> {
+) -> Result<Option<tilo_server_protocol::refusal::Refusal>, PeerError> {
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(None);
     };
@@ -187,8 +187,8 @@ const CALLS_REFUSED: &str = "calls require a subscription to the workspace";
 async fn call_answer(
     host: Option<&CallHost>,
     peer: &AuthenticatedPeer,
-    operation: &tilo_relay_protocol::voice::CallOperation,
-) -> Result<tilo_relay_protocol::voice::CallState, String> {
+    operation: &tilo_server_protocol::voice::CallOperation,
+) -> Result<tilo_server_protocol::voice::CallState, String> {
     match host {
         Some((workspaces, workspace)) => workspaces.voice_call(workspace, peer, operation).await,
         None => Err(CALLS_REFUSED.into()),
@@ -246,7 +246,7 @@ async fn calls_answer(
     host: Option<&CallHost>,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-) -> Result<Vec<tilo_relay_protocol::voice::CallSummary>, String> {
+) -> Result<Vec<tilo_server_protocol::voice::CallSummary>, String> {
     match host {
         Some((workspaces, workspace)) => {
             workspaces
@@ -326,7 +326,7 @@ pub(super) async fn handle_presence(
 }
 
 /// Handle `HostSaid`: the host's own word for a run it executes
-/// ([`tilo_relay_protocol::host_voice`]), fanned out to the workspace's other
+/// ([`tilo_server_protocol::host_voice`]), fanned out to the workspace's other
 /// subscribers. Only this host's own device speaks for its runs, and only
 /// with its signature over a run's word: anything else is dropped here, as
 /// every device drops it again on arrival. The frame never touches the live
@@ -354,7 +354,7 @@ pub(super) async fn handle_host_said(
         return;
     }
     if let Err(error) =
-        tilo_relay_protocol::host_voice::HostSaid::open(said, signature, *workspace_id, host)
+        tilo_server_protocol::host_voice::HostSaid::open(said, signature, *workspace_id, host)
     {
         tracing::debug!(workspace_id = %workspace_id, %error, "host frame dropped");
         return;

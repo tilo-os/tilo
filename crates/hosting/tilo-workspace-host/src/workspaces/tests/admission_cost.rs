@@ -16,7 +16,7 @@ pub(crate) async fn entry_arrival(
     workspace: &str,
     n: u32,
 ) -> std::time::Duration {
-    use tilo_relay_protocol::workspaces::JoinReply;
+    use tilo_server_protocol::workspaces::JoinReply;
     let (_, device_cert) = guest_device();
     let mut id = [0u8; 32];
     id[..4].copy_from_slice(&n.to_le_bytes());
@@ -70,7 +70,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Phases {
                 }
             }
         }
-        if event.metadata().target() != "tilo_relay::timing" {
+        if event.metadata().target() != "tilo_server::timing" {
             return;
         }
         let mut message = Message(String::new());
@@ -98,7 +98,7 @@ async fn seed(members: u32) -> (std::time::Duration, std::time::Duration) {
     let _timing = tracing::subscriber::set_default(
         tracing_subscriber::registry().with(phases.clone()).with(
             tracing_subscriber::filter::Targets::new()
-                .with_target("tilo_relay::timing", tracing::Level::DEBUG),
+                .with_target("tilo_server::timing", tracing::Level::DEBUG),
         ),
     );
     let dir = tempfile::tempdir().unwrap();

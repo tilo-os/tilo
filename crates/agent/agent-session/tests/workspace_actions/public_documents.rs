@@ -28,7 +28,7 @@ use tilo_actions::MemberId;
 use tilo_actions::remote::{CataloguePage, ReceiptStatus};
 use tilo_mcp::{McpServer, Surface};
 use tilo_peer_state::join::Role;
-use tilo_relay_protocol::directory::Listing;
+use tilo_server_protocol::directory::Listing;
 use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::DeviceCapabilities;
 

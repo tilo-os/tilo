@@ -9,7 +9,7 @@
 //! record once the replica holds a change of it ([`Task::landed`]).
 
 use super::*;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Governance a workspace's host sent as consecutive frames, not admitted yet:
 /// admitted together when something else arrives or the frames already here
@@ -105,9 +105,9 @@ impl Task {
     fn not_authorised(
         &mut self,
         workspace_id: WorkspaceId,
-        refusal: &tilo_relay_protocol::refusal::Refusal,
+        refusal: &tilo_server_protocol::refusal::Refusal,
     ) {
-        if *refusal == tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted {
+        if *refusal == tilo_server_protocol::refusal::Refusal::WorkspaceDeleted {
             self.workspace_deleted(workspace_id);
         } else {
             self.fail("permission-required", refusal.to_string());
@@ -267,7 +267,7 @@ impl Task {
     /// The host says the person's workspaces changed: the list as it is now,
     /// for whoever shows it beside the workspaces this device remembered.
     fn personal_list(&self, list: &[u8]) {
-        match serde_json::from_slice::<tilo_relay_session::workspaces::PersonalList>(list) {
+        match serde_json::from_slice::<tilo_server_session::workspaces::PersonalList>(list) {
             Ok(list) => self.reports.emit(&crate::Event::Personal(Box::new(list))),
             Err(error) => {
                 tracing::warn!(%error, "the host's workspace list did not decode");
@@ -522,7 +522,7 @@ impl Task {
                 };
                 // A workspace the host resumes after it lagged can replay an entry
                 // its live deliveries already carried; the page takes it once.
-                let entry = tilo_relay_protocol::compaction::entry_id(body);
+                let entry = tilo_server_protocol::compaction::entry_id(body);
                 if self.received.contains(&entry) {
                     return;
                 }

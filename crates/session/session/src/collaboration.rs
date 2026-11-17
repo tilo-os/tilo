@@ -171,7 +171,7 @@ fn app_window(
     notes: &crate::continuations::Continuations,
     workspace: &str,
     app: &str,
-) -> Option<(tilo_relay_protocol::live::LiveResource, String)> {
+) -> Option<(tilo_server_protocol::live::LiveResource, String)> {
     let records = notes.records();
     let held = tree
         .workspaces
@@ -263,7 +263,7 @@ mod tests {
         GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
         Workspace, WorkspaceId,
     };
-    use tilo_relay_protocol::live::LiveResource;
+    use tilo_server_protocol::live::LiveResource;
     use tilo_session_core::presence::{Follow, Place, Step, Target};
     use ui::kurbo::Rect;
 

@@ -116,7 +116,7 @@ command.
   drops private, shared, link-local (the metadata endpoint), loopback,
   multicast and reserved networks and Azure's platform address. Every VM is
   given exactly one more destination, the relay its session joins through
-  (`--relay-endpoint`, from `TILO_VM_RELAY_ENDPOINT`), over UDP and TCP; a
+  (`--relay-endpoint`, from `TILO_VM_SERVER_ENDPOINT`), over UDP and TCP; a
   relay on the host's own loopback (a local stack) is reached at `10.0.2.4`.
   IPv6 is off.
 - **Limits** are the VM's: its size's CPU and memory in the jail's cgroup,
@@ -161,7 +161,7 @@ command.
 ## Placement and routing
 
 The relay places a workspace's Browser where its shells run
-([`placed_shells.rs`](../crates/hosting/tilo-relay/src/placed_shells.rs)):
+([`placed_shells.rs`](../crates/hosting/tilo-server/src/placed_shells.rs)):
 
 1. Someone opens Browser: a person in their window, or an agent with a scoped
    key calling `app.so.tilo.browser#open`. The workspace lists Browser among
@@ -176,7 +176,7 @@ The relay places a workspace's Browser where its shells run
 
 ### What the session in the VM is handed
 
-One object (`tilo_relay_protocol::hosted::Material`), written to the
+One object (`tilo_server_protocol::hosted::Material`), written to the
 session's standard input as one line:
 
 | Field | What the session does with it |
@@ -354,12 +354,12 @@ fifteenth of a cent on demand, and a hundred-and-fiftieth of a cent on Spot.
 
 ## Running it
 
-A host that places workspaces (`tilo-relay workspace … --workspace-documents`) serves
+A host that places workspaces (`tilo-server workspace … --workspace-documents`) serves
 their Browser with `TILO_HOSTED_PLACER`, `TILO_HOSTED_MEMBERS`,
 `TILO_HOSTED_ACCOUNT` and `TILO_HOSTED_VM_SIZE` (as for shells), plus
 `TILO_HOSTED_BROWSER_RELAY` (`KEY@HOST:PORT`, the public address sessions
 reach it at), `TILO_HOSTED_BROWSER_ACTIONS` (the action log) and
 `TILO_HOSTED_PLANS`. A host that holds its person's root makes itself their
 stand-in from it at start (`workspace --root-file`), and keeps it in its state.
-A VM host serves Browser in its VMs when `TILO_VM_RELAY_ENDPOINT` is set; it
+A VM host serves Browser in its VMs when `TILO_VM_SERVER_ENDPOINT` is set; it
 keeps its templates under its state directory by itself.

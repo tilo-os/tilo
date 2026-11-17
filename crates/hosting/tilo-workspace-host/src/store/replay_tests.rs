@@ -1,6 +1,6 @@
 use super::*;
 use crate::{coedit::CoeditPayload, transport};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 fn frame(value: u8, size: usize, timestamp: u64) -> Vec<u8> {
     transport::encode(&Envelope::Delta {
         workspace_id: WorkspaceId::from_u128(7),

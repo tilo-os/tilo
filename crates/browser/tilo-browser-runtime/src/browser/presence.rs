@@ -12,7 +12,7 @@ use ui::tokens::PresenceHue;
 use wasm_bindgen::prelude::*;
 
 use crate::peer_sync::BoardView;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 use super::{Mount, error, with_mount_quietly};
 
@@ -375,13 +375,13 @@ fn selection_anchors(
     selection: Option<&collab_types::presence::ShellSelection>,
 ) -> Option<(PresenceKey, usize, usize)> {
     let selection = selection?;
-    let anchor = tilo_relay_protocol::live::LiveAnchor {
+    let anchor = tilo_server_protocol::live::LiveAnchor {
         cursor: hex::decode(&selection.anchor).ok()?,
     };
-    let head = tilo_relay_protocol::live::LiveAnchor {
+    let head = tilo_server_protocol::live::LiveAnchor {
         cursor: hex::decode(&selection.head).ok()?,
     };
-    tilo_relay_protocol::live::read_presence_anchors(&anchor, &head)
+    tilo_server_protocol::live::read_presence_anchors(&anchor, &head)
 }
 
 impl Mount {

@@ -23,8 +23,8 @@
 use collab_types::DocumentMutation;
 use tilo_actions::ActionOutput;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
-use tilo_relay_protocol::live::LiveAnchor;
-use tilo_relay_protocol::live::presence_anchors;
+use tilo_server_protocol::live::LiveAnchor;
+use tilo_server_protocol::live::presence_anchors;
 use ui::application::ApplicationDefinition;
 use ui::collaboration::PresencePayload;
 use ui::framework::{AttachedView, ResourceSelection};

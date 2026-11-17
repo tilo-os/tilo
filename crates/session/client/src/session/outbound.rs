@@ -12,7 +12,7 @@ use super::{
     OwnershipEntry, RelayClient, Task,
 };
 use tilo_peer_state::owner::WriteRefusal;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// A record's history is full and this device could not compact it: its writes wait.
 const RECORD_FULL: &str = "record-history-full";
@@ -210,7 +210,7 @@ impl Task {
         let ids: Vec<[u8; 32]> = committed
             .iter()
             .filter_map(|(request, _)| tilo_peer_state::owner::outgoing_bytes(request).ok())
-            .map(|bytes| tilo_relay_protocol::compaction::entry_id(&bytes))
+            .map(|bytes| tilo_server_protocol::compaction::entry_id(&bytes))
             .collect();
         // What this device publishes, its own replica holds.
         self.note_delivered(route, &ids);
@@ -395,7 +395,7 @@ impl Task {
     pub(super) fn acknowledge(
         &mut self,
         op: [u8; 16],
-        outcome: Result<u64, tilo_relay_protocol::refusal::Refusal>,
+        outcome: Result<u64, tilo_server_protocol::refusal::Refusal>,
     ) {
         let Some((workspace, id)) = self
             .sending
@@ -509,7 +509,7 @@ impl Task {
 }
 
 /// What this session reports when the host would not take a change it read.
-fn refusal_text(refusal: &tilo_relay_protocol::refusal::Refusal) -> String {
+fn refusal_text(refusal: &tilo_server_protocol::refusal::Refusal) -> String {
     format!("{REFUSAL}: {refusal}")
 }
 

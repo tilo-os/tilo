@@ -166,9 +166,9 @@ type AskedRecords = std::collections::HashMap<(Topic, [u8; 32]), AskedRecord>;
 #[derive(Default)]
 struct AskedRecord {
     /// The record as this device's person's own, which every ask for it names.
-    own: Option<tilo_relay_protocol::OwnedChannel>,
+    own: Option<tilo_server_protocol::OwnedChannel>,
     /// What the hosts answered: `None` while the answer is owed, the frames they sent once it came.
-    answer: Option<tilo_relay_protocol::DocumentAnswer>,
+    answer: Option<tilo_server_protocol::DocumentAnswer>,
 }
 
 /// The workspace transport the channels' governance travels on: what this session's collaboration
@@ -481,7 +481,7 @@ impl KeyLink {
         &self,
         workspace: ModelWorkspaceId,
         channel: [u8; 32],
-        own: Option<tilo_relay_protocol::OwnedChannel>,
+        own: Option<tilo_server_protocol::OwnedChannel>,
     ) -> bool {
         let ws = topic_of(workspace);
         {
@@ -505,7 +505,7 @@ impl KeyLink {
     fn ask_for(
         &self,
         ws: Topic,
-        channels: impl IntoIterator<Item = ([u8; 32], Option<tilo_relay_protocol::OwnedChannel>)>,
+        channels: impl IntoIterator<Item = ([u8; 32], Option<tilo_server_protocol::OwnedChannel>)>,
     ) -> bool {
         let outgoing = self.outgoing.lock_recover().clone();
         channels.into_iter().all(|(channel, own)| {
@@ -524,7 +524,7 @@ impl KeyLink {
         &self,
         ws: Topic,
         channel: [u8; 32],
-        answer: tilo_relay_protocol::DocumentAnswer,
+        answer: tilo_server_protocol::DocumentAnswer,
     ) {
         self.records
             .lock_recover()
@@ -542,7 +542,7 @@ impl KeyLink {
         &self,
         workspace: ModelWorkspaceId,
         channel: &[u8; 32],
-    ) -> Option<tilo_relay_protocol::DocumentAnswer> {
+    ) -> Option<tilo_server_protocol::DocumentAnswer> {
         self.records
             .lock_recover()
             .get(&(topic_of(workspace), *channel))

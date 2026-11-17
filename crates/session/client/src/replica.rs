@@ -4,7 +4,7 @@
 //! storage through its [`PeerStore`].
 //!
 //! The host sends a subscriber the workspace's bootstrap ahead of its replay
-//! ([`tilo_relay_protocol::Envelope::WorkspaceBootstrap`]): the workspace-join
+//! ([`tilo_server_protocol::Envelope::WorkspaceBootstrap`]): the workspace-join
 //! contract's membership answer, the workspace's governing authority, roster and
 //! revocations. The owner holds the workspace on that answer, vouched for by the
 //! host the page authenticated to
@@ -468,7 +468,7 @@ impl Replicas {
     /// workspace's own governance keeps for it: the address a peer dials the
     /// host at, and the relay it is reached through. `None` until the host's
     /// bootstrap or a governance message named it.
-    pub(crate) fn host(&self, workspace_id: WorkspaceId) -> Option<tilo_relay_client::Host> {
+    pub(crate) fn host(&self, workspace_id: WorkspaceId) -> Option<tilo_server_client::Host> {
         let hint = self
             .with_workspace(workspace_id, |view| {
                 let host = view.workspace_host().device_public_key;
@@ -489,7 +489,7 @@ impl Replicas {
             "iroh:direct" => None,
             url => Some(url.parse().ok()?),
         };
-        Some(tilo_relay_client::Host::through(
+        Some(tilo_server_client::Host::through(
             payload.endpoint_addr,
             relay,
         ))

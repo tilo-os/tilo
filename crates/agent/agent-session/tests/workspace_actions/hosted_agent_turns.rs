@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, ToolCall, Usage,
 };
-use tilo_relay::workspace_agents::{HostAgents, Model};
+use tilo_server::workspace_agents::{HostAgents, Model};
 use ui::tilo_resource::{Id, Resource as _};
 use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
@@ -89,7 +89,7 @@ fn looks_then_answers(cost: u64, asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model 
 /// set. Answers once the server holds it.
 pub(super) async fn make_agent(
     page: &Browser,
-    workspaces: &tilo_relay::workspaces::Workspaces,
+    workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
     person: &str,
     limit_micros: Option<u64>,
@@ -152,19 +152,19 @@ pub(super) async fn make_agent(
 /// MCP client does, and gives it to the agent. The part of the tracker's issues it went into.
 async fn file_issue(
     actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
-    workspaces: &tilo_relay::workspaces::Workspaces,
+    workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
     root: &SigningKey,
     (governor, browser): (&crate::support::Device, &crate::support::Device),
 ) -> String {
     let catalogue = crate::common::catalogue();
-    let tracker = tilo_relay::workspace_bots::workspace_resource(&catalogue, TASKS);
+    let tracker = tilo_server::workspace_bots::workspace_resource(&catalogue, TASKS);
     workspaces
         .prepare_application(workspace, &governor.cert, &catalogue, TASKS, &tracker)
         .await
         .unwrap();
     let id = WorkspaceId::parse(workspace).unwrap();
-    let host = tilo_relay::workspace_agents::WorkspaceActionHost::new(actions.clone(), id);
+    let host = tilo_server::workspace_agents::WorkspaceActionHost::new(actions.clone(), id);
     let person = tilo_actions::remote::Caller::authenticated(
         root.verifying_key().to_bytes(),
         browser.cert.device_public_key,
@@ -177,7 +177,7 @@ async fn file_issue(
     };
     let arguments =
         serde_json::json!({"title": "Plan the launch", "assignee": format!("agent:{SCOUT}")});
-    tilo_relay::workspace_agents::invoke_named(
+    tilo_server::workspace_agents::invoke_named(
         &host,
         &person,
         &route,
@@ -192,7 +192,7 @@ async fn file_issue(
 
 /// The first part of the tracker's issues, as the workspace keeps it.
 async fn tracker(
-    workspaces: &tilo_relay::workspaces::Workspaces,
+    workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
     record: &str,
 ) -> tasks::part::IssuePart {
@@ -215,8 +215,8 @@ fn never_asked(asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {
 /// surface, as tilo.sh's server does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
-    use tilo_relay::workspaces::person_model::ProviderProtocol;
-    use tilo_relay::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
+    use tilo_server::workspaces::person_model::ProviderProtocol;
+    use tilo_server::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
 
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
@@ -225,7 +225,7 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
     // The server's own count of what the agent spent is a change of Chat's, decided like any
     // other: the native apps name their surfaces as the server first runs them.
     let _ = crate::common::catalogue();
-    tilo_relay::surfaces::decide_receipt(&state.path().join("surfaces"));
+    tilo_server::surfaces::decide_receipt(&state.path().join("surfaces"));
     let (relay, actions) = crate::harness::hosted::serving_records_with_actions(
         &root,
         &host,
@@ -345,8 +345,8 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
 /// on a server that runs no model is told what to link.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked() {
-    use tilo_relay::workspaces::person_model::ProviderProtocol;
-    use tilo_relay::workspaces::person_model::scripted::Linking;
+    use tilo_server::workspaces::person_model::ProviderProtocol;
+    use tilo_server::workspaces::person_model::scripted::Linking;
 
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
@@ -606,7 +606,7 @@ async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
 
 /// The first part of the chat's messages, as the workspace keeps it.
 pub(super) async fn conversation_part(
-    workspaces: &tilo_relay::workspaces::Workspaces,
+    workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
 ) -> chat::parts::ChatPart {
     let saved = workspaces
@@ -623,14 +623,14 @@ pub(super) async fn conversation_part(
 /// service, as their page does. The message's id.
 pub(super) async fn write_to_agent(
     actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
-    workspaces: &tilo_relay::workspaces::Workspaces,
+    workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
     (root, browser): (&SigningKey, &crate::support::Device),
     text: &str,
 ) -> Id {
     let person = hex::encode(root.verifying_key().to_bytes());
     let id = WorkspaceId::parse(workspace).unwrap();
-    let host = tilo_relay::workspace_agents::WorkspaceActionHost::new(actions.clone(), id);
+    let host = tilo_server::workspace_agents::WorkspaceActionHost::new(actions.clone(), id);
     let caller = tilo_actions::remote::Caller::authenticated(
         root.verifying_key().to_bytes(),
         browser.cert.device_public_key,
@@ -643,7 +643,7 @@ pub(super) async fn write_to_agent(
     };
     let conversation = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
     let arguments = serde_json::json!({"channel": conversation.as_str(), "text": text});
-    tilo_relay::workspace_agents::invoke_named(
+    tilo_server::workspace_agents::invoke_named(
         &host,
         &caller,
         &route,
@@ -946,7 +946,7 @@ fn said_in(request: &ModelRequest) -> String {
 /// is written next is the newest by the clock a message carries.
 async fn long_notes(
     actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
-    workspaces: &tilo_relay::workspaces::Workspaces,
+    workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
     written: (&SigningKey, &crate::support::Device),
     about: &str,
@@ -969,8 +969,8 @@ async fn long_notes(
 /// the agent's day as its turns are.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
-    use tilo_relay::workspaces::person_model::ProviderProtocol;
-    use tilo_relay::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
+    use tilo_server::workspaces::person_model::ProviderProtocol;
+    use tilo_server::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
 
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());

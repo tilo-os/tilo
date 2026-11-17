@@ -107,10 +107,10 @@ tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }
 # The directory of public workspaces a site serves: what joins list and
 # what a site's entry and directory answer.
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-server-protocol = { path = "../../hosting/tilo-server-protocol" }
 # A browser environment's session asks its relay to enter the workspace it was handed, the way a
 # member device does.
-tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+tilo-server-session = { path = "../../hosting/tilo-server-session" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 toml.workspace = true
 url.workspace = true
@@ -244,10 +244,10 @@ tilo-model-client = { path = "../../agent/model-client", features = ["runtime-cl
 tilo-network-actor = { path = "../network-actor" }
 # A host's own questions to a member, asked on the collaboration endpoint:
 # what an agent asks before it acts on a workspace, answered by the person.
-tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+tilo-server-client = { path = "../../hosting/tilo-server-client" }
 # The person's workspace list, as their keys read it and the hosts of their
 # workspaces keep it.
-tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+tilo-server-session = { path = "../../hosting/tilo-server-session" }
 # This device's relays wait in the collaboration endpoint until a workspace
 # it shows has someone else in it, and its key is published only then.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
@@ -479,7 +479,7 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["te
 # A site's workspace as a site runs it: the host on this machine that
 # governs the workspace a join enrolls into, folding what its pages write,
 # and the page of its person that recorded there first.
-tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
+tilo-server = { path = "../../hosting/tilo-server", features = ["web"] }
 # What `NetworkManager` says, fed in rather than read from a bus.
 tilo-nm = { path = "../../system/tilo-nm" }
 # The other device's tunnel and this one's, in memory, for what a route
@@ -487,7 +487,7 @@ tilo-nm = { path = "../../system/tilo-nm" }
 tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, features = ["test-support"] }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 # A relay host on this machine's loopback, which is what a test's devices relay through.
-test-relay = { path = "../../dev/test-relay" }
+test-server = { path = "../../dev/test-server" }
 futures-util.workspace = true
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # The threshold signature material a test identity key is made of, as the

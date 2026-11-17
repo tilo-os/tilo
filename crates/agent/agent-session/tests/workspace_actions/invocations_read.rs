@@ -18,7 +18,7 @@ use tilo_actions::remote::{
     workspace_invocations,
 };
 use tilo_agent_session::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceDocumentsLink};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use ui::permissions::Role;
 use ui::permissions::policy::{ActionKind, Answer, Grant, Grantee, KindSet, TreePath};
 
@@ -29,7 +29,7 @@ const TASKS: &str = "so.tilo.tasks";
 /// read now, and the questions put to them, which nobody answers.
 struct Reading {
     member: HostDevice,
-    workspaces: tilo_relay::workspaces::Workspaces,
+    workspaces: tilo_server::workspaces::Workspaces,
     person: [u8; 32],
     device: [u8; 32],
     unreadable: Mutex<HashSet<String>>,

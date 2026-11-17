@@ -1,7 +1,7 @@
 //! The boundary through which a host may serve apps to remote callers.
 //!
 //! The relay itself runs no apps and links none: it carries
-//! [`Envelope::RemoteAction`](tilo_relay_protocol::transport::Envelope::RemoteAction) frames between
+//! [`Envelope::RemoteAction`](tilo_server_protocol::transport::Envelope::RemoteAction) frames between
 //! devices of a workspace without executing them. A process that embeds the
 //! relay and *does* host apps supplies an [`AppActionServer`] to the host
 //! ([`HostConfig::apps`](crate::host::HostConfig::apps)); frames addressed
@@ -12,7 +12,7 @@
 //! which it answers itself (`crate::workspaces::GovernedServer`).
 
 use tilo_actions::remote::{ActionHost, Caller, Pending, RemoteActionMessage};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Answers remote-action requests addressed to this host.
 ///
@@ -76,7 +76,7 @@ pub trait AppActionServer: Send + Sync {
     }
 
     /// `caller`'s session became an agent's run
-    /// ([`Envelope::AgentSession`](tilo_relay_protocol::transport::Envelope::AgentSession))
+    /// ([`Envelope::AgentSession`](tilo_server_protocol::transport::Envelope::AgentSession))
     /// in `workspace_id`, the workspace the session entered: an app action server that
     /// speaks for the runs it executes makes the run present there now, so an
     /// agent that connected and has not acted yet is already seen, waiting.

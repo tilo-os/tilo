@@ -20,12 +20,12 @@ use tilo_actions::api::ActionAddress;
 use tilo_agent_session::{
     AgentControl, AgentIdentity, AgentMember, MemberConfig, PlanContext, Planner, Step, StepAction,
 };
-use tilo_relay_protocol::agents::{AgentStatus, TaskState};
-use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_server_protocol::agents::{AgentStatus, TaskState};
+use tilo_server_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, UserIdentity};
 
 use crate::support::{WORKSPACE, enrol, start_host, wait_for};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 const VIDEO: &str = "so.tilo.video-editor";
 
@@ -79,7 +79,7 @@ fn delegate_to_ed(
     Delegation::sign(
         root,
         agent_device.cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_server_protocol::delegation::Delegate::Agent {
             agent_id: "ed".into(),
         },
         "Ed",
@@ -303,7 +303,7 @@ async fn ed_planning_with(
     let delegation = Delegation::sign(
         &root,
         agent_device.cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_server_protocol::delegation::Delegate::Agent {
             agent_id: "ed".into(),
         },
         "Ed",

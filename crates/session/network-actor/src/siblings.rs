@@ -89,7 +89,7 @@ pub(crate) async fn spawn_ticking(
     let host = WorkspaceHost::open(
         HostConfig::new(
             state.join("workspace-host"),
-            tilo_relay_protocol::WorkSetting::none(),
+            tilo_server_protocol::WorkSetting::none(),
         ),
         workspace_host::HostIdentity {
             user_public_key: cert.user_public_key,

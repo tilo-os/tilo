@@ -33,7 +33,7 @@ use std::time::Duration;
 use iroh::endpoint::Endpoint;
 use iroh_base::EndpointAddr;
 use tilo_lock::RwLockRecover as _;
-use tilo_relay_session::client::RelayClient;
+use tilo_server_session::client::RelayClient;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -41,7 +41,7 @@ use crate::handshake::LiveIdentity;
 use crate::metrics::Metrics;
 use crate::peer::WorkspaceRegistry;
 use crate::transport::Envelope;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Which host an attach session dials: the device `device` of the person
 /// `person`, at `addr`, both pinned by the handshake. The governor of a

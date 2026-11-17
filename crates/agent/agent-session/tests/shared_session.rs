@@ -50,17 +50,17 @@ use tilo_agent_session::{
     ReplicaActor, Seed, SupervisorHost,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::certify::{ApproverDecision, ApproverReply};
-use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{TlsSource, WebConfig};
-use tilo_relay_client::Approver;
-use tilo_relay_client::certify;
-use tilo_relay_protocol::agents::{
+use tilo_server::certify::{ApproverDecision, ApproverReply};
+use tilo_server::daemon::{Relay, RelayIdentity};
+use tilo_server::web::{TlsSource, WebConfig};
+use tilo_server_client::Approver;
+use tilo_server_client::certify;
+use tilo_server_protocol::agents::{
     AGENTS_PROVIDER, AgentStatus, AgentsStatus, CANCEL_TASK_ACTION, MESSAGE_ACTION, PAUSE_ACTION,
     RESUME_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE, TaskState,
     agent_resource,
 };
-use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_server_protocol::delegation::{DelegateScope, Delegation};
 use tilo_session_client::remote::Heard;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, UserIdentity,
@@ -69,7 +69,7 @@ use tilo_user_identity::{
 
 use crate::common::catalogue;
 use crate::support::{Device, TestHost, WORKSPACE, enrol, ready, start_peer, wait_for, workspace};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Plans the task `held` as a slow model would: only once its steps arrive
 /// on `release`, noting when the plan was ready. Anything else is planned as
@@ -106,7 +106,7 @@ async fn start_host(
     supervisor: &Arc<AgentSupervisor>,
 ) -> TestHost {
     let user = root.verifying_key().to_bytes();
-    let mut cfg = tilo_relay::RelayConfig {
+    let mut cfg = tilo_server::RelayConfig {
         state_root: state.to_path_buf(),
         ..Default::default()
     };
@@ -119,9 +119,9 @@ async fn start_host(
             device_cert: host.cert.clone(),
             revocations: RevocationList::new(),
         },
-        Some(Arc::new(tilo_relay::ActionHostServer::new(SupervisorHost(
-            supervisor.clone(),
-        )))),
+        Some(Arc::new(tilo_server::ActionHostServer::new(
+            SupervisorHost(supervisor.clone()),
+        ))),
     )
     .await
     .unwrap();
@@ -366,7 +366,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let delegation = Delegation::sign(
         &root,
         agent_cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_server_protocol::delegation::Delegate::Agent {
             agent_id: "writer".into(),
         },
         "Writer helper",
@@ -504,7 +504,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     agent
         .peer()
         .send(Cmd::Join(
-            tilo_relay_protocol::WorkspaceId::parse(OTHER_WORKSPACE).unwrap(),
+            tilo_server_protocol::WorkspaceId::parse(OTHER_WORKSPACE).unwrap(),
         ))
         .unwrap();
     wait_for(

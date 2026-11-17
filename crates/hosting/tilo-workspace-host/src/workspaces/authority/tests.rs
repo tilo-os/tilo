@@ -10,10 +10,10 @@
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_peer_state::join::Role;
-use tilo_relay_protocol::AuthenticatedPeer;
-use tilo_relay_protocol::operator::WaitListStatus;
-use tilo_relay_protocol::voice::{CallOperation, CallState};
-use tilo_relay_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
+use tilo_server_protocol::AuthenticatedPeer;
+use tilo_server_protocol::operator::WaitListStatus;
+use tilo_server_protocol::voice::{CallOperation, CallState};
+use tilo_server_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
@@ -640,7 +640,7 @@ async fn assert_pending_removal_contact_digest(workspaces: &Workspaces) {
             .await
             .unwrap();
     }
-    let expected: [u8; 32] = sha2::Sha256::digest(tilo_relay_protocol::workspaces::contact_key(
+    let expected: [u8; 32] = sha2::Sha256::digest(tilo_server_protocol::workspaces::contact_key(
         "äda@EXAMPLE.org",
     ))
     .into();
@@ -663,7 +663,7 @@ async fn assert_pending_removal_contact_digest(workspaces: &Workspaces) {
             .wait_list_state(&workspace, [1; 32])
             .await
             .unwrap(),
-        tilo_relay_protocol::operator::WaitListStatus::Gone
+        tilo_server_protocol::operator::WaitListStatus::Gone
     );
 }
 
@@ -672,7 +672,7 @@ async fn read_wait_list(
     workspaces: &Workspaces,
     owner: &DeviceCert,
     workspace: &str,
-) -> Vec<tilo_relay_protocol::workspaces::WaitListEntry> {
+) -> Vec<tilo_server_protocol::workspaces::WaitListEntry> {
     let WorkspacesReply::WaitList(listed) = workspaces
         .page_workspaces(
             owner,

@@ -102,7 +102,7 @@ upgrade() {
   export TILO_UPGRADE_DIR=$work
   tar -xf "$out/state.tar" -C "$TILO_UPGRADE_DIR"
   say "this checkout's release takes the people $release kept in"
-  (cd "$repo" && TILO_UPGRADE_RELAY_LOG=${TILO_UPGRADE_RELAY_LOG:-warn} cargo test --locked -p tilo-relay --features agents --test it -- \
+  (cd "$repo" && TILO_UPGRADE_RELAY_LOG=${TILO_UPGRADE_RELAY_LOG:-warn} cargo test --locked -p tilo-server --features agents --test it -- \
     --ignored --exact persistent_workspace::release_upgrade::the_people_a_release_kept_arrive_in_the_release_that_starts_fresh \
     --nocapture --test-threads=1) | ran_one
   say "the people $release kept arrived"

@@ -1,8 +1,8 @@
 //! Workspaces this host holds for the host that governs them: a hosting
 //! member, of the governor's own person or, where this host's operator takes
-//! that work ([`tilo_relay_protocol::WorkSetting`]), of another person's.
+//! that work ([`tilo_server_protocol::WorkSetting`]), of another person's.
 //!
-//! The governor asks with [`HOST_WORKSPACE`](tilo_relay_session::workspaces::HOST_WORKSPACE)
+//! The governor asks with [`HOST_WORKSPACE`](tilo_server_session::workspaces::HOST_WORKSPACE)
 //! after admitting this host's device to the workspace, handing it the workspace as a
 //! joining member gets it (its signed governance, roster and revocations)
 //! and its own signed address. This host then
@@ -21,7 +21,7 @@
 //!   join answers carry beside the governor's.
 //!
 //! It stops serving the workspace when the governor's person asks
-//! ([`UNHOST_WORKSPACE`](tilo_relay_session::workspaces::UNHOST_WORKSPACE)) or when the
+//! ([`UNHOST_WORKSPACE`](tilo_server_session::workspaces::UNHOST_WORKSPACE)) or when the
 //! workspace's governance no longer names this host. The workspace's files
 //! stay on disk either way.
 //!
@@ -49,7 +49,7 @@ use web_time::SystemTime;
 use crate::attach::{HostDialer, Upstream};
 use crate::handshake::LiveIdentity;
 use crate::workspaces::WorkspaceServices;
-use tilo_relay_protocol::{Whose, WorkSetting, WorkspaceId};
+use tilo_server_protocol::{Whose, WorkSetting, WorkspaceId};
 
 /// Governance changes the follower of one workspace has yet to take in.
 const NOTICES: usize = 256;
@@ -314,7 +314,7 @@ impl Hosting {
         &self,
         person: &[u8; 32],
         now: SystemTime,
-    ) -> Vec<tilo_relay_session::workspaces::WorkspaceListing> {
+    ) -> Vec<tilo_server_session::workspaces::WorkspaceListing> {
         let served: Vec<(WorkspaceId, Arc<HostedReplica>)> = self
             .served
             .lock_recover()
@@ -680,7 +680,7 @@ impl HostedReplica {
         workspace_id: WorkspaceId,
         person: &[u8; 32],
         now: SystemTime,
-    ) -> Option<tilo_relay_session::workspaces::WorkspaceListing> {
+    ) -> Option<tilo_server_session::workspaces::WorkspaceListing> {
         let (role, name) = {
             let peer = self.peer.lock_recover();
             let governance = peer.governance();
@@ -702,13 +702,13 @@ impl HostedReplica {
             };
             (role, governance.workspace_name().unwrap_or_default())
         };
-        Some(tilo_relay_session::workspaces::WorkspaceListing {
+        Some(tilo_server_session::workspaces::WorkspaceListing {
             workspace: workspace.to_owned(),
             workspace_id,
             name,
             generation: self.generation,
             role: Some(role),
-            labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
+            labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
             unattended: false,
         })
     }

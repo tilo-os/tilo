@@ -11,7 +11,7 @@ use tilo_actions::remote::{
     Caller, ConfirmationQuestion, ConfirmationReply, ContentPutAnswer, ContentPutStep, Pending,
 };
 use tilo_agent_session::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceDocumentsLink};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::Outbox;
 use ui::permissions::Role;
 
@@ -23,7 +23,7 @@ const TASKS: &str = "so.tilo.tasks";
 struct Membership {
     member: HostDevice,
     /// The host's workspaces, which hand the service the keys its device holds.
-    workspaces: tilo_relay::workspaces::Workspaces,
+    workspaces: tilo_server::workspaces::Workspaces,
     person: [u8; 32],
     device: [u8; 32],
     role: Mutex<Option<Role>>,

@@ -70,7 +70,7 @@ fn permitted() -> Continuity {
 
 /// One of the person's devices, certified by `person` , on its own key.
 fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
-    kept_device(person, seed, label, None, test_relay::loopback(), None)
+    kept_device(person, seed, label, None, test_server::loopback(), None)
 }
 
 /// Discovery on this machine's loopback instead of the network the session runs on: what a
@@ -88,8 +88,8 @@ fn kept_device(
     relays: tilo_endpoint_reachability::EndpointRelays,
     lan: Option<tilo_endpoint_reachability::Nearby>,
 ) -> Device {
-    let key = test_relay::signing_key(seed);
-    let cert = test_relay::certified(person, &key, label, DeviceCapabilities::member());
+    let key = test_server::signing_key(seed);
+    let cert = test_server::certified(person, &key, label, DeviceCapabilities::member());
     let client = Client::start(
         Entry {
             identity: Some(HostIdentity::kept(cert, key)),
@@ -200,7 +200,7 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
         1,
         "Laptop",
         Some(kept.path()),
-        test_relay::loopback(),
+        test_server::loopback(),
         None,
     );
     let id = laptop.id.clone();
@@ -225,7 +225,7 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
         1,
         "Laptop",
         Some(kept.path()),
-        test_relay::loopback(),
+        test_server::loopback(),
         None,
     );
     laptop.client.connect(session.client.endpoint_addr());
@@ -241,7 +241,7 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
         3,
         "Branch",
         Some(kept.path()),
-        test_relay::loopback(),
+        test_server::loopback(),
         None,
     );
     assert!(

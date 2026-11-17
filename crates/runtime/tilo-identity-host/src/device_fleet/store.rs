@@ -89,7 +89,7 @@ impl DeviceFleetStore {
             && let Ok(metadata) = fs::metadata(&registry)
             && metadata.len() <= 1024 * 1024
         {
-            let registrations: Vec<tilo_relay_protocol::HomePeerRegistration> =
+            let registrations: Vec<tilo_server_protocol::HomePeerRegistration> =
                 serde_json::from_slice(&fs::read(&registry)?)
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
             let identity = decode_hex_32(identity_id)?;
@@ -694,7 +694,7 @@ impl DeviceFleetStore {
             .user_pubkey
             .parent()
             .and_then(Path::parent)
-            .map(tilo_relay_protocol::home_peer_registry_path)
+            .map(tilo_server_protocol::home_peer_registry_path)
     }
 
     /// Stamps of the files [`Self::load_cached`] reads for `identity_id`, or

@@ -16,7 +16,7 @@ use tilo_actions::remote::{
     RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
-use tilo_relay_session::workspaces::{
+use tilo_server_session::workspaces::{
     CREATE_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, ENTER_WORKSPACE, EnteredWorkspace,
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, LIST_REVOCATIONS,
     LIST_WORKSPACES, UNHOST_WORKSPACE, WorkspaceListing,
@@ -27,7 +27,7 @@ use super::super::tests::{caller, settled};
 use super::super::{GovernedServer, HostWorkspaceActions};
 use crate::app_serving::AppActionServer as _;
 use crate::workspaces::tests::{governor, guest_device, test_host};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Another device of the relay's own person: the one `governor` certifies
 /// the relay for.
@@ -100,13 +100,13 @@ async fn the_relays_person_creates_and_lists_workspaces_as_actions() {
         offered(&host, &laptop, &caller(&laptop)).await,
         [
             CREATE_WORKSPACE,
-            tilo_relay_session::workspaces::CREATE_OWN_WORKSPACE,
+            tilo_server_session::workspaces::CREATE_OWN_WORKSPACE,
             DELETE_WORKSPACE,
-            tilo_relay_session::workspaces::BRANCH_OWN_WORKSPACE,
+            tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE,
             LIST_WORKSPACES,
-            tilo_relay_session::workspaces::LIST_PERSONAL,
-            tilo_relay_session::workspaces::KEEP_PERSONAL,
-            tilo_relay_session::workspaces::PERSONAL_DEVICE_NAME,
+            tilo_server_session::workspaces::LIST_PERSONAL,
+            tilo_server_session::workspaces::KEEP_PERSONAL,
+            tilo_server_session::workspaces::PERSONAL_DEVICE_NAME,
             LIST_REVOCATIONS,
             ENTER_WORKSPACE,
             HOST_WORKSPACE,

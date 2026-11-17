@@ -21,7 +21,7 @@ use crate::common::people::{Device, Person, Site};
 use serde_json::{Value, json};
 use tilo_actions::remote::identity_admin;
 use tilo_identity_host::device_fleet::DeviceFleetStore;
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::workspaces::Role;
 
 /// The Devices step of the person's identity administration, as Settings asks
 /// it: `resource␟action`, as the action API spells an address.

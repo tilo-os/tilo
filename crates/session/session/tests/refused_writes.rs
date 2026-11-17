@@ -25,7 +25,7 @@ use crate::common::people::{
     Device, show, titles_at, titles_on, two_people_at_a_site, wait_shown, waited, windows,
 };
 use serde_json::{Value, json};
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::workspaces::Role;
 
 /// The app whose window the people here open on their sessions: a note, as a package's window is one.
 const NOTES: &str = "so.tilo.notes";

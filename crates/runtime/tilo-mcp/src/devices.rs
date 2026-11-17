@@ -87,7 +87,7 @@ pub enum Answer {
     /// The person's workspaces, as this device holds them, for a hello that
     /// asked only for them.
     List {
-        list: tilo_relay_session::workspaces::PersonalList,
+        list: tilo_server_session::workspaces::PersonalList,
     },
     /// It refuses, and why.
     Refused { reason: String },
@@ -267,7 +267,7 @@ pub trait Arrivals: Send + Sync {
     /// The person's workspaces as this device holds them, each with its
     /// host's signed address: what a key of theirs that dials this server reads
     /// to find where to enter. `None` while this device holds no list.
-    fn listed(&self) -> Option<tilo_relay_session::workspaces::PersonalList> {
+    fn listed(&self) -> Option<tilo_server_session::workspaces::PersonalList> {
         None
     }
 }
@@ -608,7 +608,7 @@ pub async fn read_list(
     endpoint: &Endpoint,
     addr: EndpointAddr,
     own: &DeviceCert,
-) -> Result<tilo_relay_session::workspaces::PersonalList, String> {
+) -> Result<tilo_server_session::workspaces::PersonalList, String> {
     let reading = async {
         let connection = endpoint
             .connect(addr, ALPN)

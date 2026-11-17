@@ -2027,7 +2027,7 @@ mod tests {
             open_at(&config, 0)
         };
         let dialled = |line: &str| -> std::net::SocketAddr {
-            let line: tilo_relay_protocol::hosted::Material = serde_json::from_str(line).unwrap();
+            let line: tilo_server_protocol::hosted::Material = serde_json::from_str(line).unwrap();
             line.relay
                 .addrs
                 .into_iter()

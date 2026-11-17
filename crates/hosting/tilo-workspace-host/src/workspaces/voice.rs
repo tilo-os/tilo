@@ -8,7 +8,7 @@
 //! governance grants its `call` action (no role preset below the owner's
 //! does), ends and moderates calls; any member device joins an active one
 //! and gets a grant naming its participation and the call's roster (see
-//! [`tilo_relay_protocol::voice`]).
+//! [`tilo_server_protocol::voice`]).
 //!
 //! A call has no member limit. A device takes part in one call at a
 //! time: joining another call ends its earlier participation, so a call's
@@ -48,11 +48,11 @@ use std::time::{Duration, Instant};
 use ed25519_dalek::SigningKey;
 use tilo_peer_state::workspace::media::{self, CallPhaseV1, DirectionsV1, WorkspaceMediaV1};
 use tilo_peer_state::{GovernedAccess, StatePeer};
-use tilo_relay_protocol::voice::{
+use tilo_server_protocol::voice::{
     CallOperation, CallState, CallSummary, Directions, PARTICIPATION_TTL, Showing, VoiceGrant,
     VoiceMember,
 };
-use tilo_relay_protocol::{AuthenticatedPeer, Envelope};
+use tilo_server_protocol::{AuthenticatedPeer, Envelope};
 use tokio::sync::mpsc;
 use web_time::SystemTime;
 
@@ -61,7 +61,7 @@ use tilo_action_policy::roles::governance;
 use super::authority::WorkspaceOp;
 use super::{GovernedWorkspace, Workspaces};
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The longest record or channel id a call in a carried workspace is opened on.
 const MAX_CARRIED_NAME: usize = 256;

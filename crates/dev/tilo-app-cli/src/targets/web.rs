@@ -608,7 +608,7 @@ fn wasm_c_compiler(sdk_root: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
             "the web build archives C dependencies for WebAssembly, which this system's ar cannot\n  help: brew install zig (or put LLVM's llvm-ar on PATH), or set AR_wasm32_unknown_unknown"
         );
     }
-    let scripts = sdk_root.join("crates/hosting/tilo-relay/scripts");
+    let scripts = sdk_root.join("crates/hosting/tilo-server/scripts");
     let cc = std::env::var_os("CC_wasm32_unknown_unknown")
         .map_or_else(|| scripts.join("wasm-cc.sh"), PathBuf::from);
     Ok(Some((cc, scripts.join("wasm-ar.sh"))))

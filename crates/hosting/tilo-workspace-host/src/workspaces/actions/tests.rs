@@ -17,7 +17,7 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_PROVIDER,
 };
 use tilo_peer_state::join::Role;
-use tilo_relay_protocol::workspaces::JoinReply;
+use tilo_server_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
 use super::{
@@ -27,7 +27,7 @@ use super::{
 use crate::app_serving::AppActionServer as _;
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::workspaces::{PreAdmitRequest, SetMemberRoleRequest, Workspaces};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// What a pending answer comes to, on this runtime.
 pub(super) async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {

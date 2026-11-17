@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
         assert!(Relay::from_env().is_err(), "an endpoint id that is no key");
     }
 
-    phase a_tilo_relay_is_dialed_at_its_endpoint_and_its_requests_are_its_devices;
+    phase a_tilo_server_is_dialed_at_its_endpoint_and_its_requests_are_its_devices;
     {
         // A Tilo relay keys its endpoint apart from its device: the member dials
         // the endpoint, and takes requests signed by the device.

@@ -14,7 +14,7 @@
  * the visitor it turned away sees the wait list instead.
  *
  * Everything an agent does for the person goes through a login code
- * (`K7Q-MX2P`, `tilo-relay-protocol`'s `login_code`): the tab asks its host
+ * (`K7Q-MX2P`, `tilo-server-protocol`'s `login_code`): the tab asks its host
  * for one, the agent runs `tilo login <code>`, and the tab follows the code
  * (`follow()`, about once a second), showing each step the computer reports
  * as it happens.

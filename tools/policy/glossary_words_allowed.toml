@@ -237,7 +237,7 @@ paths = [
     "apps/windows/src/lib.rs",
     "apps/windows/src/provider.rs",
     "crates/agent/model-gateway/src/service.rs",
-    "crates/hosting/tilo-relay/README.md",
+    "crates/hosting/tilo-server/README.md",
     "crates/sdk/ui-core/tests/support/mod.rs",
     "crates/windows/windows-vm/src/https_guest.rs",
 ]

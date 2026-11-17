@@ -643,7 +643,7 @@ as a `--build-arg`. The workflow has since been replaced by `os/dev/ensure-base-
 
 Two adjacent holes in the same guarantee were found alongside it:
 
-- `os/containers/tilo-relay/Containerfile`'s runtime stage built `FROM quay.io/fedora/fedora-minimal:44`,
+- `os/containers/tilo-server/Containerfile`'s runtime stage built `FROM quay.io/fedora/fedora-minimal:44`,
   a floating tag — it never breaks, it just silently changes, so the relay image was not
   reproducible across time. **Closed:** the runtime stage of every server image that ships
   without a bootc base (the relay, the API server, the VM host, the agent host) is pinned by

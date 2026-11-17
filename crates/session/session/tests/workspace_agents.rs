@@ -16,7 +16,7 @@
 
 use crate::common::people::{Device, Person, Site};
 use serde_json::{Value, json};
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::workspaces::Role;
 
 /// The names of the agents the workspace's copy of Chat's agents record holds on `device` .
 fn agents_held(device: &Device) -> Vec<String> {

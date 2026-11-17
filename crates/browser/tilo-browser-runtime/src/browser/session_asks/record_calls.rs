@@ -14,7 +14,7 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::remote::SessionActions;
 
 /// The workspace's host as this page reaches it now. The page's session with its host comes and

@@ -37,7 +37,7 @@ use crate::store::{Grant, GrantKind, Scope};
 use crate::{Server, now_ms};
 use serde_json::{Value, json};
 use std::fmt::Write as _;
-use tilo_relay_session::workspaces::WorkspaceLabels;
+use tilo_server_session::workspaces::WorkspaceLabels;
 use tilo_user_identity::AgentScope;
 
 /// The account's root path.
@@ -160,7 +160,7 @@ pub(crate) const BRANCH_INCOMPLETE: &str = "branch_incomplete";
 /// the caller reads which part of the source did not come; why stays in the
 /// log, as for every refusal. `None` for any other refusal.
 pub(crate) fn not_branched(error: &RelayError) -> Option<Outcome> {
-    let RelayError::RefusedWorkspace(tilo_relay_session::workspaces::Refusal::BranchNotMade {
+    let RelayError::RefusedWorkspace(tilo_server_session::workspaces::Refusal::BranchNotMade {
         part,
     }) = error
     else {
@@ -1026,7 +1026,7 @@ fn labels_of(args: &Value) -> Result<WorkspaceLabels, Outcome> {
             })?
         }
     };
-    tilo_relay_session::workspaces::check_labels(&labels)
+    tilo_server_session::workspaces::check_labels(&labels)
         .map_err(|why| failed("invalid_arguments", why, "fix the label and ask again"))?;
     Ok(labels)
 }

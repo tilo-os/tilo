@@ -42,7 +42,7 @@ const RECORD: &str = "chat";
 const HEARD: f32 = 0.02;
 
 fn public(seed: u8) -> EndpointId {
-    test_relay::endpoint_key(seed).public()
+    test_server::endpoint_key(seed).public()
 }
 
 /// The person a device is a device of, in the hex everyone here knows them by.
@@ -56,7 +56,7 @@ fn person(seed: u8) -> String {
 
 /// One device's key, as the workspace's governance names it.
 fn key(seed: u8) -> Ed25519PublicKey {
-    Ed25519PublicKey::from_bytes(test_relay::signing_key(seed).verifying_key().to_bytes())
+    Ed25519PublicKey::from_bytes(test_server::signing_key(seed).verifying_key().to_bytes())
 }
 
 /// The person all of a call's devices are devices of.
@@ -100,8 +100,8 @@ fn private_home() -> tempfile::TempDir {
 /// One of the person's devices, on its own loopback endpoint, taking part in the collaboration
 /// live session as its certified self.
 fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
-    let key = test_relay::signing_key(seed);
-    let cert = test_relay::certified(
+    let key = test_server::signing_key(seed);
+    let cert = test_server::certified(
         person,
         &key,
         label,
@@ -115,7 +115,7 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
             continuity: Continuity::default(),
             wake: Arc::new(|| {}),
             fabric: None,
-            relays: test_relay::loopback(),
+            relays: test_server::loopback(),
             lan: None,
         },
         None,
@@ -159,7 +159,7 @@ fn keys(device: u8, vault: u8, admitted: &[u8]) -> (KeyProvider, tempfile::TempD
                 directory.path().join("channels"),
             )),
             vault: VaultKey::new([vault; 32]),
-            signer: std::sync::Arc::new(test_relay::signing_key(device)),
+            signer: std::sync::Arc::new(test_server::signing_key(device)),
             role: tilo_workspace_keys::KeyRole::Committer,
         },
         Box::new(Directory {

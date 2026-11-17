@@ -16,9 +16,9 @@ use ed25519_dalek::SigningKey;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{InvokeArgument, ReceiptStatus};
 use tilo_peer_state::join::Role;
-use tilo_relay::certify::{ApproverDecision, ApproverReply};
-use tilo_relay_client::Approver;
-use tilo_relay_protocol::agents::{
+use tilo_server::certify::{ApproverDecision, ApproverReply};
+use tilo_server_client::Approver;
+use tilo_server_protocol::agents::{
     AGENTS_PROVIDER, AgentsStatus, GrantState, REQUEST_GRANT_ACTION, REVOKE_ACTION, SPAWN_ACTION,
     STATUS_ACTION, SUPERVISOR_RESOURCE, agent_resource,
 };
@@ -28,12 +28,12 @@ use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
     Browser, Device, DeviceCapabilities, DocumentRoute, SHEETS, enrol, request, sheet_names, start,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The laptop: a root holder answering every agent request with the
 /// agent's certificate and the delegation of exactly what was proposed.
 fn approve_agents(
-    relay: &tilo_relay::daemon::Relay,
+    relay: &tilo_server::daemon::Relay,
     root: SigningKey,
     laptop: &Device,
 ) -> tokio::task::JoinHandle<()> {

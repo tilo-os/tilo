@@ -30,7 +30,7 @@ use crate::common::people::{
     wait_shown,
 };
 use serde_json::json;
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::workspaces::Role;
 
 /// The app whose window is opened on the sessions here.
 const NOTES: &str = "so.tilo.notes";

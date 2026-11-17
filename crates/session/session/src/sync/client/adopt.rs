@@ -118,7 +118,7 @@ const ENTRY_ANSWER_SLACK: std::time::Duration = std::time::Duration::from_secs(1
 /// Enter `workspace` through `entry`, as this computer's person named `name`: the entry's host (at
 /// the entry's own origin) says who it is, and this device's session with it asks to enter in its
 /// first message, as every device enters a workspace through its entry
-/// ([`tilo_relay_protocol::entering`]). The entry decides there by the workspace's own rules, and the
+/// ([`tilo_server_protocol::entering`]). The entry decides there by the workspace's own rules, and the
 /// workspace admits this device's own certificate. Answers the host's signed address for the
 /// workspace, where this device then takes its state as a member's device does; the session itself
 /// ends with the answer, since this device takes part over its own peer network.
@@ -129,13 +129,13 @@ async fn through_entry(
     workspace: InviteWorkspaceId,
     name: &str,
 ) -> Result<tilo_peer_state::join::TransportHint, String> {
-    use tilo_relay_protocol::entering::{Entered, Entering, Through};
+    use tilo_server_protocol::entering::{Entered, Entering, Through};
     let topic = workspace;
     let client =
         tilo_workspace_directory::client().map_err(|error| tilo_sheets::directory::said(&error))?;
     let origin = entry.origin().ascii_serialization();
-    let host = tilo_relay_client::https::Origin::new(&client, &origin);
-    let info = tilo_relay_client::https::host_info(&host)
+    let host = tilo_server_client::https::Origin::new(&client, &origin);
+    let info = tilo_server_client::https::host_info(&host)
         .await
         .map_err(|error| format!("the workspace's host could not be reached: {error}"))?;
     let address = info
@@ -146,23 +146,23 @@ async fn through_entry(
     getrandom::fill(&mut request_id).map_err(|error| error.to_string())?;
     let entering = Entering {
         workspace: workspace.to_string(),
-        name: tilo_relay_protocol::web::kept(
+        name: tilo_server_protocol::web::kept(
             name,
-            tilo_relay_protocol::web::MAX_DISPLAY_NAME_CHARS,
+            tilo_server_protocol::web::MAX_DISPLAY_NAME_CHARS,
         ),
         request_id,
         through: Through::Entry,
     };
-    let session = tilo_relay_session::RelayClient::connect_with_signer(
+    let session = tilo_server_session::RelayClient::connect_with_signer(
         endpoint,
         address.endpoint_addr,
         Some(info.host_cert.user_public_key),
         Some(info.host_cert.device_public_key),
-        tilo_relay_session::ClientCredentials {
+        tilo_server_session::ClientCredentials {
             cert,
             signer: identity.signer.as_ref(),
             revocations: tilo_user_identity::RevocationList::new(),
-            entering: Some(tilo_relay_session::Entry {
+            entering: Some(tilo_server_session::Entry {
                 entering,
                 // This device's channels ask for the workspace's keys as a member, once it holds
                 // the workspace.
@@ -174,7 +174,7 @@ async fn through_entry(
     .await
     .map_err(|error| format!("the workspace's host could not be reached: {error}"))?;
     let answer = tokio::time::timeout(
-        tilo_relay_protocol::entering::ENTERING_DEADLINE.saturating_add(ENTRY_ANSWER_SLACK),
+        tilo_server_protocol::entering::ENTERING_DEADLINE.saturating_add(ENTRY_ANSWER_SLACK),
         session.recv(),
     )
     .await;
@@ -183,7 +183,7 @@ async fn through_entry(
     // connection is closed.
     session.disconnect().await;
     let entered = match answer {
-        Ok(Some(tilo_relay_protocol::transport::Envelope::Entered(entered))) => entered,
+        Ok(Some(tilo_server_protocol::transport::Envelope::Entered(entered))) => entered,
         Ok(Some(_)) => {
             return Err("the workspace's host answered the entry with something else".into());
         }

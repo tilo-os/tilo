@@ -9,7 +9,7 @@ use super::{
 };
 use tilo_agent_session::ModelPlanner;
 use tilo_agent_session::profile::Catalog;
-use tilo_relay_protocol::agents::TaskState;
+use tilo_server_protocol::agents::TaskState;
 
 const NOTES: &str = "so.tilo.notes";
 

@@ -37,8 +37,8 @@ tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
-tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+tilo-server-protocol = { path = "../../hosting/tilo-server-protocol" }
+tilo-server-session = { path = "../../hosting/tilo-server-session" }
 tilo-resource = { path = "../../sdk/tilo-resource", optional = true }
 tilo-rt.workspace = true
 tilo-session-client = { path = "../../session/client" }

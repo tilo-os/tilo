@@ -1041,7 +1041,7 @@ mod tests {
         }
         {
             let temp = tempfile::tempdir().unwrap();
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let hydrator = Arc::new(crate::Hydrator::new(
                 endpoint.clone(),
                 Arc::new(crate::ContentStore::memory()),
@@ -1086,7 +1086,7 @@ mod tests {
         }
         {
             let temp = tempfile::tempdir().unwrap();
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let hydrator = Arc::new(crate::Hydrator::new(
                 endpoint.clone(),
                 Arc::new(crate::ContentStore::memory()),
@@ -1134,7 +1134,7 @@ mod tests {
         }
         {
             let temp = tempfile::tempdir().unwrap();
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let hydrator = Arc::new(crate::Hydrator::new(
                 endpoint.clone(),
                 Arc::new(crate::ContentStore::memory()),

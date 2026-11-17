@@ -4,8 +4,8 @@ use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use ed25519_dalek::Signer as _;
 use neighbour_wire::NeighbourMsg;
 
-fn ws() -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::from_u128(7)
+fn ws() -> tilo_server_protocol::WorkspaceId {
+    tilo_server_protocol::WorkspaceId::from_u128(7)
 }
 
 fn route() -> Route {
@@ -1105,7 +1105,7 @@ fn statement(
 /// `seed`'s signature over `statement`, as a member device signs one.
 fn signed(seed: u8, statement: &[u8]) -> [u8; 64] {
     key(seed)
-        .sign(&tilo_relay_protocol::compaction::signing_bytes(statement))
+        .sign(&tilo_server_protocol::compaction::signing_bytes(statement))
         .to_bytes()
 }
 
@@ -1347,7 +1347,7 @@ async fn a_sealed_compaction_statement_the_host_never_requested_removes_nothing(
     );
     let elsewhere = statement(ask.request, other_channel(), &ask.snapshot, &ask.tail);
     let mut other_workspace = CoverageStatement::decode(&ask.whole_answer()).unwrap();
-    other_workspace.workspace_id = tilo_relay_protocol::WorkspaceId::from_u128(8);
+    other_workspace.workspace_id = tilo_server_protocol::WorkspaceId::from_u128(8);
     for mismatched in [elsewhere, other_workspace.encode().unwrap()] {
         assert_eq!(
             ask.answer(MEMBER, MEMBER, &mismatched).await,

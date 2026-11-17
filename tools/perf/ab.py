@@ -461,10 +461,10 @@ BROWSER_BUILD = ("bash", "-c",
 # `footprint` measures published artifacts, so it has no A/B.
 GROUPS: dict[str, Group] = {group.name: group for group in (
     Group("hosting", "release", "none",
-          (("cargo", "build", "--locked", "--release", "-p", "tilo-relay", "--example", "relay_load"),),
+          (("cargo", "build", "--locked", "--release", "-p", "tilo-server", "--example", "relay_load"),),
           {"relay_load": "target/release/examples/relay_load"}, {}, {}, run_hosting,
-          {"keystroke_writes": ("crates/hosting/tilo-relay/examples/keystroke_writes.rs",
-                                ("cargo", "build", "--locked", "-p", "tilo-relay", "--example",
+          {"keystroke_writes": ("crates/hosting/tilo-server/examples/keystroke_writes.rs",
+                                ("cargo", "build", "--locked", "-p", "tilo-server", "--example",
                                  "keystroke_writes"),
                                 "target/debug/examples/keystroke_writes")}),
     Group("agent", "release", "lavapipe", (RELEASE_SESSION,),

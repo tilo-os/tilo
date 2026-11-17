@@ -19,7 +19,7 @@ use crate::account::{Outcome, answer, failed, refused};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::ActionHost as _;
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
-use tilo_relay_session::workspaces::RUN_UNATTENDED;
+use tilo_server_session::workspaces::RUN_UNATTENDED;
 
 /// The path of a workspace's setting.
 pub const ROOT: &str = "workspace/unattended";

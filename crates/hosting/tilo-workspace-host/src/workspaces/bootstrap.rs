@@ -1,13 +1,13 @@
 //! The membership answer a device gets when it joins a workspace.
 
 use tilo_peer_state::StatePeer;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 /// The workspace-join contract's membership answer for `device`, a device
 /// the workspace `peer` replicates just admitted to subscribe, postcard encoded:
 /// what it builds its replica of the workspace from before the workspace's replay
-/// ([`tilo_relay_protocol::Envelope::WorkspaceBootstrap`]). A device of the
+/// ([`tilo_server_protocol::Envelope::WorkspaceBootstrap`]). A device of the
 /// workspace's owner gets the owner's answer, any other member's device its
 /// role's. The governance messages and
 /// records stay out: the replay that follows carries them.

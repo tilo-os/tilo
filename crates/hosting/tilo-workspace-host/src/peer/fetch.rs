@@ -1,5 +1,5 @@
 //! A page's fetch grant: it reads sites that send no CORS headers through the
-//! host it joined ([`tilo_relay_protocol::web::FETCH_PATH`]), so the host mints
+//! host it joined ([`tilo_server_protocol::web::FETCH_PATH`]), so the host mints
 //! that connection's token as the session starts and takes it back when the
 //! connection ends. A host that serves no proxy grants nothing.
 

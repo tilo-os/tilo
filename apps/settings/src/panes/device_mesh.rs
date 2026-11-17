@@ -1,5 +1,5 @@
 //! Sync between devices — configure seamless continuation and always-on sync.
-//! The pane reads and writes the same `RelayConfig` consumed by `tilo-relay`
+//! The pane reads and writes the same `RelayConfig` consumed by `tilo-server`
 //! and reads the daemon's once-per-second metrics snapshot for live status.
 
 use std::cell::RefCell;
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use ui::time::{Duration, Instant, SystemTime};
 
 use provider_settings_ui::bound::SettingRows as _;
-use tilo_relay_protocol::{RelayConfig, WorkFrom, WorkSetting, WorkWhen};
+use tilo_server_protocol::{RelayConfig, WorkFrom, WorkSetting, WorkWhen};
 use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::tilo_resource::{self, Effect};
@@ -60,7 +60,7 @@ const CONTINUITY_ENABLED_KEY: &str = "device_mesh.continuity.enabled";
 const AGENTS_ACCEPT_KEY: &str = "device_mesh.agents.accept_own_devices";
 const AGENTS_ACT_KEY: &str = "device_mesh.agents.act_without_asking";
 const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
-const RELAY_ADMIN: &str = "/usr/libexec/tilo/tilo-relay-admin";
+const RELAY_ADMIN: &str = "/usr/libexec/tilo/tilo-server-admin";
 
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const STATUS_FRESHNESS: Duration = Duration::from_secs(5);
@@ -93,9 +93,9 @@ fn work_from_key(key: &str) -> Option<WorkFrom> {
 fn work_from(from: WorkFrom, when: WorkWhen) -> WorkSetting {
     WorkSetting {
         kinds: if from == WorkFrom::Nobody {
-            tilo_relay_protocol::WorkKinds::NONE
+            tilo_server_protocol::WorkKinds::NONE
         } else {
-            tilo_relay_protocol::WorkKinds::ALL
+            tilo_server_protocol::WorkKinds::ALL
         },
         from,
         when,
@@ -151,7 +151,7 @@ impl RelayRuntimeStatus {
         }
         let metrics_path = config
             .state_root
-            .join(tilo_relay_protocol::metrics::METRICS_FILE);
+            .join(tilo_server_protocol::metrics::METRICS_FILE);
         let modified =
             match std::fs::metadata(metrics_path).and_then(|metadata| metadata.modified()) {
                 Ok(modified) => modified,
@@ -161,7 +161,7 @@ impl RelayRuntimeStatus {
         if now.duration_since(modified).unwrap_or(Duration::ZERO) > STATUS_FRESHNESS {
             return Self::Offline;
         }
-        match tilo_relay_protocol::metrics::load_metrics(&config.state_root) {
+        match tilo_server_protocol::metrics::load_metrics(&config.state_root) {
             Ok(Some(_)) if config.services.full_content_replication => {
                 let ready = std::fs::read(&config.full_replica_status)
                     .ok()
@@ -289,7 +289,7 @@ fn follow_relay(
     let heartbeat = [
         config
             .state_root
-            .join(tilo_relay_protocol::metrics::METRICS_FILE),
+            .join(tilo_server_protocol::metrics::METRICS_FILE),
         config.full_replica_status.clone(),
     ];
     let on_change: crate::watch::OnChange = Arc::new(move || {
@@ -530,7 +530,7 @@ fn home_server_row_id(node: &str) -> String {
     format!("settings.home-server:{node}")
 }
 
-fn home_server_row(peer: &tilo_relay_protocol::HomePeerRegistration) -> LiveRow {
+fn home_server_row(peer: &tilo_server_protocol::HomePeerRegistration) -> LiveRow {
     let device = peer.device_node_id.clone();
     LiveRow::new(
         home_server_row_id(&device),
@@ -641,7 +641,7 @@ pub struct DeviceMeshModel {
     devices: bool,
     changed: bool,
     runtime_status: RelayRuntimeStatus,
-    home_peers: Vec<tilo_relay_protocol::HomePeerRegistration>,
+    home_peers: Vec<tilo_server_protocol::HomePeerRegistration>,
     home_peer_health: HashMap<String, HomePeerHealth>,
     home_peer_last_seen: HashMap<String, u64>,
     /// The person's devices as the session last read them; `None` until its first reading lands.
@@ -689,8 +689,8 @@ pub(super) enum PairingTarget {
     PersonalDevice,
 }
 
-fn registered_home_peers() -> Vec<tilo_relay_protocol::HomePeerRegistration> {
-    std::fs::read(tilo_relay_protocol::home_peer_registry_path(
+fn registered_home_peers() -> Vec<tilo_server_protocol::HomePeerRegistration> {
+    std::fs::read(tilo_server_protocol::home_peer_registry_path(
         &identity_root(),
     ))
     .ok()
@@ -883,7 +883,7 @@ pub(crate) struct MeshRead {
     config: RelayConfig,
     status: MeshStatus,
     runtime_status: RelayRuntimeStatus,
-    home_peers: Vec<tilo_relay_protocol::HomePeerRegistration>,
+    home_peers: Vec<tilo_server_protocol::HomePeerRegistration>,
     home_peer_last_seen: HashMap<String, u64>,
     roaming_provenance_path: Option<PathBuf>,
     roaming_provenance: ProvenanceRead,
@@ -952,12 +952,12 @@ impl MeshRead {
             Ok(config) => (config, MeshStatus::Ready),
             // No sync settings file: this device was never set up to sync, whether or not the
             // directory that would hold it exists.
-            Err(tilo_relay_protocol::config::ConfigError::Io(error))
+            Err(tilo_server_protocol::config::ConfigError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
             {
                 let config = RelayConfig {
                     work: WorkSetting::none(),
-                    services: tilo_relay_protocol::ServiceCapabilities::default(),
+                    services: tilo_server_protocol::ServiceCapabilities::default(),
                     ..RelayConfig::default()
                 };
                 (config, MeshStatus::NotConfigured)
@@ -1108,7 +1108,7 @@ impl DeviceMeshModel {
             }
             DeviceMeshEffect::RenameHomeServer { device, name } => {
                 let peer = self.home_peer(device)?;
-                if !tilo_relay_protocol::valid_home_peer_label(name) {
+                if !tilo_server_protocol::valid_home_peer_label(name) {
                     return Err("that name cannot be used for a home server".into());
                 }
                 self.start_home_peer_command(&peer, "home-peer-rename", Some(name.trim()));
@@ -1194,7 +1194,7 @@ impl DeviceMeshModel {
         }
     }
 
-    fn start_home_peer_removal(&mut self, peer: &tilo_relay_protocol::HomePeerRegistration) {
+    fn start_home_peer_removal(&mut self, peer: &tilo_server_protocol::HomePeerRegistration) {
         use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
         if self.management_child.is_some() || self.management_call.is_some() {
             return;
@@ -1260,7 +1260,10 @@ impl DeviceMeshModel {
         self.changed = true;
     }
 
-    fn home_peer(&self, device: &str) -> Result<tilo_relay_protocol::HomePeerRegistration, String> {
+    fn home_peer(
+        &self,
+        device: &str,
+    ) -> Result<tilo_server_protocol::HomePeerRegistration, String> {
         self.home_peers
             .iter()
             .find(|peer| peer.device_node_id == device)
@@ -1730,7 +1733,7 @@ impl DeviceMeshModel {
 
     fn start_home_peer_command(
         &mut self,
-        peer: &tilo_relay_protocol::HomePeerRegistration,
+        peer: &tilo_server_protocol::HomePeerRegistration,
         action: &str,
         label: Option<&str>,
     ) {
@@ -2052,7 +2055,7 @@ mod tests {
             assert_eq!(pane.status, MeshStatus::NotConfigured);
             assert!(pane.status.settings_trouble_shown().is_none());
             let config = RelayConfig {
-                state_root: dir.path().join("missing").join("tilo-relay"),
+                state_root: dir.path().join("missing").join("tilo-server"),
                 ..RelayConfig::default()
             };
             assert_eq!(
@@ -2060,7 +2063,7 @@ mod tests {
                 RelayRuntimeStatus::Unreadable
             );
             let config = RelayConfig {
-                state_root: dir.path().join("tilo-relay"),
+                state_root: dir.path().join("tilo-server"),
                 ..RelayConfig::default()
             };
             assert_eq!(
@@ -2138,7 +2141,7 @@ mod tests {
                 assert!(pane.config.work.takes_nothing());
                 assert_eq!(
                     pane.config.services,
-                    tilo_relay_protocol::ServiceCapabilities::default()
+                    tilo_server_protocol::ServiceCapabilities::default()
                 );
                 let _ = pane.poll();
                 assert!(!path.exists());
@@ -2258,7 +2261,7 @@ mod tests {
                 let path = dir.path().join("relay.toml");
                 let config = RelayConfig {
                     work: WorkSetting::none(),
-                    services: tilo_relay_protocol::ServiceCapabilities::default(),
+                    services: tilo_server_protocol::ServiceCapabilities::default(),
                     ..RelayConfig::default()
                 };
                 config.save(&path).unwrap();
@@ -2309,15 +2312,15 @@ mod tests {
                     work: WorkSetting::own_person(),
                     ..RelayConfig::default()
                 };
-                let metrics = tilo_relay_protocol::metrics::MetricsSnapshot {
+                let metrics = tilo_server_protocol::metrics::MetricsSnapshot {
                     deltas_received: 42,
                     ..Default::default()
                 };
-                tilo_relay_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
+                tilo_server_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
                 let modified = std::fs::metadata(
                     config
                         .state_root
-                        .join(tilo_relay_protocol::metrics::METRICS_FILE),
+                        .join(tilo_server_protocol::metrics::METRICS_FILE),
                 )
                 .unwrap()
                 .modified()
@@ -2343,18 +2346,18 @@ mod tests {
                     state_root: dir.path().to_path_buf(),
                     full_replica_status: proof.clone(),
                     work: WorkSetting::own_person(),
-                    services: tilo_relay_protocol::ServiceCapabilities::personal_server(),
+                    services: tilo_server_protocol::ServiceCapabilities::personal_server(),
                     ..RelayConfig::default()
                 };
-                tilo_relay_protocol::metrics::save_metrics(
+                tilo_server_protocol::metrics::save_metrics(
                     &config.state_root,
-                    &tilo_relay_protocol::metrics::MetricsSnapshot::default(),
+                    &tilo_server_protocol::metrics::MetricsSnapshot::default(),
                 )
                 .unwrap();
                 let now = std::fs::metadata(
                     config
                         .state_root
-                        .join(tilo_relay_protocol::metrics::METRICS_FILE),
+                        .join(tilo_server_protocol::metrics::METRICS_FILE),
                 )
                 .unwrap()
                 .modified()
@@ -2434,7 +2437,7 @@ mod tests {
             }) as StatusClock
         };
         let dir = tempfile::tempdir().unwrap();
-        let state_root = dir.path().join("tilo-relay");
+        let state_root = dir.path().join("tilo-server");
         std::fs::create_dir_all(&state_root).unwrap();
         let config = RelayConfig {
             full_replica_status: state_root.join("full-replica.json"),
@@ -2446,12 +2449,12 @@ mod tests {
         tilo_test_env::wait_until("the first read", || {
             follow.status() == Some(RelayRuntimeStatus::Offline)
         });
-        let metrics = tilo_relay_protocol::metrics::MetricsSnapshot::default();
-        tilo_relay_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
+        let metrics = tilo_server_protocol::metrics::MetricsSnapshot::default();
+        tilo_server_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
         let written = std::fs::metadata(
             config
                 .state_root
-                .join(tilo_relay_protocol::metrics::METRICS_FILE),
+                .join(tilo_server_protocol::metrics::METRICS_FILE),
         )
         .and_then(|metadata| metadata.modified())
         .unwrap();
@@ -2694,7 +2697,7 @@ mod tests {
         );
         pane.home_peers = vec![
             serde_json::from_value(serde_json::json!({
-                "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+                "schema_version": tilo_server_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                 "device_node_id": NEARBY_DEVICE,
                 "relay_service_node_id": NEARBY_SERVICE,
                 "label": "Kitchen NAS",
@@ -2854,9 +2857,9 @@ mod tests {
                 host.clone(),
                 ui::tilo_actions::remote::Caller::local_person("owner"),
             );
-            let server: tilo_relay_protocol::HomePeerRegistration =
+            let server: tilo_server_protocol::HomePeerRegistration =
                 serde_json::from_value(serde_json::json!({
-                    "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+                    "schema_version": tilo_server_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                     "device_node_id": NEARBY_DEVICE,
                     "relay_service_node_id": NEARBY_SERVICE,
                     "label": "Kitchen NAS",

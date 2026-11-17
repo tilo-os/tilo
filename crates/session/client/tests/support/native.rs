@@ -13,9 +13,9 @@ use collab_types::{
 use key_group::{Access, GroupPeer, PeerEvent, VaultKey};
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::daemon::Relay;
-use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server::daemon::Relay;
+use tilo_server::{Inbound, RelayClient, RelayCoeditSession};
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::RevocationList;
 
 use crate::support::{Device, is_host};

@@ -12,7 +12,7 @@ use crate::store::{GovernedAccessRecord, StoreError, WorkspaceStore};
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
 use crate::workspace_access::AdmissionMode;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 const AUTHORIZATION_CAPACITY: usize = 64;
 const AUTHORIZATION_WORKERS: usize = 8;
@@ -813,7 +813,7 @@ mod tests {
         let workspace = runtime(tmp.path());
         let watch = crate::membership_watch::spawn_membership_watch(tmp.path());
         warm(&workspace).await;
-        // `tilo-relay-admin` edits the file from another process.
+        // `tilo-server-admin` edits the file from another process.
         let external = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         external.save_membership(&[[1; 32], [2; 32]]).unwrap();
         wait_for_members(&workspace, &[[1; 32], [2; 32]]).await;

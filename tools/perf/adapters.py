@@ -68,7 +68,7 @@ Each adapter reads what a benchmark already prints and emits records through
   `.to_raster_ms`, every input (or input-free frame) a sample. A run without
   raster timings (no GPU) fails.
 - `hosting-load REPORT_JSON`: the relay load bench's `hosting-load.json`
-  (`crates/hosting/tilo-relay/examples/relay_load`). Each KPI it measured
+  (`crates/hosting/tilo-server/examples/relay_load`). Each KPI it measured
   becomes `<kpi>.n<members>`, one sample per measured minute (fan-out
   latency: one per delivered edit), and each provider in
   `tools/perf/prices.toml` adds `hosting.relay.cost_usd_per_collab_hour.<provider>`

@@ -30,7 +30,7 @@ use tilo_live::live::Track;
 #[cfg(target_os = "linux")]
 use tilo_live::live_session::Heard;
 #[cfg(target_os = "linux")]
-use tilo_relay_protocol::live::{LiveFrame, OpsFrame};
+use tilo_server_protocol::live::{LiveFrame, OpsFrame};
 use tilo_session_client::client::Host;
 #[cfg(target_os = "linux")]
 use tilo_session_client::client::Shell as PolicyShell;

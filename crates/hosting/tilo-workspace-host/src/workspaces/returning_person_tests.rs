@@ -17,9 +17,9 @@
 
 use super::fixtures::{entry_join_as, governor, test_host};
 use super::*;
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_protocol::entering::{Entered, Entering, Entry, Through};
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::entering::{Entered, Entering, Entry, Through};
+use tilo_server_protocol::workspaces::Role;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 /// A device of the person whose root is `root`, certified at `issued_at_ns`

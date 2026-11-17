@@ -4,7 +4,7 @@
 
 use super::{Envelope, RelayClient, Task};
 use crate::remote::NOT_CONNECTED;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 impl Task {
     pub(super) fn voice_calls(
@@ -28,7 +28,7 @@ impl Task {
         &self,
         workspace_id: WorkspaceId,
         request: [u8; 16],
-        operation: tilo_relay_protocol::voice::CallOperation,
+        operation: tilo_server_protocol::voice::CallOperation,
         client: Option<&RelayClient>,
     ) -> bool {
         if let Some(client) = client {
@@ -68,7 +68,7 @@ impl Task {
     pub(super) fn voice_show(
         &mut self,
         workspace_id: WorkspaceId,
-        showing: tilo_relay_protocol::voice::Showing,
+        showing: tilo_server_protocol::voice::Showing,
         client: Option<&RelayClient>,
     ) -> bool {
         match (client, self.voice.show(workspace_id, showing)) {

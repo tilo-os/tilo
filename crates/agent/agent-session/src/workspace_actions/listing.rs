@@ -11,7 +11,7 @@ use super::{
     CatalogueQuery, CatalogueRow, DocumentRoute, Worker, WorkspaceState, bounded, record_provider,
 };
 use tilo_actions::remote::{Caller, CataloguePage};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 impl Worker {
     /// The page `query` asks of the records at `routes`, and after them the

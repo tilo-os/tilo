@@ -4,7 +4,7 @@
 use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 use super::{CatalogueFactory, Job, Shared, Worker, WorkspaceDocumentsLink};
 

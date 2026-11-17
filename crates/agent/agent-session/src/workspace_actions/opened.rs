@@ -20,7 +20,7 @@ use tilo_actions::remote::{
     ActionHostError, InvokeRequest, application_provider, application_provider_resource,
     provider_workspace,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::{Cmd, Outbox};
 
 /// The chain `record` is a part of, when it is a part of one.
@@ -360,7 +360,7 @@ mod tests {
     use crate::workspace_actions::{GaveUp, Needs, sealed_for};
     use std::collections::BTreeSet;
     use tilo_peer_state::document_frame::DocumentRoute;
-    use tilo_relay_protocol::WorkspaceId;
+    use tilo_server_protocol::WorkspaceId;
 
     const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
 

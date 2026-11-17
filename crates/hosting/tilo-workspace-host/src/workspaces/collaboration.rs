@@ -13,7 +13,7 @@ use tilo_peer_state::join::{JoinBootstrap, Role};
 use tilo_peer_state::join_answer::{JoinWorkspaces, WorkspaceTxn};
 use tilo_peer_state::join_log::{Administered, Governed, Signer};
 pub use tilo_peer_state::join_log::{JoinError as CollaborationError, Redeeming};
-use tilo_relay_session::workspaces::{
+use tilo_server_session::workspaces::{
     CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
     RemoveMemberRequest, SetMemberRoleRequest,
 };

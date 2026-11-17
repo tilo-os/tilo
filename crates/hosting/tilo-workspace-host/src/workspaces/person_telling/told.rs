@@ -26,7 +26,7 @@ use tilo_actions::remote::person_telling::{
     ToldList,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 use super::super::Workspaces;
 use super::super::person_model::Spender;

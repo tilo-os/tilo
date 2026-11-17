@@ -1,6 +1,6 @@
 //! The relay stream's frames: every value a device and its relay exchange
 //! after the certified handshake, on the relay ALPN
-//! (`tilo_relay_protocol::transport::ALPN`). There is one framing, at the
+//! (`tilo_server_protocol::transport::ALPN`). There is one framing, at the
 //! peer protocol version the handshake names
 //! (docs/architecture/compatibility.md): state is [`EnvelopeV2::State`],
 //! except that a zero-signature delta travels as
@@ -15,8 +15,8 @@
 )]
 use collab_types::WorkspaceId;
 use serde::{Deserialize, Serialize};
-use tilo_relay_client::frame::FrameError;
-use tilo_relay_protocol::transport::{Envelope, MAX_FRAME_BYTES};
+use tilo_server_client::frame::FrameError;
+use tilo_server_protocol::transport::{Envelope, MAX_FRAME_BYTES};
 
 /// Discriminant of [`EnvelopeV2::UnsignedDelta`].
 const UNSIGNED_DELTA_KIND: u8 = 11;

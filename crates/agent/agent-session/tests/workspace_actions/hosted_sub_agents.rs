@@ -5,7 +5,7 @@
 //! own turn is answered when it reads the thread of the agent that started it.
 use super::*;
 use chat::chat::{Message as Kept, reply_id};
-use tilo_relay::workspaces::Workspaces;
+use tilo_server::workspaces::Workspaces;
 use ui::tilo_resource::{Invoke, NonBlank, Replica};
 use ui::tilo_workspace_agent::{Agent, NewSubAgent, Stands, workspace_agents};
 

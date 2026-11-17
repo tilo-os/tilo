@@ -213,7 +213,7 @@ function wireConfirmation(confirmation) {
 }
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
-/** A host served over plain HTTP on this machine (`tilo-relay workspace --web-plain`). */
+/** A host served over plain HTTP on this machine (`tilo-server workspace --web-plain`). */
 const isLoopbackHttp = url => url.protocol === 'http:' && LOOPBACK.has(url.hostname);
 
 /** `post(path, body)` over `fetch` to the host origin: https, or loopback

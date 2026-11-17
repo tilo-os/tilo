@@ -2,7 +2,7 @@
 //! workspaces it hosts, so both sides attach where they share one.
 
 use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Handle the dialer's hello: record it as a host attached to every
 /// workspace both host.

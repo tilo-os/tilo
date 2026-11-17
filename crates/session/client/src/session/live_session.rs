@@ -27,12 +27,12 @@ use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use tilo_relay_client::Carrier;
-use tilo_relay_client::link::{Dialer, Purpose};
+use tilo_server_client::Carrier;
+use tilo_server_client::link::{Dialer, Purpose};
 
 use super::{Command, DeviceSigner, Task};
 use key_group::ContentKeys;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The message a page shows in its members' place when its live session cannot
 /// be joined: the page keeps asking quietly, and nobody is listed from the
@@ -320,7 +320,7 @@ pub(crate) struct LiveSessionJoin {
     /// The dialer the session reaches its host through.
     pub dialer: Arc<Dialer>,
     /// Where the live session is served, over the session's carrier.
-    pub host: tilo_relay_client::Host,
+    pub host: tilo_server_client::Host,
     /// Where the outcome goes.
     pub commands: tokio::sync::mpsc::WeakUnboundedSender<Command>,
     /// This device's certificate, presented as the grant.
@@ -438,7 +438,7 @@ async fn proven_live_session_link(
         .await
         .map_err(unavailable)?;
     let (mut send, mut recv) = link.open_bi().await.map_err(unavailable)?;
-    let proved = tilo_relay_session::client::prove(
+    let proved = tilo_server_session::client::prove(
         &mut send,
         &mut recv,
         &join.cert,

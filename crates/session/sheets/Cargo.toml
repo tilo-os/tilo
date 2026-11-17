@@ -24,7 +24,7 @@ zeroize = { workspace = true }
 # The directory sheet's store: the sites it reads and the joins it asks for, on one app task.
 tilo-workspace-directory = { path = "../workspace-directory" }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["http", "json"] }
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-server-protocol = { path = "../../hosting/tilo-server-protocol" }
 tilo-workspace-join = { path = "../../collab/workspace-join" }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 tilo-rt = { path = "../../platform/tilo-rt" }

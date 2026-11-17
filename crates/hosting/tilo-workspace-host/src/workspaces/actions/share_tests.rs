@@ -90,7 +90,7 @@ fn note(workspace: &str, id: &str) -> String {
     reason = "one share told whole, through both paths, in order"
 )]
 async fn a_share_grants_the_workspace_one_item_until_its_sharer_ends_it() {
-    use tilo_relay_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
+    use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
@@ -233,7 +233,7 @@ async fn a_share_grants_the_workspace_one_item_until_its_sharer_ends_it() {
 
 #[tokio::test]
 async fn a_share_to_edit_lifts_no_restriction() {
-    use tilo_relay_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
+    use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();

@@ -4,7 +4,7 @@
 //! persistence owner, the replay slots, the blocking workers. Which one a
 //! crowd waits in is invisible from outside, so the phases a join, a commit
 //! and an owner turn pass through report how long they took, on the
-//! `tilo_relay::timing` target at debug level:
+//! `tilo_server::timing` target at debug level:
 //!
 //! - [`event`]: one `TIMING <step> <microseconds> <size>` line per
 //!   occurrence, for phases that happen about once per newcomer or commit,
@@ -14,7 +14,7 @@
 //!   <total µs> <max µs>` line per step and second.
 //!
 //! Both are off unless the target is enabled (a capacity run does, such as the
-//! relay load bench, `crates/hosting/tilo-relay/examples/relay_load`): a
+//! relay load bench, `crates/hosting/tilo-server/examples/relay_load`): a
 //! production host pays one disabled-callsite check per phase and reads no
 //! clock.
 
@@ -25,7 +25,7 @@ use tilo_lock::MutexRecover as _;
 
 /// Whether timings are being recorded.
 pub(crate) fn enabled() -> bool {
-    tracing::enabled!(target: "tilo_relay::timing", tracing::Level::DEBUG)
+    tracing::enabled!(target: "tilo_server::timing", tracing::Level::DEBUG)
 }
 
 /// Now, when timings are recorded: the start [`event`] and [`window`] take.
@@ -42,7 +42,7 @@ fn micros(elapsed: Duration) -> u64 {
 pub(crate) fn event(step: &'static str, started: Option<Instant>, size: u64) {
     if let Some(started) = started {
         tracing::debug!(
-            target: "tilo_relay::timing",
+            target: "tilo_server::timing",
             "TIMING {step} {} {size}",
             micros(started.elapsed())
         );
@@ -71,7 +71,7 @@ fn windows() -> &'static Mutex<BTreeMap<&'static str, Window>> {
                         .map_or(0, |since| since.as_secs());
                     for (step, window) in taken {
                         tracing::debug!(
-                            target: "tilo_relay::timing",
+                            target: "tilo_server::timing",
                             "TIMING_WINDOW {second} {step} {} {} {}",
                             window.count,
                             window.total_us,

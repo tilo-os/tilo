@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tilo_lock::MutexRecover as _;
 
-pub use tilo_relay_protocol::config::MemberLimitsConfig;
+pub use tilo_server_protocol::config::MemberLimitsConfig;
 
 /// Buckets kept before idle, full ones are forgotten.
 const KEPT: usize = 4096;
@@ -33,13 +33,13 @@ pub enum Limited {
 impl Limited {
     /// The refusal a device is sent for it.
     #[must_use]
-    pub fn refusal(self) -> tilo_relay_protocol::refusal::Refusal {
+    pub fn refusal(self) -> tilo_server_protocol::refusal::Refusal {
         match self {
             Self::Changes { retry_after } => {
-                tilo_relay_protocol::refusal::Refusal::too_fast(retry_after)
+                tilo_server_protocol::refusal::Refusal::too_fast(retry_after)
             }
             Self::Content { retry_after } => {
-                tilo_relay_protocol::refusal::Refusal::too_much_content(retry_after)
+                tilo_server_protocol::refusal::Refusal::too_much_content(retry_after)
             }
         }
     }

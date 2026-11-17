@@ -17,7 +17,7 @@ a device's identity:
   used and dropped, and never outlives the test that binds it. Nothing to
   list: the test attribute is what exempts it.
 * A process that is not a desktop. ``EXEMPT`` names each file and why:
-  ``tilo-relay``'s diagnostic subcommands and its daemon, the initrd's
+  ``tilo-server``'s diagnostic subcommands and its daemon, the initrd's
   sibling unlock. Each lives as
   long as the command that started it, dials an address it was handed, or is
   the relay devices are meant to find. They are listed so that a device
@@ -46,10 +46,10 @@ DECISION = "crates/system/endpoint-reachability/src/directory.rs"
 EXEMPT = {
     # The registry transport dials the registry with an address it was given.
     # The relay's own diagnostic probes.
-    "crates/hosting/tilo-relay/src/files_probe.rs": "relay diagnostic probe",
-    "crates/hosting/tilo-relay/src/admin.rs": "relay admin client",
+    "crates/hosting/tilo-server/src/files_probe.rs": "relay diagnostic probe",
+    "crates/hosting/tilo-server/src/admin.rs": "relay admin client",
     # `tilo app push`: one command dialing the workspace host its link names.
-    "crates/hosting/tilo-relay-session/src/workspaces/govern.rs": "workspace governance client of one command",
+    "crates/hosting/tilo-server-session/src/workspaces/govern.rs": "workspace governance client of one command",
     # A client of the device administrator, which chooses its own relays.
     "crates/dev/tilo-device-admin/src/net.rs": "device-admin client",
     # The initrd's sibling unlock: it asks the siblings named in a token that
@@ -58,7 +58,7 @@ EXEMPT = {
     # A P2P node that dials the peers a caller names.
     "crates/platform/tilo-net-p2p/src/lib.rs": "net-p2p dialer",
     # The relay daemon's own endpoint, which is what devices dial.
-    "crates/hosting/tilo-relay/src/daemon.rs": "relay daemon",
+    "crates/hosting/tilo-server/src/daemon.rs": "relay daemon",
 }
 
 PRESET = re.compile(r"\bpresets::N0\b")

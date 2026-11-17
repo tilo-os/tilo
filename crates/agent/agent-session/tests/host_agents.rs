@@ -1,6 +1,6 @@
-//! Agents hosted by `tilo-relay` itself, driven from a browser session.
+//! Agents hosted by `tilo-server` itself, driven from a browser session.
 //!
-//! The host runs `tilo_relay::agents::start`: an [`AgentHost`] whose
+//! The host runs `tilo_server::agents::start`: an [`AgentHost`] whose
 //! supervisor is the host's app action server, one thread per agent, state
 //! under a directory. A simulated browser (the page's session code built
 //! natively: HTTPS for documents and remote actions) asks for a grant; a
@@ -38,10 +38,10 @@ use ed25519_dalek::SigningKey;
 use tilo_actions::remote::InvokeArgument;
 use tilo_agent_session::{ModelChoice, Replica, ReplicaActor, Seed};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::certify::{ApproverReply, ConfirmationAnswer};
-use tilo_relay::daemon::Relay;
-use tilo_relay_client::Approver;
-use tilo_relay_protocol::agents::{
+use tilo_server::certify::{ApproverReply, ConfirmationAnswer};
+use tilo_server::daemon::Relay;
+use tilo_server_client::Approver;
+use tilo_server_protocol::agents::{
     AgentStatus, AgentsStatus, GrantState, MESSAGE_ACTION, REQUEST_GRANT_ACTION, REVOKE_ACTION,
     SPAWN_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE, TaskState, agent_resource,
 };
@@ -907,7 +907,7 @@ async fn person_device(relay: &Relay, laptop: &Device) -> (iroh::endpoint::Endpo
 }
 
 /// The one question an agent is waiting on, once it is asked.
-async fn asked(device: &mut Approver) -> tilo_relay::certify::PendingConfirmation {
+async fn asked(device: &mut Approver) -> tilo_server::certify::PendingConfirmation {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let mut asked = device.list_confirmations().await.unwrap();

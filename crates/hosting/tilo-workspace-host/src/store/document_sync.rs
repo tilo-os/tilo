@@ -501,7 +501,7 @@ impl WorkspaceStore {
         else {
             return Ok(LineageRecord::Empty);
         };
-        let Some(bytes) = tilo_relay_store::frames::frame_bytes(&active.join(frame))? else {
+        let Some(bytes) = tilo_server_store::frames::frame_bytes(&active.join(frame))? else {
             return Ok(LineageRecord::Other);
         };
         Ok(super::retained::body_of(&bytes, self.workspace_id)
@@ -526,12 +526,12 @@ impl WorkspaceStore {
                 continue;
             };
             for name in super::compaction::document_names(&active)? {
-                let Some(bytes) = tilo_relay_store::frames::frame_bytes(&active.join(&name))?
+                let Some(bytes) = tilo_server_store::frames::frame_bytes(&active.join(&name))?
                 else {
                     continue;
                 };
                 if let Some((envelope @ Envelope::Delta { workspace_id, .. }, [])) =
-                    tilo_relay_store::frames::framed_envelope(&bytes)
+                    tilo_server_store::frames::framed_envelope(&bytes)
                     && workspace_id == self.workspace_id
                 {
                     frames.push(envelope);

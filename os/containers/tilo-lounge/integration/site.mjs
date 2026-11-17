@@ -10,7 +10,7 @@
 // SHELF_ORIGIN is the relay's plain listener, which is where a deployment's
 // ingress hands what it terminates TLS for: the shelf needs no certificate of
 // its own there.
-// HOST_INFO is the line `tilo-relay page-host` prints for the workspace's
+// HOST_INFO is the line `tilo-server page-host` prints for the workspace's
 // host, which the web entry image hands its page from TILO_WEB_HOME_HOST_INFO
 // so the page dials that host as named; an empty HOST_INFO is only for a site
 // whose host is not there to ask. FEEDBACK is the id of the Chat channel the

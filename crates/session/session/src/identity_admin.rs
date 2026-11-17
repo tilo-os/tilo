@@ -32,7 +32,7 @@ pub(crate) use tilo_actions::remote::identity_admin::{
     REVOKE, STEPS,
 };
 
-const RELAY_ADMIN: &str = "/usr/libexec/tilo/tilo-relay-admin";
+const RELAY_ADMIN: &str = "/usr/libexec/tilo/tilo-server-admin";
 /// Removing a home server dials it to deliver its decommission; this bounds a server that never
 /// answers.
 const HOME_PEER_TIMEOUT: Duration = Duration::from_secs(60);

@@ -9,7 +9,7 @@ use tilo_actions::ActionOutput;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_automerge_isolate::{Applied, Dependencies};
 use tilo_content::ContentStore;
-use tilo_relay_protocol::live::LiveAnchor;
+use tilo_server_protocol::live::LiveAnchor;
 use ui::resource::DocumentId;
 
 use super::process::{Lease, Stopped};

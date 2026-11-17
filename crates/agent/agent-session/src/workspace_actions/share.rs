@@ -5,7 +5,7 @@
 use tilo_actions::remote::{ActionHostError, Caller, CatalogueQuery};
 use tilo_actions::{ActionFailure, ActionOutput};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 use super::{Outcome, Worker, WorkspaceState, record_provider};
 

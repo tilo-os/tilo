@@ -23,9 +23,9 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 use tilo_identity_host::identity_store::HostIdentity;
 use tilo_peer_state::join::{self, Role};
-use tilo_relay::workspace_join::WorkspaceJoinClient;
-use tilo_relay::workspaces::IssueInvitationRequest;
-use tilo_relay::{Relay, RelayConfig};
+use tilo_server::workspace_join::WorkspaceJoinClient;
+use tilo_server::workspaces::IssueInvitationRequest;
+use tilo_server::{Relay, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 const SECOND: u64 = 1_000_000_000;
@@ -90,7 +90,7 @@ impl Admitted {
                 state_root: state.path().to_path_buf(),
                 ..RelayConfig::default()
             },
-            tilo_relay::daemon::RelayIdentity {
+            tilo_server::daemon::RelayIdentity {
                 user_public_key: alice.verifying_key().to_bytes(),
                 device_signing_key: host_key.clone(),
                 device_cert: host.clone(),

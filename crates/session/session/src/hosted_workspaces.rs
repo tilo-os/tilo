@@ -28,7 +28,7 @@ use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity_host::device_admin;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_session::workspaces::PersonalList;
+use tilo_server_session::workspaces::PersonalList;
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
 use tilo_session_client::remote::SessionActions;
@@ -152,7 +152,7 @@ impl HostedWorkspaces {
         // per relay, which a second key service or endpoint of its own would take.
         let device = Device::over_lent(
             PeerConfig {
-                host: tilo_relay_client::Host::at(placed.host.endpoint_addr.clone()),
+                host: tilo_server_client::Host::at(placed.host.endpoint_addr.clone()),
                 cert: identity.device_cert.clone(),
                 host_cert: placed.host.device_certificate.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
@@ -211,7 +211,7 @@ impl HostedWorkspaces {
                 Some(actions.invoke(
                     &Caller::local_person("tilo"),
                     record_request(
-                        tilo_relay_session::workspaces::LIST_PERSONAL,
+                        tilo_server_session::workspaces::LIST_PERSONAL,
                         serde_json::Map::new(),
                     ),
                 ))
@@ -336,9 +336,9 @@ fn record_request(
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
-            provider: tilo_relay_session::workspaces::HOST_ACTIONS_PROVIDER.to_owned(),
+            provider: tilo_server_session::workspaces::HOST_ACTIONS_PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(
-                tilo_relay_session::workspaces::HOST_WORKSPACES_RESOURCE,
+                tilo_server_session::workspaces::HOST_WORKSPACES_RESOURCE,
                 step,
             ),
         },
@@ -358,7 +358,7 @@ fn record_request(
 pub(crate) fn keep_on_hosts(
     hosted: &dyn tilo_action_broker::services::HostedWorkspaces,
     engine: &Engine,
-    list: &tilo_relay_session::workspaces::PersonalList,
+    list: &tilo_server_session::workspaces::PersonalList,
 ) {
     let Ok(value) = serde_json::to_value(list) else {
         return;
@@ -369,7 +369,7 @@ pub(crate) fn keep_on_hosts(
         };
         let mut arguments = serde_json::Map::new();
         arguments.insert("list".to_owned(), value.clone());
-        let request = record_request(tilo_relay_session::workspaces::KEEP_PERSONAL, arguments);
+        let request = record_request(tilo_server_session::workspaces::KEEP_PERSONAL, arguments);
         let label = host.device_certificate.device_label.clone();
         actions.invoke(&Caller::local_person("tilo"), request).then(
             move |answered| match answered {

@@ -1166,7 +1166,7 @@ fn a_busy_relay_answers_rate_limited_with_its_wait() {
 /// could not take everything names the part that did not come.
 #[test]
 fn a_workspace_refusal_is_read_by_its_case() {
-    use tilo_relay_session::workspaces::Refusal;
+    use tilo_server_session::workspaces::Refusal;
     let refused = |refusal: Refusal| {
         let error = tilo_actions::remote::ActionHostError::Refused {
             reason: refusal.to_reason(),

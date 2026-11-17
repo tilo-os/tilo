@@ -52,12 +52,12 @@ labelled() {
 
 build_programs() {
   cd "$repo"
-  cargo build --locked --profile lounge-local --features tilo-relay/agents \
-    -p tilo-relay -p discord-worker -p tilo-api -p fake-discord -p tilo-cli \
-    --bin tilo-relay --bin discord-worker --bin tilo-api --bin fake-discord --bin tilo
+  cargo build --locked --profile lounge-local --features tilo-server/agents \
+    -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p tilo-cli \
+    --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin tilo
   local dir=$CARGO_TARGET_DIR/$stage/programs program
   mkdir -p "$dir"
-  for program in tilo-relay discord-worker tilo-api fake-discord tilo; do
+  for program in tilo-server discord-worker tilo-api fake-discord tilo; do
     cmp -s "$CARGO_TARGET_DIR/lounge-local/$program" "$dir/$program" && continue
     cp --reflink=auto "$CARGO_TARGET_DIR/lounge-local/$program" "$dir/.$program.next"
     mv -f "$dir/.$program.next" "$dir/$program"

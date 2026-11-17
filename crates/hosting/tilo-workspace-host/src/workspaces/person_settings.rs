@@ -47,7 +47,7 @@ use tilo_actions::remote::{
 };
 use tilo_mail_session::{Attachment, Leaving};
 use tilo_net::proxy::host::Destinations;
-use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;

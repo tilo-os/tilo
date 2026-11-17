@@ -1015,7 +1015,7 @@ the model but instead of it:
   and the host-served `tilo.host` / `tilo.member` namespaces. Membership is
   workspace state changed by actions.
 - **Per-person spaces.** The person's devices meet on the session between two
-  of them (`tilo-relay-sibling/1`) and learn the person's workspaces from the
+  of them (`tilo-server-sibling/1`) and learn the person's workspaces from the
   hosts holding them. The person's own documents are in no workspace: their
   store is
   one cluster per person, derived from the root key, and the readers of its

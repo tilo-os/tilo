@@ -19,8 +19,8 @@ use std::sync::Arc;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use serde_json::{Map, json};
-use tilo_relay::workspaces::OwnWorkspaceOffer;
-use tilo_relay_client::invite::guest_certificate;
+use tilo_server::workspaces::OwnWorkspaceOffer;
+use tilo_server_client::invite::guest_certificate;
 use tilo_session_client::device::{Device, HostRefusal};
 use tilo_session_client::{Outbox as _, PeerConfig};
 use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
@@ -136,7 +136,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // them. A workspace the answering host keeps itself names no other host.
     let listed = device
         .personal_list(
-            &tilo_relay_session::workspaces::WorkspaceLabels::new(),
+            &tilo_server_session::workspaces::WorkspaceLabels::new(),
             None,
         )
         .await
@@ -170,7 +170,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     );
     let listed_by_api = api
         .personal_list(
-            &tilo_relay_session::workspaces::WorkspaceLabels::new(),
+            &tilo_server_session::workspaces::WorkspaceLabels::new(),
             None,
         )
         .await
@@ -282,7 +282,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // A key Bob made for that one workspace enters it straight from its session with the host, in
     // no other workspace first: the host invites it in on the session and it redeems there.
     let script_key = new_key();
-    let script_cert = tilo_relay_client::issue_agent_grant(
+    let script_cert = tilo_server_client::issue_agent_grant(
         &bob,
         script_key.verifying_key().to_bytes(),
         "A script",

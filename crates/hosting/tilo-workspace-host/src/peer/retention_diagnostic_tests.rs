@@ -1,5 +1,5 @@
 use super::*;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 fn retained(
     workspace: WorkspaceId,

@@ -35,9 +35,9 @@ pub use tilo_model_client;
 // here instead of carrying its own copy.
 pub use tilo_model_client as tilo_model_gateway;
 pub use tilo_net;
-pub use tilo_relay_protocol;
 pub use tilo_rich_text;
 pub use tilo_rt;
+pub use tilo_server_protocol;
 pub use tilo_user_identity;
 pub use ui;
 pub use vte;

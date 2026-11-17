@@ -11,7 +11,7 @@ use super::hosted_agent_turns::{SCOUT, conversation_part, make_agent, write_to_a
 use super::*;
 use std::sync::Mutex;
 use tilo_actions::remote::{person_accounts, person_vault};
-use tilo_relay::{
+use tilo_server::{
     workspace_agents::HostAgents,
     workspaces::{
         Workspaces,

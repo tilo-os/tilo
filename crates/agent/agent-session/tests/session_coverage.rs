@@ -39,13 +39,13 @@ use tilo_agent_session::{
     StepAction, record_provider,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_protocol::agents::{AgentStatus, TaskState};
-use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_server_protocol::agents::{AgentStatus, TaskState};
+use tilo_server_protocol::delegation::{DelegateScope, Delegation};
 use tilo_session_client::remote::Heard;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use crate::support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 const ATTEMPTS: usize = 40;
 
@@ -222,7 +222,7 @@ async fn every_web_app_over_the_session() {
     let delegation = Delegation::sign(
         &root,
         agent_device.cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_server_protocol::delegation::Delegate::Agent {
             agent_id: "coverage".into(),
         },
         "Coverage agent",
@@ -641,7 +641,7 @@ async fn planning_agent_labelled(
     let delegation = Delegation::sign(
         root,
         agent_device.cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_server_protocol::delegation::Delegate::Agent {
             agent_id: id.into(),
         },
         label,
@@ -811,7 +811,7 @@ fn run_task(
     agent: &mut AgentMember,
     control: &AgentControl,
     text: &str,
-) -> tilo_relay_protocol::agents::AgentTask {
+) -> tilo_server_protocol::agents::AgentTask {
     let task = control.message(text).unwrap();
     let ended = || {
         control
@@ -1513,7 +1513,7 @@ async fn task_with_model(
     answers: Vec<serde_json::Value>,
     task: &str,
 ) -> (
-    tilo_relay_protocol::agents::AgentTask,
+    tilo_server_protocol::agents::AgentTask,
     Vec<serde_json::Value>,
     serde_json::Value,
 ) {

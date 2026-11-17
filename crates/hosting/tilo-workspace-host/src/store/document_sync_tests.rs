@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::payloads::Route;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 const APP: &str = "so.tilo.chat";
 const BASE: &str = "derived:messages@derived:default@tab:0000000000000000";

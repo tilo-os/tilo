@@ -2596,7 +2596,7 @@ fn rect_f32(rect: ui::kurbo::Rect) -> [f32; 4] {
 /// What a shell shows that a member's pointer can be relative to, as the browser runtime lays it
 /// out: each shown window by the record it shows (here, its app's workspace record) and the shown
 /// strip.
-fn pointer_layout(handle: &DesktopHandle) -> tilo_relay_protocol::live::PointerLayout {
+fn pointer_layout(handle: &DesktopHandle) -> tilo_server_protocol::live::PointerLayout {
     let shown = handle.shown_tabs();
     let windows = handle.read(|tree| {
         shown
@@ -2612,7 +2612,7 @@ fn pointer_layout(handle: &DesktopHandle) -> tilo_relay_protocol::live::PointerL
                 let TileContent::LocalApp { app_id, .. } = &tab.tile else {
                     return None;
                 };
-                let record = tilo_relay_protocol::live::LiveResource {
+                let record = tilo_server_protocol::live::LiveResource {
                     app: app_id.clone(),
                     record: String::new(),
                 };
@@ -2624,14 +2624,15 @@ fn pointer_layout(handle: &DesktopHandle) -> tilo_relay_protocol::live::PointerL
         clippy::cast_possible_truncation,
         reason = "a strip's pan is a few thousand logical pixels"
     )]
-    let strip = handle
-        .shown_strip()
-        .map(|(id, area, pan)| tilo_relay_protocol::live::ShownStrip {
-            id: id.0,
-            area: rect_f32(area),
-            scroll_x: pan as f32,
-        });
-    tilo_relay_protocol::live::PointerLayout { windows, strip }
+    let strip =
+        handle
+            .shown_strip()
+            .map(|(id, area, pan)| tilo_server_protocol::live::ShownStrip {
+                id: id.0,
+                area: rect_f32(area),
+                scroll_x: pan as f32,
+            });
+    tilo_server_protocol::live::PointerLayout { windows, strip }
 }
 
 fn close_to(a: [f32; 2], b: [f32; 2]) -> bool {
@@ -2644,7 +2645,7 @@ fn close_to(a: [f32; 2], b: [f32; 2]) -> bool {
 /// strip's coordinates, it never landed anywhere.
 #[test]
 fn a_pointer_over_the_empty_desktop_crosses_personal_layouts_of_other_widths() {
-    use tilo_relay_protocol::live::LivePointer;
+    use tilo_server_protocol::live::LivePointer;
     let (_wide_driver, wide) = personal_shell(7, 1440);
     let (_narrow_driver, narrow) = personal_shell(9, 1024);
     let (wide_layout, narrow_layout) = (pointer_layout(&wide), pointer_layout(&narrow));
@@ -2653,7 +2654,7 @@ fn a_pointer_over_the_empty_desktop_crosses_personal_layouts_of_other_widths() {
         wide_strip.id, narrow_strip.id,
         "each shell's strip is its own"
     );
-    let notes = |layout: &tilo_relay_protocol::live::PointerLayout| {
+    let notes = |layout: &tilo_server_protocol::live::PointerLayout| {
         layout
             .windows
             .iter()

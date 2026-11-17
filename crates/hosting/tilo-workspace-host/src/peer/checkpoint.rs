@@ -3,7 +3,7 @@
 //! catching-up sessions.
 
 use super::{Arc, Envelope, EnvelopeV2, Invariant, ReplayCatchup, Step, inbound_bytes, test_point};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 pub(super) const RETENTION_PREFIX_FRAME_CAP: usize = 32;
 pub(super) const RETENTION_PREFIX_BYTE_CAP: usize = 64 * 1024 * 1024;

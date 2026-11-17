@@ -10,7 +10,7 @@ Documentation=file:///usr/share/doc/tilo/recovery.md
 #
 # A machine waiting to be paired has no relay yet; it is judged by
 # multi-user.target alone, so it is never rolled back for waiting on a person.
-After=multi-user.target tilo-relay.service tilo-fs-replica.service
+After=multi-user.target tilo-server.service tilo-fs-replica.service
 # Above tilo-server-health's own wait (240 s), so the verdict is its own.
 TimeoutStartSec=360
 
@@ -26,10 +26,10 @@ UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-# `tilo-relay-admin status` opens every durable workspace store, and opening one
+# `tilo-server-admin status` opens every durable workspace store, and opening one
 # recovers its journal: that is the "store opens" half of the verdict, so the
 # probe needs the state root writable exactly as the relay does.
-ReadWritePaths=/var/lib/tilo-relay
+ReadWritePaths=/var/lib/tilo-server
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectProc=invisible

@@ -7,7 +7,7 @@
 use iroh_base::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_protocol::DocumentAnswer;
+use tilo_server_protocol::DocumentAnswer;
 
 /// A host's own transport of the peer network: the client says `outgoing`, reads `arrived` and what became
 /// of what it asked a host for, and the transport holds the other ends.
@@ -105,8 +105,8 @@ pub trait Outbox: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     /// The transport is gone.
     fn ask_workspaces(
         &self,
-        request: tilo_relay_protocol::workspaces::WorkspacesRequest,
-    ) -> Result<Receipt<Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>>, Closed>
+        request: tilo_server_protocol::workspaces::WorkspacesRequest,
+    ) -> Result<Receipt<Result<tilo_server_protocol::workspaces::WorkspacesReply, String>>, Closed>
     {
         let (answer, receipt) = answer();
         self.send(Cmd::Administer(request, answer))?;
@@ -204,14 +204,14 @@ pub enum Event {
     Refused {
         route: DocumentRoute,
         changes: Vec<[u8; 32]>,
-        refusal: tilo_relay_protocol::refusal::Refusal,
+        refusal: tilo_server_protocol::refusal::Refusal,
     },
     /// The host did not pass on content this device sent in `ws`: its person's content budget
     /// is spent, and the refusal says when it holds content again
-    /// ([`tilo_relay_protocol::refusal::Refusal::plain`] reads it for a person).
+    /// ([`tilo_server_protocol::refusal::Refusal::plain`] reads it for a person).
     ContentRefused {
         ws: Topic,
-        refusal: tilo_relay_protocol::refusal::Refusal,
+        refusal: tilo_server_protocol::refusal::Refusal,
     },
     /// A live frame the device `from` published on `ws`, opened with its record's channel keys.
     Live {
@@ -287,7 +287,7 @@ pub enum Event {
     /// The person's workspace list, as their host keeps it now: sent whenever
     /// a workspace of theirs is made, joined, renamed, left or deleted, so no
     /// device has to ask the host again.
-    Personal(Box<tilo_relay_session::workspaces::PersonalList>),
+    Personal(Box<tilo_server_session::workspaces::PersonalList>),
 }
 
 /// What the host said about this device's calls.
@@ -297,7 +297,7 @@ pub enum VoiceEvent {
     Calls {
         ws: Topic,
         /// Its calls, or why it lists none.
-        result: Result<Vec<tilo_relay_protocol::voice::CallSummary>, String>,
+        result: Result<Vec<tilo_server_protocol::voice::CallSummary>, String>,
     },
     /// The answer to the call change `request`.
     CallResult {
@@ -305,13 +305,13 @@ pub enum VoiceEvent {
         /// The request's id.
         request: [u8; 16],
         /// The call now, or why the change was refused.
-        result: Result<tilo_relay_protocol::voice::CallState, String>,
+        result: Result<tilo_server_protocol::voice::CallState, String>,
     },
     /// The participation's current grant: the first after a join, then
     /// whenever the roster, the directions or the token change.
     Granted {
         ws: Topic,
-        grant: Box<tilo_relay_protocol::voice::VoiceGrant>,
+        grant: Box<tilo_server_protocol::voice::VoiceGrant>,
     },
     /// The participation ended: the call ended, the device may no longer
     /// take part, or the host refused the join.
@@ -371,7 +371,7 @@ pub enum Cmd {
     OpenDocument {
         ws: Topic,
         channel: [u8; 32],
-        own: Option<tilo_relay_protocol::OwnedChannel>,
+        own: Option<tilo_server_protocol::OwnedChannel>,
     },
     /// Send this device's owner's outgoing ownership of the workspace on `ws` to its peers.
     PublishOwnership(Topic),
@@ -413,20 +413,20 @@ pub enum Cmd {
     /// Say these frames on the presence track of the workspace on the topic.
     Presence(Topic, Vec<collab_types::presence::Presence>),
     /// The host's word for a run it executes, on the workspace on the topic.
-    SayForSession(Topic, tilo_relay_protocol::host_voice::HostWords),
+    SayForSession(Topic, tilo_server_protocol::host_voice::HostWords),
     /// Microphone frames, said on the peer network of the workspace on the topic as this device's voice.
     CallAudio(Topic, Vec<CallFrame>),
     /// Ask for the calls of the workspace on the topic: the answer is a [`VoiceEvent::Calls`].
     VoiceCalls(Topic),
     /// Change a call of the workspace on the topic under a request id: the answer is a
     /// [`VoiceEvent::CallResult`].
-    VoiceCall(Topic, [u8; 16], tilo_relay_protocol::voice::CallOperation),
+    VoiceCall(Topic, [u8; 16], tilo_server_protocol::voice::CallOperation),
     /// Take part in a call of the workspace on the topic.
     VoiceJoin(Topic, [u8; 32]),
     /// Leave the call this device takes part in on the topic.
     VoiceLeave(Topic),
     /// What this device shows of the call it takes part in on the topic.
-    VoiceShow(Topic, tilo_relay_protocol::voice::Showing),
+    VoiceShow(Topic, tilo_server_protocol::voice::Showing),
     /// Pictures this device's camera and screen encoded, for the peer network of the workspace on the
     /// topic.
     CallPictures(Topic, Vec<CallPicture>),
@@ -438,8 +438,8 @@ pub enum Cmd {
     CallPictureRestart(Topic, [u8; 32], tilo_live::video::Source),
     /// Ask the host's workspace administration a request ([`Outbox::ask_workspaces`]).
     Administer(
-        tilo_relay_protocol::workspaces::WorkspacesRequest,
-        Answer<Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>>,
+        tilo_server_protocol::workspaces::WorkspacesRequest,
+        Answer<Result<tilo_server_protocol::workspaces::WorkspacesReply, String>>,
     ),
     /// Say this session is one run of the agent the label names: every request it makes from then
     /// on is the agent's, for this device's person, and the person's MCP server lists the run while
@@ -449,14 +449,14 @@ pub enum Cmd {
     /// connection: a device in a session with its host redeems an invitation this way. The answer
     /// is the host's, or why there was none.
     Enter(
-        tilo_relay_protocol::entering::Entering,
-        Answer<Result<tilo_relay_protocol::entering::Entered, tilo_relay_client::LinkError>>,
+        tilo_server_protocol::entering::Entering,
+        Answer<Result<tilo_server_protocol::entering::Entered, tilo_server_client::LinkError>>,
     ),
     /// Ask the host a member's root-signed approver command (pairing, agents' questions).
     AskMember(
-        Box<tilo_relay_protocol::certify::MemberApproval>,
+        Box<tilo_server_protocol::certify::MemberApproval>,
         Answer<
-            Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError>,
+            Result<tilo_server_protocol::certify::ApproverReply, tilo_server_client::CertifyError>,
         >,
     ),
     /// Announce a revocation this device's person's root signed to every workspace this session is

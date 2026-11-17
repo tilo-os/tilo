@@ -1,19 +1,19 @@
 [Unit]
 Description=Tilo complete authenticated filesystem replica
-After=network-online.target tilo-relay-firstboot.service
+After=network-online.target tilo-server-firstboot.service
 Wants=network-online.target
-Requires=tilo-relay-firstboot.service
-Requires=tilo-relay-state-migrate.service
-After=tilo-relay-state-migrate.service
-After=tilo-relay.service
-BindsTo=tilo-relay.service
+Requires=tilo-server-firstboot.service
+Requires=tilo-server-state-migrate.service
+After=tilo-server-state-migrate.service
+After=tilo-server.service
+BindsTo=tilo-server.service
 ConditionPathExists=/etc/tilo/home-peer.toml
-ConditionPathExists=!/var/lib/tilo-relay/decommissioned
+ConditionPathExists=!/var/lib/tilo-server/decommissioned
 
 [Service]
 Type=simple
-User=tilo-relay
-Group=tilo-relay
+User=tilo-server
+Group=tilo-server
 SupplementaryGroups=tilo-identity
 ExecStart=/usr/bin/fs replica --config /etc/tilo/home-peer.toml
 Restart=always

@@ -559,7 +559,7 @@ export async function certifyDevice(options) {
 }
 
 /**
- * Hand a node waiting for its certificate (`tilo-relay run
+ * Hand a node waiting for its certificate (`tilo-server run
  * --install-token-file`) the certificate `certifyDevice` issued for it, at
  * its HTTPS `origin`, with the install token it was provisioned with, and
  * with it `sessionCertificate`, the one issued for the session beside it
@@ -633,7 +633,7 @@ export async function nodeInstallInfo({origin, devicePublicKey, installToken, ru
   const node = devicePublicKey.toLowerCase();
   if (info?.device_public_key !== node) throw new IdentityError('install-refused', 'the node at this origin has another key');
   if (!info.session) return {sessionPublicKey: null};
-  // The node signs the two keys together (`tilo-relay-protocol`'s
+  // The node signs the two keys together (`tilo-server-protocol`'s
   // `node_session_message`): only a session its own key vouches for is one
   // this person certifies.
   const session = String(info.session.device_public_key).toLowerCase();

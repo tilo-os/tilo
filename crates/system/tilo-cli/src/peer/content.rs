@@ -18,7 +18,7 @@ use iroh_blobs::Hash;
 use neighbour_wire::content::ContentWants;
 use tilo_fs::hydration::ContentSource;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::{Cmd, Link, Outbox as _};
 
 use super::tree::FILES_APP;

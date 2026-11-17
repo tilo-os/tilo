@@ -1345,7 +1345,7 @@ fn place_own_workspace(
                         as Arc<dyn tilo_workspace_host::app_serving::AppActionServer>),
                     ..tilo_workspace_host::host::HostConfig::new(
                         profile.join(HOST_STORE),
-                        tilo_relay_protocol::WorkSetting::none(),
+                        tilo_server_protocol::WorkSetting::none(),
                     )
                 },
                 tilo_workspace_host::host::HostIdentity {

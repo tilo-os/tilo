@@ -1,6 +1,6 @@
 //! Page actions on records nobody has open, answered by the host.
 //!
-//! The host runs `tilo_relay::agents::start`, whose app action server now
+//! The host runs `tilo_server::agents::start`, whose app action server now
 //! also answers the workspace's records ([`tilo_agent_session::WorkspaceActions`]).
 //! A browser session creates a Sheets and a Slides record and closes them;
 //! no agent exists. The page then lists the workspace's catalogue, runs a record's
@@ -23,7 +23,7 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 #[cfg(test)]
 #[path = "workspace_actions/agent_mcp.rs"]
@@ -179,7 +179,7 @@ use tilo_actions::{
 };
 use tilo_agent_session::{ModelChoice, Replica, ReplicaActor, Seed, record_provider};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
+use tilo_server_client::Host;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::harness::hosted::{Hosted, Options};

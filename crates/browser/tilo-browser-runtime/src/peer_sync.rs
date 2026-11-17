@@ -19,7 +19,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::peer::{js_error, workspace_id};
 use crate::presence_value::{JsPresence, pointer_of, shell_from_js};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// A started page's live session: the session's client, the transport ends it says through, and the
 /// workspaces its mounts show.
@@ -320,7 +320,7 @@ pub(crate) fn narrated(
     peer: u32,
     workspace_id: WorkspaceId,
     from: [u8; 32],
-    event: &tilo_relay_protocol::live::SemanticFrame,
+    event: &tilo_server_protocol::live::SemanticFrame,
 ) {
     let admitted = PAGES.with_borrow_mut(|pages| {
         let Some(page) = pages.get_mut(&peer) else {

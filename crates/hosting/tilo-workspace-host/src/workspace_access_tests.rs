@@ -2,14 +2,14 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 use ed25519_dalek::SigningKey;
-use tilo_relay_protocol::delegation::{Delegate, DelegateScope, Delegation};
+use tilo_server_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason,
 };
 
 use super::*;
 use crate::workspace::Membership;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 const WORKSPACE: &str = "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21";
 const OTHER_WORKSPACE: &str = "0b9e8f6c-2a1d-4e3b-8c7f-5d4a3b2c1e0f";

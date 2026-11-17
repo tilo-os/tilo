@@ -2,7 +2,7 @@
 //! settings open under it, renaming a home server in place, and removing a
 //! device after asking.
 
-use tilo_relay_protocol::WorkFrom;
+use tilo_server_protocol::WorkFrom;
 use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Widget};
 
 use super::{
@@ -23,7 +23,7 @@ struct DeviceEntry<'a> {
     key: String,
     label: String,
     personal: Option<&'a super::PersonalDevice>,
-    peer: Option<&'a tilo_relay_protocol::HomePeerRegistration>,
+    peer: Option<&'a tilo_server_protocol::HomePeerRegistration>,
     this: bool,
 }
 
@@ -191,7 +191,7 @@ impl Page<'_> {
 
     /// A home server's line under its name: how it is doing, and when it
     /// was last seen if it is not answering.
-    fn peer_health(&self, peer: &tilo_relay_protocol::HomePeerRegistration) -> String {
+    fn peer_health(&self, peer: &tilo_server_protocol::HomePeerRegistration) -> String {
         let device = &peer.device_node_id;
         let health = self.home_peer_health.get(device).copied();
         match self.home_peer_last_seen.get(device) {
@@ -343,7 +343,7 @@ impl Page<'_> {
 
     fn home_peer_rows(
         &self,
-        peer: &tilo_relay_protocol::HomePeerRegistration,
+        peer: &tilo_server_protocol::HomePeerRegistration,
     ) -> Vec<provider_settings_ui::widgets::Item> {
         let device = peer.device_node_id.clone();
         let name = self.bind_on_row(

@@ -36,7 +36,7 @@ workspace's Linux programs and its Browser in one jailed Firecracker VM
   admits wakes against.
 - **The guest**: the digest this build pins (`os/hosted-guest-snapshot.env`),
   or `TILO_VM_GUEST_REF`; either way only an image the release key signed.
-- **Browser** (optional): `TILO_VM_RELAY_ENDPOINT` (`ADDR:PORT`) has the
+- **Browser** (optional): `TILO_VM_SERVER_ENDPOINT` (`ADDR:PORT`) has the
   host serve each workspace's Browser in its VM: the browser session there
   joins its workspace through the relay at that address, the relay's address
   as a VM reaches it and the only address besides the internet a VM may

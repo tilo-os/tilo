@@ -411,7 +411,7 @@ test('a site that names its host as it was before it was set up again stops the 
   await assert.rejects(entering, failed => failed.name === 'AdmissionError' && failed.code === 'stale-entry'
     && failed.message === STALE_SITE_HOST);
   assert.equal(asked, 1, 'the host is asked who it is once, only once the session could not reach it');
-  assert.ok(said.some(line => line.includes('TILO_WEB_HOME_HOST_INFO') && line.includes('tilo-relay page-host https://host.example:8443')), said.join('\n'));
+  assert.ok(said.some(line => line.includes('TILO_WEB_HOME_HOST_INFO') && line.includes('tilo-server page-host https://host.example:8443')), said.join('\n'));
   assert.ok(runtime.peer.disposed, 'the session is let go');
   assert.ok(reported.some(failure => failure.message.includes('TILO_WEB_HOME_HOST_INFO')),
     'the entry hears what to set');

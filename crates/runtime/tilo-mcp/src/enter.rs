@@ -1,7 +1,7 @@
 //! One way into one of the person's workspaces, for a key of theirs: the
 //! person's own device, an agent's grant, a script's key. Their workspace
 //! list names each workspace's host with the host's own signed address
-//! (`tilo_relay_session::workspaces::WorkspaceHostAddress`), and the key
+//! (`tilo_server_session::workspaces::WorkspaceHostAddress`), and the key
 //! enters it there, over iroh, wherever it is hosted:
 //!
 //! - **A device of the person's** (their desktop, a paired box) hosts it: the
@@ -24,7 +24,7 @@ use ed25519_dalek::SigningKey;
 use iroh::Endpoint;
 use serde_json::Value;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
-use tilo_relay_session::workspaces::WorkspaceHostAddress;
+use tilo_server_session::workspaces::WorkspaceHostAddress;
 use tilo_session_client::device::Device;
 use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::DeviceCert;

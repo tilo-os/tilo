@@ -81,7 +81,7 @@
 # brings `signin` with it and `restart` brings `people-call`. Needs node,
 # chromium, curl, bwrap, the stack's environment (TILO_SH_PROGRAMS,
 # TILO_SH_LOUNGE, TILO_SH_SITE, TILO_SH_CADDY naming what t built), and
-# TILO_RELAY_BIN, TILO_CRYPTO_BIN, TILO_FONTS_DIR and TILO_CLI_BIN for the wait
+# TILO_SERVER_BIN, TILO_CRYPTO_BIN, TILO_FONTS_DIR and TILO_CLI_BIN for the wait
 # list's Lounge and the setups. E2E_FLOW_SECONDS bounds each flow (default
 # 480).
 set -euo pipefail

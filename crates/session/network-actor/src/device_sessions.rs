@@ -30,7 +30,7 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
-use tilo_relay_protocol::transport::SIBLING_ALPN;
+use tilo_server_protocol::transport::SIBLING_ALPN;
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 use tokio::sync::mpsc;
 

@@ -19,7 +19,7 @@ use legacy_agent_protocol::link::{AgentLink, AgentStream};
 use legacy_agent_protocol::{AGENT_PORT, Display, Launch, ProtocolError, Signal, Stdio};
 use thiserror::Error;
 use tilo_actions::remote::browser::{MARK, Report, UP};
-use tilo_relay_protocol::hosted::Material;
+use tilo_server_protocol::hosted::Material;
 
 use super::network::Endpoint;
 
@@ -96,7 +96,7 @@ pub fn hand_off(material: &str, relay: Endpoint) -> Result<String, String> {
 }
 
 #[cfg(test)]
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 #[cfg(test)]
 /// The material the relay writes a session, joining the workspace at
@@ -119,7 +119,7 @@ pub fn test_material(relay: &str) -> String {
         device: cert,
         secret: [2; 32],
         relay: EndpointAddr::from_parts(
-            test_relay_id(),
+            test_server_id(),
             [TransportAddr::Ip(relay.parse().unwrap())],
         ),
         user_public_key: [1; 32],
@@ -129,7 +129,7 @@ pub fn test_material(relay: &str) -> String {
 }
 
 #[cfg(test)]
-fn test_relay_id() -> iroh_base::EndpointId {
+fn test_server_id() -> iroh_base::EndpointId {
     iroh_base::SecretKey::from_bytes(&[7; 32]).public()
 }
 
@@ -740,7 +740,7 @@ mod tests {
         )
         .unwrap();
         let line: Material = serde_json::from_str(&handed).unwrap();
-        assert_eq!(line.relay.id, test_relay_id(), "the same relay");
+        assert_eq!(line.relay.id, test_server_id(), "the same relay");
         assert_eq!(
             line.relay.addrs,
             [TransportAddr::Ip("10.0.2.4:7704".parse().unwrap())]

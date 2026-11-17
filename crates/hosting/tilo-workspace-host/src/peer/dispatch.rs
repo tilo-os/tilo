@@ -12,7 +12,7 @@ use super::{
 };
 #[cfg(test)]
 use super::{ReplayWrite, answered_as_replay, finish_replay_write};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Handle one successfully-decoded inbound envelope: dispatch to
 /// [`handle_envelope`], then write any replay backlog to the wire —

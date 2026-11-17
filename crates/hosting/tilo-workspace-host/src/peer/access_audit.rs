@@ -32,7 +32,7 @@ use tokio::time::Instant;
 use super::AgentRegistry;
 use crate::auth::AuthenticatedPeer;
 use tilo_lock::RwLockRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Audit cadence while a subscribed workspace's membership file is not watched:
 /// reading the disk is then the only way an external edit is seen, so it is
@@ -156,7 +156,7 @@ fn after(now: Instant, delay: Duration) -> Instant {
 
 #[cfg(test)]
 mod tests {
-    use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+    use tilo_server_protocol::delegation::{DelegateScope, Delegation};
     use tilo_user_identity::UserIdentity;
 
     use super::*;
@@ -266,7 +266,7 @@ mod tests {
         let delegation = Delegation::sign(
             &root,
             peer.device_public_key,
-            tilo_relay_protocol::delegation::Delegate::Agent {
+            tilo_server_protocol::delegation::Delegate::Agent {
                 agent_id: "helper".into(),
             },
             "Helper",

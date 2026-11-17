@@ -19,7 +19,7 @@ use super::follow::Followed;
 use super::{GovernedWorkspace, WeakWorkspaces, Workspaces};
 use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Carry `body`, `author`'s write the relay admitted for `workspace` from a
 /// relay session, to the devices on the workspace's link

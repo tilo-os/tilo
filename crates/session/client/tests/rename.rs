@@ -9,7 +9,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_relay_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
+use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
 use tilo_session_client::{Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 

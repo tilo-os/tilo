@@ -32,7 +32,7 @@ use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ActionService, Offering, ReadFuture, Workspaces};
-use tilo_relay_protocol::{Machine, Whose, WorkSetting};
+use tilo_server_protocol::{Machine, Whose, WorkSetting};
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::GovernedWorkspace;

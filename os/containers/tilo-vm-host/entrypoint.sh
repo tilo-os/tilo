@@ -41,7 +41,7 @@
 #      VMs by the memory they really take of the node's (TILO_VM_MEMORY_MIB,
 #      or auto: all of it) less the reserve it keeps
 #      (TILO_VM_MEMORY_RESERVE_MIB), and answers a placer's Status on
-#      TILO_VM_STATUS_LISTEN. With TILO_VM_RELAY_ENDPOINT (ADDR:PORT), each
+#      TILO_VM_STATUS_LISTEN. With TILO_VM_SERVER_ENDPOINT (ADDR:PORT), each
 #      workspace's Browser in its VM joins its workspace through the relay at
 #      that address, the one address besides the internet a VM may reach.
 set -eu

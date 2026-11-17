@@ -3,7 +3,7 @@
 # the host for the deployment's environment, and that it refuses an
 # environment the image does not honor instead of starting with part of it.
 #
-# No container: it runs the entrypoint with a tilo-relay on PATH that prints
+# No container: it runs the entrypoint with a tilo-server on PATH that prints
 # its arguments, so the whole interface is asserted in a second.
 #
 # usage: test-entrypoint.sh
@@ -13,12 +13,12 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/tilo-lounge.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
-cat > "$work/bin/tilo-relay" <<'STUB'
+cat > "$work/bin/tilo-server" <<'STUB'
 #!/bin/sh
 set -eu
 for argument in "$@"; do printf '%s\n' "$argument"; done
 STUB
-chmod +x "$work/bin/tilo-relay"
+chmod +x "$work/bin/tilo-server"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -31,7 +31,7 @@ lounge() {
   env -i PATH="$work/bin:/usr/bin:/bin" \
     TILO_WORKSPACES_PERSISTENT=lounge \
     TILO_WORKSPACES_ROOT_FILE=/run/secrets/workspace-root-lounge \
-    TILO_WORKSPACES_RELAY_ORIGIN=https://eu1.tilo.sh/ \
+    TILO_WORKSPACES_SERVER_ORIGIN=https://eu1.tilo.sh/ \
     TILO_WORKSPACES_DESCRIPTION='Coffee and tea, and whatever is being made' \
     TILO_WORKSPACES_WEB_ENTRY=https://tilo.sh/ \
     TILO_WORKSPACES_STATE="$work/state" \
@@ -119,7 +119,7 @@ lounge \
   TILO_WORKSPACES_IROH_LISTEN=0.0.0.0:7704 \
   TILO_WORKSPACES_FETCH_PROXY=0 \
   TILO_WORKSPACES_WEB=127.0.0.1:0 \
-  TILO_WORKSPACES_RELAY_PLAIN=0.0.0.0:9880 \
+  TILO_WORKSPACES_SERVER_PLAIN=0.0.0.0:9880 \
   TILO_WORKSPACES_LIVE=0.0.0.0:9881 \
   TILO_WORKSPACES_LIVE_ORIGIN=https://live.eu1.tilo.sh/ \
   TILO_WORKSPACES_HTTP=0.0.0.0:8890 \
@@ -198,7 +198,7 @@ eu1() {
     TILO_WORKSPACES_NAME=Lounge \
     TILO_WORKSPACES_ADMISSION=invite \
     TILO_WORKSPACES_ROOT_FILE=/run/secrets/workspace-root-lounge \
-    TILO_WORKSPACES_RELAY_ORIGIN=https://eu1.tilo.sh \
+    TILO_WORKSPACES_SERVER_ORIGIN=https://eu1.tilo.sh \
     TILO_WORKSPACES_PUBLIC_API=https://eu1.tilo.sh \
     TILO_WORKSPACES_LIVE_ORIGIN=https://live.eu1.tilo.sh \
     TILO_WORKSPACES_WEB_ENTRY=https://tilo.sh/ \
@@ -251,8 +251,8 @@ fails_with lounge TILO_WORKSPACES_LINK=0.0.0.0:8443
 grep -Fq TILO_WORKSPACES_LINK_ORIGIN "$work/err" || fail "the refusal does not name the missing origin"
 
 # Without what it cannot invent, it names the setting and starts nothing.
-for required in TILO_WORKSPACES_PERSISTENT TILO_WORKSPACES_ROOT_FILE TILO_WORKSPACES_RELAY_ORIGIN TILO_WORKSPACES_WEB_ENTRY; do
-  unset_env=(TILO_WORKSPACES_PERSISTENT=lounge TILO_WORKSPACES_ROOT_FILE=/root TILO_WORKSPACES_RELAY_ORIGIN=https://eu1.example
+for required in TILO_WORKSPACES_PERSISTENT TILO_WORKSPACES_ROOT_FILE TILO_WORKSPACES_SERVER_ORIGIN TILO_WORKSPACES_WEB_ENTRY; do
+  unset_env=(TILO_WORKSPACES_PERSISTENT=lounge TILO_WORKSPACES_ROOT_FILE=/root TILO_WORKSPACES_SERVER_ORIGIN=https://eu1.example
     TILO_WORKSPACES_DESCRIPTION=text TILO_WORKSPACES_WEB_ENTRY=https://tilo.example/)
   status=0
   env -i PATH="$work/bin:/usr/bin:/bin" "${unset_env[@]}" sh -c "unset $required; exec sh '$here/entrypoint.sh'" \
@@ -264,13 +264,13 @@ done
 
 # The flags the stub accepts are the flags the host has. A removed flag that the
 # entrypoint still passes starts nothing in production, and the stub cannot see
-# that; where a built `tilo-relay` is here (a developer's checkout, the builder),
+# that; where a built `tilo-server` is here (a developer's checkout, the builder),
 # the real one takes the entrypoint's arguments and says whether it would start.
-# `TILO_RELAY_BIN` names one; without either, this part says it was skipped.
-relay=${TILO_RELAY_BIN:-}
+# `TILO_SERVER_BIN` names one; without either, this part says it was skipped.
+relay=${TILO_SERVER_BIN:-}
 if [[ -z $relay ]]; then
-  for candidate in "${CARGO_TARGET_DIR:-$here/../../../target}/debug/tilo-relay" \
-    "${CARGO_TARGET_DIR:-$here/../../../target}/release/tilo-relay"; do
+  for candidate in "${CARGO_TARGET_DIR:-$here/../../../target}/debug/tilo-server" \
+    "${CARGO_TARGET_DIR:-$here/../../../target}/release/tilo-server"; do
     [[ -x $candidate ]] && relay=$candidate && break
   done
 fi
@@ -300,12 +300,12 @@ if [[ -n $relay ]] && "$relay" --version >/dev/null 2>&1; then
       --*)
         name=${argument%%=*}
         grep -Eq -- "(^|[[:space:]])${name}([[:space:]]|=|$)" "$work/workspace-help" \
-          || fail "the entrypoint passes $name, which tilo-relay workspace has no flag for"
+          || fail "the entrypoint passes $name, which tilo-server workspace has no flag for"
         ;;
     esac
   done <"$work/real-args"
   [[ $(grep -c -- '^--' "$work/real-args") -gt 0 ]] || fail "the entrypoint passed no flags to the real relay"
-  echo "ok: every flag the entrypoint passes is one tilo-relay workspace reads ($relay)"
+  echo "ok: every flag the entrypoint passes is one tilo-server workspace reads ($relay)"
 else
-  echo "skipped: no built tilo-relay (TILO_RELAY_BIN) to check the entrypoint's flags against"
+  echo "skipped: no built tilo-server (TILO_SERVER_BIN) to check the entrypoint's flags against"
 fi

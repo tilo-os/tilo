@@ -39,7 +39,7 @@ NATIVE_TEST_FEATURES = {
     # The listener browsers and the fetch proxy reach a host through, and their
     # tests, are behind `web`, which every deployed relay enables. (`agents`
     # links every web app, so its tests run with the agent packages.)
-    "tilo-relay": ("web",),
+    "tilo-server": ("web",),
     # The rest compile their tests only with a feature their default build
     # leaves to the dependents that want it; each costs a few small crates.
     "wire-frame": ("tokio", "postcard"),

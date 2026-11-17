@@ -111,8 +111,8 @@ use crate::transport::Envelope;
 use crate::workspace::{SharedWorkspace, Subscriber};
 use crate::workspace_access::{self, Decision, RelayTrust, WorkspaceOperation};
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_protocol::refusal::Refusal;
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::refusal::Refusal;
 
 /// Maximum live fan-out backlog per connected peer. Deltas are durable before
 /// queueing; saturation disconnects the recipient for replay on reconnect.
@@ -229,7 +229,7 @@ pub struct PeerContext {
 /// refused like a revoked device.
 pub type AgentRegistry = Arc<
     std::sync::RwLock<
-        std::collections::HashMap<[u8; 32], Option<tilo_relay_protocol::delegation::Delegation>>,
+        std::collections::HashMap<[u8; 32], Option<tilo_server_protocol::delegation::Delegation>>,
     >,
 >;
 
@@ -333,7 +333,7 @@ impl SessionCtx<'_> {
 
 // Both ends trace the same publication hop; the client side lives with the
 // session client.
-pub(crate) use tilo_relay_session::trace_native_publication;
+pub(crate) use tilo_server_session::trace_native_publication;
 
 #[cfg(test)]
 #[allow(

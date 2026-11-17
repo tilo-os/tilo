@@ -16,7 +16,7 @@ use tilo_desktop::workspace_settings::people::{Member as Row, content_of};
 use tilo_desktop_model::UserId;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::i18n::t;
-use tilo_relay_protocol::workspaces::{
+use tilo_server_protocol::workspaces::{
     Member, Role, Workspace, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_session::workspace_people;

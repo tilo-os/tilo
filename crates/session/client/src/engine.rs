@@ -1031,7 +1031,7 @@ impl Engine {
         let Some(link) = self.link.lock_recover().clone() else {
             return false;
         };
-        let own = tilo_relay_protocol::OwnedChannel::recognise(
+        let own = tilo_server_protocol::OwnedChannel::recognise(
             app,
             record,
             self.identity.device_cert.user_public_key,
@@ -1052,7 +1052,7 @@ impl Engine {
         workspace: &str,
         app: &str,
         record: &str,
-    ) -> Option<tilo_relay_protocol::DocumentAnswer> {
+    ) -> Option<tilo_server_protocol::DocumentAnswer> {
         let workspace = WorkspaceId::parse(workspace)?;
         let channel = neighbour_wire::app_document_channel(app, record);
         self.link

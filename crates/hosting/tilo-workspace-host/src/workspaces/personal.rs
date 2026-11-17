@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tilo_lock::MutexRecover as _;
-use tilo_relay_session::workspaces::{
+use tilo_server_session::workspaces::{
     MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES, PersonalBrowser, PersonalDevice, PersonalList,
     PersonalWorkspace, WorkspaceHostAddress,
 };
@@ -674,7 +674,7 @@ impl Workspaces {
     pub(super) fn personal(
         &self,
         device: &DeviceCert,
-        here: &[tilo_relay_session::workspaces::WorkspaceListing],
+        here: &[tilo_server_session::workspaces::WorkspaceListing],
         only: &super::actions::host::Listed,
     ) -> PersonalList {
         let name = self.host_name();
@@ -772,7 +772,7 @@ impl Workspaces {
     /// Only a device of the person's own names them: an agent's grant and a
     /// stand-in are no browser of theirs.
     ///
-    /// [`LIST_PERSONAL`]: tilo_relay_session::workspaces::LIST_PERSONAL
+    /// [`LIST_PERSONAL`]: tilo_server_session::workspaces::LIST_PERSONAL
     pub(super) fn note_browser(&self, device: &DeviceCert, browser: PersonalBrowser) {
         if device.capabilities.agent.is_some() || device.capabilities.stand_in {
             return;

@@ -18,7 +18,7 @@ use tilo_delivery_protocol::workspace_join::{
 use tilo_peer_state::join::{self, JoinTransportRequest, JoinTransportResponse, Role};
 use tilo_peer_state::owner::testing::governor::TestGovernor;
 use tilo_peer_state::owner_commit::CommitOperation;
-use tilo_relay::workspace_join::WorkspaceJoinProtocol;
+use tilo_server::workspace_join::WorkspaceJoinProtocol;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 type Authority = Arc<std::sync::Mutex<TestGovernor>>;
@@ -108,7 +108,7 @@ fn ns(at: SystemTime) -> u64 {
 /// `starting`, a host or a relay starting on one of these fixtures'
 /// endpoints, awaited past its wait for a relay. Each starts only after its
 /// endpoint had `tilo_endpoint_reachability::RELAY_WAIT` to reach a relay
-/// (`tilo_workspace_host::workspaces::Workspaces::open`, `tilo_relay`'s start), and
+/// (`tilo_workspace_host::workspaces::Workspaces::open`, `tilo_server`'s start), and
 /// these endpoints have none to reach. A test on a runtime whose clock it can
 /// hold holds it over the start: the same whole wait runs on that clock, which
 /// passes it when nothing else can run instead of five seconds later. The
@@ -183,7 +183,7 @@ impl Joined {
         let host = past_the_relay_wait(Box::pin(tilo_workspace_host::host::WorkspaceHost::open(
             tilo_workspace_host::host::HostConfig::new(
                 directory.path().join("workspace-host"),
-                tilo_relay_protocol::WorkSetting::none(),
+                tilo_server_protocol::WorkSetting::none(),
             ),
             tilo_workspace_host::host::HostIdentity {
                 user_public_key: joined.identity.device_cert.user_public_key,
@@ -217,7 +217,7 @@ impl Joined {
 /// once it publishes.
 struct HostedWorkspace {
     authority: Authority,
-    relay: tilo_relay::Relay,
+    relay: tilo_server::Relay,
     workspace: WorkspaceId,
     governor: DeviceCert,
     governor_key: SigningKey,
@@ -251,7 +251,7 @@ impl HostedWorkspace {
             .unwrap()
             .clone()
             .save();
-        tilo_relay::store::WorkspaceStore::open(&relay_root, topic, true)
+        tilo_server::store::WorkspaceStore::open(&relay_root, topic, true)
             .unwrap()
             .save_snapshot(&baseline)
             .unwrap();
@@ -264,18 +264,18 @@ impl HostedWorkspace {
         };
         let join = JoinService(hosted.clone());
         let relay = past_the_relay_wait(Box::pin(
-            tilo_relay::Relay::start_on_endpoint_with_protocols(
-                tilo_relay::RelayConfig {
+            tilo_server::Relay::start_on_endpoint_with_protocols(
+                tilo_server::RelayConfig {
                     state_root: relay_root.clone(),
                     identity_root: dir.join("relay-identity"),
                     full_replica_status: dir.join("replica/status.json"),
                     home_peer_bundle: dir.join("home-peer.toml"),
-                    trust_policy: tilo_relay::TrustPolicy::AllowList {
+                    trust_policy: tilo_server::TrustPolicy::AllowList {
                         users: vec![hex::encode(governor.user_public_key)],
                     },
                     ..Default::default()
                 },
-                tilo_relay::daemon::RelayIdentity {
+                tilo_server::daemon::RelayIdentity {
                     user_public_key: governor.user_public_key,
                     device_signing_key: host_key,
                     device_cert: host.clone(),

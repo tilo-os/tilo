@@ -10,7 +10,7 @@ use super::{
     workspace_access,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Handle an inbound `Delta`: validate the author, fan out to every
 /// other subscriber via the same path a change from an attached host
@@ -425,7 +425,7 @@ pub(super) async fn handle_delta(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            refusal: tilo_relay_protocol::refusal::Refusal::NotReady,
+            refusal: tilo_server_protocol::refusal::Refusal::NotReady,
         }));
     };
     // A host attached to the workspace carries its members' changes under
@@ -529,7 +529,7 @@ async fn change_refusal(
     attached: bool,
     claimed: [u8; 32],
     env: &Envelope,
-) -> Option<tilo_relay_protocol::refusal::Refusal> {
+) -> Option<tilo_server_protocol::refusal::Refusal> {
     let Envelope::Delta { delta, .. } = env else {
         return None;
     };
@@ -574,7 +574,7 @@ pub(super) async fn governor_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
     env: &Envelope,
-) -> Option<tilo_relay_protocol::refusal::Refusal> {
+) -> Option<tilo_server_protocol::refusal::Refusal> {
     let body = governor_notice(env)?;
     let authority = ws.lock().await.workspace_authority.clone()?;
     let workspaces = authority.workspaces()?;
@@ -585,7 +585,7 @@ pub(super) async fn governor_refusal(
     // device's own workspace slice, the one place its author reads it.
     file_refusal_of(ws, env, &reason).await;
     tracing::warn!(%reason, device = %hex::encode(author), "refused a change the workspace does not take in");
-    Some(tilo_relay_protocol::refusal::Refusal::NotAllowed(reason))
+    Some(tilo_server_protocol::refusal::Refusal::NotAllowed(reason))
 }
 
 /// File `ws`'s verdict on `env`, a change this host refused for `reason`, in
@@ -659,7 +659,7 @@ pub(super) async fn desktop_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
     env: &Envelope,
-) -> Option<tilo_relay_protocol::refusal::Refusal> {
+) -> Option<tilo_server_protocol::refusal::Refusal> {
     let body = governor_notice(env)?;
     if !crate::workspaces::writes_desktop(&body) {
         return None;
@@ -674,7 +674,7 @@ pub(super) async fn desktop_refusal(
     // device's own workspace slice, the one place its author reads it.
     file_refusal_of(ws, env, &reason).await;
     tracing::warn!(%reason, device = %hex::encode(author), "refused a shared desktop change");
-    Some(tilo_relay_protocol::refusal::Refusal::NotAllowed(reason))
+    Some(tilo_server_protocol::refusal::Refusal::NotAllowed(reason))
 }
 
 /// What the workspace's governor follows of `env`, a member's state change: its
@@ -722,7 +722,7 @@ pub(super) async fn handle_delta_prefix(
     let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
-            refusal: tilo_relay_protocol::refusal::Refusal::NotReady,
+            refusal: tilo_server_protocol::refusal::Refusal::NotReady,
         }));
     };
     if author_device_public_key != &peer.device_public_key
@@ -871,7 +871,7 @@ pub(super) fn refused_reason(
     peer: &AuthenticatedPeer,
     op: WorkspaceOperation,
     channel: Option<[u8; 32]>,
-) -> tilo_relay_protocol::refusal::Refusal {
+) -> tilo_server_protocol::refusal::Refusal {
     let outside = crate::environment::environment_of(trust.environments, &peer.device_public_key)
         .filter(|environment| !environment.reaches(channel))
         .map(|_| workspace_access::DenyReason::OutOfEnvironmentScope.refusal());
@@ -891,6 +891,6 @@ fn trace_all(envelopes: &[Envelope], step: &str) {
 }
 
 /// Why the relay took none of `peer`'s frames into the workspace.
-pub(super) fn unpublished() -> tilo_relay_protocol::refusal::Refusal {
-    tilo_relay_protocol::refusal::Refusal::NotAMember("workspace membership changed".into())
+pub(super) fn unpublished() -> tilo_server_protocol::refusal::Refusal {
+    tilo_server_protocol::refusal::Refusal::NotAMember("workspace membership changed".into())
 }

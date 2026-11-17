@@ -6,7 +6,7 @@
 use super::SessionCtx;
 use crate::auth::AuthenticatedPeer;
 use crate::transport::Envelope;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Make this session a run of the agent `label` names, asked as `request_id`.
 /// The run is present from now on in the workspace the session entered last
@@ -24,7 +24,7 @@ pub(super) fn handle_agent_session(
     let label: String = label
         .chars()
         .filter(|character| !character.is_control())
-        .take(tilo_relay_protocol::transport::MAX_AGENT_LABEL_CHARS)
+        .take(tilo_server_protocol::transport::MAX_AGENT_LABEL_CHARS)
         .collect();
     let label = label.as_str();
     let refusal = if note_agent(session, label) {

@@ -26,11 +26,11 @@ use tilo_session_client::{Cmd, Outbox};
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_relay_client::CertificationOutcome;
-use tilo_relay_client::invite::guest_certificate;
-use tilo_relay_client::{CertifyError, Host, answer_pairing, certify, pending_pairings};
-use tilo_relay_client::{MemberApprover, MemberHost as _};
-use tilo_relay_protocol::certify::{
+use tilo_server_client::CertificationOutcome;
+use tilo_server_client::invite::guest_certificate;
+use tilo_server_client::{CertifyError, Host, answer_pairing, certify, pending_pairings};
+use tilo_server_client::{MemberApprover, MemberHost as _};
+use tilo_server_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, MemberApproval, PendingCertification,
 };
 use tilo_session_client::{MemoryPeerStore, PeerStore as _};
@@ -450,7 +450,7 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
     let (code_sent, code) = tokio::sync::oneshot::channel::<String>();
     let address = host.iroh().addr();
     let asking = tokio::spawn(async move {
-        tilo_relay_client::request_certification(&endpoint, address, request, |code| {
+        tilo_server_client::request_certification(&endpoint, address, request, |code| {
             let _ = code_sent.send(code.to_owned());
         })
         .await

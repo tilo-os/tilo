@@ -102,7 +102,7 @@ tilo-fuse-engine = { path = "../../crates/runtime/engines/fuse", optional = true
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 tilo-identity-host = { path = "../../crates/runtime/tilo-identity-host" }
-tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
+tilo-server-protocol = { path = "../../crates/hosting/tilo-server-protocol" }
 automerge.workspace = true
 cap-fs-ext = "3.4.6"
 cap-primitives = "3.4.6"

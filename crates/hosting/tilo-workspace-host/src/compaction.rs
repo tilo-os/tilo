@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ChangeHash};
 use collab_types::{DocumentMutation, DocumentMutationKind};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_relay_protocol::compaction::{CoverageStatement, entry_id, snapshot_heads, verify};
+use tilo_server_protocol::compaction::{CoverageStatement, entry_id, snapshot_heads, verify};
 
 mod verified;
 
@@ -50,7 +50,7 @@ use crate::store::compaction::{ChannelEntry, SnapshotWrite, file_digest};
 use crate::transport::Envelope;
 use crate::workspace::SharedWorkspace;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Tail size past which a channel is compacted: this many entries, or
 /// [`COMPACT_TAIL_BYTES`] that are at least half its snapshot's size, so a

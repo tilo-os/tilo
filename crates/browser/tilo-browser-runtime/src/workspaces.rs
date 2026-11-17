@@ -1,6 +1,6 @@
 //! The workspaces a host governs, administered from the page: one call turns
 //! the page's arguments into the shared protocol's own typed request
-//! ([`tilo_relay_protocol::workspaces`]) and answers in the shape the page
+//! ([`tilo_server_protocol::workspaces`]) and answers in the shape the page
 //! draws and its apps read as an action's output — times in milliseconds,
 //! roles as the workspace settings name them, keys in hex.
 //!
@@ -9,7 +9,7 @@
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tilo_relay_protocol::workspaces::{
+use tilo_server_protocol::workspaces::{
     Member, PendingInvite, WaitListEntry, Workspace, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_workspace_join::encode_invitation_text;

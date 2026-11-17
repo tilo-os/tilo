@@ -261,7 +261,7 @@ pub(crate) fn role_refusal(
     delta: &[u8],
     device_access: Option<&crate::workspace::DeviceAccess>,
     author_device: [u8; 32],
-) -> Option<tilo_relay_protocol::refusal::Refusal> {
+) -> Option<tilo_server_protocol::refusal::Refusal> {
     // What a role says about a document change it sends: an app's record or the
     // workspace's own. A content store's key material and presence frames are no
     // document change and pass.
@@ -281,7 +281,7 @@ pub(crate) fn role_refusal(
     {
         return None;
     }
-    Some(tilo_relay_protocol::refusal::Refusal::NotGranted(
+    Some(tilo_server_protocol::refusal::Refusal::NotGranted(
         collab_types::ReceiptRefusal::NotGranted {
             node: tilo_action_policy::TreePath::workspace(&access.policy.workspace).to_string(),
             kind: tilo_action_policy::ActionKind::Undoable,
@@ -308,10 +308,10 @@ pub(crate) fn own_refusal(
     store: &crate::store::WorkspaceStore,
     person: &[u8; 32],
     delta: &[u8],
-) -> Option<tilo_relay_protocol::refusal::Refusal> {
+) -> Option<tilo_server_protocol::refusal::Refusal> {
     let owner = store.frame_owner(delta)?;
     (owner != *person).then(|| {
-        tilo_relay_protocol::refusal::Refusal::NotAllowed(
+        tilo_server_protocol::refusal::Refusal::NotAllowed(
             "another member's own record, which only they write".to_owned(),
         )
     })
@@ -329,7 +329,7 @@ pub(crate) fn refusal(
     payloads: &dyn crate::payloads::ShellPayloads,
     delta: &[u8],
     device_access: Option<&crate::workspace::DeviceAccess>,
-) -> Option<tilo_relay_protocol::refusal::Refusal> {
+) -> Option<tilo_server_protocol::refusal::Refusal> {
     let (_, _, body) = crate::coedit::retention_view(delta)?;
     let (route, envelope) = payloads.open_document(body)?;
     let record = collab_types::WrittenDocument {
@@ -366,9 +366,9 @@ pub(crate) fn refusal(
     .err()
     .map(|refusal| match refusal {
         collab_types::ReceiptRefusal::NotGranted { .. } => {
-            tilo_relay_protocol::refusal::Refusal::NotGranted(refusal.to_string())
+            tilo_server_protocol::refusal::Refusal::NotGranted(refusal.to_string())
         }
-        other => tilo_relay_protocol::refusal::Refusal::NotAllowed(other.to_string()),
+        other => tilo_server_protocol::refusal::Refusal::NotAllowed(other.to_string()),
     })
 }
 

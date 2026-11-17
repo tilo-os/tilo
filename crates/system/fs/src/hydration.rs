@@ -840,7 +840,7 @@ pub(crate) mod test_peers {
     }
 
     pub(crate) async fn silent() -> Router {
-        let endpoint = test_relay::direct_endpoint().await;
+        let endpoint = test_server::direct_endpoint().await;
         Router::builder(endpoint)
             .accept(iroh_blobs::ALPN, Silent)
             .spawn()
@@ -943,7 +943,7 @@ mod tests {
     #[tokio::test]
     async fn local_content_is_read_without_peers() {
         {
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let hash = store.write_content(b"hello local").await.unwrap().unwrap();
 
@@ -955,7 +955,7 @@ mod tests {
             assert_eq!(&mid, b"local");
         }
         {
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let data: Vec<u8> = (0..200_000_u32)
                 .map(|i| u8::try_from(i % 251).unwrap())
@@ -979,7 +979,7 @@ mod tests {
     #[tokio::test]
     async fn chunked_ranges_read_locally_and_missing_blobs_error_without_peers() {
         {
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let data: Vec<u8> = (0..300_000u32)
                 .map(|i| u8::try_from((i.wrapping_mul(2_654_435_761) >> 13) & 0xff).unwrap())
@@ -1004,7 +1004,7 @@ mod tests {
             }
         }
         {
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let hydrator = Hydrator::new(endpoint, store);
             let absent = Hash::from([9u8; 32]);
@@ -1019,7 +1019,7 @@ mod tests {
     )]
     async fn sync_state_reports_local_projected_and_downloading_content() {
         {
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let data: Vec<u8> = (0..250_000u32)
                 .map(|i| u8::try_from((i.wrapping_mul(2_654_435_761) >> 11) & 0xff).unwrap())
@@ -1033,7 +1033,7 @@ mod tests {
             );
         }
         {
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let hyd = Hydrator::new(endpoint, store);
             let absent = Hash::from([7u8; 32]);
@@ -1044,7 +1044,7 @@ mod tests {
             );
         }
         {
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let present = store
                 .ingest(Bytes::from_static(b"chunk that exists"))
@@ -1073,7 +1073,7 @@ mod tests {
             );
         }
         {
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let data: Vec<u8> = (0..200_000u32)
                 .map(|i| u8::try_from((i.wrapping_mul(40_503) >> 9) & 0xff).unwrap())
@@ -1098,7 +1098,7 @@ mod tests {
             );
         }
         {
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let mh = store
                 .write_content(b"already local")
@@ -1128,7 +1128,7 @@ mod tests {
             assert_eq!(hyd.sync_state(mh).await, SyncState::Local);
         }
         {
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let a = Hash::from([0xA1; 32]);
             let b = Hash::from([0xB2; 32]);
@@ -1150,7 +1150,7 @@ mod tests {
     #[tokio::test]
     async fn peers_hydrate_real_bytes_and_unhealthy_peers_are_backed_off() {
         async fn failed_peer_is_backed_off_behind_a_healthy_peer() {
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let hydrator = Hydrator::new(endpoint, store);
             let failed = iroh::SecretKey::from_bytes(&[0x51; 32]).public();
@@ -1164,7 +1164,7 @@ mod tests {
             assert_eq!(hydrator.known_peers()[0].id, failed);
         }
         {
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let hydrator = Hydrator::new(endpoint, store);
             let key = iroh::SecretKey::from_bytes(&[0x41; 32]).public();
@@ -1188,7 +1188,7 @@ mod tests {
         }
         failed_peer_is_backed_off_behind_a_healthy_peer().await;
         {
-            let server_ep = test_relay::direct_endpoint().await;
+            let server_ep = test_server::direct_endpoint().await;
             let server_store = ContentStore::memory();
             let payload = Bytes::from_static(b"collaborative filesystem payload");
             let hash = server_store
@@ -1201,7 +1201,7 @@ mod tests {
                 .spawn();
             let server_addr = server_ep.addr();
 
-            let client_ep = test_relay::direct_endpoint().await;
+            let client_ep = test_server::direct_endpoint().await;
             let client_store = Arc::new(ContentStore::memory());
             let hydrator = Hydrator::new(client_ep, client_store.clone());
 
@@ -1224,7 +1224,7 @@ mod tests {
             );
         }
         {
-            let server_ep = test_relay::direct_endpoint().await;
+            let server_ep = test_server::direct_endpoint().await;
             let server_store = ContentStore::memory();
             let payload = Bytes::from_static(b"healthy replica wins the hedge");
             let hash = server_store.ingest(payload.clone()).await.unwrap();
@@ -1232,7 +1232,7 @@ mod tests {
                 .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
                 .spawn();
 
-            let client_ep = test_relay::direct_endpoint().await;
+            let client_ep = test_server::direct_endpoint().await;
             let client_store = Arc::new(ContentStore::memory());
             let hydrator = Hydrator::new(client_ep, client_store);
             let ghost = iroh::SecretKey::from_bytes(&[0x61; 32]).public();
@@ -1257,7 +1257,7 @@ mod tests {
     #[tokio::test]
     async fn prefetch_hydrates_every_chunk_within_the_policy_limit() {
         {
-            let server_ep = test_relay::direct_endpoint().await;
+            let server_ep = test_server::direct_endpoint().await;
             let server_store = ContentStore::memory();
             let payload: Vec<u8> = (0..400_000u32)
                 .map(|i| (i.wrapping_mul(2_654_435_761) >> 11).to_le_bytes()[0])
@@ -1267,7 +1267,7 @@ mod tests {
                 .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
                 .spawn();
 
-            let client_ep = test_relay::direct_endpoint().await;
+            let client_ep = test_server::direct_endpoint().await;
             let client_store = Arc::new(ContentStore::memory());
             let hydrator = Hydrator::new(client_ep, client_store);
             hydrator.add_peer(server_ep.addr());
@@ -1297,7 +1297,7 @@ mod tests {
             );
         }
         {
-            let endpoint = test_relay::direct_endpoint().await;
+            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let payload = vec![7u8; 1024];
             let manifest_hash = store.write_content(&payload).await.unwrap().unwrap();

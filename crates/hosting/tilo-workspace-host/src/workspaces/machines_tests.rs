@@ -146,8 +146,8 @@ mod branching {
         };
         let refused = not.refusal();
         assert_eq!(
-            tilo_relay_session::workspaces::Refusal::from_reason(&refused),
-            Some(tilo_relay_session::workspaces::Refusal::BranchNotMade {
+            tilo_server_session::workspaces::Refusal::from_reason(&refused),
+            Some(tilo_server_session::workspaces::Refusal::BranchNotMade {
                 part: "its Linux machine".into(),
             }),
             "the refusal names the machine as what did not come: {refused}"
@@ -191,7 +191,7 @@ mod branching {
             ],
             "its machine went first, while the branch was there"
         );
-        let id = tilo_relay_protocol::WorkspaceId::parse(BRANCH).unwrap();
+        let id = tilo_server_protocol::WorkspaceId::parse(BRANCH).unwrap();
         assert!(!workspaces.deleted(id), "discarded, not deleted");
         assert!(
             !workspaces.unfinished_branch(BRANCH),

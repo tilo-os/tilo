@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Serialize;
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_session::workspaces::PersonalList;
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_session::workspaces::PersonalList;
 use tilo_session_client::device::Device as Entered;
 
 /// One workspace, as this peer shows it.
@@ -133,7 +133,7 @@ impl Peer {
         }
         let (list, complete) = match device
             .personal_list(
-                &tilo_relay_session::workspaces::WorkspaceLabels::new(),
+                &tilo_server_session::workspaces::WorkspaceLabels::new(),
                 None,
             )
             .await
@@ -566,7 +566,7 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_relay_session::workspaces::{PersonalWorkspace, WorkspaceHostAddress};
+    use tilo_server_session::workspaces::{PersonalWorkspace, WorkspaceHostAddress};
 
     /// The host's list names each folder after its workspace, and the folder
     /// of the workspace this device entered exists before any list names it.
@@ -583,7 +583,7 @@ mod tests {
                     hint: None,
                 }),
                 role: Some("owner".to_owned()),
-                labels: tilo_relay_session::workspaces::WorkspaceLabels::default(),
+                labels: tilo_server_session::workspaces::WorkspaceLabels::default(),
                 unattended: false,
             }],
             devices: Vec::new(),

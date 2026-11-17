@@ -222,7 +222,7 @@ impl WorkspaceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_relay_protocol::WorkspaceId;
+    use tilo_server_protocol::WorkspaceId;
 
     #[test]
     fn concurrent_first_uses_agree_on_one_generation() {

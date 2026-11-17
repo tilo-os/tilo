@@ -27,7 +27,7 @@ use tilo_actions::remote::person_telling::{
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, ReceiptStatus, WORKSPACE_GOVERNANCE_PROVIDER,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::super::tests::{caller, settled};

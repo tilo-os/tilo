@@ -1,6 +1,6 @@
 //! Change notification for the access record another process edits.
 //!
-//! `tilo-relay-admin` and the operator's own tools rewrite a workspace's
+//! `tilo-server-admin` and the operator's own tools rewrite a workspace's
 //! `governed-access.log` from outside the daemon. Rather than re-read and
 //! parse it on every authorization, the daemon watches the entries of
 //! `<state_root>/workspaces` (workspace directories appearing and going) and the
@@ -30,7 +30,7 @@ use tokio::task::JoinHandle;
 
 use crate::store::GOVERNED_ACCESS_FILE;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Changes queued from the native watches to the watch task.
 const QUEUED_CHANGES: usize = 256;
@@ -143,7 +143,7 @@ fn registry() -> &'static Mutex<Vec<Weak<MembershipWatch>>> {
 pub(crate) fn attach(workspace_root: &Path) -> Option<DiskGeneration> {
     let workspace_id = tilo_failure::ignored!(
         "a path not named as a workspace's is not covered by a watch",
-        tilo_relay_protocol::WorkspaceId::parse(workspace_root.file_name()?.to_str()?)?
+        tilo_server_protocol::WorkspaceId::parse(workspace_root.file_name()?.to_str()?)?
     );
     let workspaces = workspace_root.parent()?;
     let watch = registry()
@@ -215,7 +215,7 @@ pub fn spawn_membership_watch(state_root: &Path) -> JoinHandle<()> {
 #[derive(Clone, Copy, Debug)]
 enum Origin {
     Workspaces,
-    Workspace(tilo_relay_protocol::WorkspaceId),
+    Workspace(tilo_server_protocol::WorkspaceId),
 }
 
 /// The native watches of one established watch, each forwarding its changes
@@ -354,7 +354,7 @@ async fn establish(watch: &MembershipWatch) -> Option<Watches> {
             let Some(workspace_id) = entry.file_name().to_str().and_then(|name| {
                 tilo_failure::ignored!(
                     "an entry not named as a workspace's is not one",
-                    tilo_relay_protocol::WorkspaceId::parse(name)
+                    tilo_server_protocol::WorkspaceId::parse(name)
                 )
             }) else {
                 continue;
@@ -404,11 +404,11 @@ async fn establish(watch: &MembershipWatch) -> Option<Watches> {
 
 /// The workspace a change among the entries of `workspaces` names, if it names
 /// one.
-fn workspace_directory(path: &VPath) -> Option<tilo_relay_protocol::WorkspaceId> {
+fn workspace_directory(path: &VPath) -> Option<tilo_server_protocol::WorkspaceId> {
     let mut components = path.components();
     let workspace_id = tilo_failure::ignored!(
         "a change to an entry not named as a workspace's names none",
-        tilo_relay_protocol::WorkspaceId::parse(components.next()?)?
+        tilo_server_protocol::WorkspaceId::parse(components.next()?)?
     );
     components.next().is_none().then_some(workspace_id)
 }

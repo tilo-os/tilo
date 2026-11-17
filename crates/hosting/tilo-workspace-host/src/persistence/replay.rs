@@ -740,7 +740,7 @@ impl State {
 mod tests {
     use super::*;
     use crate::store::replay::DEFAULT_BATCH_BYTES;
-    use tilo_relay_protocol::WorkspaceId;
+    use tilo_server_protocol::WorkspaceId;
 
     fn capture(state: &mut State, ticket: &ReplayTicket) -> ReplayHandle {
         loop {

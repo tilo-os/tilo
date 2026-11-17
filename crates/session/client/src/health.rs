@@ -65,7 +65,7 @@ pub enum EntryHealth {
         /// The entry's own refusal, when a workspace's entry turned the device away: what it
         /// says about a wait list the workspace keeps, which its page offers.
         #[serde(skip_serializing_if = "Option::is_none")]
-        entry: Option<tilo_relay_protocol::directory::EntryRefused>,
+        entry: Option<tilo_server_protocol::directory::EntryRefused>,
     },
 }
 

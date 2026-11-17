@@ -21,7 +21,7 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = test_relay::direct_endpoint().await;
+        let endpoint = test_server::direct_endpoint().await;
         let hydrator = Arc::new(Hydrator::new(endpoint, Arc::new(ContentStore::memory())));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));

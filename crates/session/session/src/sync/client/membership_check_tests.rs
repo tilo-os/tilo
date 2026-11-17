@@ -35,10 +35,10 @@ impl Device {
     /// A session of a device certified by `root`, relaying through `host`'s relay: two of them
     /// are two devices of one person. Each device mints a key no other run shares, as each host
     /// does.
-    fn of(root: &SigningKey, label: &str, host: &test_relay::Host) -> Self {
+    fn of(root: &SigningKey, label: &str, host: &test_server::Host) -> Self {
         let state = tempfile::tempdir().expect("the session's directory");
-        let key = test_relay::fresh_signing_key(label);
-        let cert = test_relay::certified(root, &key, label, DeviceCapabilities::member());
+        let key = test_server::fresh_signing_key(label);
+        let cert = test_server::certified(root, &key, label, DeviceCapabilities::member());
         let identity = tilo_network_actor::HostIdentity::kept(cert, key);
         let engine = std::sync::Arc::new(
             Engine::open(
@@ -80,7 +80,7 @@ impl Device {
 
     /// Join the host's workspace with an invitation for this person, and wait until the workspace
     /// is held here.
-    fn join(&self, host: &test_relay::Host, request: u8) -> WorkspaceId {
+    fn join(&self, host: &test_server::Host, request: u8) -> WorkspaceId {
         let workspace_id = WorkspaceId::parse(host.workspace()).expect("a workspace id");
         self.engine.bind(workspace_id);
         self.network
@@ -117,7 +117,7 @@ impl Device {
     /// Enter the host's workspace as a further device of this person, at the host's own signed
     /// address: nothing is invited here, and the workspace answers with what it holds, so this
     /// device takes part in it from then on.
-    fn enter(&self, host: &test_relay::Host) -> WorkspaceId {
+    fn enter(&self, host: &test_server::Host) -> WorkspaceId {
         let workspace_id = WorkspaceId::parse(host.workspace()).expect("a workspace id");
         self.network
             .enter(Entering {
@@ -179,7 +179,7 @@ fn holds_receipt(device: &Device, workspace_id: WorkspaceId, invocation: uuid::U
 /// then holds it too.
 #[test]
 fn a_receipt_the_owner_commits_reaches_the_workspaces_other_session() {
-    let host = test_relay::Host::of(&SigningKey::from_bytes(&[0x71; 32]), "Notes");
+    let host = test_server::Host::of(&SigningKey::from_bytes(&[0x71; 32]), "Notes");
     let writer = Device::of(&SigningKey::from_bytes(&[0x51; 32]), "The writer", &host);
     let reader = Device::of(&SigningKey::from_bytes(&[0x61; 32]), "The reader", &host);
     let workspace = writer.join(&host, 0x01);
@@ -238,7 +238,7 @@ fn wait_for(device: &Device, workspace_id: WorkspaceId, invocation: uuid::Uuid) 
 #[test]
 fn a_person_s_further_device_enters_their_workspace_at_its_host() {
     let root = SigningKey::from_bytes(&[0x71; 32]);
-    let host = test_relay::Host::of(&root, "Notes");
+    let host = test_server::Host::of(&root, "Notes");
     let laptop = Device::of(&root, "The laptop", &host);
     let desktop = Device::of(&root, "The desktop", &host);
     assert_eq!(laptop.person(), desktop.person(), "one person, two devices");

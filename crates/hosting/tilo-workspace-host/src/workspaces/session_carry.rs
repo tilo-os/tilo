@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 
 use super::{WeakWorkspaces, Workspaces};
 use crate::workspace_documents::HostCommit;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The first wait before a failed copy is tried again.
 const FIRST_RETRY: std::time::Duration = std::time::Duration::from_millis(100);

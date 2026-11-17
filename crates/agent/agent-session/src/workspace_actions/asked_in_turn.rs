@@ -32,7 +32,7 @@ use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::person_asking::{ActionName, Asked, Thing, Words};
 use tilo_actions::remote::{InvocationReceipt, InvocationState, Pending, RemoteActionMessage};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// What an invocation an agent made inside a turn ends with once its person
 /// is asked about it in the conversation: nothing ran, and the agent neither

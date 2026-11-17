@@ -11,8 +11,8 @@
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionHost as _, ActionHostError, InvokeRequest, ReceiptStatus};
-use tilo_relay_protocol::workspaces::JoinReply;
-use tilo_relay_session::workspaces::{
+use tilo_server_protocol::workspaces::JoinReply;
+use tilo_server_session::workspaces::{
     CREATE_OWN_WORKSPACE, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
     KEEP_PERSONAL, LIST_PERSONAL, PersonalList,
 };
@@ -481,7 +481,7 @@ async fn a_pages_browser_names_its_tab_devices_and_the_list_groups_them() {
 fn listed_device<'a>(
     list: &'a PersonalList,
     cert: &DeviceCert,
-) -> &'a tilo_relay_session::workspaces::PersonalDevice {
+) -> &'a tilo_server_session::workspaces::PersonalDevice {
     list.devices
         .iter()
         .find(|device| device.cert.device_public_key == cert.device_public_key)

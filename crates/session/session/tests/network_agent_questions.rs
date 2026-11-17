@@ -27,10 +27,10 @@ use iroh::{EndpointAddr, RelayMode};
 use tilo_compositor::OutputConfig;
 use tilo_identity_host::device_fleet::DeviceFleetStore;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
-use tilo_relay_client::frame::{read_frame, write_frame};
-use tilo_relay_protocol::auth::{self, HandshakeTrust, ServerIdentity};
-use tilo_relay_protocol::certify::CERTIFY_ALPN;
-use tilo_relay_protocol::certify::{
+use tilo_server_client::frame::{read_frame, write_frame};
+use tilo_server_protocol::auth::{self, HandshakeTrust, ServerIdentity};
+use tilo_server_protocol::certify::CERTIFY_ALPN;
+use tilo_server_protocol::certify::{
     ApproverReply, ApproverRequest, CertifyOpen, ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES,
     PendingConfirmation,
 };

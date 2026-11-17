@@ -263,7 +263,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # session's workspace-service test and the browser peer's fresh-page test.
         lounge = scripts.pop("lounge-siblings")
         self.assertEqual(lounge["command"], ["bash", "tools/build-sibling-binaries.sh",
-                                             "tilo-relay:tilo-relay=tilo-relay/agents"])
+                                             "tilo-server:tilo-server=tilo-server/agents"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
                      if rule["setup"] == "lounge-siblings"]
@@ -286,7 +286,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "machine-siblings"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-relay) and test(coding_agents::)",
+                [("package(tilo-server) and test(coding_agents::)",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the guest's agent for the relay's coding-agent tests",
             )
@@ -332,7 +332,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "package(tilo-session-client) and binary(it) and "
                                  "test(lounge_fresh_page::)":
                                      "lounge-siblings",
-                                 "package(tilo-relay) and test(coding_agents::)": "machine-siblings",
+                                 "package(tilo-server) and test(coding_agents::)": "machine-siblings",
                                  "package(tilo-session-client) and binary(it) and "
                                  "(test(passkey_root::) or test(node_workspace::))": "page-bundle",
                                  "package(tilo-ntfs-helper)": "ntfs-fixtures",

@@ -2,7 +2,7 @@
 //! ([`crate::store::document_sync`]) is sent to it once it asks.
 
 use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx, WorkspaceOperation};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Handle `OpenDocument`: under the admission a replay has, mark the record
 /// held by the device, so its live changes reach it from now on, then answer
@@ -29,7 +29,7 @@ pub(super) async fn handle_open_document(
     else {
         return Ok(None);
     };
-    let refused = |refusal: tilo_relay_protocol::refusal::Refusal| {
+    let refused = |refusal: tilo_server_protocol::refusal::Refusal| {
         Ok(Some(Envelope::NotAuthorised {
             workspace_id,
             refusal,
@@ -38,7 +38,7 @@ pub(super) async fn handle_open_document(
     // A record opened before the subscription goes through once the host
     // says the workspace is ready.
     if !subscribed.contains(&workspace_id) {
-        return refused(tilo_relay_protocol::refusal::Refusal::NotReady);
+        return refused(tilo_server_protocol::refusal::Refusal::NotReady);
     }
     // A browser environment's device opens its own record and no other.
     if session
@@ -48,7 +48,7 @@ pub(super) async fn handle_open_document(
         return refused(crate::workspace_access::DenyReason::OutOfEnvironmentScope.refusal());
     }
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
-        return refused(tilo_relay_protocol::refusal::Refusal::NotReady);
+        return refused(tilo_server_protocol::refusal::Refusal::NotReady);
     };
     // A chain's head names whichever part is the chain's newest: that part
     // is what is sent.
@@ -61,7 +61,7 @@ pub(super) async fn handle_open_document(
     let (store, governed) = {
         let mut runtime = crate::workspace_io::fresh_membership(&ws).await?;
         if !session.admits(&runtime, peer, WorkspaceOperation::State) {
-            return refused(tilo_relay_protocol::refusal::Refusal::NotAMember(
+            return refused(tilo_server_protocol::refusal::Refusal::NotAMember(
                 "device not in workspace membership".into(),
             ));
         }
@@ -82,7 +82,7 @@ pub(super) async fn handle_open_document(
             return Ok(Some(Envelope::DocumentOpened {
                 workspace_id,
                 channel,
-                answer: tilo_relay_protocol::DocumentAnswer::NotYours,
+                answer: tilo_server_protocol::DocumentAnswer::NotYours,
             }));
         }
         // Its person's device opening their own record says whose it is.
@@ -133,6 +133,6 @@ pub(super) async fn handle_open_document(
     Ok(Some(Envelope::DocumentOpened {
         workspace_id,
         channel,
-        answer: tilo_relay_protocol::DocumentAnswer::Sent { frames: sent },
+        answer: tilo_server_protocol::DocumentAnswer::Sent { frames: sent },
     }))
 }

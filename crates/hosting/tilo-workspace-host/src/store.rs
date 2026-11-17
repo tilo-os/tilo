@@ -3,7 +3,7 @@
 //! Layout (rooted at `RelayConfig.state_root`):
 //!
 //! ```text
-//! /var/lib/tilo-relay/
+//! /var/lib/tilo-server/
 //! ├── iroh-secret.bin          # relay's iroh node secret (0600)
 //! └── workspaces/
 //!     └── <workspace_id>/
@@ -21,7 +21,7 @@
 //! + store-and-forward. Pending directories exist regardless of
 //!   pin state — a peer can be offline and still catch up when it reconnects.
 
-pub(crate) use tilo_relay_store::bounded;
+pub(crate) use tilo_server_store::bounded;
 #[doc(hidden)]
 pub mod compaction;
 pub(crate) mod document_sync;
@@ -33,7 +33,7 @@ pub mod retained;
 mod revocation_log;
 mod sealed;
 #[cfg(test)]
-pub(crate) use tilo_relay_store::test_barrier;
+pub(crate) use tilo_server_store::test_barrier;
 #[cfg(any(test, feature = "test-support"))]
 #[allow(
     clippy::missing_panics_doc,
@@ -48,12 +48,12 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 #[cfg(test)]
-pub(crate) use tilo_relay_store::thread_fsyncs;
-pub use tilo_relay_store::{StoreError, fsyncs};
-pub(crate) use tilo_relay_store::{atomic_write, credit_fsyncs, fsync, helper_fsyncs};
+pub(crate) use tilo_server_store::thread_fsyncs;
+pub use tilo_server_store::{StoreError, fsyncs};
+pub(crate) use tilo_server_store::{atomic_write, credit_fsyncs, fsync, helper_fsyncs};
 
 /// Filename used for the pinned Automerge snapshot inside a
 /// workspace directory.
@@ -70,7 +70,7 @@ pub use revocation_log::{
     REVOCATIONS_FILE, append_revocation, append_revocations, load_revocations, save_revocations,
 };
 /// The metrics snapshot file is read by clients as well as the daemon.
-pub use tilo_relay_protocol::metrics::{METRICS_FILE, load_metrics, save_metrics};
+pub use tilo_server_protocol::metrics::{METRICS_FILE, load_metrics, save_metrics};
 
 /// Directory entries the relay's workspace stores listed to commit retained
 /// history since this process started.

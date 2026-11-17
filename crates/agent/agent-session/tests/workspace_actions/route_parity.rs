@@ -29,7 +29,7 @@ use tilo_actions::remote::{
 };
 use tilo_agent_session::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceDocumentsLink};
 use tilo_broker_core::{BrokerActor, CrdtRoute, PublishedAction, PublishedInput, PublishedSurface};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::{Cmd, Outbox};
 
 const NOTES: &str = "so.tilo.notes";
@@ -42,7 +42,7 @@ const TERMINAL: &str = "so.tilo.terminal";
 struct Member {
     host: HostDevice,
     /// The host's workspaces, which hand the service the keys its device holds.
-    workspaces: tilo_relay::workspaces::Workspaces,
+    workspaces: tilo_server::workspaces::Workspaces,
     person: [u8; 32],
     devices: Vec<[u8; 32]>,
     asked: AtomicUsize,
@@ -449,7 +449,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
         ],
         asked: AtomicUsize::new(0),
         content: tilo_content::ContentStore::in_dir(state.path().join("member-content")),
-        shell: tilo_relay::agents::host_shells(shells.clone()).unwrap(),
+        shell: tilo_server::agents::host_shells(shells.clone()).unwrap(),
     });
     let actions = tilo_agent_session::WorkspaceActions::new(Arc::new(crate::common::catalogue));
     actions.attach(member.clone()).unwrap();
@@ -961,7 +961,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         .peer
         .send(Cmd::SayForSession(
             agent.workspace,
-            tilo_relay_protocol::host_voice::HostWords::Presence(forged.clone()),
+            tilo_server_protocol::host_voice::HostWords::Presence(forged.clone()),
         ))
         .unwrap();
     agent

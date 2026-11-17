@@ -1,6 +1,6 @@
 # Tilo Lounge
 
-One always-on public Tilo workspace, hosted by one process: `tilo-relay`'s
+One always-on public Tilo workspace, hosted by one process: `tilo-server`'s
 persistent public workspace, the deployment routes beside it, and the Discord
 bridge whose bot programs it runs.
 
@@ -44,7 +44,7 @@ its settings. Required:
 | --- | --- |
 | `TILO_WORKSPACES_PERSISTENT` | the workspace's name; its state is `$TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT` |
 | `TILO_WORKSPACES_ROOT_FILE` | the workspace's owner root, 64 hex characters, from the operator's secrets |
-| `TILO_WORKSPACES_RELAY_ORIGIN` | the `https://` origin the ingress publishes: pages, avatars and the callback |
+| `TILO_WORKSPACES_SERVER_ORIGIN` | the `https://` origin the ingress publishes: pages, avatars and the callback |
 | `TILO_WORKSPACES_DESCRIPTION` | what the public directory says the workspace is; listed, anyone joins through its entry |
 | `TILO_WORKSPACES_WEB_ENTRY` | the Tilo app's web entry the links the host mints open |
 
@@ -64,7 +64,7 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_OPERATOR_SOCKET` | `$TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT/operator.sock` | where the operator asks the host for what only it does: another host holding a workspace (`hold`, `unhold`), and taking in the people an earlier release kept (`import_people`). Everything about who is in the workspace is an action its owners and administrators take (`tilo members add`, `tilo members invite`), not something this socket does |
 | `TILO_WORKSPACES_HOLD_FOR` | none | the workspaces of other people this host holds whoever's they are, when an owner has the host governing one hand it over (`tilo workspace hosts add`): `anyone`, or their ids, comma-separated. Without it the host holds those of the people it let in |
 | `TILO_WORKSPACES_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
-| `TILO_WORKSPACES_RELAY_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
+| `TILO_WORKSPACES_SERVER_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
 | `TILO_WORKSPACES_LIVE` | `0.0.0.0:9782` | the address the packet relay binds, as the ingress forwards to it |
 | `TILO_WORKSPACES_LIVE_ORIGIN` | the address it bound | the `https://host[:port]` origin devices dial the packet relay at |
 | `TILO_WORKSPACES_TLS_CERT` | none | a publicly trusted certificate chain (PEM) the host's HTTPS listener presents instead of its own development one; read again when it changes |
@@ -77,7 +77,7 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_MODERATION_MODEL` | the relay's | the model it asks |
 | `TILO_WORKSPACES_DISCORD_CLIENT_ID` | none | the Discord application members connect, once sign-in is set up |
 | `TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE` | `/run/secrets/discord-client-secret` | its secret |
-| `TILO_WORKSPACES_DISCORD_REDIRECT_URL` | `$TILO_WORKSPACES_RELAY_ORIGIN/discord/callback` | where Discord sends the browser back |
+| `TILO_WORKSPACES_DISCORD_REDIRECT_URL` | `$TILO_WORKSPACES_SERVER_ORIGIN/discord/callback` | where Discord sends the browser back |
 | `TILO_WORKSPACES_DISCORD_AUTHORIZE_URL` | `https://discord.com/oauth2/authorize` | Discord's consent page |
 | `TILO_WORKSPACES_DISCORD_API_BASE` | `https://discord.com` | where Discord's API is, for a test server: the sign-in and the bridge's worker both reach it |
 | `TILO_WORKSPACES_DISCORD_TOKEN_FILE` | `/run/secrets/discord-bot-token` | the bridge's bot token, read when the file is there |
@@ -85,8 +85,8 @@ Optional, with these defaults:
 `TILO_SOURCE_REVISION` is the image's own revision, which `/mode` reports;
 `TILO_SECRETS_DIR` already points into the state volume, where the workspace
 root is kept sealed. The relay's session limits
-(`TILO_RELAY_MAX_WEB_SESSIONS`, `TILO_RELAY_MAX_HANDSHAKES`,
-`TILO_RELAY_MAX_WORKSPACE_GRANTS`) are the image's defaults and the deployment's to
+(`TILO_SERVER_MAX_WEB_SESSIONS`, `TILO_SERVER_MAX_HANDSHAKES`,
+`TILO_SERVER_MAX_WORKSPACE_GRANTS`) are the image's defaults and the deployment's to
 raise.
 
 ## State on the volume
@@ -151,7 +151,7 @@ bash os/containers/tilo-lounge/test-onboarding.sh out/web-desktop/bundle /tmp/on
 It needs node, a headless Chrome (`CHROME`, else Playwright's cache), curl,
 bwrap, `TILO_SH_PROGRAMS`, `TILO_SH_LOUNGE`, `TILO_SH_SITE` and
 `TILO_SH_CADDY` naming what `tilo-sh-binaries`, `image-web-entry-context` and
-`tilo-sh-caddy` built, and `TILO_RELAY_BIN`, `TILO_CRYPTO_BIN`,
+`tilo-sh-caddy` built, and `TILO_SERVER_BIN`, `TILO_CRYPTO_BIN`,
 `TILO_FONTS_DIR` and `TILO_CLI_BIN` naming built programs (the
 `lounge-check-binaries`, `lounge-check-tools`, `lounge-fonts` and
 `lounge-check-cli` outputs), which the wait list's own Lounge and the setups

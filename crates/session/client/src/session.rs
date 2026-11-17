@@ -27,16 +27,16 @@ use crate::{
 };
 use std::time::Duration;
 
-use tilo_relay_client::{CoeditPayload, DeviceSigner};
-use tilo_relay_protocol::Envelope;
+use tilo_server_client::{CoeditPayload, DeviceSigner};
+use tilo_server_protocol::Envelope;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::membership_check::{PeerEntry, PeerStore};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::LinkError;
-use tilo_relay_session::RelayClient;
+use tilo_server_client::LinkError;
+use tilo_server_session::RelayClient;
 
 mod agent_session;
 mod connect;
@@ -56,7 +56,7 @@ pub use connect::{SessionMemberHost, member_host};
 use connect::{connect, connect_backoff, link_error, transient};
 use entry::{Refusal, refusal};
 use governance::HostGovernance;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Longest wait between reconnect attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -93,13 +93,13 @@ pub(crate) const WORKSPACE_DELETED: (&str, &str) = (
 const ADMISSION_TIMEOUT_MS: u64 = 30_000;
 
 /// Where to reach the user's host: the iroh endpoint it serves its peers'
-/// sessions on ([`tilo_relay_client::Host`]).
-pub use tilo_relay_client::Host;
+/// sessions on ([`tilo_server_client::Host`]).
+pub use tilo_server_client::Host;
 
 /// Where to connect and as whom.
 #[derive(Clone)]
 pub struct PeerConfig {
-    /// The user's host (`tilo-relay`).
+    /// The user's host (`tilo-server`).
     pub host: Host,
     /// This device's certificate.
     pub cert: DeviceCert,
@@ -109,8 +109,8 @@ pub struct PeerConfig {
     pub revocations: RevocationList,
     /// The workspace this device enters through its entry on its first
     /// session, when the host has not admitted it yet
-    /// ([`tilo_relay_protocol::entering`]); taken once the host answered.
-    pub entering: Option<tilo_relay_protocol::entering::Entering>,
+    /// ([`tilo_server_protocol::entering`]); taken once the host answered.
+    pub entering: Option<tilo_server_protocol::entering::Entering>,
 }
 
 impl PeerConfig {
@@ -169,7 +169,7 @@ enum Command {
 enum Sealing {
     Sealed(Vec<u8>),
     /// This device holds no keys for the record yet.
-    NoKeys(tilo_relay_protocol::live::LiveResource),
+    NoKeys(tilo_server_protocol::live::LiveResource),
     /// Names no record, or does not seal: never sent.
     Dropped,
 }
@@ -189,7 +189,7 @@ pub(crate) type Completion = crate::Answer<Result<(), String>>;
 pub(crate) type LiveCompletion = crate::Answer<Option<Vec<u8>>>;
 /// Where the host's answer to a workspace administration request goes ([`Cmd::Administer`]).
 pub(crate) type WorkspacesCompletion =
-    crate::Answer<Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>>;
+    crate::Answer<Result<tilo_server_protocol::workspaces::WorkspacesReply, String>>;
 #[derive(Debug, PartialEq, Eq)]
 enum Admission {
     Admitted,
@@ -400,7 +400,7 @@ struct Answered {
     /// The ownership entry.
     id: [u8; 32],
     /// Durable at this order, or refused, and why.
-    outcome: Result<u64, tilo_relay_protocol::refusal::Refusal>,
+    outcome: Result<u64, tilo_server_protocol::refusal::Refusal>,
     /// What a refusal withdraws from the replica.
     withdrawn: Option<Event>,
 }
@@ -428,7 +428,7 @@ struct Task {
     dial: Dial,
     /// What this session reports to its links.
     reports: Arc<Reports>,
-    workspaces: BTreeSet<tilo_relay_protocol::WorkspaceId>,
+    workspaces: BTreeSet<tilo_server_protocol::WorkspaceId>,
     /// Whether the host deleted the last workspace this session held: it has
     /// nothing left to be admitted to, so it stays done instead of dialling a
     /// host that only ends the connection again.
@@ -774,10 +774,10 @@ impl Task {
                 self.answering.push((workspace_id, request, route, covered));
                 continue;
             };
-            let snapshot = vec![tilo_relay_protocol::compaction::entry_id(&entry)];
+            let snapshot = vec![tilo_server_protocol::compaction::entry_id(&entry)];
             // What this device publishes, its own replica holds.
             self.note_delivered(&route, &snapshot);
-            let statement = tilo_relay_protocol::compaction::CoverageStatement {
+            let statement = tilo_server_protocol::compaction::CoverageStatement {
                 workspace_id,
                 channel: neighbour_wire::app_document_channel(&route.app_id, &route.document),
                 request,
@@ -790,7 +790,7 @@ impl Task {
             };
             let Ok(signature) = self
                 .signer
-                .sign(tilo_relay_protocol::compaction::signing_bytes(&statement))
+                .sign(tilo_server_protocol::compaction::signing_bytes(&statement))
                 .await
             else {
                 continue;
@@ -819,7 +819,7 @@ impl Task {
             .open_content(envelope.artifact, &envelope.encryption?, &ciphertext)
             .ok()?;
         let snapshot = collab_types::DocumentMutation::decode(&plaintext).ok()?;
-        tilo_relay_protocol::compaction::snapshot_heads(snapshot.data())
+        tilo_server_protocol::compaction::snapshot_heads(snapshot.data())
     }
 
     fn fail(&self, code: &'static str, message: impl Into<String>) {
@@ -1198,7 +1198,7 @@ impl Task {
             .extend(self.workspaces.iter().copied());
         let mut ping = n0_future::time::interval(PING_INTERVAL);
         let mut channel_tick = n0_future::time::interval(CHANNEL_TICK);
-        let mut heartbeat = n0_future::time::interval(tilo_relay_protocol::voice::HEARTBEAT);
+        let mut heartbeat = n0_future::time::interval(tilo_server_protocol::voice::HEARTBEAT);
         // A page that stood still beats once when it runs again, not once
         // for every beat it missed.
         heartbeat.set_missed_tick_behavior(n0_future::time::MissedTickBehavior::Delay);
@@ -1328,7 +1328,7 @@ impl Task {
         // A host that keeps nothing of this person forgot them: the session
         // stops as not admitted, and the page joins again through its entry.
         if let Envelope::NotAuthorised {
-            refusal: tilo_relay_protocol::refusal::Refusal::NotAdmitted,
+            refusal: tilo_server_protocol::refusal::Refusal::NotAdmitted,
             ..
         } = &envelope
         {
@@ -1381,7 +1381,7 @@ impl Task {
             self.reports.emit(&Event::Remote(Heard::Undeliverable {
                 workspace_id,
                 to,
-                refusal: tilo_relay_protocol::refusal::Refusal::NotReady,
+                refusal: tilo_server_protocol::refusal::Refusal::NotReady,
             }));
             return;
         };
@@ -1391,7 +1391,7 @@ impl Task {
                 self.reports.emit(&Event::Remote(Heard::Undeliverable {
                     workspace_id,
                     to,
-                    refusal: tilo_relay_protocol::refusal::Refusal::Invalid(
+                    refusal: tilo_server_protocol::refusal::Refusal::Invalid(
                         "outside a workspace, only the host itself is asked".into(),
                     ),
                 }));
@@ -1406,7 +1406,7 @@ impl Task {
                 self.reports.emit(&Event::Remote(Heard::Undeliverable {
                     workspace_id: dropped.workspace_id,
                     to: dropped.to,
-                    refusal: tilo_relay_protocol::refusal::Refusal::Other(
+                    refusal: tilo_server_protocol::refusal::Refusal::Other(
                         "too many actions waited for the workspace's admission".into(),
                     ),
                 }));
@@ -1438,7 +1438,7 @@ impl Task {
     ) {
         let _ = client.send(Envelope::RemoteAction {
             workspace_id,
-            version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+            version: tilo_server_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
             to_device_public_key: to,
             from_device_public_key: self.config.cert.device_public_key,
             from_user_public_key: self.config.cert.user_public_key,
@@ -1760,7 +1760,7 @@ impl Task {
             }
         });
         self.administer(
-            &tilo_relay_protocol::workspaces::WorkspacesRequest::Place { workspace, name },
+            &tilo_server_protocol::workspaces::WorkspacesRequest::Place { workspace, name },
             placed,
             Some(client),
         );
@@ -1811,7 +1811,7 @@ impl Task {
     /// session asking several may come back in any order.
     fn administer(
         &mut self,
-        request: &tilo_relay_protocol::workspaces::WorkspacesRequest,
+        request: &tilo_server_protocol::workspaces::WorkspacesRequest,
         done: WorkspacesCompletion,
         client: Option<&RelayClient>,
     ) {
@@ -1963,7 +1963,7 @@ impl Task {
         let Ok(workspace_id) = route.workspace_id() else {
             return;
         };
-        let record = tilo_relay_protocol::live::LiveResource {
+        let record = tilo_server_protocol::live::LiveResource {
             app: route.app_id.clone(),
             record: route.document.clone(),
         };
@@ -1976,14 +1976,14 @@ impl Task {
     /// Seal canonical live `frame` of `workspace_id` with the content cipher
     /// of the record it names. A frame naming no record is never sent.
     fn seal_live(&self, workspace_id: WorkspaceId, frame: &[u8]) -> Sealing {
-        let Some(frame) = tilo_relay_protocol::live::LiveFrame::decode(frame).ok() else {
+        let Some(frame) = tilo_server_protocol::live::LiveFrame::decode(frame).ok() else {
             return Sealing::Dropped;
         };
         let Some((_, _, record)) = frame.seal_tags() else {
             return Sealing::Dropped;
         };
         let keys = self.keyed_routes().find_map(|route| {
-            let names = tilo_relay_protocol::live::LiveResource {
+            let names = tilo_server_protocol::live::LiveResource {
                 app: route.app_id.clone(),
                 record: route.document.clone(),
             };
@@ -1994,7 +1994,7 @@ impl Task {
         let Some(keys) = keys else {
             return Sealing::NoKeys(record.clone());
         };
-        tilo_relay_protocol::live::SealedLiveFrame::seal(
+        tilo_server_protocol::live::SealedLiveFrame::seal(
             &frame,
             |artifact, retention, cleartext| {
                 keys.seal_content(artifact, retention, cleartext)
@@ -2007,11 +2007,11 @@ impl Task {
     /// Open sealed live `frame` of `workspace_id` with the content cipher of
     /// the record it names into the canonical frame.
     fn open_live(&self, workspace_id: WorkspaceId, frame: &[u8]) -> Opening {
-        let Ok(sealed) = tilo_relay_protocol::live::SealedLiveFrame::decode(frame) else {
+        let Ok(sealed) = tilo_server_protocol::live::SealedLiveFrame::decode(frame) else {
             return Opening::Dropped;
         };
         let bound = self.keyed_routes().find_map(|route| {
-            let record = tilo_relay_protocol::live::LiveResource {
+            let record = tilo_server_protocol::live::LiveResource {
                 app: route.app_id.clone(),
                 record: route.document.clone(),
             };

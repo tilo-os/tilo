@@ -2352,8 +2352,8 @@ mod transfers_between_devices {
         spool: &Path,
         peer_id: u64,
     ) -> Device {
-        let key = test_relay::signing_key(seed);
-        let cert = test_relay::certified(person, &key, label, DeviceCapabilities::member());
+        let key = test_server::signing_key(seed);
+        let cert = test_server::certified(person, &key, label, DeviceCapabilities::member());
         let client = Client::start(
             Entry {
                 identity: Some(HostIdentity::kept(cert, key)),
@@ -2362,7 +2362,7 @@ mod transfers_between_devices {
                 continuity: permitted(),
                 wake: Arc::new(|| {}),
                 fabric: None,
-                relays: test_relay::loopback(),
+                relays: test_server::loopback(),
                 lan: None,
             },
             None,

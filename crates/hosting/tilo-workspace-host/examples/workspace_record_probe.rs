@@ -8,7 +8,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use tilo_peer_state::join::invitations::IssuedInvitation;
 use tilo_peer_state::join::{InviteGrant, JoinBootstrap, JoinChallenge, MembershipChallenge};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 #[derive(Deserialize)]

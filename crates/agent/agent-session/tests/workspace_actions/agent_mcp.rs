@@ -229,11 +229,11 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     // window showing the document highlights in its colour, and it is in
     // the record it wrote in: following it brings the person there.
     let selected = view.selection.clone().expect("where the agent left off");
-    let (key, _, _) = tilo_relay_protocol::live::read_presence_anchors(
-        &tilo_relay_protocol::live::LiveAnchor {
+    let (key, _, _) = tilo_server_protocol::live::read_presence_anchors(
+        &tilo_server_protocol::live::LiveAnchor {
             cursor: hex::decode(&selected.anchor).unwrap(),
         },
-        &tilo_relay_protocol::live::LiveAnchor {
+        &tilo_server_protocol::live::LiveAnchor {
             cursor: hex::decode(&selected.head).unwrap(),
         },
     )
@@ -243,7 +243,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
             || key.scope_digest().is_none(),
         "{key:?}"
     );
-    let wrote_in = tilo_relay_protocol::live::LiveResource {
+    let wrote_in = tilo_server_protocol::live::LiveResource {
         app: WRITER.into(),
         record: writer.document.clone(),
     };
@@ -476,7 +476,7 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
         &host,
         state.path(),
         Options {
-            shell: Some(tilo_relay::agents::host_shells(shells.clone()).unwrap()),
+            shell: Some(tilo_server::agents::host_shells(shells.clone()).unwrap()),
             ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
         },
     )
@@ -594,7 +594,7 @@ async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
         &host,
         state.path(),
         Options {
-            shell: Some(tilo_relay::agents::host_shells(shells.clone()).unwrap()),
+            shell: Some(tilo_server::agents::host_shells(shells.clone()).unwrap()),
             ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
         },
     )

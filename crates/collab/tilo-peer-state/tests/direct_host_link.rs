@@ -37,8 +37,8 @@ const OTHER_WORKSPACE: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 
-fn workspace_id() -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap()
+fn workspace_id() -> tilo_server_protocol::WorkspaceId {
+    tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap()
 }
 
 /// Write `value` into the workspace's record as `key`'s device, making the record
@@ -921,7 +921,7 @@ async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted
         .unwrap();
     assert_eq!(
         ended,
-        Err(tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted)
+        Err(tilo_server_protocol::refusal::Refusal::WorkspaceDeleted)
     );
     // A member that was away dials it again, and hears the same.
     let again = tokio::time::timeout(
@@ -932,7 +932,7 @@ async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted
     .expect("the dial is answered");
     assert_eq!(
         again,
-        Err(tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted)
+        Err(tilo_server_protocol::refusal::Refusal::WorkspaceDeleted)
     );
     assert!(serving.link(workspace_id()).is_none());
 }

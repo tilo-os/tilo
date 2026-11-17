@@ -7,14 +7,14 @@ Description=Tilo node relay for %i's session
 After=network-online.target var-lib-tilo.mount tilo-node-session-key@%i.service
 Wants=network-online.target
 Requires=tilo-node-session-key@%i.service
-Conflicts=tilo-relay.service
+Conflicts=tilo-server.service
 ConditionPathExists=/etc/tilo/node/install-token
 
 [Service]
 Type=notify
 NotifyAccess=all
-User=tilo-relay
-Group=tilo-relay
+User=tilo-server
+Group=tilo-server
 SupplementaryGroups=tilo-identity
 EnvironmentFile=/var/lib/tilo-node/%i/session.env
 # The deployment's browser origins: TILO_NODE_WEB_ARGS="--allowed-origin
@@ -25,7 +25,7 @@ StateDirectoryMode=0700
 RuntimeDirectory=tilo-node/%i
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
-ExecStart=/usr/libexec/tilo/tilo-relay --config /usr/lib/tilo/node-relay.toml run --web 0.0.0.0:9443 --install-token-file /etc/tilo/node/install-token --session-device ${TILO_NODE_SESSION_DEVICE} --session-identity-root /var/lib/tilo-node/%i/session --session-env-out /run/tilo-node/%i/session-host.env $TILO_NODE_WEB_ARGS
+ExecStart=/usr/libexec/tilo/tilo-server --config /usr/lib/tilo/node-relay.toml run --web 0.0.0.0:9443 --install-token-file /etc/tilo/node/install-token --session-device ${TILO_NODE_SESSION_DEVICE} --session-identity-root /var/lib/tilo-node/%i/session --session-env-out /run/tilo-node/%i/session-host.env $TILO_NODE_WEB_ARGS
 # Until the person's page installs it, the relay waits for its certificate
 # and only then reports ready: that wait has no deadline.
 TimeoutStartSec=infinity
@@ -33,7 +33,7 @@ Restart=on-failure
 RestartSec=5
 LimitCORE=0
 
-# The same sandbox as tilo-relay.service: a network-facing daemon.
+# The same sandbox as tilo-server.service: a network-facing daemon.
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes

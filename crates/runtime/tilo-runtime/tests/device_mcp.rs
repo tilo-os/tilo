@@ -248,7 +248,7 @@ struct Server {
     /// Each connection's serving thread, which ends when it does.
     served: Arc<Mutex<Vec<std::thread::JoinHandle<std::io::Result<()>>>>>,
     /// The person's workspace list, as B holds it.
-    list: Arc<Mutex<Option<tilo_relay_session::workspaces::PersonalList>>>,
+    list: Arc<Mutex<Option<tilo_server_session::workspaces::PersonalList>>>,
 }
 
 impl Arrivals for Server {
@@ -278,7 +278,7 @@ impl Arrivals for Server {
         Ok(())
     }
 
-    fn listed(&self) -> Option<tilo_relay_session::workspaces::PersonalList> {
+    fn listed(&self) -> Option<tilo_server_session::workspaces::PersonalList> {
         self.list.lock().unwrap().clone()
     }
 }
@@ -713,7 +713,7 @@ const ON_RELAY: &str = "22222222-2222-4222-8222-222222222222";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_one_else_does() {
-    use tilo_relay_session::workspaces::{PersonalList, PersonalWorkspace, WorkspaceHostAddress};
+    use tilo_server_session::workspaces::{PersonalList, PersonalWorkspace, WorkspaceHostAddress};
     let person = Person::new();
     let b = b(&person, &[]).await;
     let all = grant(
@@ -735,7 +735,7 @@ async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_on
             hint: Some("00".into()),
         }),
         role: Some("owner".into()),
-        labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
+        labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
         unattended: false,
     };
     let held = PersonalList {
@@ -787,7 +787,7 @@ async fn a_revoked_key_reads_no_workspace_list() {
         tilo_user_identity::AgentScope::AllWorkspaces,
     );
     let b = b(&person, &[&revoked.1]).await;
-    *b.server.list.lock().unwrap() = Some(tilo_relay_session::workspaces::PersonalList::default());
+    *b.server.list.lock().unwrap() = Some(tilo_server_session::workspaces::PersonalList::default());
     let refused = read_list(&endpoint(&revoked.0).await, addr(&b.endpoint), &revoked.1)
         .await
         .unwrap_err();
@@ -799,7 +799,7 @@ fn address_on_b(
     person: &Person,
     b: &B,
     workspace: &str,
-) -> tilo_relay_session::workspaces::WorkspaceHostAddress {
+) -> tilo_server_session::workspaces::WorkspaceHostAddress {
     let hint = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1 {
         version: 1,
         holds_keys: true,
@@ -812,7 +812,7 @@ fn address_on_b(
     }
     .transport_hint(&person.b.0)
     .unwrap();
-    tilo_relay_session::workspaces::WorkspaceHostAddress::of_hint(
+    tilo_server_session::workspaces::WorkspaceHostAddress::of_hint(
         &postcard::to_stdvec(&hint).unwrap(),
     )
     .unwrap()

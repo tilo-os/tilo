@@ -15,7 +15,7 @@
 )]
 
 use ed25519_dalek::SigningKey;
-use tilo_relay_client::issue_stand_in;
+use tilo_server_client::issue_stand_in;
 use tilo_session_client::{Cmd, Outbox};
 use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities, RevocationList,
@@ -99,7 +99,7 @@ async fn a_stand_in_revoked_beside_a_session_refuses_what_it_signs_after() {
     // revoke the stand-in, and the entry reaches the host with the session
     // it already has.
     let revoked_at = stand_in.issued_at_ns + 2;
-    let entry = tilo_relay_client::revoke_device(
+    let entry = tilo_server_client::revoke_device(
         &root,
         stand_in.device_public_key,
         revoked_at,

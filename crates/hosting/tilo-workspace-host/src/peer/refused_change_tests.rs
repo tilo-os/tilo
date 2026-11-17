@@ -23,7 +23,7 @@ use crate::workspaces::fixtures::{
     admit_view_reader, governor_with, project_access, test_host_taking_part,
 };
 use crate::workspaces::sealed_documents::fixtures::SealingMember;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 const APP: &str = "so.tilo.notes";
 const RECORD: &str = "welcome";
@@ -343,8 +343,8 @@ async fn a_refused_change_is_never_kept_and_the_same_sequence_still_applies() {
     assert!(
         matches!(
             refusal,
-            tilo_relay_protocol::refusal::Refusal::NotGranted(_)
-                | tilo_relay_protocol::refusal::Refusal::NotAMember(_)
+            tilo_server_protocol::refusal::Refusal::NotGranted(_)
+                | tilo_server_protocol::refusal::Refusal::NotAMember(_)
         ),
         "the workspace's own reason for refusing it, got {refusal}"
     );

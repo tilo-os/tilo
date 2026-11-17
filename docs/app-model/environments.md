@@ -398,7 +398,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   (10.0.2.15, gateway .2, DNS .3), so a snapshot restores anywhere. A VM
   is allowed one destination besides the internet: the relay its Browser
   session joins the workspace through
-  (`--relay-endpoint`/`TILO_VM_RELAY_ENDPOINT`, a public address or the
+  (`--relay-endpoint`/`TILO_VM_SERVER_ENDPOINT`, a public address or the
   stack's cluster address), and a relay on a local host's loopback is
   reached at 10.0.2.4, which `pasta` maps there. Firecracker's rate
   limiters bound each VM's bandwidth.
@@ -487,7 +487,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   endpoint gives is bounded on the host, where the person and their limits
   are known. The host's side is `ush::served_runs`; a coding agent is the
   first program run this way
-  ([`coding_agents.rs`](../../crates/hosting/tilo-relay/src/coding_agents.rs)).
+  ([`coding_agents.rs`](../../crates/hosting/tilo-server/src/coding_agents.rs)).
 
 ## Members that take work
 
@@ -509,7 +509,7 @@ relay's runs. A member that runs the workspace's VMs also answers its browser
 environments' opens there (`tilo_actions::remote::browser`), which the host's
 hosted-VM service starts beside the Linux VM; the relay asks for them the way
 it asks for a shell command, placing `<workspace>/browser` first
-(`crates/hosting/tilo-relay/src/placed_browsers.rs`). The first time the relay
+(`crates/hosting/tilo-server/src/placed_browsers.rs`). The first time the relay
 asks about a workspace it placed on the member, the member enters it: it asks
 the relay's own `workspace.enter`, which answers an invitation naming the member's
 person, and redeems it as a device joins any workspace. The relay decides

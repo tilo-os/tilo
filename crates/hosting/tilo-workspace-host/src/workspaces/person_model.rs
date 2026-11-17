@@ -35,7 +35,7 @@ pub use agent_provider_config::{
 use tilo_clock::time::Instant;
 use tilo_history::FluentArgs;
 use tilo_lock::RwLockRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 use super::Workspaces;
 use super::person_settings::{credentials, key_id, provider_config};

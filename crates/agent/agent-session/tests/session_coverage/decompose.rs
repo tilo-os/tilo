@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_protocol::agents::TaskState;
+use tilo_server_protocol::agents::TaskState;
 
 use super::{
     CHAT, RelayWorkspace, SHEETS, ana_said, answered_model_endpoint, chat_parts_text, last_turn,

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use super::{Carried, Workspaces};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Notices one workspace hands its channel service at once; a device asks
 /// again when its request is dropped.

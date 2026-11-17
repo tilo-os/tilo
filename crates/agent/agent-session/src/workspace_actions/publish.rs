@@ -23,7 +23,7 @@ use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 
 use super::{InvocationLog, Job, Needs, Outcome, Performed, Shared, Worker};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The record at `route` as the session's replica holds it, and whether the
 /// replica holds it at all.

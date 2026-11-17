@@ -12,6 +12,8 @@ used in code.
   certified. Per workspace a device either holds the keys (reads and runs work) or only stores
   ciphertext. A device setting says which work it takes, from whom, and when (charging, energy
   mode, free resources).
+- **Server**: a device that serves workspaces for people other than its owner. It stores their
+  ciphertext, and holds a workspace's keys only where it was made a member. tilo.coffee runs one.
 - **Agent**: a model-driven member. It does what members ask, in the workspace, like a person. A
   person adds it and picks the device it runs on. Claude Code connected over MCP is an agent.
 - **Agent session**: one context of one agent: a conversation with a Tilo agent, or one Claude

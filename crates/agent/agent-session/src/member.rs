@@ -37,9 +37,9 @@ use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_live::presence::KEEPALIVE_MS;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
-use tilo_relay_protocol::agents::{AgentStatus, AgentStep, TaskState};
-use tilo_relay_protocol::live::{LiveAnchor, LiveResource};
+use tilo_server_client::Host;
+use tilo_server_protocol::agents::{AgentStatus, AgentStep, TaskState};
+use tilo_server_protocol::live::{LiveAnchor, LiveResource};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::DeviceCert;
 
@@ -70,7 +70,7 @@ use running::{
     FollowUp, NEW_DOCUMENT_NOTE, Running, imports, named_without_documents, produced,
     unknown_action,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The longest a pump runs local steps back to back before it takes in the
 /// session again.

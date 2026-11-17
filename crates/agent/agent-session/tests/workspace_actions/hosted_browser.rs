@@ -12,10 +12,10 @@ use std::sync::Mutex;
 use tilo_actions::remote::host_account::Refusal;
 use tilo_actions::remote::{CataloguePage, CatalogueQuery};
 use tilo_mcp::{McpServer, Surface};
-use tilo_relay::hosted_browser::{
+use tilo_server::hosted_browser::{
     APP, BrowserMeter, BrowserSessions, HostedBrowsers, TITLE, Window,
 };
-use tilo_relay_protocol::hosted::Material;
+use tilo_server_protocol::hosted::Material;
 use tilo_session_client::remote::SessionActions;
 
 /// The provider a fake environment's window publishes under: its peer
@@ -48,11 +48,11 @@ impl BrowserSessions for Environments {
 /// The session the environment `material` started, holding the window: its
 /// device joins the workspace, and it answers what the relay hands it — a
 /// listing of the window with the page its window offers (none here).
-async fn window_session(relay: &tilo_relay::daemon::Relay, person: [u8; 32], material: &Material) {
+async fn window_session(relay: &tilo_server::daemon::Relay, person: [u8; 32], material: &Material) {
     use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
-    use tilo_relay::Envelope;
+    use tilo_server::Envelope;
     let workspace_id = material.workspace_id;
-    let client = tilo_relay::RelayClient::connect(
+    let client = tilo_server::RelayClient::connect(
         iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .bind()
             .await
@@ -104,7 +104,7 @@ async fn window_session(relay: &tilo_relay::daemon::Relay, person: [u8; 32], mat
             .unwrap();
             let _ = client.send(Envelope::RemoteAction {
                 workspace_id,
-                version: tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+                version: tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION,
                 to_device_public_key: from_device_public_key,
                 from_device_public_key: window,
                 from_user_public_key: person,
@@ -155,7 +155,7 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
     let state = crate::support::scratch_dir();
     // The relay makes itself the person's stand-in from the root it keeps, as
     // a host that places browser sessions does at start.
-    tilo_relay::hosted_browser::keep_stand_in(&state.path().join("relay"), &root)
+    tilo_server::hosted_browser::keep_stand_in(&state.path().join("relay"), &root)
         .expect("the root signs the host's stand-in");
     let environments = Environments::default();
     let browsers = Arc::new(HostedBrowsers::new(
@@ -167,7 +167,7 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
         // A session in the workspace's VM reaches the relay at this address.
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(
-            tilo_relay::hosted_browser::RELAY_ENV,
+            tilo_server::hosted_browser::RELAY_ENV,
             format!(
                 "{}@127.0.0.1:7704",
                 hex::encode(host.cert.device_public_key)
@@ -224,7 +224,7 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
     assert_eq!(started[0].workspace, WORKSPACE);
     assert_eq!(
         browsers
-            .window(tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap())
+            .window(tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap())
             .map(|window| window.provider),
         Some(WINDOW.into()),
         "the workspace has the window"

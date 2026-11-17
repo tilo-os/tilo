@@ -6,7 +6,7 @@ use super::{
     AuthenticatedPeer, Decision, Envelope, PeerError, Refusal, SessionCtx, WorkspaceOperation,
     mpsc, unix_now_ns, workspace_access,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Membership + revocation re-check for every workspace this peer is
 /// subscribed to, run when [`AccessAudit`] says. Reloads membership

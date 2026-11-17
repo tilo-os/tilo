@@ -7,7 +7,7 @@
 //! yet, the member asks the relay to enter it:
 //!
 //! 1. it asks the relay's own `workspace.enter`
-//!    ([`ENTER_WORKSPACE`](tilo_relay_session::workspaces::ENTER_WORKSPACE)) over a
+//!    ([`ENTER_WORKSPACE`](tilo_server_session::workspaces::ENTER_WORKSPACE)) over a
 //!    session of its own, as the device its ownership certifies;
 //! 2. it redeems the invitation the relay answers with
 //!    ([`super::Joined::join`]), which makes the workspace one it holds and
@@ -31,8 +31,8 @@ use std::time::Instant;
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ReadFuture, Workspaces};
-use tilo_relay_session::RelayClient;
-use tilo_relay_session::workspaces::enter_invitation;
+use tilo_server_session::RelayClient;
+use tilo_server_session::workspaces::enter_invitation;
 
 /// How long the relay is given to admit this member to a workspace it placed
 /// here: the session, the ask and the invitation redeemed.

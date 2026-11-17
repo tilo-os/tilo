@@ -47,8 +47,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
-use tilo_relay_protocol::directory::{EntryJoin, Listing, entry_path};
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::directory::{EntryJoin, Listing, entry_path};
+use tilo_server_protocol::workspaces::Role;
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCert, IdentityPaths};
@@ -80,9 +80,9 @@ pub fn joined_within() -> Duration {
 /// admits people to it at its entry.
 pub struct Site {
     runtime: tokio::runtime::Runtime,
-    relay: Option<tilo_relay::daemon::Relay>,
+    relay: Option<tilo_server::daemon::Relay>,
     /// The workspaces this site governs.
-    pub workspaces: tilo_relay::workspaces::Workspaces,
+    pub workspaces: tilo_server::workspaces::Workspaces,
     /// The person this site is: the workspace's owner.
     pub owner: [u8; 32],
     /// The site's device, the one it governs and signs with — a device of [`Self::owner`], as a
@@ -136,15 +136,15 @@ impl Site {
         let host_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
             .expect("the site's device key");
         let (relay, workspaces, workspace) = runtime.block_on(async {
-            let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
-                tilo_relay::RelayConfig {
+            let relay = tilo_server::daemon::Relay::start_with_relay_mode(
+                tilo_server::RelayConfig {
                     state_root: state.path().join("host"),
                     // Devices of this machine find the site on loopback, as they do on a person's
                     // own network.
                     iroh_listen: "127.0.0.1:0".parse().expect("a loopback address"),
-                    ..tilo_relay::RelayConfig::default()
+                    ..tilo_server::RelayConfig::default()
                 },
-                tilo_relay::daemon::RelayIdentity {
+                tilo_server::daemon::RelayIdentity {
                     user_public_key: owner.public,
                     device_signing_key: host_key.clone(),
                     device_cert: host.clone(),
@@ -152,7 +152,7 @@ impl Site {
                 },
                 // The site relays through this machine's loopback relay, as its people's devices
                 // do: neither side reaches number 0.
-                test_relay::relay_mode(),
+                test_server::relay_mode(),
             )
             .await
             .expect("the site's host");
@@ -270,7 +270,7 @@ impl Site {
             .block_on(self.workspaces.set_member_role(
                 &self.workspace,
                 &self.host,
-                tilo_relay::workspaces::SetMemberRoleRequest {
+                tilo_server::workspaces::SetMemberRoleRequest {
                     request_id: fresh_id(),
                     user_public_key: person,
                     role,
@@ -304,7 +304,7 @@ impl Site {
     /// and whether they are removed.
     pub fn members(
         &self,
-    ) -> std::collections::BTreeMap<String, tilo_relay::workspaces::MemberMark> {
+    ) -> std::collections::BTreeMap<String, tilo_server::workspaces::MemberMark> {
         self.runtime
             .block_on(self.workspaces.membership(&self.workspace))
             .expect("the site's members")
@@ -328,7 +328,7 @@ impl Site {
             .block_on(self.workspaces.remove_member(
                 &self.workspace,
                 &self.host,
-                tilo_relay::workspaces::RemoveMemberRequest {
+                tilo_server::workspaces::RemoveMemberRequest {
                     request_id: fresh_id(),
                     user_public_key: person,
                 },
@@ -921,7 +921,7 @@ impl Person {
         );
         // This device relays through this machine's loopback relay, as the site does: no session
         // of a test reaches the person's relays or their directory out on the internet.
-        test_relay::relay_through_loopback_in(&root.join("config"));
+        test_server::relay_through_loopback_in(&root.join("config"));
         let paths = IdentityPaths::under(root.join("identity"));
         let cert = self.certify(&paths, label);
         Device {

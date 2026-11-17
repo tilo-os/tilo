@@ -241,9 +241,9 @@ async fn host_on(
             // A server of other people's workspaces takes their work in them.
             ..HostConfig::new(
                 state_root.to_owned(),
-                tilo_relay_protocol::WorkSetting {
-                    from: tilo_relay_protocol::WorkFrom::Anyone,
-                    ..tilo_relay_protocol::WorkSetting::own_person()
+                tilo_server_protocol::WorkSetting {
+                    from: tilo_server_protocol::WorkFrom::Anyone,
+                    ..tilo_server_protocol::WorkSetting::own_person()
                 },
             )
         },
@@ -392,11 +392,11 @@ pub async fn restricted_until(
 pub fn signed_pre_admission(
     workspace: &str,
     token: &[u8],
-) -> tilo_relay_protocol::workspaces::PreAdmission {
+) -> tilo_server_protocol::workspaces::PreAdmission {
     signed_pre_admission_as(
         workspace,
         token,
-        tilo_relay_protocol::workspaces::Role::Editor,
+        tilo_server_protocol::workspaces::Role::Editor,
     )
 }
 
@@ -410,12 +410,12 @@ pub fn signed_pre_admission(
 pub fn signed_pre_admission_as(
     workspace: &str,
     token: &[u8],
-    role: tilo_relay_protocol::workspaces::Role,
-) -> tilo_relay_protocol::workspaces::PreAdmission {
+    role: tilo_server_protocol::workspaces::Role,
+) -> tilo_server_protocol::workspaces::PreAdmission {
     use ed25519_dalek::Signer as _;
     use sha2::Digest as _;
     let owner = SigningKey::from_bytes(&[1; 32]);
-    let mut grant = tilo_relay_protocol::workspaces::PreAdmission {
+    let mut grant = tilo_server_protocol::workspaces::PreAdmission {
         workspace: workspace.to_owned(),
         role,
         token_sha256: sha2::Sha256::digest(token).into(),
@@ -445,7 +445,7 @@ pub async fn entry_join(
     tilo_peer_state::join::JoinTransportRequest,
     tilo_peer_state::join::JoinTransportResponse,
 ) {
-    let role = tilo_relay_protocol::workspaces::Role::Editor;
+    let role = tilo_server_protocol::workspaces::Role::Editor;
     entry_join_as(
         workspaces,
         host,
@@ -471,7 +471,7 @@ pub async fn entry_join_as(
     workspace: &str,
     (device, device_cert): (&SigningKey, &DeviceCert),
     seed: u8,
-    role: tilo_relay_protocol::workspaces::Role,
+    role: tilo_server_protocol::workspaces::Role,
 ) -> (
     tilo_peer_state::join::JoinTransportRequest,
     tilo_peer_state::join::JoinTransportResponse,
@@ -526,11 +526,11 @@ pub async fn entry_join_as(
 pub async fn voice_join(
     workspaces: &Workspaces,
     workspace: &str,
-    peer: &tilo_relay_protocol::AuthenticatedPeer,
+    peer: &tilo_server_protocol::AuthenticatedPeer,
     call: [u8; 32],
     participation: Option<[u8; 32]>,
-    outbound: tokio::sync::mpsc::Sender<tilo_relay_protocol::Envelope>,
-) -> Result<tilo_relay_protocol::voice::VoiceGrant, String> {
+    outbound: tokio::sync::mpsc::Sender<tilo_server_protocol::Envelope>,
+) -> Result<tilo_server_protocol::voice::VoiceGrant, String> {
     workspaces
         .voice_join(workspace, peer, call, participation, outbound)
         .await
@@ -545,16 +545,16 @@ pub async fn voice_join(
 pub async fn voice_calls(
     workspaces: &Workspaces,
     workspace: &str,
-    peer: &tilo_relay_protocol::AuthenticatedPeer,
-    outbound: tokio::sync::mpsc::Sender<tilo_relay_protocol::Envelope>,
-) -> Result<Vec<tilo_relay_protocol::voice::CallSummary>, String> {
+    peer: &tilo_server_protocol::AuthenticatedPeer,
+    outbound: tokio::sync::mpsc::Sender<tilo_server_protocol::Envelope>,
+) -> Result<Vec<tilo_server_protocol::voice::CallSummary>, String> {
     workspaces.voice_calls(workspace, peer, outbound).await
 }
 
 /// `peer`'s device ends `participation` in `call`, as the voice entry ends it.
 pub fn voice_leave(
     workspaces: &Workspaces,
-    peer: &tilo_relay_protocol::AuthenticatedPeer,
+    peer: &tilo_server_protocol::AuthenticatedPeer,
     call: [u8; 32],
     participation: [u8; 32],
 ) {

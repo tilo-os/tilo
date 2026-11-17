@@ -293,7 +293,7 @@ enum Command {
         /// Persistent cache directory on the home peer.
         #[arg(long, default_value = "/var/lib/tilo/full-replica")]
         replica_cache_dir: PathBuf,
-        /// Atomic readiness proof read by tilo-relay.
+        /// Atomic readiness proof read by tilo-server.
         #[arg(long, default_value = "/var/lib/tilo/full-replica/status.json")]
         status_file: PathBuf,
         /// Additional members held by the host identity.

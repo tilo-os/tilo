@@ -24,13 +24,13 @@ use collab_types::presence::{ShellPresence, ShellSelection};
 use tilo_actions::remote::{ActorPlace, Caller, ExecutionLease, RemoteActionTarget};
 use tilo_actions::{InteractionPhase, InvocationId};
 use tilo_live::presence::{Board, Device};
-use tilo_relay_protocol::host_voice::HostWords;
-use tilo_relay_protocol::live::LiveResource;
+use tilo_server_protocol::host_voice::HostWords;
+use tilo_server_protocol::live::LiveResource;
 use tilo_session_client::presence::now_ms;
 use tilo_session_client::{Cmd, Link, Outbox, narration};
 
 use super::{CatalogueQuery, InvokeRequest, Outcome, invoke_arguments, resource_of as route_of};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// How soon an invocation leaves once the session that is the invocation ended.
 const ENDED_WITHIN: Duration = Duration::from_millis(250);

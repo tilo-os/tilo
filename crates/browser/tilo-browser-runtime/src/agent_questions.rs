@@ -1,6 +1,6 @@
 //! What a person's agents on a workspace host ask them, on a page of theirs:
 //! the approver session a native session keeps
-//! ([`tilo_relay_client::questions`]), signed by the root the page holds or,
+//! ([`tilo_server_client::questions`]), signed by the root the page holds or,
 //! on a page paired to them, by the page's own device key, and
 //! each question on the native question sheet over the desktop
 //! ([`tilo_sheets::portal`]), in its words. Allow once runs that one
@@ -16,8 +16,8 @@
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
 
-use tilo_relay_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
-use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+use tilo_server_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::portal::{AgentQuestion, Dialog, DrawnSheet, PortalEffect, PortalState};
 use tokio::sync::mpsc;
@@ -58,7 +58,7 @@ thread_local! {
 /// `device key` is no device key, or neither the person's root nor the session's
 /// device key.
 pub(crate) fn answer_as(peer: u32, device_key: &JsValue, cert: &DeviceCert) -> Result<(), JsError> {
-    use tilo_relay_client::DeviceSigner as _;
+    use tilo_server_client::DeviceSigner as _;
     let signer = PageSigner::from_js(device_key)?;
     let key = signer.device_public_key();
     let device = if key == cert.user_public_key {

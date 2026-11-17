@@ -12,7 +12,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use crate::engine::Engine;
 use crate::network::{Closed, Cmd, Event, Outbox};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Failures kept at once; the oldest goes first.
 const MAX_FAILURES: usize = 16;
@@ -185,7 +185,7 @@ pub enum Entry {
         /// Its name.
         name: String,
         /// What the person may do there.
-        role: tilo_relay_protocol::workspaces::Role,
+        role: tilo_server_protocol::workspaces::Role,
     },
     /// The entry or the workspace did not let it in: the entry's `code`
     /// (`banned`, `removed`, `invitation-only`, `full`, `refused`), or
@@ -198,7 +198,7 @@ pub enum Entry {
         /// The entry's own refusal as it answered it: its code, and what it
         /// says about a wait list the workspace keeps, so the page offers to
         /// leave an address there.
-        entry: Option<tilo_relay_protocol::directory::EntryRefused>,
+        entry: Option<tilo_server_protocol::directory::EntryRefused>,
     },
 }
 

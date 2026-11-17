@@ -30,7 +30,7 @@ use tilo_lock::MutexRecover as _;
 
 use super::{Job, Worker, WorkspaceActions};
 use crate::worker::ConfinedReplica;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use ui::permissions::policy::ActionKind;
 
 /// The most bytes one upload into a workspace's store takes. A file goes up

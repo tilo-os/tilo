@@ -9,7 +9,7 @@ use super::{
     trace_native_publication, unix_now_ns, workspace_access,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// What a resuming subscriber has received: the frames this connection wrote
 /// to it are appended to its resume log, and a [`Envelope::Position`] naming

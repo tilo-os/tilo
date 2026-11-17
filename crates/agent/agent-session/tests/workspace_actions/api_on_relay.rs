@@ -12,8 +12,8 @@ use super::{Arc, Device, DeviceCapabilities, Hosted, ModelChoice, Options, Signi
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use tilo_api::{Config, Server, store::Store};
-use tilo_relay_protocol::directory::Listing;
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::directory::Listing;
+use tilo_server_protocol::workspaces::Role;
 use tilo_user_identity::{DeviceCert, SignInProof};
 
 /// A reply's status and JSON body.
@@ -78,8 +78,8 @@ pub struct OnRelay {
 
 impl OnRelay {
     /// The relay as a person's devices and pages reach it over iroh.
-    pub fn relay_host(&self) -> tilo_relay_client::Host {
-        tilo_relay_client::Host::at(self.hosted.relay.node_addr())
+    pub fn relay_host(&self) -> tilo_server_client::Host {
+        tilo_server_client::Host::at(self.hosted.relay.node_addr())
     }
 }
 
@@ -92,7 +92,7 @@ pub async fn api_on_relay(issuer: &str) -> OnRelay {
 /// relay whose workspaces admit the public does.
 pub async fn api_on_relay_limiting(
     issuer: &str,
-    member_limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
+    member_limits: Option<tilo_server::member_limits::MemberLimitsConfig>,
 ) -> OnRelay {
     start(issuer, member_limits, false).await
 }
@@ -105,7 +105,7 @@ pub async fn api_on_relay_shelled(issuer: &str) -> OnRelay {
 
 async fn start(
     issuer: &str,
-    member_limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
+    member_limits: Option<tilo_server::member_limits::MemberLimitsConfig>,
     shelled: bool,
 ) -> OnRelay {
     // The site the action API and the relay hand people's links out under: its
@@ -115,7 +115,7 @@ async fn start(
     // Its shelf keeps the sealed invitations links name (`/i/<handle>`).
     let shelf = std::sync::Mutex::new(HashMap::<String, Value>::new());
     let site = test_http::Responder::handle(move |request| {
-        use tilo_relay_protocol::sealed_invitations::{Fetched, Stored, handle_of};
+        use tilo_server_protocol::sealed_invitations::{Fetched, Stored, handle_of};
         let reply = |body: String| {
             test_http::Reply::status(200)
                 .header("content-type", "application/json")
@@ -154,7 +154,7 @@ async fn start(
             plain: true,
             member_limits,
             shell: shells.as_ref().map(|shells| {
-                tilo_relay::agents::host_shells(shells.path().join("shells")).unwrap()
+                tilo_server::agents::host_shells(shells.path().join("shells")).unwrap()
             }),
             web_entry: Some(format!("http://127.0.0.1:{}/", site.port())),
             ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
@@ -164,7 +164,7 @@ async fn start(
     let relay = hosted.web.plain_origin.clone().unwrap();
     let workspaces = hosted.relay.workspaces().unwrap();
     workspaces
-        .offer_own_workspaces(tilo_relay::workspaces::OwnWorkspaceOffer::free(
+        .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
             "relay.tilo.test",
         ))
         .unwrap();
@@ -259,7 +259,7 @@ impl OnRelay {
         // again.
         let workspaces = hosted.relay.workspaces().unwrap();
         workspaces
-            .offer_own_workspaces(tilo_relay::workspaces::OwnWorkspaceOffer::free(
+            .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
                 "relay.tilo.test",
             ))
             .unwrap();
@@ -313,7 +313,7 @@ pub async fn approved_key(
         .unwrap()
         .admit_listed(
             &on_relay.lobby,
-            &tilo_relay_protocol::directory::EntryJoin {
+            &tilo_server_protocol::directory::EntryJoin {
                 user_public_key: hex::encode(root.verifying_key().to_bytes()),
                 display_name: device.cert.device_label.clone(),
             },
@@ -463,16 +463,16 @@ pub async fn enter_page(
     invitation: &[u8],
     token: Option<&[u8]>,
 ) -> Value {
-    use tilo_relay_protocol::workspaces::JoinReply;
+    use tilo_server_protocol::workspaces::JoinReply;
     use tilo_session_client::device::{Entering, Held, entered, invitation_entry};
     let client = tilo_net::Client::builder().build().unwrap();
-    let host = tilo_relay_client::https::Origin::new(&client, &on_relay.relay);
-    let offer = tilo_relay_client::https::invitation(&host, invitation)
+    let host = tilo_server_client::https::Origin::new(&client, &on_relay.relay);
+    let offer = tilo_server_client::https::invitation(&host, invitation)
         .await
         .unwrap();
     assert!(matches!(offer, JoinReply::Invitation { .. }), "{offer:?}");
     // The page's session carries the invitation in its first message.
-    let info = tilo_relay_client::https::host_info(&host).await.unwrap();
+    let info = tilo_server_client::https::host_info(&host).await.unwrap();
     let label = page.cert.device_label.clone();
     let held = Held {
         cert: page.cert.clone(),
@@ -495,7 +495,7 @@ pub async fn enter_page(
     let address = info.address.expect("the relay takes device sessions");
     let session = tilo_session_client::start_session(
         tilo_session_client::PeerConfig {
-            host: tilo_relay_client::Host::published(&address),
+            host: tilo_server_client::Host::published(&address),
             cert: page.cert.clone(),
             host_cert: info.host_cert,
             revocations: tilo_user_identity::RevocationList::new(),

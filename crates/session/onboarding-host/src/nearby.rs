@@ -463,7 +463,7 @@ impl NearbyPairing {
         label: &str,
     ) -> Result<Self, NearbyFailure> {
         let lease =
-            tilo_relay_protocol::ProcessLease::capture(std::process::id()).map_err(|error| {
+            tilo_server_protocol::ProcessLease::capture(std::process::id()).map_err(|error| {
                 NearbyFailure {
                     cause: NearbyCause::NotStarted,
                     detail: Some(error.to_string()),

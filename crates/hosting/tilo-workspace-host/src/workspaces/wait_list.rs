@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 use tilo_files::native::migration::Format;
-use tilo_relay_protocol::operator::WaitListStatus;
-use tilo_relay_protocol::workspaces::{WaitListEntry, contact_key};
+use tilo_server_protocol::operator::WaitListStatus;
+use tilo_server_protocol::workspaces::{WaitListEntry, contact_key};
 
 /// The wait list's on-disk format: a `u32` version, then the entries.
 pub(super) const FORMAT: Format = Format {
@@ -59,7 +59,7 @@ const MAX_INVITES: usize = 8;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Entry {
     request_id: [u8; 32],
-    /// The address as first typed ([`tilo_relay_protocol::workspaces::contact_address`]).
+    /// The address as first typed ([`tilo_server_protocol::workspaces::contact_address`]).
     contact: String,
     /// When it was left; while unconfirmed, when it was last left.
     at_ns: u64,
@@ -257,7 +257,7 @@ impl WaitList {
     }
 
     /// Keep the request of `contact` (already a
-    /// [`tilo_relay_protocol::workspaces::contact_address`]), asked at `now_ns`
+    /// [`tilo_server_protocol::workspaces::contact_address`]), asked at `now_ns`
     /// in `language`, when the workspace keeps fewer than `max`. Whoever holds
     /// the secret that hashes to `secrets.removal` may take it off again
     /// ([`Self::leave`]); the one that hashes to `secrets.confirm` confirms
@@ -271,7 +271,7 @@ impl WaitList {
         max: usize,
     ) -> Result<WaitListed, String> {
         let key = contact_key(contact);
-        let language = tilo_relay_protocol::workspaces::mail_language(language);
+        let language = tilo_server_protocol::workspaces::mail_language(language);
         let mails = |entry: &Entry| {
             secrets.confirm.is_some()
                 && entry
@@ -580,22 +580,22 @@ pub(super) struct EntrySettings {
     )>,
     /// What the entry says about the wait list
     /// ([`super::Workspaces::offer_wait_list`]).
-    pub(super) wait_list: std::sync::OnceLock<tilo_relay_protocol::directory::EntryWaitList>,
+    pub(super) wait_list: std::sync::OnceLock<tilo_server_protocol::directory::EntryWaitList>,
 }
 
 impl super::Workspaces {
     /// The wait list the entry keeps, as whoever runs the relay configured it:
     /// what a person the entry turns away is told about leaving an address
-    /// there ([`EntryRefused::wait_list`](tilo_relay_protocol::directory::EntryRefused)).
+    /// there ([`EntryRefused::wait_list`](tilo_server_protocol::directory::EntryRefused)).
     /// `false` once called before.
     #[must_use]
-    pub fn offer_wait_list(&self, entry: tilo_relay_protocol::directory::EntryWaitList) -> bool {
+    pub fn offer_wait_list(&self, entry: tilo_server_protocol::directory::EntryWaitList) -> bool {
         self.inner.entry.wait_list.set(entry).is_ok()
     }
 
     /// The wait list the entry keeps, when whoever runs the relay offered one.
     #[must_use]
-    pub fn wait_list_page(&self) -> Option<&tilo_relay_protocol::directory::EntryWaitList> {
+    pub fn wait_list_page(&self) -> Option<&tilo_server_protocol::directory::EntryWaitList> {
         self.inner.entry.wait_list.get()
     }
 
@@ -603,7 +603,7 @@ impl super::Workspaces {
     /// for whoever runs the relay to send from the web entry `entry`: until
     /// this is called, the workspaces send no mail and refuse to, and they mail
     /// only invitations on that entry
-    /// ([`tilo_relay_protocol::workspaces::invitation_on_entry`]). `None` once
+    /// ([`tilo_server_protocol::workspaces::invitation_on_entry`]). `None` once
     /// called before.
     #[must_use]
     pub fn mail_wait_list(
@@ -617,7 +617,7 @@ impl super::Workspaces {
 
     /// The page the workspace's entry mails from, when it mails at all: a link
     /// an invitation is mailed at leads there
-    /// ([`tilo_relay_protocol::workspaces::invitation_on_entry`]).
+    /// ([`tilo_server_protocol::workspaces::invitation_on_entry`]).
     #[must_use]
     pub fn mail_entry(&self) -> Option<String> {
         self.inner.entry.mail.get().map(|(entry, _)| entry.clone())

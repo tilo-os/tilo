@@ -6,7 +6,7 @@ use super::{
     StateDelivery, WorkspaceOperation, authorize_state_recipient, resume_document,
     trace_native_publication, unix_now_ns,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// `envelope` as the relay stream carries it (a zero-signature delta goes
 /// without its signature), for a frame about to be written, charged to its

@@ -43,10 +43,10 @@ use tilo_desktop_model::{
     WorkspaceId, shared_resource,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::workspaces::RemoveMemberRequest;
-use tilo_relay_client::Host;
-use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, entry_path};
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server::workspaces::RemoveMemberRequest;
+use tilo_server_client::Host;
+use tilo_server_protocol::directory::{DirectoryEntry, DirectoryPage, Face, entry_path};
+use tilo_server_protocol::workspaces::Role;
 use tilo_session::{Options, Session};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::SheetState as _;
@@ -810,7 +810,7 @@ fn collaborative_session(state: &std::path::Path) -> Session {
         collab: true,
         // This machine's loopback relay, as the lounge's host is: nothing here reaches the
         // person's relays out on the internet.
-        relays: Some(test_relay::loopback()),
+        relays: Some(test_server::loopback()),
         state: Some(state.to_path_buf()),
         ..Options::default()
     })
@@ -831,13 +831,13 @@ fn chat_with(line: &str) -> automerge::AutoCommit {
 /// Dropping it takes the page down before the runtime it runs on, and shuts the host down.
 struct Lounge {
     page: Option<Link>,
-    relay: Option<tilo_relay::daemon::Relay>,
+    relay: Option<tilo_server::daemon::Relay>,
     _entry: Responder,
     /// The host's web listener, which serves the entry's host (`/host`) a device asks before its
     /// session enters through the entry.
-    _web: tilo_relay::web::WebHandle,
+    _web: tilo_server::web::WebHandle,
     runtime: tokio::runtime::Runtime,
-    workspaces: tilo_relay::workspaces::Workspaces,
+    workspaces: tilo_server::workspaces::Workspaces,
     host_cert: tilo_user_identity::DeviceCert,
     /// The certificate of the site's page, the device that recorded in the workspace before anyone
     /// joined.
@@ -974,8 +974,8 @@ fn lounge_key() -> [u8; 32] {
 /// The host behind the lounge's site: a relay of this machine, certified under a key root of the
 /// test's own, which governs the lounge's workspace and keeps what its page writes sealed.
 struct LoungeHost {
-    relay: tilo_relay::daemon::Relay,
-    workspaces: tilo_relay::workspaces::Workspaces,
+    relay: tilo_server::daemon::Relay,
+    workspaces: tilo_server::workspaces::Workspaces,
     host_cert: tilo_user_identity::DeviceCert,
     /// The key and certificate of the site's page, the device that recorded in the workspace before
     /// anyone joined.
@@ -1004,18 +1004,18 @@ impl LoungeHost {
         );
         let (relay, workspaces, workspace) =
             block_on_within(runtime, "the lounge's host to start", async {
-                let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
-                    tilo_relay::RelayConfig {
+                let relay = tilo_server::daemon::Relay::start_with_relay_mode(
+                    tilo_server::RelayConfig {
                         state_root: state.join("host"),
-                        ..tilo_relay::RelayConfig::default()
+                        ..tilo_server::RelayConfig::default()
                     },
-                    tilo_relay::daemon::RelayIdentity {
+                    tilo_server::daemon::RelayIdentity {
                         user_public_key: owner_key.verifying_key().to_bytes(),
                         device_signing_key: host_key.clone(),
                         device_cert: host_cert.clone(),
                         revocations: tilo_user_identity::RevocationList::new(),
                     },
-                    test_relay::relay_mode(),
+                    test_server::relay_mode(),
                 )
                 .await
                 .expect("the lounge's host");
@@ -1065,7 +1065,7 @@ impl LoungeHost {
                     revocations: tilo_user_identity::RevocationList::new(),
                     entering: None,
                 },
-                Arc::new(self.page_key.clone()) as Arc<dyn tilo_relay_client::DeviceSigner>,
+                Arc::new(self.page_key.clone()) as Arc<dyn tilo_server_client::DeviceSigner>,
                 Arc::new(MemoryPeerStore::default()),
             );
             page.join_placed(&self.workspace, "Lounge")
@@ -1112,14 +1112,14 @@ impl LoungeHost {
         runtime: &tokio::runtime::Runtime,
         state: &std::path::Path,
         admission: LoungeAdmission,
-    ) -> (Responder, tilo_relay::web::WebHandle, String) {
+    ) -> (Responder, tilo_server::web::WebHandle, String) {
         let web = block_on_within(runtime, "the lounge's host to serve its web", async {
             if admission != LoungeAdmission::Private {
                 self.workspaces
                     .publish(
                         &self.workspace,
                         &self.host_cert,
-                        tilo_relay_protocol::directory::Listing {
+                        tilo_server_protocol::directory::Listing {
                             description: "Where the site's people talk".to_owned(),
                             default_role: Role::Editor,
                         },
@@ -1134,9 +1134,9 @@ impl LoungeHost {
                     .expect("the lounge takes people by invitation");
             }
             self.relay
-                .serve_web(tilo_relay::web::WebConfig {
+                .serve_web(tilo_server::web::WebConfig {
                     listen: "127.0.0.1:0".parse().expect("an address"),
-                    tls: tilo_relay::web::TlsSource::Development {
+                    tls: tilo_server::web::TlsSource::Development {
                         hosts: vec!["localhost".into(), "127.0.0.1".into()],
                         store: Some(state.join("web-dev-identity")),
                     },
@@ -1156,7 +1156,7 @@ impl LoungeHost {
             web.plain_origin
                 .as_deref()
                 .expect("the host's loopback listener"),
-            tilo_relay_protocol::web::API_PREFIX,
+            tilo_server_protocol::web::API_PREFIX,
             entry_path(&self.workspace)
         );
         let origin = Arc::new(Mutex::new(String::new()));
@@ -1729,7 +1729,7 @@ fn join_the_lounge(session: &mut Session, lounge: &Lounge) {
 fn other_member_arrives(lounge: &Lounge) {
     let page = lounge.page.as_ref().expect("the site's page runs");
     page.send(Cmd::Presence(
-        tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).expect("a workspace id"),
+        tilo_server_protocol::WorkspaceId::parse(&lounge.workspace).expect("a workspace id"),
         vec![collab_types::presence::Presence::desktop(
             &lounge.workspace,
             collab_types::PeerPresencePayload::Arrived,
@@ -1742,7 +1742,7 @@ fn other_member_arrives(lounge: &Lounge) {
 fn other_member_points_at(lounge: &Lounge, tab: u64, x: f32, y: f32) {
     let page = lounge.page.as_ref().expect("the site's page runs");
     page.send(Cmd::Presence(
-        tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).expect("a workspace id"),
+        tilo_server_protocol::WorkspaceId::parse(&lounge.workspace).expect("a workspace id"),
         vec![collab_types::presence::Presence::pointing(
             &lounge.workspace,
             tab,

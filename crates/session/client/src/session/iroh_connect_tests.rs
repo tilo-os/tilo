@@ -55,7 +55,7 @@ async fn dial_error(server: &Endpoint) -> TestResult<LinkError> {
 }
 
 #[tokio::test]
-async fn unsupported_alpn_identifies_tilo_relay_v1() {
+async fn unsupported_alpn_identifies_tilo_server_v1() {
     let server = endpoint(b"dummy-alpn/1").await.unwrap();
     let accept = async {
         let incoming = server.accept().await.unwrap();
@@ -71,13 +71,13 @@ async fn unsupported_alpn_identifies_tilo_relay_v1() {
     server.close().await;
     assert_eq!(
         error.unwrap(),
-        LinkError::Unavailable("host does not speak tilo-relay/1".into()),
+        LinkError::Unavailable("host does not speak tilo-server/1".into()),
     );
 }
 
 #[tokio::test]
 async fn transport_refusal_remains_generic_unavailable() {
-    let server = endpoint(b"tilo-relay/1").await.unwrap();
+    let server = endpoint(b"tilo-server/1").await.unwrap();
     let refuse = async {
         server.accept().await.unwrap().refuse();
     };
@@ -91,7 +91,7 @@ async fn transport_refusal_remains_generic_unavailable() {
         panic!("ordinary transport failures must remain unavailable: {error}");
     };
     assert!(!reason.is_empty());
-    assert_ne!(reason, "host does not speak tilo-relay/1");
+    assert_ne!(reason, "host does not speak tilo-server/1");
 }
 
 tilo_test_env::scenario! {
@@ -128,13 +128,13 @@ tilo_test_env::scenario! {
 
     phase every_client_error_has_a_deliberate_link_class;
     {
-        use tilo_relay_protocol::auth::AuthError;
-        use tilo_relay_session::ClientError;
+        use tilo_server_protocol::auth::AuthError;
+        use tilo_server_session::ClientError;
 
         // Reachability: retried with backoff, never counted as a refusal.
         assert_eq!(
             link_error(ClientError::UnsupportedProtocol),
-            LinkError::Unavailable("host does not speak tilo-relay/1".into()),
+            LinkError::Unavailable("host does not speak tilo-server/1".into()),
         );
         assert_eq!(
             link_error(ClientError::Transport("timed out".into())),

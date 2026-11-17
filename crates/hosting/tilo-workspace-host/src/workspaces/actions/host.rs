@@ -21,8 +21,8 @@ use tilo_action_policy::roles;
 use tilo_actions::remote::{ActionHostError, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::Role;
-use tilo_relay_session::workspaces::BRANCH_OWN_WORKSPACE;
-use tilo_relay_session::workspaces::{
+use tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE;
+use tilo_server_session::workspaces::{
     ActionInvitation, CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE,
     ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
     HOST_WORKSPACES_RESOURCE, HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS,
@@ -38,7 +38,7 @@ use super::{
 use crate::host_authority::HostOperation;
 use crate::workspaces::authority::WorkspaceOp;
 use crate::workspaces::{IssueInvitationRequest, WorkspaceSummary, Workspaces};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The host's own operations.
 pub(super) const HOST: Publisher = Publisher {
@@ -375,7 +375,7 @@ fn listing(summary: &WorkspaceSummary) -> WorkspaceListing {
         name: summary.name.clone(),
         generation: summary.generation,
         role: None,
-        labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
+        labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
         unattended: false,
     }
 }

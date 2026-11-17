@@ -2,7 +2,7 @@
 //! longer act, and an allowed one spends its member's change budget.
 
 use super::*;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 #[tokio::test]
 async fn revoked_device_remote_action_is_refused() {
@@ -135,7 +135,7 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
     assert!(
         matches!(
             refusal,
-            tilo_relay_protocol::refusal::Refusal::NotAMember(_)
+            tilo_server_protocol::refusal::Refusal::NotAMember(_)
         ),
         "{refusal}"
     );
@@ -262,7 +262,7 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
     assert!(
         matches!(
             refusal,
-            tilo_relay_protocol::refusal::Refusal::TooFast { .. }
+            tilo_server_protocol::refusal::Refusal::TooFast { .. }
         ) && (3500..=3600).contains(&wait.as_secs()),
         "the refusal says when to ask again: {refusal}"
     );
@@ -442,7 +442,10 @@ async fn requests_the_server_does_not_answer_are_refused() {
         panic!("an unanswered request is refused, got {answer:?}");
     };
     assert!(
-        matches!(undelivered, tilo_relay_protocol::refusal::Refusal::Other(_)),
+        matches!(
+            undelivered,
+            tilo_server_protocol::refusal::Refusal::Other(_)
+        ),
         "{undelivered}"
     );
 

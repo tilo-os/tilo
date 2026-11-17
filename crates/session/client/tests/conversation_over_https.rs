@@ -23,7 +23,7 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::invite::guest_certificate;
+use tilo_server_client::invite::guest_certificate;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 
 use crate::native::NativeDevice;

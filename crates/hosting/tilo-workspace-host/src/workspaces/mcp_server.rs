@@ -2,7 +2,7 @@
 //! (`tilo login`, then `tilo mcp`), and each session of one open now.
 //!
 //! A device says it runs an agent when its session opens
-//! ([`tilo_relay_protocol::transport::Envelope::AgentSession`]), naming the agent
+//! ([`tilo_server_protocol::transport::Envelope::AgentSession`]), naming the agent
 //! as History names it; the host keeps that only for a device of its own
 //! person. Each of the device's sessions is one agent session, ended at once by
 //! [`McpServer::stop`] while the device stays the person's, so the agent can

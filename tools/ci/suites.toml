@@ -275,7 +275,7 @@ name = "os-workflows"
 inputs = ["os/", ".forgejo/workflows/", "tools/ci/publish/"]
 suites = [
   "os/tests/test_ci_fast_images.py",
-  "os/containers/tilo-relay/test-contract.sh",
+  "os/containers/tilo-server/test-contract.sh",
   "os/containers/tilo-lounge/test-entrypoint.sh",
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_rpm_snapshot_fingerprint.py",
@@ -513,7 +513,7 @@ inputs = [
   "crates/system/fs/tests/performance_timing.rs",
   # ... the FILES-NAME-INDEX parser equal to the Files search test's line,
   # ... and the hosting-load KPI ids equal to the relay load bench's.
-  "crates/hosting/tilo-relay/examples/relay_load/main.rs",
+  "crates/hosting/tilo-server/examples/relay_load/main.rs",
   # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
   "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
   # scripts/perf/browser_qualification.mjs drives Chrome through tools/web/chrome.mjs.
@@ -967,13 +967,13 @@ readers = [
 ]
 
 [[cargo]]
-package = "tilo-relay"
+package = "tilo-server"
 # A workspace's bot runner is tested with the Discord bridge's program as it
 # ships, the import it plans resuming after the workspace refused part of a run.
 inputs = ["apps/discord/bridge/program.json", "apps/notes/surface.toml"]
 readers = [
-  "crates/hosting/tilo-relay/src/workspace_bots/tests.rs",
-  "crates/hosting/tilo-relay/tests/governed_workspaces/app_push.rs",
+  "crates/hosting/tilo-server/src/workspace_bots/tests.rs",
+  "crates/hosting/tilo-server/tests/governed_workspaces/app_push.rs",
 ]
 
 [[cargo]]

@@ -320,7 +320,7 @@ impl WorkspaceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_relay_protocol::WorkspaceId;
+    use tilo_server_protocol::WorkspaceId;
 
     fn key(n: u8) -> [u8; 32] {
         [n; 32]

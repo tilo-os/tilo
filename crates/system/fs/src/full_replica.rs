@@ -611,7 +611,7 @@ mod tests {
 
     #[tokio::test]
     async fn ready_endpoint_serves_blob_after_owner_is_offline() {
-        let owner_endpoint = test_relay::direct_endpoint().await;
+        let owner_endpoint = test_server::direct_endpoint().await;
         let owner_store = ContentStore::memory();
         let bytes = b"home peer survives owner shutdown";
         let hash = owner_store.write_content(bytes).await.unwrap().unwrap();
@@ -644,7 +644,7 @@ mod tests {
         owner_router.shutdown().await.unwrap();
         owner_endpoint.close().await;
 
-        let reader_endpoint = test_relay::direct_endpoint().await;
+        let reader_endpoint = test_server::direct_endpoint().await;
         let reader_store = Arc::new(ContentStore::memory());
         let reader = Hydrator::new(reader_endpoint.clone(), reader_store);
         reader.add_peer(discovered.filesystem_endpoints[0].clone());
@@ -657,7 +657,7 @@ mod tests {
     }
 
     async fn owner_manifest_source(bytes: &[u8]) -> (Endpoint, Router, Hash, Hash) {
-        let endpoint = test_relay::direct_endpoint().await;
+        let endpoint = test_server::direct_endpoint().await;
         let store = ContentStore::memory();
         let chunk = store.ingest(bytes.to_vec()).await.unwrap();
         let manifest = store
@@ -768,7 +768,7 @@ mod tests {
             .spawn();
         owner_router.shutdown().await.unwrap();
         owner_endpoint.close().await;
-        let reader_endpoint = test_relay::direct_endpoint().await;
+        let reader_endpoint = test_server::direct_endpoint().await;
         let reader = Hydrator::new(reader_endpoint.clone(), Arc::new(ContentStore::memory()));
         assert_eq!(
             reader
@@ -820,7 +820,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn batched_gc_yields_for_namespace_mutations() {
-        let endpoint = test_relay::direct_endpoint().await;
+        let endpoint = test_server::direct_endpoint().await;
         let store = Arc::new(ContentStore::memory());
         for index in 0..MAX_GC_BATCH_BLOBS {
             store.ingest(format!("obsolete-{index}")).await.unwrap();

@@ -337,7 +337,7 @@ class SetupHandedProgramTests(unittest.TestCase):
     def test_a_family_declares_one_build_of_each_target(self):
         # tools/build-sibling-binaries.sh reads a bin's hand as NEXTEST_BIN_EXE_<bin>, which names
         # a file and not the features it was built with. t hands one declaration per target per
-        # family (it refuses two), so the tree must keep it: a plain `tilo-relay` declared beside
+        # family (it refuses two), so the tree must keep it: a plain `tilo-server` declared beside
         # the featured one would be two builds of one file's name, and the hand could be either.
         for family in tomllib.loads(T_TOML.read_text(encoding="utf-8")).get("cargo", []):
             declared: dict[tuple[str, str], set[tuple[str, ...]]] = {}
@@ -496,11 +496,11 @@ class SiblingBinarySetupTests(unittest.TestCase):
     handed none (a developer's) builds it, with the features its entry names.
     """
 
-    # The workspace host, which only `agents` gives `tilo-relay` the subcommand the Lounge tests
+    # The workspace host, which only `agents` gives `tilo-server` the subcommand the Lounge tests
     # start: the one program a setup builds with features.
-    ENTRY = "tilo-relay:tilo-relay=tilo-relay/agents"
-    BUILD = ("build --locked --message-format=json-render-diagnostics --package tilo-relay "
-             "--bin tilo-relay --features tilo-relay/agents")
+    ENTRY = "tilo-server:tilo-server=tilo-server/agents"
+    BUILD = ("build --locked --message-format=json-render-diagnostics --package tilo-server "
+             "--bin tilo-server --features tilo-server/agents")
 
     def run_setup(self, hand: str = ""):
         """The Lounge setup as a shard runs it: the result, the cargo invocations it made, the
@@ -514,7 +514,7 @@ class SiblingBinarySetupTests(unittest.TestCase):
                         tree / "tools" / "build-sibling-binaries.sh")
             argv, env_file = Path(work) / "argv", Path(work) / "nextest-env"
             env_file.write_text("")
-            built = programs / "built" / "tilo-relay"
+            built = programs / "built" / "tilo-server"
             built.parent.mkdir()
             built.write_text("#!/bin/sh\nexit 0\n")
             built.chmod(0o755)
@@ -526,11 +526,11 @@ class SiblingBinarySetupTests(unittest.TestCase):
             env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                    "GIVEN": str(argv), "BUILT": str(built), "NEXTEST_ENV": str(env_file)}
             if hand:
-                path = programs / "handed" / "tilo-relay"
+                path = programs / "handed" / "tilo-server"
                 path.parent.mkdir()
                 path.write_text("#!/bin/sh\nexit 0\n")
                 path.chmod(0o755)
-                env["NEXTEST_BIN_EXE_tilo-relay"] = str(path)
+                env["NEXTEST_BIN_EXE_tilo-server"] = str(path)
             result = subprocess.run(
                 ["bash", str(tree / "tools" / "build-sibling-binaries.sh"), self.ENTRY],
                 env=env, capture_output=True, text=True, check=False)
@@ -542,14 +542,14 @@ class SiblingBinarySetupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(ran, [], "the setup, and no build")
         self.assertEqual(len(handed), 1, handed)
-        self.assertTrue(handed[0].startswith("TILO_SIBLING_BIN_tilo_relay="), handed)
-        self.assertIn(os.sep + "handed" + os.sep + "tilo-relay", handed[0])
+        self.assertTrue(handed[0].startswith("TILO_SIBLING_BIN_tilo_server="), handed)
+        self.assertIn(os.sep + "handed" + os.sep + "tilo-server", handed[0])
 
     def test_a_run_not_handed_builds_the_program_with_its_features(self):
         result, ran, handed, built = self.run_setup()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(ran, [self.BUILD])
-        self.assertEqual(handed, [f"TILO_SIBLING_BIN_tilo_relay={built}"])
+        self.assertEqual(handed, [f"TILO_SIBLING_BIN_tilo_server={built}"])
 
 
 if __name__ == "__main__":

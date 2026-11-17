@@ -1,4 +1,4 @@
-//! The agent host the scenario tests drive: a `tilo-relay` whose app-serving
+//! The agent host the scenario tests drive: a `tilo-server` whose app-serving
 //! app action server is the agent supervisor, its state under a scratch directory, and
 //! the laptop that certifies the agents and answers what they ask.
 
@@ -21,11 +21,11 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use tilo_agent_session::{AgentHost, AppCatalogue, FeedbackReviewer, ModelChoice};
-use tilo_relay::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
-use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
-use tilo_relay_client::Approver;
-use tilo_relay_protocol::certify::PendingConfirmation;
+use tilo_server::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
+use tilo_server::daemon::{Relay, RelayIdentity};
+use tilo_server::web::{TlsSource, WebConfig, WebHandle};
+use tilo_server_client::Approver;
+use tilo_server_protocol::certify::PendingConfirmation;
 use tilo_user_identity::{CertificationPolicy, RevocationList, issue_device_cert};
 
 use crate::support::Device;
@@ -52,15 +52,15 @@ pub struct Options {
     /// The reviewer a host lends its workspaces' reporters.
     pub feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     /// Where the host runs its workspaces' Terminal sessions.
-    pub shell: Option<Arc<tilo_relay::agents::HostShells>>,
+    pub shell: Option<Arc<tilo_server::agents::HostShells>>,
     /// The Browser this host places for its workspaces.
-    pub browsers: Option<Arc<tilo_relay::hosted_browser::HostedBrowsers>>,
+    pub browsers: Option<Arc<tilo_server::hosted_browser::HostedBrowsers>>,
     /// Serve the web routes as plain HTTP on loopback too, as a client that
     /// trusts no development certificate reaches them.
     pub plain: bool,
     /// The per-person change and content budgets of a host whose workspaces
     /// admit the public; `None` limits nobody.
-    pub member_limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
+    pub member_limits: Option<tilo_server::member_limits::MemberLimitsConfig>,
 }
 
 impl Default for Options {
@@ -102,7 +102,7 @@ impl Options {
 
 /// Start a host for `root`'s person on `host`'s device.
 pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Options) -> Hosted {
-    let cfg = tilo_relay::RelayConfig {
+    let cfg = tilo_server::RelayConfig {
         state_root: state.join("relay"),
         web_entry: options.web_entry,
         member_limits: options.member_limits,
@@ -111,7 +111,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
         packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
     };
-    let (relay, agents) = tilo_relay::agents::start(
+    let (relay, agents) = tilo_server::agents::start(
         cfg,
         RelayIdentity {
             user_public_key: root.verifying_key().to_bytes(),
@@ -119,7 +119,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
             device_cert: host.cert.clone(),
             revocations: RevocationList::new(),
         },
-        tilo_relay::agents::AgentOptions {
+        tilo_server::agents::AgentOptions {
             state_dir: state.join("agents"),
             model: options.model,
             catalogue: options.catalogue,
@@ -166,12 +166,12 @@ pub async fn serving_records_with_actions(
     Relay,
     tilo_agent_session::workspace_actions::WorkspaceActions,
 ) {
-    let cfg = tilo_relay::RelayConfig {
+    let cfg = tilo_server::RelayConfig {
         state_root: state.join("relay"),
         packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
     };
-    tilo_relay::agents::start_serving_documents(
+    tilo_server::agents::start_serving_documents(
         cfg,
         RelayIdentity {
             user_public_key: root.verifying_key().to_bytes(),
@@ -199,12 +199,12 @@ pub async fn serving_documents(
     state: &Path,
     catalogue: impl Fn() -> AppCatalogue + Send + Sync + 'static,
 ) -> Relay {
-    let cfg = tilo_relay::RelayConfig {
+    let cfg = tilo_server::RelayConfig {
         state_root: state.join("relay"),
         packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
     };
-    tilo_relay::agents::start_serving_documents(
+    tilo_server::agents::start_serving_documents(
         cfg,
         RelayIdentity {
             user_public_key: root.verifying_key().to_bytes(),

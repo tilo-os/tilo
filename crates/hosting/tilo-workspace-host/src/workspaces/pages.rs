@@ -1,6 +1,6 @@
 //! The workspaces as pages reach them (`/workspaces`, `/invitation`; see
-//! [`tilo_relay_protocol::workspaces`]), and the redemptions of the devices
-//! that enter them on their sessions ([`tilo_relay_protocol::entering`]).
+//! [`tilo_server_protocol::workspaces`]), and the redemptions of the devices
+//! that enter them on their sessions ([`tilo_server_protocol::entering`]).
 //!
 //! `/workspaces` is workspace administration with the authorization every action API has
 //! ([`Workspaces::authorize`]): the
@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 
 use tilo_action_policy::roles::governance;
 use tilo_peer_state::join::VerifiedRedemption;
-use tilo_relay_protocol::workspaces::{
+use tilo_server_protocol::workspaces::{
     Inviter, JoinReply, PendingInvite, PreAdmission, Role, WaitListEntry, Workspace,
     WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
 };
@@ -32,7 +32,7 @@ use super::{
 };
 use crate::host_authority::HostOperation;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// One pre-admission to record: the owner's signed grant and, when the
 /// invitation is for one person only, that person.
@@ -61,7 +61,7 @@ pub(super) struct QueuedAdmission {
 /// An invitation a device redeems on the connection that carries its entry,
 /// on which its host checked the device holds its certificate's key: the
 /// device signed keying material exported from that connection
-/// ([`tilo_relay_protocol::entering`]).
+/// ([`tilo_server_protocol::entering`]).
 pub(crate) struct Presented {
     pub invitation: Vec<u8>,
     pub cert: DeviceCert,
@@ -920,7 +920,7 @@ impl Workspaces {
         let Some((entry_url, mail)) = self.inner.entry.mail.get() else {
             return Err(CollaborationError::new("this entry sends no mail"));
         };
-        if !tilo_relay_protocol::workspaces::invitation_on_entry(entry_url, &link) {
+        if !tilo_server_protocol::workspaces::invitation_on_entry(entry_url, &link) {
             return Err(CollaborationError::new(
                 "only an invitation on this entry is mailed",
             ));
@@ -984,7 +984,7 @@ impl Workspaces {
 
     /// Keep the request of someone who asked at `workspace`'s entry without an
     /// invitation, to be invited at `contact` (an address
-    /// [`tilo_relay_protocol::workspaces::contact_address`] accepts), while the
+    /// [`tilo_server_protocol::workspaces::contact_address`] accepts), while the
     /// workspace keeps fewer than `max`. Whoever may invite sees it on the workspace's
     /// wait list until it leaves it, once confirmed; whoever holds the
     /// secret whose SHA-256 is `secrets.removal` takes it off
@@ -1003,7 +1003,7 @@ impl Workspaces {
         language: &str,
         max: usize,
     ) -> Result<super::WaitListed, CollaborationError> {
-        let contact = tilo_relay_protocol::workspaces::contact_address(contact)
+        let contact = tilo_server_protocol::workspaces::contact_address(contact)
             .map_err(CollaborationError::new)?;
         let governed = self.workspace(workspace).await?;
         let mut governed = governed.lock().await;
@@ -1050,7 +1050,7 @@ impl Workspaces {
         &self,
         workspace: &str,
         removal: [u8; 32],
-    ) -> Result<tilo_relay_protocol::operator::WaitListStatus, CollaborationError> {
+    ) -> Result<tilo_server_protocol::operator::WaitListStatus, CollaborationError> {
         let governed = self.workspace(workspace).await?;
         let mut governed = governed.lock().await;
         governed.forget_joined_wait_list();
@@ -1163,7 +1163,7 @@ impl Workspaces {
     /// owner's pre-admission `token` where it was issued under one. The
     /// caller vouches that the device proved it holds its key on the
     /// connection that carries the redemption: the host's session entry
-    /// ([`tilo_relay_protocol::entering`]) checks that proof before it gets
+    /// ([`tilo_server_protocol::entering`]) checks that proof before it gets
     /// here.
     pub async fn admit_proven(
         &self,

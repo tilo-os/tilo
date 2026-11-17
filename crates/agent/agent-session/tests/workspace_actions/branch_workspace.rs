@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use tilo_api::Server;
-use tilo_relay::workspaces::{BranchContent, Branched, Workspaces};
+use tilo_server::workspaces::{BranchContent, Branched, Workspaces};
 
 /// A key's calls of `/v1`.
 pub(super) struct Key<'a> {

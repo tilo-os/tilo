@@ -34,7 +34,7 @@ use tilo_actions::remote::{
     ActorPlace, ConfirmationQuestion, ConfirmationReply, InvocationReceipt, InvocationState,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::live::LiveAnchor;
+use tilo_server_protocol::live::LiveAnchor;
 use ui::permissions::policy::{self, ActionKind, Answer, TreePath};
 
 /// How long the person's answer to one invocation stays good for running it.

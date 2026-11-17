@@ -5,7 +5,7 @@
 //! is asked for that way ([`Task::documents_when_opened`]).
 
 use super::{DocumentRoute, Envelope, RelayClient, Task};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 impl Task {
     /// Open the on-demand record `route` of `workspace_id`, and ask for its
@@ -84,8 +84,8 @@ impl Task {
     pub(super) fn own_channel(
         &self,
         route: &DocumentRoute,
-    ) -> Option<tilo_relay_protocol::OwnedChannel> {
-        tilo_relay_protocol::OwnedChannel::recognise(
+    ) -> Option<tilo_server_protocol::OwnedChannel> {
+        tilo_server_protocol::OwnedChannel::recognise(
             &route.app_id,
             &route.document,
             self.config.cert.user_public_key,
@@ -114,7 +114,7 @@ impl Task {
         &mut self,
         workspace_id: WorkspaceId,
         channel: [u8; 32],
-        answer: tilo_relay_protocol::DocumentAnswer,
+        answer: tilo_server_protocol::DocumentAnswer,
     ) {
         // Its frames are in the replica before anyone hears the record opened.
         self.keep_arrived();

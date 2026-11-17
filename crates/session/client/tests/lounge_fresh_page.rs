@@ -1,5 +1,5 @@
 //! A fresh page joining a real Lounge, as the deployment rehearsal: the
-//! image's own entrypoint with eu1's environment, `tilo-relay workspace
+//! image's own entrypoint with eu1's environment, `tilo-server workspace
 //! --persistent` on a copy of the deployment's state, watched by pages that
 //! were never here before.
 //!
@@ -41,16 +41,16 @@ use std::sync::Arc;
 use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 
 use std::time::Duration;
-use tilo_relay_client::https::HttpFuture;
+use tilo_server_client::https::HttpFuture;
 
 use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
-use tilo_relay_client::invite::guest_certificate;
-use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
-use tilo_relay_protocol::workspaces::{Role, WorkspacesReply, WorkspacesRequest};
+use tilo_server_client::Host;
+use tilo_server_client::invite::guest_certificate;
+use tilo_server_protocol::operator::{OperatorCommand, OperatorEvent};
+use tilo_server_protocol::workspaces::{Role, WorkspacesReply, WorkspacesRequest};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -80,10 +80,10 @@ fn entrypoint() -> std::path::PathBuf {
         })
 }
 
-/// A PATH holding the relay this run built, so the image's `exec tilo-relay`
+/// A PATH holding the relay this run built, so the image's `exec tilo-server`
 /// runs it.
 fn relay_on_path() -> std::ffi::OsString {
-    let relay = tilo_test_env::sibling_binary("tilo-relay", "tilo-relay");
+    let relay = tilo_test_env::sibling_binary("tilo-server", "tilo-server");
     let programs = relay.parent().expect("the relay's directory").to_path_buf();
     let mut paths = vec![programs];
     paths.extend(std::env::split_paths(
@@ -101,7 +101,7 @@ struct Lounge {
     host_cert: DeviceCert,
     /// Where the host's iroh endpoint answers: what a page's session dials,
     /// which is what `/host` publishes.
-    address: tilo_relay_protocol::web::HostAddress,
+    address: tilo_server_protocol::web::HostAddress,
     /// The snapshot's owner root: the workspace's owner, from the volume.
     owner_root: SigningKey,
     _state: tempfile::TempDir,
@@ -213,7 +213,7 @@ impl Lounge {
             .env("TILO_WORKSPACES_DEFAULT_ROLE", "editor")
             .env("TILO_WORKSPACES_LAYOUT", "shared")
             .env("TILO_WORKSPACES_ADMISSION", "invite")
-            .env("TILO_WORKSPACES_RELAY_ORIGIN", "https://127.0.0.1")
+            .env("TILO_WORKSPACES_SERVER_ORIGIN", "https://127.0.0.1")
             .env("TILO_WORKSPACES_WEB_ENTRY", "https://tilo.sh/")
             .env(
                 "TILO_WORKSPACES_SITE_ORIGINS",
@@ -226,11 +226,11 @@ impl Lounge {
             .env("TILO_WORKSPACES_SEED_APPS", "")
             .env("TILO_WORKSPACES_STATE", state.path())
             .env("TILO_WORKSPACES_WEB", "127.0.0.1:0")
-            .env("TILO_WORKSPACES_RELAY_PLAIN", "127.0.0.1:0")
+            .env("TILO_WORKSPACES_SERVER_PLAIN", "127.0.0.1:0")
             .env("TILO_WORKSPACES_LIVE", "127.0.0.1:0")
             .env("TILO_WORKSPACES_HTTP", "127.0.0.1:0")
             .env("TILO_SECRETS_DIR", state.path().join("secrets"))
-            .env("TILO_RELAY_LOG", "info")
+            .env("TILO_SERVER_LOG", "info")
             .env(
                 "TILO_SOURCE_REVISION",
                 "0123456789abcdef0123456789abcdef01234567",
@@ -287,7 +287,7 @@ impl Lounge {
         let entry = Arc::new(Plain(plain.trim_end_matches('/').to_owned()));
         let info = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current()
-                .block_on(tilo_relay_client::https::host_info(entry.as_ref()))
+                .block_on(tilo_server_client::https::host_info(entry.as_ref()))
         })
         .expect("the host's certificate");
         let host_cert = info.host_cert;
@@ -381,11 +381,11 @@ impl Lounge {
     fn page_entering(
         &self,
         who: &Person,
-        entering: Option<tilo_relay_protocol::entering::Entering>,
+        entering: Option<tilo_server_protocol::entering::Entering>,
     ) -> Link {
         // A page reaches its host over WebTransport, at the listener `/host`
         // names: exactly what a browser in the Lounge has.
-        let host = Host::published(&self.address).over(tilo_relay_client::Carrier::WebTransport);
+        let host = Host::published(&self.address).over(tilo_server_client::Carrier::WebTransport);
         tilo_session_client::start_session(
             tilo_session_client::PeerConfig {
                 host,
@@ -520,7 +520,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     println!("the host minted an invitation for the visitor");
 
     let page = fresh_page(&lounge, &visitor, &invitation).await;
-    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).unwrap();
+    let workspace_id = tilo_server_protocol::WorkspaceId::parse(&lounge.workspace).unwrap();
     println!("the fresh page joined the Lounge");
 
     let desktop = DocumentRoute {
@@ -697,7 +697,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
 /// state volume, and the second sees where the first put its pointer.
 ///
 /// This is the deployment's own composition (`os/containers/tilo-lounge/
-/// entrypoint.sh` starting `tilo-relay workspace --persistent`), with nothing of
+/// entrypoint.sh` starting `tilo-server workspace --persistent`), with nothing of
 /// production: the host makes its workspace and its owner root as it starts,
 /// and both people are guests the host invites through the entry it serves. It
 /// is the fast check of the one thing a member's page needs to see another
@@ -873,8 +873,8 @@ async fn wait_for_live_session(page: &Link) {
 }
 
 /// The workspace's id as a page numbers it.
-fn workspace_id(lounge: &Lounge) -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).unwrap()
+fn workspace_id(lounge: &Lounge) -> tilo_server_protocol::WorkspaceId {
+    tilo_server_protocol::WorkspaceId::parse(&lounge.workspace).unwrap()
 }
 
 /// Every presence frame `page` heard over `secs`, and the devices that said
@@ -965,7 +965,7 @@ fn pointer_on(
 /// (the deployment's ingress terminates TLS in front of it).
 struct Plain(String);
 
-impl tilo_relay_client::https::HttpClient for Plain {
+impl tilo_server_client::https::HttpClient for Plain {
     fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
         let url = format!("{}{path}", self.0);
         Box::pin(async move {

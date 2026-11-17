@@ -737,15 +737,15 @@ class SelectorTests(unittest.TestCase):
                              sum(ci_select.package_cost(pkg) for pkg in packages.values()))
         with self.subTest(phase='fsync-heavy suites keep to separate test shards'):
             self.setUp()
-            names = ("tilo-fs", "tilo-relay", "tilo-action-broker", "light")
+            names = ("tilo-fs", "tilo-server", "tilo-action-broker", "light")
             packages = {name: {"name": name, "targets": [], "dependencies": []} for name in names}
             # By time alone tilo-fs and the relay would share the lighter
             # shard. Placement breaks equal weights by name, so theirs differ.
-            seconds = {"tilo-action-broker": 900, "tilo-fs": 100, "tilo-relay": 99, "light": 1}
+            seconds = {"tilo-action-broker": 900, "tilo-fs": 100, "tilo-server": 99, "light": 1}
             shards = ci_select.balance(set(packages), packages, 2, seconds,
                                        ci_select.TEST_SHARD_APART)
             placed = [set(shard["packages"].split()[1::2]) for shard in shards]
-            self.assertIn({"tilo-relay", "tilo-action-broker"}, placed)
+            self.assertIn({"tilo-server", "tilo-action-broker"}, placed)
             self.assertTrue(any("tilo-fs" in names for names in placed))
             # One shard still takes everything.
             (only,) = ci_select.balance(set(packages), packages, 1, seconds,
@@ -1837,13 +1837,13 @@ class DependencyKindTests(unittest.TestCase):
             "tilo-runtime": [("tilo-owner-commit", None)],
             "agent": [("shell", "dev")],
             "tilo-session-host": [("tilo-owner-replica", "dev")],
-            "tilo-relay": [("tilo-session-host", None)],
+            "tilo-server": [("tilo-session-host", None)],
             "tilo-agent-session": [("tilo-session-host", None), ("agent", None)],
             "tilo-sync-load": [("tilo-session-host", None)],
             "tilo-browser-runtime": [("tilo-session-host", None)],
             "tilo-web-desktop": [("tilo-browser-runtime", None)],
-            "tilo-relay-shell": [("tilo-relay", "dev")],
-            "discord-worker": [("tilo-relay", "dev")],
+            "tilo-server-shell": [("tilo-server", "dev")],
+            "discord-worker": [("tilo-server", "dev")],
         }
         metadata = self.metadata(graph, wasm=frozenset({"tilo-browser-runtime", "tilo-web-desktop"}))
         packages, _ = ci_select.package_maps(metadata, self.root)
@@ -1861,7 +1861,7 @@ class DependencyKindTests(unittest.TestCase):
                              set(plan["tested"]))
         # A change to browser-peer itself still reaches relay and the wasm crates.
         plan = ci_select.make_plan(metadata, self.root, ["tilo-session-host/src/lib.rs"], 2)
-        self.assertLessEqual({"tilo-relay", "tilo-relay-shell", "discord-worker", "tilo-web-desktop"},
+        self.assertLessEqual({"tilo-server", "tilo-server-shell", "discord-worker", "tilo-web-desktop"},
                              set(plan["selected"]))
         self.assertEqual(plan["wasm"], ["tilo-browser-runtime", "tilo-web-desktop"])
 

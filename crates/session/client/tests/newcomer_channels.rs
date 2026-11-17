@@ -102,9 +102,9 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
         .publish(
             &lounge.workspace,
             &host_device.cert,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await
@@ -193,9 +193,9 @@ async fn a_newcomer_asks_for_its_workspaces_live_session_and_joins_it() {
         .publish(
             &lounge.workspace,
             &host_device.cert,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await

@@ -457,7 +457,7 @@ impl<'a> Caller<'a> {
                 // The person's list, as the key reaches it: one workspace for a
                 // key for one, every one wherever it is hosted for the rest;
                 // with `label.<name>=<value>`, those labelled so.
-                let labels: tilo_relay_session::workspaces::WorkspaceLabels = self
+                let labels: tilo_server_session::workspaces::WorkspaceLabels = self
                     .query
                     .iter()
                     .filter_map(|(name, value)| {
@@ -465,7 +465,7 @@ impl<'a> Caller<'a> {
                         Some((label.strip_suffix(']')?.to_owned(), value.clone()))
                     })
                     .collect();
-                tilo_relay_session::workspaces::check_labels(&labels)
+                tilo_server_session::workspaces::check_labels(&labels)
                     .map_err(|why| ApiError::new("invalid_arguments", why))?;
                 let mut listed = self
                     .session

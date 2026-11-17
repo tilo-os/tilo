@@ -51,7 +51,7 @@ use ui::resource::{DocumentSync, WorkspaceAnswer};
 use ui::state::DocumentReplica;
 
 use crate::replicated::{Attachment, DESKTOP_APP, DESKTOP_DOCUMENT};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// How often a page asks again what the workspace lets its person do: a role the
 /// workspace grants or withdraws while they are in it reaches their page within
@@ -215,7 +215,7 @@ pub(crate) fn open(
     (store, kept): (Rc<MemoryStore>, Kept),
 ) -> Result<(), String> {
     let workspace_id =
-        tilo_relay_protocol::WorkspaceId::parse(workspace).ok_or("a workspace must be a uuid")?;
+        tilo_server_protocol::WorkspaceId::parse(workspace).ok_or("a workspace must be a uuid")?;
     peer.send(Cmd::KeepContent(
         workspace_id,
         Arc::new(kept_content(id, workspace.to_owned())),
@@ -547,8 +547,8 @@ pub(crate) fn host_then(
 /// once it comes.
 fn ask_then(
     peer: &Link,
-    request: tilo_relay_protocol::workspaces::WorkspacesRequest,
-    answered: impl FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + 'static,
+    request: tilo_server_protocol::workspaces::WorkspacesRequest,
+    answered: impl FnOnce(Result<tilo_server_protocol::workspaces::WorkspacesReply, String>) + 'static,
 ) -> Result<(), tilo_session::sync::Closed> {
     let receipt = peer.ask_workspaces(request)?;
     wasm_bindgen_futures::spawn_local(async move {
@@ -732,13 +732,13 @@ impl Joined {
             let shared_role = self.role.clone();
             let due = Arc::clone(&self.moderation_due_ms);
             let wake = wake.clone();
-            let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
+            let request = tilo_server_protocol::workspaces::WorkspacesRequest::Permits {
                 workspace: self.uuid.clone(),
                 node: node.to_string(),
             };
             if let Err(error) = ask_then(&self.peer, request, move |answer| {
                 let may = match &answer {
-                    Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
+                    Ok(tilo_server_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
                     Ok(other) => {
                         warn(&format!(
                             "the workspace did not say what this page may do: {other:?}"
@@ -797,13 +797,13 @@ impl Joined {
             .values()
             .map(|mounted| Arc::clone(&mounted.attachment.notify))
             .collect();
-        let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
+        let request = tilo_server_protocol::workspaces::WorkspacesRequest::Permits {
             workspace: self.uuid.clone(),
             node: node.to_string(),
         };
         if let Err(error) = ask_then(&self.peer, request, move |answer| {
             let may = match &answer {
-                Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
+                Ok(tilo_server_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
                 Ok(other) => {
                     warn(&format!(
                         "the workspace did not say whether this page may invite: {other:?}"
@@ -859,12 +859,13 @@ impl Joined {
                 .values()
                 .map(|mounted| Arc::clone(&mounted.attachment.notify))
                 .collect();
-            let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
+            let request = tilo_server_protocol::workspaces::WorkspacesRequest::Permits {
                 workspace: self.uuid.clone(),
                 node: node.clone(),
             };
             if let Err(error) = ask_then(&self.peer, request, move |answer| {
-                if let Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) = answer {
+                if let Ok(tilo_server_protocol::workspaces::WorkspacesReply::Permits(may)) = answer
+                {
                     answers
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
@@ -1257,7 +1258,7 @@ impl Joined {
 
     /// The host did not pass on content this page shared: say so over every desktop the page
     /// shows, with when to try again, as the host said it.
-    fn content_refused(&self, refusal: &tilo_relay_protocol::refusal::Refusal) {
+    fn content_refused(&self, refusal: &tilo_server_protocol::refusal::Refusal) {
         warn(&format!(
             "the workspace did not pass on shared content: {refusal}"
         ));
@@ -1277,7 +1278,7 @@ impl Joined {
         &mut self,
         route: &DocumentRoute,
         changes: &[[u8; 32]],
-        refusal: &tilo_relay_protocol::refusal::Refusal,
+        refusal: &tilo_server_protocol::refusal::Refusal,
         woken: &mut HashSet<u64>,
     ) {
         warn(&format!(

@@ -19,7 +19,7 @@
 )]
 
 use crate::common::people::{Device, Person, Site, share_the_fleet};
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::workspaces::Role;
 
 /// A studio and the two people in it, each on a laptop and a phone: Ada's site hosts the workspace
 /// and lets Chat author its records, Ada and Bob join as editors, and Chat is installed and open on

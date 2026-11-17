@@ -17,14 +17,14 @@ use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_peer_state::{StatePeer, TransportOrigin};
-use tilo_relay::RelayClient;
-use tilo_relay::coedit::{Inbound, RelayCoeditSession};
-use tilo_relay::daemon::Relay;
-use tilo_relay::web::WebHandle;
-use tilo_relay::workspace_join::WorkspaceJoinClient;
-use tilo_relay::workspaces::{IssueInvitationRequest, IssuedInvitation};
-use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::voice::{CallOperation, CallState, Directions, VoiceGrant};
+use tilo_server::RelayClient;
+use tilo_server::coedit::{Inbound, RelayCoeditSession};
+use tilo_server::daemon::Relay;
+use tilo_server::web::WebHandle;
+use tilo_server::workspace_join::WorkspaceJoinClient;
+use tilo_server::workspaces::{IssueInvitationRequest, IssuedInvitation};
+use tilo_server_protocol::Envelope;
+use tilo_server_protocol::voice::{CallOperation, CallState, Directions, VoiceGrant};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
 use crate::support::{Device, TestHost, enrol, start_workspace_host_relaying, wait_for};
@@ -44,7 +44,7 @@ pub const BOTH: Directions = Directions {
 /// relay is one on this machine's loopback, so nothing here reaches the
 /// internet.
 pub async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
-    test_relay::endpoint(iroh::SecretKey::from_bytes(&key.to_bytes())).await
+    test_server::endpoint(iroh::SecretKey::from_bytes(&key.to_bytes())).await
 }
 
 /// An endpoint whose key is the device's own, dialling as whoever was handed
@@ -376,8 +376,8 @@ impl GovernedCall {
     }
 
     /// The host as a browser session reaches it.
-    pub fn iroh(&self) -> tilo_relay_client::Host {
-        tilo_relay_client::Host::at(self.relay.node_addr()).with_web(Some(self.web.link.clone()))
+    pub fn iroh(&self) -> tilo_server_client::Host {
+        tilo_server_client::Host::at(self.relay.node_addr()).with_web(Some(self.web.link.clone()))
     }
 
     /// A raw session the device behind `cert` and `key` dials from its own

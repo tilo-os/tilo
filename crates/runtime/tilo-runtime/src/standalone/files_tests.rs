@@ -12,7 +12,7 @@ impl Host {
     fn new(profile: &Path) -> Self {
         // The relay this device's endpoint holds is one on this machine's loopback: a test never
         // reaches number 0's relays or directory.
-        let relays = test_relay::loopback().relays;
+        let relays = test_server::loopback().relays;
         tilo_rt::app()
             .block_on(async move {
                 Self {

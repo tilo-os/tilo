@@ -17,7 +17,7 @@ use crate::workspaces::fixtures::test_host_taking_part;
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::CommitNamed as _;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 pub(super) const APP: &str = "so.tilo.notes";
@@ -771,7 +771,7 @@ async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
     );
     drop(state);
 
-    let open = tilo_relay_protocol::voice::CallOperation::Open {
+    let open = tilo_server_protocol::voice::CallOperation::Open {
         app_id: CHAT.into(),
         document_id: LOBBY.into(),
         channel_id: "voice".into(),
@@ -781,7 +781,7 @@ async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
         .await
         .expect("a member opens the voice channel's call");
     assert!(call.active);
-    let peer = tilo_relay_protocol::AuthenticatedPeer {
+    let peer = tilo_server_protocol::AuthenticatedPeer {
         cert: member_cert.clone(),
         user_public_key: member_cert.user_public_key,
         device_public_key: member_cert.device_public_key,
@@ -2442,7 +2442,7 @@ async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
         loop {
             if let Some(crate::Envelope::DocumentOpened {
                 channel: opened,
-                answer: tilo_relay_protocol::DocumentAnswer::Sent { frames },
+                answer: tilo_server_protocol::DocumentAnswer::Sent { frames },
                 ..
             }) = page.recv().await
                 && opened == channel
@@ -2475,7 +2475,7 @@ async fn opened_frames(page: &crate::RelayClient, workspace_id: WorkspaceId, rec
         loop {
             if let Some(crate::Envelope::DocumentOpened {
                 channel: opened,
-                answer: tilo_relay_protocol::DocumentAnswer::Sent { frames },
+                answer: tilo_server_protocol::DocumentAnswer::Sent { frames },
                 ..
             }) = page.recv().await
                 && opened == channel

@@ -215,7 +215,7 @@ fn identity_directories() -> Vec<(std::path::PathBuf, bool)> {
     }
     let paths = crate::provisioning::collaboration_identity_paths();
     if let Some(root) = paths.user_pubkey.parent().and_then(std::path::Path::parent)
-        && let Some(peers) = tilo_relay_protocol::home_peer_registry_path(root).parent()
+        && let Some(peers) = tilo_server_protocol::home_peer_registry_path(root).parent()
     {
         directories.push((peers.to_path_buf(), false));
     }

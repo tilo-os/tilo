@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::workspace_documents::{HostCommit, Reservation, WorkspaceDocuments};
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// One change to admit: its position in the workspace's publication (none for a
 /// channel change, which is not republished), the commit, and its

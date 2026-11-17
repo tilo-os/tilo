@@ -33,12 +33,12 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # How a workspace numbers itself on the peer network.
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-server-protocol = { path = "../../hosting/tilo-server-protocol" }
 # The identity layer's device side: certification, invitations and the link to a person's host,
 # over iroh natively and over the browser's WebTransport in a page.
-tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+tilo-server-client = { path = "../../hosting/tilo-server-client" }
 # The session client every device reaches its host with, over its link.
-tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+tilo-server-session = { path = "../../hosting/tilo-server-session" }
 # The action host another device of a workspace is, reached through the session.
 tilo-actions = { path = "../../collab/actions" }
 # Sorts without a copy of std's sort per call site, which kept the web desktop's start module large.
@@ -119,7 +119,7 @@ tilo-automerge-isolate.workspace = true
 # beside the wire's.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 test-http = { path = "../../dev/test-http" }
-tilo-relay = { path = "../../hosting/tilo-relay", features = ["web", "test-support"] }
+tilo-server = { path = "../../hosting/tilo-server", features = ["web", "test-support"] }
 # The fetch proxy's host side, as the page's test of it drives it.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }
 # A relay listener on loopback, as the live session's acceptance test drives it.
@@ -146,7 +146,7 @@ getrandom.workspace = true
 serde_json.workspace = true
 tilo-test-env = { path = "../../dev/test-env", features = ["tokio"] }
 # A relay on this machine's loopback, which is what a test's devices relay through.
-test-relay = { path = "../../dev/test-relay" }
+test-server = { path = "../../dev/test-server" }
 # The broker's verdict, for the browser's to be checked against.
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # A call's voice channel is a real Chat channel, written by Chat's own model.

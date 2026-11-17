@@ -202,8 +202,8 @@ makes before it execs anything.
 install -Dpm 0755 bin/tilo-session           %{buildroot}%{_bindir}/tilo-session
 install -Dpm 0755 bin/tilo                   %{buildroot}%{_bindir}/tilo
 install -Dpm 0755 bin/fs %{buildroot}%{_bindir}/fs
-install -Dpm 0755 bin/tilo-relay-admin %{buildroot}%{_libexecdir}/tilo/tilo-relay-admin
-ln -s ../libexec/tilo/tilo-relay-admin %{buildroot}%{_bindir}/tilo-relay-admin
+install -Dpm 0755 bin/tilo-server-admin %{buildroot}%{_libexecdir}/tilo/tilo-server-admin
+ln -s ../libexec/tilo/tilo-server-admin %{buildroot}%{_bindir}/tilo-server-admin
 install -Dpm 0755 bin/tilo-enroll %{buildroot}%{_libexecdir}/tilo/tilo-enroll
 ln -s ../libexec/tilo/tilo-enroll %{buildroot}%{_bindir}/tilo-enroll
 install -Dpm 0644 systemd-user/tilo-files-workspace.service %{buildroot}%{_userunitdir}/tilo-files-workspace.service
@@ -283,7 +283,7 @@ install -Dpm 0644 wayland-sessions/tilo-app.desktop \
 # Files readiness and normal same-person enrollment are first-party tools.
 # Keep automatic ELF requirements enabled for these host executables; only the
 # separately signed private app/runtime stores are excluded above.
-for program in fs tilo-relay-admin tilo-enroll; do
+for program in fs tilo-server-admin tilo-enroll; do
     test -x %{buildroot}%{_bindir}/$program
 done
 test -x %{buildroot}%{_bindir}/tilo-import-folders
@@ -355,8 +355,8 @@ done
 %{_bindir}/tilo-session
 %{_bindir}/tilo
 %{_bindir}/fs
-%{_bindir}/tilo-relay-admin
-%{_libexecdir}/tilo/tilo-relay-admin
+%{_bindir}/tilo-server-admin
+%{_libexecdir}/tilo/tilo-server-admin
 %{_bindir}/tilo-enroll
 %{_libexecdir}/tilo/tilo-enroll
 %{_userunitdir}/tilo-files-workspace.service

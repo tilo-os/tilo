@@ -2,7 +2,7 @@
 //! routes and the coverage statements the host acts on.
 
 use super::{AuthenticatedPeer, Envelope, SessionCtx};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// A member volunteering to compact sealed routes, or its coverage
 /// statement for one: the host removes the entries the statement names. A

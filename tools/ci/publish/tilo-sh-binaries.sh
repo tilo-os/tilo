@@ -7,7 +7,7 @@
 #
 #   OUT           the stack's own programs in bin/ (TILO_SH_PROGRAMS) and its
 #                 lounge/ (TILO_SH_LOUNGE)
-#   LOUNGE_BINARIES  lounge-check-binaries' output: tilo-relay and
+#   LOUNGE_BINARIES  lounge-check-binaries' output: tilo-server and
 #                 discord-worker, built as the Lounge image ships them
 #   FONTS         lounge-fonts' output
 #
@@ -19,7 +19,7 @@ usage='usage: tilo-sh-binaries.sh OUT LOUNGE_BINARIES FONTS'
 out=${1:?$usage}
 binaries=${2:?$usage}
 fonts=${3:?$usage}
-[[ -x $binaries/tilo-relay && -x $binaries/discord-worker ]] || die "no Lounge programs in $binaries"
+[[ -x $binaries/tilo-server && -x $binaries/discord-worker ]] || die "no Lounge programs in $binaries"
 [[ -f $fonts/manifest.toml ]] || die "no product font catalog in $fonts"
 cd "$repo_root"
 target=${CARGO_TARGET_DIR:-$repo_root/target}

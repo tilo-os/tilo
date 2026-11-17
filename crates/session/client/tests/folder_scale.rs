@@ -30,7 +30,7 @@ use fs_protocol::{FileActor, TreeChunk, TreeChunks};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_fs::namespace::{Namespace, ROOT_INO};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
+use tilo_server_client::Host;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
@@ -216,7 +216,7 @@ struct Reader {
 impl Reader {
     fn open(&mut self, chunk: TreeChunk) {
         let route = route(&self.workspace, chunk);
-        let workspace = tilo_relay_protocol::WorkspaceId::parse(&self.workspace).unwrap();
+        let workspace = tilo_server_protocol::WorkspaceId::parse(&self.workspace).unwrap();
         self.link.send(Cmd::OpenRoute(route.clone())).unwrap();
         self.link
             .send(Cmd::OpenDocumentAt(workspace, route))
@@ -316,9 +316,9 @@ async fn a_write_costs_the_same_in_a_folder_of_twenty_thousand_files() {
         .publish(
             &company.workspace,
             &host_device.cert,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "The company's folder".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await

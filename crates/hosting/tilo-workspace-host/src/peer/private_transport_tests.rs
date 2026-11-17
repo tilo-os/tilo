@@ -2,7 +2,7 @@ use super::*;
 
 /// Remote actions: who may still act, and what acting costs.
 mod remote_action_tests;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity, sign_device_cert,
 };
@@ -844,7 +844,7 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
     let Some(Envelope::RemoteActionUndeliverable { refusal, .. }) = refused else {
         panic!("a replaced session's action is undeliverable, got {refused:?}");
     };
-    assert_eq!(refusal, tilo_relay_protocol::refusal::Refusal::Superseded);
+    assert_eq!(refusal, tilo_server_protocol::refusal::Refusal::Superseded);
     assert!(brx.try_recv().is_err(), "nothing reached the target");
 }
 
@@ -939,7 +939,7 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
         assert!(
             matches!(
                 refusal,
-                tilo_relay_protocol::refusal::Refusal::NotAMember(_)
+                tilo_server_protocol::refusal::Refusal::NotAMember(_)
             ),
             "{refusal}"
         );
@@ -1395,7 +1395,7 @@ async fn an_opened_records_answer_is_written_whole_before_live_frames() {
                 continue;
             };
             if let Envelope::DocumentOpened {
-                answer: tilo_relay_protocol::DocumentAnswer::Sent { frames },
+                answer: tilo_server_protocol::DocumentAnswer::Sent { frames },
                 ..
             } = frame
             {

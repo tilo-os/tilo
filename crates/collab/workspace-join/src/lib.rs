@@ -9,7 +9,7 @@
 //! `tilo_peer_state::join`.
 //!
 //! [`delegation`] holds the root-signed agent and bot delegations; it is
-//! re-exported by `tilo-relay-protocol`.
+//! re-exported by `tilo-server-protocol`.
 //!
 //! A workspace is named by its [`WorkspaceId`] everywhere here.
 

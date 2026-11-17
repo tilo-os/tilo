@@ -13,7 +13,7 @@ path = "src/lib.rs"
 [features]
 # The fixtures the host's tests and its embedders' tests build on: a
 # certified test host and the devices around it, plus the store's test hooks.
-test-support = ["tilo-relay-store/test-support"]
+test-support = ["tilo-server-store/test-support"]
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages.
 agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:ui", "dep:chat", "dep:calendar", "dep:tilo-model-gateway"]
@@ -30,9 +30,9 @@ web-time = { version = "1", features = ["serde"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
 tilo-actions = { path = "../../collab/actions" }
-tilo-relay-protocol = { path = "../tilo-relay-protocol" }
-tilo-relay-client = { path = "../tilo-relay-client" }
-tilo-relay-session = { path = "../tilo-relay-session" }
+tilo-server-protocol = { path = "../tilo-server-protocol" }
+tilo-server-client = { path = "../tilo-server-client" }
+tilo-server-session = { path = "../tilo-server-session" }
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 iroh.workspace = true
 iroh-base.workspace = true
@@ -64,7 +64,7 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 collab-types = { path = "../../collab/collab-types" }
 key-group = { path = "../../collab/key-group" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
-tilo-relay-store = { path = "../tilo-relay-store" }
+tilo-server-store = { path = "../tilo-server-store" }
 sha2.workspace = true
 tilo-agent-session = { path = "../../agent/agent-session", optional = true }
 # A person's own provider, asked through the gateway's transport with the key
@@ -119,7 +119,7 @@ test-http = { path = "../../dev/test-http" }
 tilo-test-env = { path = "../../dev/test-env", features = ["iroh-relay"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
-tilo-relay-store = { path = "../tilo-relay-store", features = ["test-support"] }
+tilo-server-store = { path = "../tilo-server-store", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 

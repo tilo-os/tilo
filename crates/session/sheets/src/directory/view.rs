@@ -4,8 +4,8 @@
 use std::collections::BTreeSet;
 
 use crate::directory::{Directory, Listing, ListingAction};
-use tilo_relay_protocol::directory::Activity;
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::directory::Activity;
+use tilo_server_protocol::workspaces::Role;
 
 use tilo_workspace_directory::Listed;
 
@@ -137,7 +137,7 @@ fn joins_as(listing: &Listed) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_relay_protocol::directory::DirectoryEntry;
+    use tilo_server_protocol::directory::DirectoryEntry;
 
     fn entry(workspace: &str, name: &str) -> DirectoryEntry {
         DirectoryEntry {

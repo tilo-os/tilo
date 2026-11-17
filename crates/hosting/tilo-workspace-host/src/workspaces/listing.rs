@@ -34,11 +34,11 @@ use sha2::{Digest as _, Sha256};
 use tilo_action_policy::{EntryPolicy, ListingPolicy, Role, roles::governance};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join_log::request_digest;
-use tilo_relay_protocol::directory::{
+use tilo_server_protocol::directory::{
     DirectoryEntry, EntryJoin, EntryReport, Face, Listing, MAX_FACES, entry_path,
 };
-use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceNotice};
-use tilo_relay_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
+use tilo_server_protocol::workspaces::{PreAdmission, WorkspaceNotice};
+use tilo_server_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
 use tilo_user_identity::DeviceCert;
 
 use super::authority::WorkspaceOp;
@@ -84,16 +84,16 @@ impl EntryRefusal {
     #[must_use]
     pub fn answer_with(
         &self,
-        entry: Option<&tilo_relay_protocol::directory::EntryWaitList>,
-    ) -> tilo_relay_protocol::directory::EntryRefused {
+        entry: Option<&tilo_server_protocol::directory::EntryWaitList>,
+    ) -> tilo_server_protocol::directory::EntryRefused {
         self.answer().with_wait_list(entry)
     }
 
     /// The refusal as the entry answers it.
     #[must_use]
-    pub fn answer(&self) -> tilo_relay_protocol::directory::EntryRefused {
-        use tilo_relay_protocol::directory::EntryRefusalCode;
-        tilo_relay_protocol::directory::EntryRefused {
+    pub fn answer(&self) -> tilo_server_protocol::directory::EntryRefused {
+        use tilo_server_protocol::directory::EntryRefusalCode;
+        tilo_server_protocol::directory::EntryRefused {
             code: match self {
                 Self::Refused(_) => EntryRefusalCode::Refused,
                 Self::Banned => EntryRefusalCode::Banned,
@@ -623,7 +623,7 @@ impl Workspaces {
     /// Let the person `join` names into the public workspace `workspace`: an
     /// invitation only they can redeem, and the token of a pre-admission at
     /// the listing's default role, under the owner's entry. The entry answers
-    /// them with an invitation, or with a [`tilo_relay_protocol::directory::EntryRefused`].
+    /// them with an invitation, or with a [`tilo_server_protocol::directory::EntryRefused`].
     ///
     /// A workspace whose entry takes people by invitation answers its entry only
     /// to a person it has in it (joining again from another device of theirs),
@@ -897,10 +897,10 @@ pub(crate) mod entry_tests {
         RemoteActionTarget,
     };
     use tilo_peer_state::join::Role;
-    use tilo_relay_protocol::WorkspaceId;
-    use tilo_relay_protocol::directory::{EntryJoin, Listing};
-    use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission};
-    use tilo_relay_session::workspaces::RemoveMemberRequest;
+    use tilo_server_protocol::WorkspaceId;
+    use tilo_server_protocol::directory::{EntryJoin, Listing};
+    use tilo_server_protocol::workspaces::{JoinReply, PreAdmission};
+    use tilo_server_session::workspaces::RemoveMemberRequest;
     use tilo_user_identity::DeviceCert;
 
     use super::super::actions::{HostWorkspaceActions, PUBLISH, UNPUBLISH};
@@ -1578,7 +1578,7 @@ pub(crate) mod entry_tests {
         let reported = workspaces
             .report_listed(
                 &workspace,
-                &tilo_relay_protocol::directory::EntryReport {
+                &tilo_server_protocol::directory::EntryReport {
                     reporter_user_public_key: hex::encode([5; 32]),
                     reason: "spam in general".into(),
                 },

@@ -26,7 +26,7 @@
 )]
 
 use crate::common::people::{Person, Site};
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::workspaces::Role;
 
 #[test]
 fn two_people_on_two_devices_each_meet_in_one_workspace() {

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# The Lounge's host: tilo-relay's persistent public workspace with the
+# The Lounge's host: tilo-server's persistent public workspace with the
 # deployment routes beside it (/mode, /avatars/<name>, /discord/callback) and
 # the Discord bridge in the same process. Nothing here compiles: the programs
 # are built by tools/ci/publish/lounge-binaries.sh and laid out with the bot
@@ -27,7 +27,7 @@ RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify
   && microdnf clean all \
   && command -v bash rpm grep sort tr >/dev/null \
   && bash /run/tilo-verify-no-cisco-openh264.sh
-# tilo-relay, and the Discord connector's outside worker beside it (the
+# tilo-server, and the Discord connector's outside worker beside it (the
 # connector finds `<app>-worker` next to the relay it runs under).
 COPY bin/ /usr/local/bin/
 # Every version of the built-in apps' surface.toml, which the relay publishes
@@ -52,9 +52,9 @@ USER 10001
 ENV TILO_SOURCE_REVISION=${SOURCE_REVISION} \
     TILO_WORKSPACES_STATE=/run/tilo-workspaces \
     TILO_SECRETS_DIR=/run/tilo-workspaces/secrets \
-    TILO_RELAY_MAX_WEB_SESSIONS=2164 \
-    TILO_RELAY_MAX_HANDSHAKES=1024 \
-    TILO_RELAY_MAX_WORKSPACE_GRANTS=34624
+    TILO_SERVER_MAX_WEB_SESSIONS=2164 \
+    TILO_SERVER_MAX_HANDSHAKES=1024 \
+    TILO_SERVER_MAX_WORKSPACE_GRANTS=34624
 # 8790: the deployment routes (/mode, /avatars, /discord/callback, plain HTTP
 #       behind the ingress).
 # 9780: the relay's plain listener the ingress forwards the workspace's own

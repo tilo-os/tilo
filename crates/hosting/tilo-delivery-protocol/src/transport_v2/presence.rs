@@ -6,8 +6,8 @@
 //! a session reads what a peer running an older build sends.
 
 use serde::{Deserialize, Serialize};
-use tilo_relay_client::frame::FrameError;
-use tilo_relay_protocol::transport::MAX_FRAME_BYTES;
+use tilo_server_client::frame::FrameError;
+use tilo_server_protocol::transport::MAX_FRAME_BYTES;
 
 use super::PRESENCE_BATCH_KIND;
 use collab_types::WorkspaceId;

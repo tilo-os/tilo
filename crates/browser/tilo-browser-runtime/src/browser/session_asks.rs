@@ -141,7 +141,7 @@ impl Desktop {
                 Box::new(move |reply| {
                     // What the workspace permits beyond the person's role (an
                     // item shared with them to edit) reaches their windows.
-                    if let Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) =
+                    if let Ok(tilo_server_protocol::workspaces::WorkspacesReply::Permits(may)) =
                         &reply
                     {
                         permitted
@@ -176,9 +176,9 @@ fn node_request(
     workspace: &str,
     node: String,
     action: tilo_desktop_surface::session::NodeAction,
-) -> tilo_relay_protocol::workspaces::WorkspacesRequest {
+) -> tilo_server_protocol::workspaces::WorkspacesRequest {
     use tilo_desktop_surface::session::NodeAction;
-    use tilo_relay_protocol::workspaces::WorkspacesRequest;
+    use tilo_server_protocol::workspaces::WorkspacesRequest;
     let workspace = workspace.to_owned();
     match action {
         NodeAction::Share { share, access } => WorkspacesRequest::Share {
@@ -194,9 +194,9 @@ fn node_request(
 
 /// A node ask's output from the workspace's reply.
 fn node_answer(
-    reply: Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>,
+    reply: Result<tilo_server_protocol::workspaces::WorkspacesReply, String>,
 ) -> Result<serde_json::Value, String> {
-    use tilo_relay_protocol::workspaces::WorkspacesReply;
+    use tilo_server_protocol::workspaces::WorkspacesReply;
     match reply? {
         WorkspacesReply::Permits(may) => Ok(serde_json::json!({ "undoable": may })),
         WorkspacesReply::Shared(count) => Ok(serde_json::json!({ "grants": count })),

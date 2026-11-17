@@ -23,5 +23,5 @@ else
 fi
 # Pairing is native Linux only; all Linux host formats need the canonical helper.
 if [ "$(uname -s)" = Linux ]; then
-    "${CARGO:-cargo}" build --locked --release -p tilo-relay --bin tilo-enroll
+    "${CARGO:-cargo}" build --locked --release -p tilo-server --bin tilo-enroll
 fi

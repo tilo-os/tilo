@@ -105,9 +105,9 @@ async fn a_host_whose_endpoint_reaches_no_relay_opens_and_names_the_address_it_h
         // takes their work in them.
         HostConfig::new(
             dir.path().to_owned(),
-            tilo_relay_protocol::WorkSetting {
-                from: tilo_relay_protocol::WorkFrom::Anyone,
-                ..tilo_relay_protocol::WorkSetting::own_person()
+            tilo_server_protocol::WorkSetting {
+                from: tilo_server_protocol::WorkFrom::Anyone,
+                ..tilo_server_protocol::WorkSetting::own_person()
             },
         ),
         HostIdentity {

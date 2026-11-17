@@ -12,7 +12,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use crate::store::{CommitEntry, WorkspaceStore};
 use crate::transport::Envelope;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Membership set for a workspace on this relay, as the workspace's governance
 /// or an explicit admission set it. Peers listed here get
@@ -747,7 +747,7 @@ impl WorkspaceRuntime {
     pub(crate) fn refuse_removed_live_members(&mut self, removed: &[[u8; 32]]) {
         self.refuse_live_members(
             removed,
-            &tilo_relay_protocol::refusal::Refusal::NotAMember(
+            &tilo_server_protocol::refusal::Refusal::NotAMember(
                 "workspace membership changed".into(),
             ),
         );
@@ -757,7 +757,7 @@ impl WorkspaceRuntime {
     /// and why, then unregister them: the workspace was deleted.
     pub(crate) fn refuse_every_live_member(
         &mut self,
-        refusal: &tilo_relay_protocol::refusal::Refusal,
+        refusal: &tilo_server_protocol::refusal::Refusal,
     ) {
         let live: Vec<[u8; 32]> = self.subscribers.keys().copied().collect();
         self.refuse_live_members(&live, refusal);
@@ -766,7 +766,7 @@ impl WorkspaceRuntime {
     fn refuse_live_members(
         &mut self,
         removed: &[[u8; 32]],
-        refusal: &tilo_relay_protocol::refusal::Refusal,
+        refusal: &tilo_server_protocol::refusal::Refusal,
     ) {
         if removed.is_empty() {
             return;

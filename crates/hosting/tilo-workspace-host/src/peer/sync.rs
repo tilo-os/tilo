@@ -1,7 +1,7 @@
 //! Anti-entropy: a peer asks for the changes its materialized heads lack.
 
 use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx, StateSource, WorkspaceOperation};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Handle `SyncRequest`: reply with exactly the changes the requester is
 /// missing, computed against this host's materialized pinned doc.
@@ -21,14 +21,14 @@ pub(super) async fn handle_sync_request(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            refusal: tilo_relay_protocol::refusal::Refusal::NotReady,
+            refusal: tilo_server_protocol::refusal::Refusal::NotReady,
         }));
     };
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
     if !session.admits(&wr, peer, WorkspaceOperation::State) {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            refusal: tilo_relay_protocol::refusal::Refusal::NotAMember(
+            refusal: tilo_server_protocol::refusal::Refusal::NotAMember(
                 "device not in workspace membership".into(),
             ),
         }));

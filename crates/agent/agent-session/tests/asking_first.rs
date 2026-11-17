@@ -24,12 +24,12 @@ use tilo_actions::remote::{
     ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
 };
 use tilo_agent_session::{AgentControl, AgentIdentity, AgentMember, MemberConfig, ModelPlanner};
-use tilo_relay_protocol::agents::{AgentStatus, TaskState};
-use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_server_protocol::agents::{AgentStatus, TaskState};
+use tilo_server_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use crate::support::{WORKSPACE, enrol, start_host, wait_for};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 const EBOOK: &str = "so.tilo.ebook";
 
@@ -121,7 +121,7 @@ fn shelve_then_remove() -> String {
     .to_string()
 }
 
-fn last_task(control: &AgentControl) -> tilo_relay_protocol::agents::AgentTask {
+fn last_task(control: &AgentControl) -> tilo_server_protocol::agents::AgentTask {
     control.info().tasks.last().cloned().unwrap()
 }
 
@@ -158,7 +158,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     let delegation = Delegation::sign(
         &root,
         agent_device.cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_server_protocol::delegation::Delegate::Agent {
             agent_id: "careful".into(),
         },
         "Careful agent",

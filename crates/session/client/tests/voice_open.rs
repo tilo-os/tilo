@@ -13,10 +13,10 @@
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_relay::RelayClient;
-use tilo_relay::coedit::RelayCoeditSession;
-use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::voice::CallOperation;
+use tilo_server::RelayClient;
+use tilo_server::coedit::RelayCoeditSession;
+use tilo_server_protocol::Envelope;
+use tilo_server_protocol::voice::CallOperation;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};

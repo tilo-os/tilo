@@ -164,12 +164,12 @@ pub use collaboration::{AddMemberRequest, CollaborationError, GovernanceCompleti
 pub use host_invitations::HostInvitation;
 pub use listing::EntryRefusal;
 pub use pages::PreAdmitRequest;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListMail, WaitListed};
 
 // The administration vocabulary (the actions' names and answers), under the
 // daemon's historic paths.
-pub use tilo_relay_session::workspaces::{
+pub use tilo_server_session::workspaces::{
     ActionInvitation, CREATE_WORKSPACE, CancelInvitationRequest, CreatedWorkspace, ENTER_WORKSPACE,
     EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE,
     HostedWorkspace, IssueInvitationRequest, IssuedInvitation, LIST_WORKSPACES, PendingInvitation,
@@ -808,7 +808,7 @@ impl GovernedWorkspace {
             name: self.name(),
             generation: self.record.generation,
             role: None,
-            labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
+            labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
             unattended: false,
         }
     }
@@ -912,7 +912,7 @@ pub(crate) struct WorkspaceServices {
     pub(crate) agents: crate::peer::AgentRegistry,
     /// The work this device takes: it serves a workspace placed on it only when the setting
     /// takes the placing person's work.
-    pub(crate) work: tilo_relay_protocol::WorkSetting,
+    pub(crate) work: tilo_server_protocol::WorkSetting,
     /// Each device whose session to this host authenticated: a host it
     /// dials and could not reach is dialled again then.
     pub(crate) arrivals: crate::attach::Arrivals,

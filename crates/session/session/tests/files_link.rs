@@ -83,13 +83,13 @@ fn the_files_daemon_reaches_peers_through_the_sessions_endpoint() {
 
     // A peer elsewhere, on the relay the laptop uses.
     let peer_key = iroh::SecretKey::generate();
-    let relay: iroh::RelayUrl = test_relay::loopback_url()
+    let relay: iroh::RelayUrl = test_server::loopback_url()
         .parse()
         .expect("the loopback relay's address");
     let theirs = Arc::new(fs::ContentStore::memory());
     let (peer, there, _peer_workspace) = runtime.block_on(async {
         let peer = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .relay_mode(test_relay::relay_mode())
+            .relay_mode(test_server::relay_mode())
             .secret_key(peer_key.clone())
             .bind()
             .await

@@ -16,8 +16,8 @@
 
 use collab_types::DocumentMutation;
 use tilo_app::prelude::*;
-use tilo_relay::member_limits::MemberLimitsConfig;
-use tilo_relay_protocol::refusal::{PLAIN_TOO_FAST, Refusal};
+use tilo_server::member_limits::MemberLimitsConfig;
+use tilo_server_protocol::refusal::{PLAIN_TOO_FAST, Refusal};
 use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 

@@ -745,11 +745,11 @@ mod tests {
     ) {
         let server_store = Arc::new(crate::store::ContentStore::memory());
         let id = server_store.write_content(data).await.unwrap().unwrap();
-        let server = test_relay::direct_endpoint().await;
+        let server = test_server::direct_endpoint().await;
         let router = iroh::protocol::Router::builder(server.clone())
             .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
             .spawn();
-        let client = test_relay::direct_endpoint().await;
+        let client = test_server::direct_endpoint().await;
         let hydrator = Hydrator::new(client, Arc::new(crate::store::ContentStore::memory()));
         hydrator.add_peer(server.addr());
         (hydrator, id, server_store, router)
@@ -878,7 +878,7 @@ mod tests {
         let id = source.write_content(&data).await.unwrap().unwrap();
         let quiet = crate::hydration::test_peers::silent().await;
         let hydrator = Hydrator::new(
-            test_relay::direct_endpoint().await,
+            test_server::direct_endpoint().await,
             Arc::new(crate::store::ContentStore::memory()),
         );
         let manifest = source.local(id).await.unwrap();

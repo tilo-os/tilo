@@ -260,7 +260,7 @@ async fn device_host(root: &SigningKey) -> Box_ {
                     as Arc<dyn tilo_workspace_host::app_serving::AppActionServer>),
                 ..HostConfig::new(
                     state.path().join("workspace-host"),
-                    tilo_relay_protocol::WorkSetting::none(),
+                    tilo_server_protocol::WorkSetting::none(),
                 )
             },
             HostIdentity {
@@ -320,7 +320,7 @@ async fn device_host(root: &SigningKey) -> Box_ {
 async fn session(device: &Box_, key: &(SigningKey, DeviceCert)) -> Device {
     let session = Device::over(
         PeerConfig {
-            host: tilo_relay_client::Host::at(addr(&device.endpoint)),
+            host: tilo_server_client::Host::at(addr(&device.endpoint)),
             cert: key.1.clone(),
             host_cert: device.cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
@@ -359,7 +359,7 @@ async fn a_key_lists_enters_and_acts_in_a_workspace_its_persons_device_hosts() {
     // The person's workspaces, as the host lists them to a key of theirs.
     let listed = key
         .personal_list(
-            &tilo_relay_session::workspaces::WorkspaceLabels::new(),
+            &tilo_server_session::workspaces::WorkspaceLabels::new(),
             None,
         )
         .await
@@ -430,8 +430,8 @@ async fn a_key_reaching_another_workspace_enters_nothing_and_runs_nothing_here()
     // The device's host said so itself, and why: a session that never reached
     // it, or an answer that never came, is no refusal of this key.
     assert_eq!(
-        tilo_relay_session::workspaces::Refusal::from_reason(&refused.message),
-        Some(tilo_relay_session::workspaces::Refusal::NotYourOwn),
+        tilo_server_session::workspaces::Refusal::from_reason(&refused.message),
+        Some(tilo_server_session::workspaces::Refusal::NotYourOwn),
         "{refused:?}"
     );
     assert!(

@@ -32,7 +32,7 @@ use collab_types::DocumentMutation;
 use fs_protocol::TreeChunk;
 use tilo_fs::namespace::Namespace;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::{DocumentAnswer, WorkspaceId};
+use tilo_server_protocol::{DocumentAnswer, WorkspaceId};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, DocumentRoute, Event, Link, Outbox as _};
 
@@ -265,8 +265,8 @@ struct Refusals {
 }
 
 /// How long the host said to wait before it takes the next write, when it said.
-fn host_wait(refusal: &tilo_relay_protocol::refusal::Refusal) -> Option<Duration> {
-    use tilo_relay_protocol::refusal::Refusal;
+fn host_wait(refusal: &tilo_server_protocol::refusal::Refusal) -> Option<Duration> {
+    use tilo_server_protocol::refusal::Refusal;
     match refusal {
         Refusal::TooFast { wait_ms } | Refusal::TooMuchContent { wait_ms } => {
             Some(Duration::from_millis(*wait_ms))
@@ -833,7 +833,7 @@ fn holds_none(answer: Option<DocumentAnswer>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use tilo_relay_protocol::DocumentAnswer;
+    use tilo_server_protocol::DocumentAnswer;
 
     #[test]
     fn a_refused_record_waits_longer_each_time_until_a_write_lands() {
@@ -881,7 +881,7 @@ mod tests {
             "a wait the host said is the wait"
         );
         assert_eq!(
-            super::host_wait(&tilo_relay_protocol::refusal::Refusal::TooFast { wait_ms: 7000 }),
+            super::host_wait(&tilo_server_protocol::refusal::Refusal::TooFast { wait_ms: 7000 }),
             Some(said)
         );
     }

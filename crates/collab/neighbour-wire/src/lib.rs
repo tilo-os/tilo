@@ -34,7 +34,7 @@ pub use tilo_actions::document_sync::{
 use serde::{Deserialize, Serialize};
 
 /// The device ↔ device interface's one version: the certified handshake
-/// (`tilo_relay_protocol::auth`), the relay session's frames and the
+/// (`tilo_server_protocol::auth`), the relay session's frames and the
 /// peer-sync messages they carry. Two devices sync only when theirs are
 /// equal; there is no negotiation and nothing kept for an older version
 /// (docs/architecture/compatibility.md). `interface.toml` beside this crate
@@ -712,7 +712,7 @@ pub enum NeighbourMsg {
         seq: u64,
     },
     /// One of session `peer`'s live presence frames in the workspace
-    /// (`tilo_relay_protocol::live`, sealed with the channel keys of the
+    /// (`tilo_server_protocol::live`, sealed with the channel keys of the
     /// record it names), on the workspace's own topic: how the frame travels
     /// when no workspace host's live session reaches the workspace. It is the same
     /// frame, read the same way as one the live session delivers, so what

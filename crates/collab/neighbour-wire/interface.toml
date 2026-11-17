@@ -10,12 +10,12 @@ version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
 sources = [
-    "crates/hosting/tilo-relay-protocol/src/auth.rs",
-    "crates/hosting/tilo-relay-protocol/src/transport.rs",
-    "crates/hosting/tilo-relay-protocol/src/refusal.rs",
-    "crates/hosting/tilo-relay-protocol/src/entering.rs",
-    "crates/hosting/tilo-relay-protocol/src/directory.rs",
-    "crates/hosting/tilo-relay-protocol/src/workspaces.rs",
+    "crates/hosting/tilo-server-protocol/src/auth.rs",
+    "crates/hosting/tilo-server-protocol/src/transport.rs",
+    "crates/hosting/tilo-server-protocol/src/refusal.rs",
+    "crates/hosting/tilo-server-protocol/src/entering.rs",
+    "crates/hosting/tilo-server-protocol/src/directory.rs",
+    "crates/hosting/tilo-server-protocol/src/workspaces.rs",
     "crates/hosting/tilo-delivery-protocol/src/transport_v2.rs",
     "crates/hosting/tilo-delivery-protocol/src/transport_v2/delta.rs",
     "crates/hosting/tilo-delivery-protocol/src/transport_v2/presence.rs",
@@ -31,7 +31,7 @@ sources = [
     "crates/collab/neighbour-wire/src/content.rs",
     "crates/collab/tilo-user-identity/src/cert.rs",
     "crates/collab/collab-types/src/artifact.rs",
-    "crates/hosting/tilo-relay-protocol/src/voice.rs",
+    "crates/hosting/tilo-server-protocol/src/voice.rs",
     "crates/collab/collab-types/src/mls_governance.rs",
     "crates/collab/tilo-user-identity/src/directory.rs",
     "crates/collab/actions/src/outcome.rs",

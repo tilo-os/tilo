@@ -232,7 +232,7 @@ impl World {
         device: &Device,
         reason: RevocationReason,
     ) -> RevocationEntry {
-        let entry = tilo_relay_client::revoke_device(
+        let entry = tilo_server_client::revoke_device(
             &self.root,
             device.cert.device_public_key,
             tilo_clock::unix_now_ns(),

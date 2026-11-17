@@ -1435,14 +1435,14 @@ impl BrowserShell {
         let asked = crate::replicated::host_then(
             peer,
             Box::new(
-                move |_| tilo_relay_protocol::workspaces::WorkspacesRequest::Rename {
+                move |_| tilo_server_protocol::workspaces::WorkspacesRequest::Rename {
                     workspace,
                     name,
                 },
             ),
             Box::new(move |answer| {
                 match answer {
-                    Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Refused(why))
+                    Ok(tilo_server_protocol::workspaces::WorkspacesReply::Refused(why))
                     | Err(why) => {
                         said.post(tilo_desktop_surface::notifications::Notification::new(
                             why, "",

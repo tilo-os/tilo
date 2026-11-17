@@ -605,7 +605,7 @@ pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
         )
     });
     let home_peers = HOME_PEERS.get_or_init(|| {
-        tilo_relay_protocol::home_peer_registry_path(
+        tilo_server_protocol::home_peer_registry_path(
             system
                 .user_pubkey
                 .parent()
@@ -644,15 +644,15 @@ mod tests {
             tilo_user_identity::persist::read_device_cert(&local_system.device_cert).unwrap();
         let identity_id = hex::encode(local_cert.user_public_key);
         let home_peers = local_dir.path().join("home-peers.json");
-        let peer = tilo_relay_protocol::HomePeerRegistration {
-            schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+        let peer = tilo_server_protocol::HomePeerRegistration {
+            schema_version: tilo_server_protocol::HomePeerRegistration::CURRENT_SCHEMA,
             device_node_id: hex::encode(local_cert.device_public_key),
             relay_service_node_id: hex::encode([4_u8; 32]),
             relay_endpoint: None,
             label: "setup".into(),
             user_public_key: identity_id.clone(),
             device_cert: Some(local_cert.clone()),
-            relay_workspace_ids: vec![tilo_relay_protocol::WorkspaceId::from_u128(7)],
+            relay_workspace_ids: vec![tilo_server_protocol::WorkspaceId::from_u128(7)],
         };
         fs::write(
             &home_peers,
@@ -701,8 +701,8 @@ mod tests {
         );
         assert_eq!(cert.user_public_key, local_cert.user_public_key);
         assert!(cert.capabilities.can_own_workspaces);
-        let copied: Vec<tilo_relay_protocol::HomePeerRegistration> = serde_json::from_slice(
-            &fs::read(tilo_relay_protocol::home_peer_registry_path(
+        let copied: Vec<tilo_server_protocol::HomePeerRegistration> = serde_json::from_slice(
+            &fs::read(tilo_server_protocol::home_peer_registry_path(
                 &dir.path().join("var/lib/tilo"),
             ))
             .unwrap(),
@@ -711,7 +711,7 @@ mod tests {
         assert_eq!(copied, vec![peer]);
         let direct: Vec<String> = serde_json::from_slice(
             &fs::read(
-                tilo_relay_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
+                tilo_server_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
                     .with_file_name("personal-device-peers.json"),
             )
             .unwrap(),

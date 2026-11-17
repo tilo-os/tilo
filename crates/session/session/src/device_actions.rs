@@ -29,8 +29,8 @@ use tilo_peer_state::actions::{
 };
 use tilo_power_mgmt::InhibitToken;
 use tilo_power_mgmt::inhibit::INHIBIT_SUSPEND;
-use tilo_relay_protocol::{Whose, WorkSetting};
 use tilo_runtime::offload::{ActionServicePeers, offer_offload, own_offering};
+use tilo_server_protocol::{Whose, WorkSetting};
 
 use crate::engine::Engine;
 use neighbour_wire::offer::{Answer, Query};

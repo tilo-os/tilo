@@ -82,12 +82,12 @@ filter = "package(tilo-session) or package(tilo-quick-settings)"
 setup = "session-siblings"
 
 # The session's workspace-service test starts the relay as the Lounge image does
-# (`tilo-relay workspace --persistent` with its deployment routes), a program of
+# (`tilo-server workspace --persistent` with its deployment routes), a program of
 # another package: the feature `agents` is what gives it that subcommand.
 [scripts.setup.lounge-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "tilo-relay:tilo-relay=tilo-relay/agents",
+    "tilo-server:tilo-server=tilo-server/agents",
 ]
 
 [[profile.default.scripts]]
@@ -111,12 +111,12 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-relay) and test(coding_agents::)"
+filter = "package(tilo-server) and test(coding_agents::)"
 setup = "machine-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-relay) and test(coding_agents::)"
+filter = "package(tilo-server) and test(coding_agents::)"
 setup = "machine-siblings"
 
 # The browser peer's Lounge test starts the same workspace service the deployment
@@ -330,7 +330,7 @@ test-group = "agent-sessions"
 # bound already, so this bound only has to catch a run that stopped; it starts
 # with the longest tests.
 [[profile.default.overrides]]
-filter = 'package(tilo-relay) and binary(it) and test(=hosting_cost::one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk)'
+filter = 'package(tilo-server) and binary(it) and test(=hosting_cost::one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk)'
 priority = 50
 slow-timeout = { period = "30s", terminate-after = 40 }
 
@@ -341,7 +341,7 @@ filter = 'package(tilo-session-client) and binary(it) and test(compaction::)'
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]
-filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or (binary(it) and test(collab_release_matrix::)))) or (package(tilo-action-broker) and test(=history_outlives_the_memory_window_and_a_restart)) or (package(tilo-media) and test(/::real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(it) and test(patch_log_memory::)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(tilo-app-state) and test(/^fs_store::tests::/))'
+filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or (binary(it) and test(collab_release_matrix::)))) or (package(tilo-action-broker) and test(=history_outlives_the_memory_window_and_a_restart)) or (package(tilo-media) and test(/::real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(it) and test(patch_log_memory::)) or (package(tilo-server) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(tilo-app-state) and test(/^fs_store::tests::/))'
 priority = 50
 
 # A lock starts the lock screen app, which draws under llvmpipe: beside the

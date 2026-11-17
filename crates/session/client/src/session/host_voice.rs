@@ -1,5 +1,5 @@
 //! The host's word for the runs it executes, said and heard outside the live
-//! live session ([`tilo_relay_protocol::host_voice`]).
+//! live session ([`tilo_server_protocol::host_voice`]).
 //!
 //! The host's session signs each frame with this device's key and hands it
 //! to the relay that is the host; a member's session takes a frame only when
@@ -13,13 +13,13 @@
 //! The host's narration of a run travels here alone: no member of the live session
 //! narrates in the host's place.
 
-use tilo_relay_protocol::host_voice::{HOST_VOICE_VERSION, HostSaid, HostWords};
-use tilo_relay_protocol::live::{LiveFrame, OpsFrame};
-use tilo_relay_protocol::transport::Envelope;
-use tilo_relay_session::RelayClient;
+use tilo_server_protocol::host_voice::{HOST_VOICE_VERSION, HostSaid, HostWords};
+use tilo_server_protocol::live::{LiveFrame, OpsFrame};
+use tilo_server_protocol::transport::Envelope;
+use tilo_server_session::RelayClient;
 
 use super::Task;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 impl Task {
     /// Say `words` for a run this host executes, in `workspace_id`, signed

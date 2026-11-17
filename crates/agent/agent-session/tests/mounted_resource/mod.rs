@@ -35,7 +35,7 @@ pub async fn run() {
         admit_person, on_messages, open_admitted_peer, part_route, published_message,
     };
     use tilo_peer_state::join::Role;
-    use tilo_relay::workspaces::RemoveMemberRequest;
+    use tilo_server::workspaces::RemoveMemberRequest;
     let bundle = std::env::args()
         .nth(1)
         .expect("compiled web bundle path is required");
@@ -312,11 +312,11 @@ pub async fn run() {
             .send(Cmd::VoiceCall(
                 native.workspace,
                 [40; 16],
-                tilo_relay_protocol::voice::CallOperation::Start {
+                tilo_server_protocol::voice::CallOperation::Start {
                     app_id: route.app_id.clone(),
                     document_id: route.document.clone(),
                     channel_id: voice_channel.id.clone(),
-                    allowed: tilo_relay_protocol::voice::Directions {
+                    allowed: tilo_server_protocol::voice::Directions {
                         publish: true,
                         subscribe: true,
                     },

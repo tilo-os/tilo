@@ -21,7 +21,7 @@ use serde::Deserialize;
 use tilo_actions::remote::person_telling::{
     CAUSE_PERSON, Cause, Decided, Importance, Kind, Mark, Told, Why, WhyCode,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 use super::super::Workspaces;
 use super::super::person_model::protocol::{Message, ModelRequest, Role, ToolChoice};

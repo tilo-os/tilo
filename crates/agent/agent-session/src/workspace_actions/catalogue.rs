@@ -9,7 +9,7 @@ use super::{
     DEFAULT_DOCUMENTS, DocumentRoute, Worker, WorkspaceState, catalogue_keys, is_part,
     provider_workspace, record_provider, resource_of,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 impl Worker {
     pub(super) fn catalogue_page(

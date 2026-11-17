@@ -22,12 +22,12 @@ use tilo_actions::{ActionAddress, InvocationId};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_net::proxy::host::{Destinations, check_destination, guarded_client, system_lookup};
 use tilo_peer_state::join::{Role, TransportHint};
-use tilo_relay_client::{
+use tilo_server_client::{
     LinkError,
     https::{HttpClient, HttpFuture},
 };
-use tilo_relay_session::client::RelayClient;
-use tilo_relay_session::workspaces::{
+use tilo_server_session::client::RelayClient;
+use tilo_server_session::workspaces::{
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, HostedWorkspace,
     UNHOST_WORKSPACE, ask_host,
 };
@@ -37,7 +37,7 @@ use super::{CollaborationError, GovernedWorkspace, Workspaces};
 use crate::attach::{HostDialer, Upstream};
 use crate::handshake::LiveIdentity;
 use tilo_lock::RwLockRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// This host's answer to the session a host serving one of its workspaces opened
 /// here ([`Workspaces::answer_host`]).
@@ -618,7 +618,7 @@ impl Workspaces {
             addr,
             None,
             Some(device),
-            tilo_relay_session::client::ClientCredentials {
+            tilo_server_session::client::ClientCredentials {
                 cert: host.cert.clone(),
                 signer: &host.key,
                 revocations,
@@ -631,7 +631,7 @@ impl Workspaces {
             // unanswered: another person's host trusts one only when it keeps
             // workspaces for the people it lets in, or its operator takes
             // workspaces it does not own.
-            tilo_relay_session::client::ClientError::NoHandshakeAnswer(_) => format!(
+            tilo_server_session::client::ClientError::NoHandshakeAnswer(_) => format!(
                 "the host refused this host's session: it keeps workspaces only for the \
                  people it let in, and this one keeps none ({error})"
             ),
@@ -787,7 +787,7 @@ async fn host_at(
             Ok((status, answer))
         })
     });
-    let info = tilo_relay_client::https::host_info(&asked)
+    let info = tilo_server_client::https::host_info(&asked)
         .await
         .map_err(|error| match error {
             // What a site answers a refusal with stays with it: an owner

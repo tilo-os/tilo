@@ -159,7 +159,7 @@ tilo-fs = { path = "../../crates/system/fs" }
 fuser.workspace = true
 iroh.workspace = true
 # Endpoints with no relay or directory at all, for tests whose peers are all this machine's.
-test-relay = { path = "../../crates/dev/test-relay" }
+test-server = { path = "../../crates/dev/test-server" }
 
 [[test]]
 name = "it"

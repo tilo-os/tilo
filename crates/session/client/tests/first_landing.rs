@@ -29,8 +29,8 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_client::Host;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::{Cmd, Event, Events, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
@@ -207,9 +207,9 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
         .publish(
             &lounge.workspace,
             &host_device.cert,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await

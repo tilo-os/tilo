@@ -373,7 +373,7 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
         &host,
         state.path(),
         Options {
-            shell: Some(tilo_relay::agents::host_shells(shells.clone()).unwrap()),
+            shell: Some(tilo_server::agents::host_shells(shells.clone()).unwrap()),
             ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
         },
     )

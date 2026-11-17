@@ -12,7 +12,7 @@
 //! The journal holds them through a crash ([`super::journal`]).
 //!
 //! The owner flushes before it acknowledges or fans out any record of the
-//! group, and before any other barrier ([`tilo_relay_store::with_barrier_hook`]):
+//! group, and before any other barrier ([`tilo_server_store::with_barrier_hook`]):
 //! nothing made durable later can depend on a record that is not.
 use super::{StoreError, generation_stamp, journal, remember_digest, tail_index};
 use std::{
@@ -154,7 +154,7 @@ fn publish(staged: &[Staged]) -> Result<(), StoreError> {
     for record in staged {
         fs::rename(&record.staging, &record.path)?;
         remember_digest(&record.path, &record.digest);
-        tilo_relay_store::durable::journaled(&record.path);
+        tilo_server_store::durable::journaled(&record.path);
     }
     // The index followed each staged append; it follows the renames and a
     // journal's creation too.

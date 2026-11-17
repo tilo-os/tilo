@@ -205,7 +205,7 @@ fn crosses_roots(entry: &RevocationEntry, certificates: &[DeviceCert]) -> bool {
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::SigningKey;
-    use tilo_relay_protocol::WorkspaceId;
+    use tilo_server_protocol::WorkspaceId;
     use tilo_user_identity::{
         DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert,
         sign_revocation_entry,

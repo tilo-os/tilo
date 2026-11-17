@@ -163,9 +163,9 @@ async fn only_member_hears_deleted(
     }
     back.close();
     let client = tilo_net::Client::builder().build().unwrap();
-    let host = tilo_relay_client::https::Origin::new(&client, &on_relay.relay);
+    let host = tilo_server_client::https::Origin::new(&client, &on_relay.relay);
     assert!(
-        tilo_relay_client::https::workspace_deleted(&host, workspace)
+        tilo_server_client::https::workspace_deleted(&host, workspace)
             .await
             .unwrap(),
         "the host's address says the workspace was deleted"
@@ -220,7 +220,7 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
         )
         .await;
     let workspace = made["workspace"]["id"].as_str().unwrap().to_owned();
-    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(&workspace).unwrap();
+    let workspace_id = tilo_server_protocol::WorkspaceId::parse(&workspace).unwrap();
     let kept = account
         .did(
             "account/workspaces#create",

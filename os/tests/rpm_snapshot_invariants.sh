@@ -29,7 +29,7 @@ mapfile -t frozen_consumers < <(
     "$repo/os/Containerfile" \
     "$repo/os/Containerfile.dev" \
     "$repo/os/Containerfile.host" \
-    "$repo/os/containers/tilo-relay/Containerfile" \
+    "$repo/os/containers/tilo-server/Containerfile" \
     "$repo/os/containers/tilo-api/Containerfile" \
     "$repo/os/containers/tilo-vm-host/Containerfile" \
     "$repo/os/dev/composefs/Containerfile"

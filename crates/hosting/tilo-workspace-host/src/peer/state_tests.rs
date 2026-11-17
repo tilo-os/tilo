@@ -13,7 +13,7 @@
 use super::private_transport_tests::certified_device;
 use super::*;
 use crate::workspace::{Membership, WorkspaceRuntime};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{RevocationList, UserIdentity};
 
 /// The workspace the fixtures here hold.
@@ -723,7 +723,7 @@ async fn a_member_over_the_change_limit_is_refused_and_keeps_the_session() {
         !matches!(
             &answers[0],
             Some(Envelope::CommitRefused {
-                refusal: tilo_relay_protocol::refusal::Refusal::TooFast { .. },
+                refusal: tilo_server_protocol::refusal::Refusal::TooFast { .. },
                 ..
             })
         ),
@@ -735,7 +735,7 @@ async fn a_member_over_the_change_limit_is_refused_and_keeps_the_session() {
     assert!(matches!(
         &answers[1],
         Some(Envelope::CommitRefused {
-            refusal: tilo_relay_protocol::refusal::Refusal::TooFast { .. },
+            refusal: tilo_server_protocol::refusal::Refusal::TooFast { .. },
             ..
         })
     ));

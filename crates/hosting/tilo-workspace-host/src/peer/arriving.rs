@@ -1,5 +1,5 @@
 //! Devices a workspace admitted through its entry that have not subscribed
-//! yet ([`tilo_relay_protocol::entering`]), and the frames committed for them
+//! yet ([`tilo_server_protocol::entering`]), and the frames committed for them
 //! alone in the meantime: the Welcome to the workspace's channel group that
 //! the request in their entry asked for. Their subscription's replay writes
 //! these first, so the keys are the first thing a newcomer downloads.
@@ -14,7 +14,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tilo_relay_protocol::entering::{ENTERING_DEADLINE, MAX_ENTERING};
+use tilo_server_protocol::entering::{ENTERING_DEADLINE, MAX_ENTERING};
 use tokio::time::Instant;
 
 use super::replay::ReplayCatchup;
@@ -119,7 +119,7 @@ impl Arriving {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_relay_protocol::WorkspaceId;
+    use tilo_server_protocol::WorkspaceId;
 
     fn frame(n: u8) -> Arc<Envelope> {
         Arc::new(Envelope::Ready {

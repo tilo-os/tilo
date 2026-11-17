@@ -16,7 +16,7 @@ use tilo_app::feedback::{MaskedScreenshot, ReviewText};
 use tilo_feedback_transport::{
     Capture, Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::remote::Heard;
 use tilo_session_client::{Events, Link};
@@ -70,7 +70,7 @@ pub(crate) fn configure(
     owner: DeviceCert,
     destination: FeedbackDestination,
 ) -> Result<(), String> {
-    let workspace = tilo_relay_protocol::WorkspaceId::parse(&destination.workspace)
+    let workspace = tilo_server_protocol::WorkspaceId::parse(&destination.workspace)
         .ok_or("feedback workspace must be a uuid")?;
     Destination {
         workspace: destination.workspace.clone(),

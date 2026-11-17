@@ -155,7 +155,7 @@ impl Carets {
             .clone()
             .filter(|typing| typing.app == app)?;
         let (anchor, head) =
-            tilo_relay_protocol::live::presence_anchors(&typing.key, typing.start, typing.end)?;
+            tilo_server_protocol::live::presence_anchors(&typing.key, typing.start, typing.end)?;
         Some(ShellSelection {
             anchor: hex::encode(anchor.cursor),
             head: hex::encode(head.cursor),
@@ -279,13 +279,13 @@ const fn composing(composing: bool) -> PresencePayload {
 /// The caret or selection `selection` names, as an app's presence carries it, and whether a draft
 /// is under way there.
 fn caret_of(selection: &ShellSelection) -> Option<Caret> {
-    let anchor = tilo_relay_protocol::live::LiveAnchor {
+    let anchor = tilo_server_protocol::live::LiveAnchor {
         cursor: hex::decode(&selection.anchor).ok()?,
     };
-    let head = tilo_relay_protocol::live::LiveAnchor {
+    let head = tilo_server_protocol::live::LiveAnchor {
         cursor: hex::decode(&selection.head).ok()?,
     };
-    let (key, start, end) = tilo_relay_protocol::live::read_presence_anchors(&anchor, &head)?;
+    let (key, start, end) = tilo_server_protocol::live::read_presence_anchors(&anchor, &head)?;
     let payload = if start == end {
         PresencePayload::Caret { pos: start }
     } else {
@@ -355,7 +355,7 @@ mod tests {
             let key = PresenceKey::Widget {
                 path: vec![collab_types::presence::PathSegment::Field("block-1".into())],
             };
-            let (anchor, head) = tilo_relay_protocol::live::presence_anchors(&key, 7, 7).unwrap();
+            let (anchor, head) = tilo_server_protocol::live::presence_anchors(&key, 7, 7).unwrap();
             let said = ShellSelection {
                 anchor: hex::encode(anchor.cursor),
                 head: hex::encode(head.cursor),
@@ -369,7 +369,7 @@ mod tests {
                     composing: 1,
                 })
             );
-            let (anchor, head) = tilo_relay_protocol::live::presence_anchors(&key, 2, 9).unwrap();
+            let (anchor, head) = tilo_server_protocol::live::presence_anchors(&key, 2, 9).unwrap();
             let said = ShellSelection {
                 anchor: hex::encode(anchor.cursor),
                 head: hex::encode(head.cursor),

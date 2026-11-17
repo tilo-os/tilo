@@ -31,13 +31,13 @@ case $image in
     # The relay and the filesystem replica in one feature resolution, as the image compiled them:
     # separate Cargo invocations recompile the shared dependencies whose selected features differ
     # by package root.
-    packages=(-p tilo-relay -p tilo-fs --bins)
-    bins=(tilo-relay tilo-relay-admin tilo-enroll fs) ;;
+    packages=(-p tilo-server -p tilo-fs --bins)
+    bins=(tilo-server tilo-server-admin tilo-enroll fs) ;;
   host)
     # The server OS: the relay and replica, the hosted-VM service and its jail helper, the API
     # server, and the boot tools the update log and the boot-entry pass read. One feature
     # resolution, so the shared workspace crates compile once.
-    packages=(-p tilo-relay -p tilo-fs --bin tilo-relay --bin tilo-relay-admin \
+    packages=(-p tilo-server -p tilo-fs --bin tilo-server --bin tilo-server-admin \
                 --bin tilo-enroll --bin fs
               -p legacy-vm --bin tilo-legacy --bin tilo-hosted-jail
               -p tilo-api --bin tilo-api
@@ -45,7 +45,7 @@ case $image in
               -p tilo-image-policy-check --bin tilo-image-policy-check
               -p tilo-user-identity --bin tilo-image-trust
               -p tilo-board-successor --bin tilo-board-successor)
-    bins=(tilo-relay tilo-relay-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api
+    bins=(tilo-server tilo-server-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api
           tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor) ;;
   *)
     die "unknown server image $image: api, vm-host, relay or host" ;;

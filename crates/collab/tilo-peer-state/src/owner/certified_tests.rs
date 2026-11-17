@@ -52,7 +52,7 @@ fn actual_redemption_at(
         "Joining device",
     );
     let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(workspace).unwrap();
+    let workspace_id = tilo_server_protocol::WorkspaceId::parse(workspace).unwrap();
     let hint = WorkspaceDeviceHintV1 {
         version: 1,
         holds_keys: true,

@@ -113,7 +113,7 @@ TILO_SH_REMOTE=0 runs everything here instead (needed for --images and the VM
 host, and for \`check\`).
 
 What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
-  relay     tilo-relay workspace through the Lounge image's entrypoint, as tilo.sh's
+  relay     tilo-server workspace through the Lounge image's entrypoint, as tilo.sh's
             relay
   tls       production's Caddy and Caddyfile in front of it, plain HTTP:
             http://127.0.0.1:BASE (eu1.tilo.sh) and http://127.0.0.1:BASE+6
@@ -494,7 +494,7 @@ relay_env() {
     "TILO_WORKSPACES_DESCRIPTION=The Tilo community: chat, notes and a shared desktop"
     TILO_WORKSPACES_DEFAULT_ROLE=editor
     TILO_WORKSPACES_LAYOUT=shared
-    "TILO_WORKSPACES_RELAY_ORIGIN=$relay_origin"
+    "TILO_WORKSPACES_SERVER_ORIGIN=$relay_origin"
     "TILO_WORKSPACES_LIVE=127.0.0.1:$packet_port"
     "TILO_WORKSPACES_IROH_LISTEN=127.0.0.1:$iroh_port"
     "TILO_WORKSPACES_LIVE_ORIGIN=$live_origin"
@@ -513,7 +513,7 @@ relay_env() {
     "TILO_WORKSPACES_RESEND_URL=http://127.0.0.1:$mail_port/emails"
     # Production's listeners, which its pod binds on all addresses, here on
     # loopback only.
-    "TILO_WORKSPACES_RELAY_PLAIN=127.0.0.1:$plain_port"
+    "TILO_WORKSPACES_SERVER_PLAIN=127.0.0.1:$plain_port"
     "TILO_WORKSPACES_HTTP=127.0.0.1:$routes_port"
     "TILO_WORKSPACES_WEB=127.0.0.1:$relay_web_port"
     "TILO_WORKSPACES_LINK=127.0.0.1:$link_port"
@@ -907,8 +907,8 @@ find_enroll() {
   if [[ -n ${TILO_SH_TILO_ENROLL:-} ]]; then printf '%s' "$TILO_SH_TILO_ENROLL"; return; fi
   local candidate=${CARGO_TARGET_DIR:-$repo/target}/debug/tilo-enroll
   if [[ ! -x $candidate ]]; then
-    say 'building tilo-enroll (cargo.sh build -p tilo-relay --bin tilo-enroll)'
-    (cd "$repo" && "$here/cargo.sh" build -p tilo-relay --bin tilo-enroll >&2) \
+    say 'building tilo-enroll (cargo.sh build -p tilo-server --bin tilo-enroll)'
+    (cd "$repo" && "$here/cargo.sh" build -p tilo-server --bin tilo-enroll >&2) \
       || die 'could not build tilo-enroll; or set TILO_SH_TILO_ENROLL'
   fi
   printf '%s' "$candidate"
@@ -1093,9 +1093,9 @@ build_programs() {
     from=$repo/target/$builder_stage/programs
   else
     say "building the programs ($cargo build --profile $profile; only what changed compiles)"
-    (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-relay/agents \
-      -p tilo-relay -p discord-worker -p tilo-api -p fake-discord -p tilo-cli \
-      --bin tilo-relay --bin discord-worker --bin tilo-api --bin fake-discord --bin tilo >&2) \
+    (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-server/agents \
+      -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p tilo-cli \
+      --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin tilo >&2) \
       || die "the build failed (above); if it built but did not bring the programs back, TILO_SH_CARGO names another cargo drop-in to build with"
   fi
   copy_programs "$from"
@@ -1154,7 +1154,7 @@ bundle_stage() {
 copy_programs() {
   local from=$1 file
   mkdir -p "$programs"
-  for file in tilo-relay discord-worker tilo-api fake-discord tilo; do
+  for file in tilo-server discord-worker tilo-api fake-discord tilo; do
     [[ -x $from/$file ]] || die "the build left no $from/$file; TILO_SH_CARGO names another cargo drop-in to build with"
     cmp -s "$from/$file" "$programs/$file" && continue
     cp --reflink=auto "$from/$file" "$programs/.$file.next" || die "could not copy $file"
@@ -1190,10 +1190,10 @@ lay_out_lounge() {
     # programs, the catalog, the files the image's context takes and this
     # commit, whose history the app surfaces come from.
     local stamp container=$repo/os/containers/tilo-lounge
-    stamp=$(made_from "$programs/tilo-relay" "$programs/discord-worker" "$fonts/manifest.toml" \
+    stamp=$(made_from "$programs/tilo-server" "$programs/discord-worker" "$fonts/manifest.toml" \
       "$repo/tools/ci/publish/lounge-context.sh" "$container/Containerfile" "$container/Containerfile.dockerignore" \
       "$container/entrypoint.sh" "$repo/apps/discord/bridge/program.json")
-    if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp" || ! -x $native/lounge/bin/tilo-relay ]]; then
+    if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp" || ! -x $native/lounge/bin/tilo-server ]]; then
       TILO_LOUNGE_SURFACE_COMMIT=$commit \
         bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" >/dev/null \
         || die 'could not lay out the relay (lounge-context.sh)'
@@ -1201,7 +1201,7 @@ lay_out_lounge() {
     fi
     lounge=$native/lounge
   fi
-  [[ -x $lounge/bin/tilo-relay ]] || die "TILO_SH_LOUNGE names $lounge, which holds no bin/tilo-relay"
+  [[ -x $lounge/bin/tilo-server ]] || die "TILO_SH_LOUNGE names $lounge, which holds no bin/tilo-server"
   [[ -f $lounge/entrypoint.sh ]] || die "TILO_SH_LOUNGE names $lounge, which holds no entrypoint.sh"
   # The image installs the catalog at /usr/share/fonts/tilo; outside it a Tilo
   # program looks beside itself, and TILO_FONT_CATALOG names where the catalog
@@ -1422,7 +1422,7 @@ private_env() {
     "TMPDIR=$home/tmp" "PATH=$2:/usr/bin:/bin" LANG=C.UTF-8
   [[ -z ${RUST_LOG:-} ]] || printf 'RUST_LOG=%s\n' "$RUST_LOG"
   # The relay reads its own log filter, not RUST_LOG.
-  [[ -z ${TILO_RELAY_LOG:-} ]] || printf 'TILO_RELAY_LOG=%s\n' "$TILO_RELAY_LOG"
+  [[ -z ${TILO_SERVER_LOG:-} ]] || printf 'TILO_SERVER_LOG=%s\n' "$TILO_SERVER_LOG"
   [[ -z ${RUST_BACKTRACE:-} ]] || printf 'RUST_BACKTRACE=%s\n' "$RUST_BACKTRACE"
 }
 
@@ -1495,16 +1495,16 @@ start_native_api() {
 }
 
 # Who the Lounge's host is and where its page dials it, which the web entry
-# hands its page (TILO_WEB_HOME_HOST_INFO): what `tilo-relay page-host` prints
+# hands its page (TILO_WEB_HOME_HOST_INFO): what `tilo-server page-host` prints
 # for the running relay, asked at its public origin, as production's operator
 # asks it to set apps/tilo-web. LOUNGE is the relay's image with --images.
 page_host() {
   local image=${1:-}
   if [[ $mode == images ]]; then
-    podman_ run --rm --network host --read-only --entrypoint /usr/local/bin/tilo-relay \
+    podman_ run --rm --network host --read-only --entrypoint /usr/local/bin/tilo-server \
       -v "$state/trust-bundle.pem:$ca_path:ro,Z" "$image" page-host "$relay_origin"
   else
-    local relay=${lounge:-${TILO_SH_LOUNGE:-$native/lounge}}/bin/tilo-relay
+    local relay=${lounge:-${TILO_SH_LOUNGE:-$native/lounge}}/bin/tilo-server
     env -i PATH=/usr/bin:/bin "HOME=$runs" \
       bwrap --dev-bind / / --ro-bind "$state/trust-bundle.pem" "$ca_path" -- \
       "$relay" page-host "$relay_origin"
@@ -1514,7 +1514,7 @@ page_host() {
 start_native_web() {
   local workspace=$1 caddy container=$repo/crates/browser/tilo-browser-runtime/container info
   caddy=$(find_caddy)
-  info=$(page_host) || die 'the relay did not say who it is (tilo-relay page-host)'
+  info=$(page_host) || die 'the relay did not say who it is (tilo-server page-host)'
 
   { private_env web "$(dirname "$caddy")"
     image_env_here "$container/Containerfile" \
@@ -1889,7 +1889,7 @@ up_images() {
   # plain listener (its shelf) and the releases on this machine's loopback.
   start_releases
   local web_args=() info
-  info=$(page_host "$lounge") || die 'the relay did not say who it is (tilo-relay page-host)'
+  info=$(page_host "$lounge") || die 'the relay did not say who it is (tilo-server page-host)'
   mapfile -d '' web_args < <(web_env "$workspace" "$info" | env_args)
   start web --network "pasta:-T,$plain_port,-T,$releases_port" -p "127.0.0.1:$web_port:8080" \
     --read-only --tmpfs /tmp --user 10001 \

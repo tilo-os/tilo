@@ -10,7 +10,7 @@ use tilo_actions::{
     ActionDescriptor, ActionOutput,
     api::{ActionAddress, ApiError},
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use ui::resource::DocumentId;
 
 pub(super) fn document_id(wire: &str) -> Result<DocumentId, String> {

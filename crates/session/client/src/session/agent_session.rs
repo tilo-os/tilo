@@ -1,8 +1,8 @@
 //! A session declaring itself one run of an agent: the person's MCP server
 //! lists the run while the session lasts.
 
-use tilo_relay_protocol::Envelope;
-use tilo_relay_session::RelayClient;
+use tilo_server_protocol::Envelope;
+use tilo_server_session::RelayClient;
 
 use super::Task;
 use crate::remote::NOT_CONNECTED;

@@ -75,7 +75,7 @@ impl Offering for Reported {
     fn report(
         &self,
         _from: [u8; 32],
-        _whose: &tilo_relay_protocol::Whose,
+        _whose: &tilo_server_protocol::Whose,
         _offer: &Query,
     ) -> Answer {
         self.0.clone()
