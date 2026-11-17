@@ -1356,7 +1356,8 @@ impl Workbook {
         places
     }
 
-    /// Every sheet by name, and every populated cell by reference, input and value.
+    /// Every sheet by name, and every cell that shows something by reference, input and
+    /// value: the cells a formula spills into among them, which hold no input of their own.
     fn search(&self) -> Vec<SearchEntry> {
         let mut entries = Vec::new();
         for (id, sheet) in self.sheets.iter() {
@@ -1367,10 +1368,14 @@ impl Workbook {
             let Some(snap) = self.snapshot_of(id) else {
                 continue;
             };
-            for cell in crate::cell_actions::shown_cells(&snap) {
+            for cell in crate::cell_actions::shown_cells_and_spills(&snap) {
                 let reference = addr_to_a1(cell.col, cell.row);
                 let title = format!("{}!{reference}", sheet.name.0);
-                let text = format!("{reference} {title} {} {}", cell.raw, cell.display);
+                let text = if cell.raw.is_empty() {
+                    format!("{reference} {title} {}", cell.display)
+                } else {
+                    format!("{reference} {title} {} {}", cell.raw, cell.display)
+                };
                 entries.push(
                     SearchEntry::new(title, text).anchored(cell_anchor(id, (cell.col, cell.row))),
                 );
