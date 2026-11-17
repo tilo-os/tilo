@@ -1225,7 +1225,7 @@ fn tab_menu_renames_duplicates_deletes_moves_and_colours() {
     {
         let (mut app, mut doc) = seeded_app();
         app.begin_tab_rename(0);
-        for ch in ["L", "e", "d", "g", "e", "r"] {
+        for ch in ["L", "o", "g"] {
             assert!(feed(
                 &mut app,
                 &mut doc,
