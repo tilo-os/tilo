@@ -660,3 +660,47 @@ async fn only_the_host_hands_an_agent_its_turn() {
         })
         .await;
 }
+
+/// An action the agent's permissions deny is listed to it as not allowed, with where that is
+/// changed: it hears it is refused, never that the app has no such action.
+#[tokio::test(flavor = "current_thread")]
+async fn an_agent_is_listed_an_action_it_is_denied_as_not_allowed() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            set_notes_permission(&f, false);
+            let (_notes, _stream) = notes_target(&f).await;
+            let agent = answering(&f).await;
+            let query = tilo_actions::remote::CatalogueQuery {
+                app_id: Some("so.tilo.notes".into()),
+                max_results: 50,
+                ..Default::default()
+            };
+            let answer = remote(
+                &f,
+                &agent,
+                RemoteActionMessage::CatalogueRequest {
+                    correlation: 1,
+                    query,
+                },
+            )
+            .await;
+            let RemoteActionMessage::CatalogueResponse { result, .. } = answer else {
+                panic!("{answer:?}");
+            };
+            let page = result.expect("the catalogue answers");
+            let append = page
+                .rows
+                .iter()
+                .filter_map(|row| row.action.as_ref())
+                .find(|action| action.address.action == "append")
+                .expect("the denied action is listed");
+            assert!(
+                append.contract.availability.refusal().is_some(),
+                "{:?}",
+                append.contract.availability
+            );
+            drop(f);
+        })
+        .await;
+}

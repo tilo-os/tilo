@@ -785,8 +785,8 @@ fn an_agents_question_says_who_wants_what_and_hugs_its_words() {
     };
     let dialog = asked.dialog("request-1");
     assert_eq!(
-        dialog.title,
-        "Jane Doe’s agent wants to submit the application"
+        dialog.title, "Jane Doe’s agent asks to use “Submit the application”",
+        "the action is named as its app names it, whatever its words"
     );
     assert_eq!(dialog.heading, "Fill Jane Doe’s visa application");
     assert_eq!(

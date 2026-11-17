@@ -2321,7 +2321,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 // the id of another action the app offers.
                 let begins_another = starts && picked.is_ok();
                 match named_beyond_its_start(starts, &action, &resolved.path, picked) {
-                    Ok(found) => found,
+                    Ok((at, found)) => (at, super::refusal::not_allowed(found)?),
                     // The open's own arguments are a file, which reaches the app's open whether
                     // the app runs or not. Arguments that name no file are another action's where
                     // the app offers one the word begins: the caller is told which, and nothing
@@ -2441,11 +2441,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         else {
             return Ok(None);
         };
-        Ok(page
-            .rows
+        page.rows
             .into_iter()
             .filter_map(|row| row.action)
-            .find(|found| found.address.resource == node.id && found.address.action == action))
+            .find(|found| found.address.resource == node.id && found.address.action == action)
+            .map(super::refusal::not_allowed)
+            .transpose()
     }
     /// The provider of a running instance of the installed app `app_id`, starting the app in
     /// the workspace when none runs yet, without a window: where an invocation of the app's own

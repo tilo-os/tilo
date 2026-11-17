@@ -511,6 +511,17 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
             .any(|row| row.scope == "app:so.tilo.notes"),
         "the review lists the installed app though no window of it is open: {review:?}"
     );
+    // An agent never carries out an outside effect unasked: that line offers no Allow.
+    let notes = listed_app(&session, "app:so.tilo.notes");
+    let choices = |kind: &str| {
+        notes
+            .kinds
+            .iter()
+            .find(|line| line.kind == kind)
+            .map(|line| line.choices.clone())
+    };
+    assert_eq!(choices("change"), Some(vec![0, 1, 2]), "{notes:?}");
+    assert_eq!(choices("outside"), Some(vec![1, 2]), "{notes:?}");
     choose(&mut app, "Notes Changes", "Ask first");
     settle(&mut session, &mut app);
     assert_eq!(

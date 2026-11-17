@@ -570,6 +570,39 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase an_outside_effect_offers_only_the_answers_it_may_be_given;
+    // An agent never carries out an outside effect unasked: its line offers Ask
+    // first and Deny, never an Allow the workspace would then refuse.
+    {
+        let (mut app, state) = mounted("agent-review");
+        let nodes: std::collections::HashMap<_, _> =
+            app.harness().a11y_nodes().into_iter().collect();
+        let offered = |name: &str| -> Vec<String> {
+            let (_, group) = nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(name))
+                .unwrap_or_else(|| panic!("{name:?} is shown"));
+            group
+                .children()
+                .iter()
+                .filter_map(|child| nodes.get(child)?.label().map(str::to_owned))
+                .collect()
+        };
+        assert_eq!(offered("Notes Reading"), ["Allow", "Ask first", "Deny"]);
+        assert_eq!(offered("Notes Outside effects"), ["Ask first", "Deny"]);
+        press(&mut app, "ws-agent-answer-so.tilo.notes-outside:segment:0");
+        assert_eq!(
+            state.take_asked(),
+            [WorkspaceSettingsEffect::SetAgentAnswer {
+                agent: "claude".to_owned(),
+                scope: "so.tilo.notes".to_owned(),
+                kind: "outside".to_owned(),
+                answer: "ask".to_owned(),
+            }],
+            "its first choice is Ask first"
+        );
+    }
+
     phase in_a_review_escape_goes_back_to_the_agents;
     {
         let (mut app, state) = mounted("agent-review");

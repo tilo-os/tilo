@@ -1514,6 +1514,7 @@ fn the_agents_mark_is_the_keyboards_stop_after_the_tab_list() {
         1,
         Some(tilo_desktop_model::ownership::OpenedBy {
             run: "agent-session:7".into(),
+            agent: "scribe".into(),
             label: AGENT.into(),
             title: "Fill Jane Doe's visa application".into(),
         })

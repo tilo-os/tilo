@@ -2267,6 +2267,7 @@ impl AgentMember {
                     || format!("agent:{}", crate::control::agent_id(delegation)),
                     |running| running.id.clone(),
                 ),
+                agent: crate::control::agent_id(delegation).to_owned(),
                 label: delegation.label.clone(),
                 title: self
                     .running

@@ -72,6 +72,7 @@ impl Worker {
             .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)
             .map(|group| tilo_desktop_model::ownership::OpenedBy {
                 run: group.id,
+                agent: caller.acting().agent_id().unwrap_or_default().to_owned(),
                 // The agent, by its own name; its session, by the title it gave.
                 label: caller
                     .agent_session()

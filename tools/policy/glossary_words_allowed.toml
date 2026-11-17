@@ -426,3 +426,8 @@ paths = ["crates/runtime/tilo-mcp/src/devices.rs"]
 reason = "The helper that drives a test phase's async body on a current-thread runtime."
 words = ["run"]
 paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs"]
+
+[[allow]]
+reason = "tokio's LocalSet method that drives a future to completion."
+words = ["run"]
+identifiers = ["run_until"]
