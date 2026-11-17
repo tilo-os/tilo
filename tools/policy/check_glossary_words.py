@@ -16,7 +16,11 @@ identifier the word is part of. Every other use counts.
 `glossary_words_baseline.txt` holds how many uses each word still has while
 it is being renamed. A count only goes down: a commit that adds uses fails,
 and a commit that removes some lowers the count (the pre-commit hook recounts
-the index, writes the counts and stages them). A word the baseline does not list has no uses at all.
+the index, writes the counts and stages them). That never raises a count by
+what the tree already held: uses that arrived unjudged (a commit made before
+its base had this check, then rebased onto it) stay above the baseline, where
+judging the tree names their word, until they are renamed. A word the baseline
+does not list has no uses at all.
 
     check_glossary_words.py            judge the tree
     check_glossary_words.py --staged   judge what the commit changes (the hook)
@@ -272,7 +276,10 @@ def judge_tree() -> int:
 
 def judge_staged() -> int:
     """A commit adds no use to the files it stages. When it removes some, or
-    changes what counts, the baseline is recounted from the index."""
+    changes what counts, the baseline is recounted from the index: a count
+    goes down to what is left, and up only by what the commit itself makes
+    count (an allowed use that no longer is one), never by uses the tree
+    held unjudged before it."""
     names = [
         name
         for name in git("diff", "--cached", "--name-only", "--no-renames", "-z").decode().split("\0")
@@ -312,6 +319,25 @@ def judge_staged() -> int:
     if not recount and not any(count < 0 for count in delta.values()):
         return 0
     total = Counter(hit.word for hit in hits(matcher, allowed, ["--cached"], None))
+    if has_head:
+        # A staged baseline may lower a count by hand and never raises one.
+        may, staged_may = read_baseline(show("HEAD", BASELINE)), read_baseline(show("", BASELINE))
+        grown: Counter = Counter()
+        if recount:
+            # What counts may have changed. A count rises by what this commit
+            # itself makes count: the index against HEAD's tree as HEAD counted it.
+            _, head_matcher, head_allowed = setup("HEAD")
+            head_total = Counter(
+                hit.word for hit in hits(head_matcher, head_allowed, ["HEAD"], None)
+            )
+            grown = Counter({word: total[word] - head_total[word] for word in words})
+        for word in words:
+            # A word new to the glossary starts at its count. Any other keeps
+            # the uses that reached the tree unjudged above its count, where
+            # judging the tree names the word until they are renamed.
+            if word in head_words:
+                allowed_before = min(may.get(word, 0), staged_may.get(word, 0))
+                total[word] = min(total[word], allowed_before + max(0, grown[word]))
     wanted = render_baseline(total, words)
     if (show("", BASELINE) or "") != wanted:
         if (show("", BASELINE) or "") != (show(None, BASELINE) or ""):
