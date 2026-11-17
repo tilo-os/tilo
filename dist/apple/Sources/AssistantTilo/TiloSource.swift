@@ -44,6 +44,13 @@ public final class TiloSource: AssistantSource {
     private var toldByMessage: [String: ToldThing] = [:]
     /// The things told that still wait for the person, by the piece each is shown as.
     private var toldPieces: [Chat: [Item.ID: String]] = [:]
+    /// The things told that offer something to press, by the piece each is shown as.
+    private var toldOffered: [Chat: [Item.ID: ToldThing]] = [:]
+    /// The piece of the main chat each thing told is shown as, by the thing's id.
+    private var toldShown: [String: Item.ID] = [:]
+    /// What the person was told while they were away, as their server counted it when this device got in.
+    private var toldSince: ToldSince?
+    private let since = Told<SinceLeft?>(nil)
     /// The place in the server's log that was read up to.
     private var toldUpTo = 0
     private var followsTold = false
@@ -201,6 +208,10 @@ public final class TiloSource: AssistantSource {
         learnedOnHost = []
         toldByMessage = [:]
         toldPieces = [:]
+        toldOffered = [:]
+        toldShown = [:]
+        toldSince = nil
+        since.set(nil)
         toldUpTo = 0
         toldWanted = false
         toldRefused = false
@@ -402,11 +413,31 @@ public final class TiloSource: AssistantSource {
     /// The person's assistant among a workspace's agents: the active one they keep that no
     /// outside client connects as and that is nobody's sub-agent, the earliest made.
     private static func assistant(among all: [JSON], of person: String) -> JSON? {
+        assistants(among: all, of: person).first
+    }
+
+    /// Every agent that could be the person's assistant, the earliest made first. Two made in
+    /// the same moment stand in the order of their ids, so every device reads the same first.
+    private static func assistants(among all: [JSON], of person: String) -> [JSON] {
         all.filter {
             ChatMember($0["keeper"])?.id == person && ($0["mcp_client"]?.isNull ?? true) && ($0["sub"]?.isNull ?? true)
                 && variant($0["state"]) == "active" && $0["id"]?.string != nil
         }
-        .min { ($0["created_at"]?.number ?? 0) < ($1["created_at"]?.number ?? 0) }
+        .sorted {
+            let made = ($0["created_at"]?.number ?? 0, $1["created_at"]?.number ?? 0)
+            return made.0 == made.1 ? ($0["id"]?.string ?? "") < ($1["id"]?.string ?? "") : made.0 < made.1
+        }
+    }
+
+    /// Chat's own name for the mark that the workspace's server answers for an agent.
+    private static let answeredByServer = "on_host"
+
+    /// Whether an agent beside the assistant is one another device of the person's made as its
+    /// assistant in the same moment: it carries the name the app gives one, and the server
+    /// answers for it nowhere yet. Only such a one is taken back; an agent the person made and
+    /// named, or one that already answers, is theirs to keep.
+    private static func isTwin(_ agent: JSON) -> Bool {
+        agent["name"]?.string == assistantName && agent[answeredByServer]?.bool != true
     }
 
     /// What a new assistant is called until its person renames it.
@@ -456,7 +487,13 @@ public final class TiloSource: AssistantSource {
                 try await engine.askAgents("create-agent", ["name": .string(TiloSource.assistantName)])
                 all = try await agentsOnServer()
                 guard let made = TiloSource.assistant(among: all, of: me)?["id"]?.string else { throw TiloEngine.Problem.noAnswer }
-                try await engine.askAgents("set-agent-on-host", ["agent": .string(made), "on_host": true])
+                try await engine.askAgents("set-agent-on-host", ["agent": .string(made), TiloSource.answeredByServer: true])
+                // Another device of the person's found none in the same moment and made one too.
+                // The earliest made is the assistant on both, and what was made after it is
+                // taken back, so the person keeps one and no agent nobody writes to.
+                for twin in TiloSource.assistants(among: all, of: me).dropFirst() where TiloSource.isTwin(twin) {
+                    if let id = twin["id"]?.string { _ = try? await engine.askAgents("retire-agent", ["agent": .string(id)]) }
+                }
             }
             if let found = TiloSource.assistant(among: all, of: me) {
                 take(found, of: me)
@@ -669,6 +706,8 @@ public final class TiloSource: AssistantSource {
                         }
                         await self.look()
                     }
+                    // What happened while the person was away is counted at their first look after.
+                    if !waits { await self.readSince() }
                     waits = true
                 } catch TiloEngine.Problem.refused {
                     // A server that tells nothing this way is not asked again before the device gets in anew.
@@ -681,6 +720,20 @@ public final class TiloSource: AssistantSource {
             self?.followsTold = false
         }
     }
+
+    /// Ask what the person was told while they were away. Their server counts that stretch at
+    /// the first look after it, which this device's first read of its log was.
+    private func readSince() async {
+        toldSince = try? await engine.toldSinceLeft()
+        saySince()
+    }
+
+    private func saySince() {
+        let said = toldSince.map { TiloSource.since($0, shown: toldShown) }
+        since.set(said?.isEmpty == false ? said : nil)
+    }
+
+    public nonisolated func sinceLeft() -> AsyncStream<SinceLeft?> { since.stream() }
 
     /// The pieces of one conversation's messages, oldest first.
     ///
@@ -700,6 +753,8 @@ public final class TiloSource: AssistantSource {
             }
         }
         var waiting: [Item.ID: String] = [:]
+        var offered: [Item.ID: ToldThing] = [:]
+        var shown: [String: Item.ID] = [:]
         let made = read.compactMap { message -> Item? in
             guard causes[message.name] == nil else { return nil }
             var item = piece(of: message, in: chat, isFirst: message.id == read.first?.id)
@@ -721,10 +776,19 @@ public final class TiloSource: AssistantSource {
                 }
             }
             item.isImportant = told.isImportant
+            // Why it did not notify, what is offered under its notice, how often it was raised again.
+            TiloSource.mark(&item, as: told)
+            shown[told.id] = item.id
+            if !item.offers.isEmpty { offered[item.id] = told }
             if told.reaches, !told.isSettled { waiting[item.id] = told.id }
             return item
         }
         toldPieces[chat] = waiting
+        toldOffered[chat] = offered
+        if chat == .main {
+            toldShown = shown
+            saySince()
+        }
         return made
     }
 
@@ -734,6 +798,24 @@ public final class TiloSource: AssistantSource {
         guard let told = toldPieces[chat]?[item] else { return }
         toldPieces[chat]?[item] = nil
         try? await engine.acknowledge(told: told, device: deviceName)
+    }
+
+    /// The person pressed one of the things their server offers with a piece, where they were
+    /// told of it. The action is invoked as the person on this device, with the arguments
+    /// their server gave and no others, and their server hears which one it was.
+    public func take(_ offer: Offer.ID, of item: Item.ID, in chat: Chat) async throws {
+        guard let told = toldOffered[chat]?[item], let wanted = told.offers.first(where: { $0.id == offer.value }),
+              TiloSource.mayPress(wanted)
+        else { throw SourceProblem.refused("This is no longer offered") }
+        if wanted.action == "answer-question", let message = wanted.arguments["message"]?.string,
+           let words = wanted.arguments["answer"]?.string {
+            // A question's answer goes the way the app's own answer to it goes.
+            try await answer(message, words, detail: nil)
+        } else {
+            try await taken { try await self.engine.invoke(wanted.action, on: wanted.resource, wanted.arguments.object ?? [:]) }
+        }
+        toldPieces[chat]?[item] = nil
+        try? await engine.acknowledge(told: told.id, by: wanted.id, device: deviceName)
     }
 
     private func piece(of message: ChatMessage, in chat: Chat, isFirst: Bool) -> Item {

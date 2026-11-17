@@ -62,7 +62,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
 
     /// Do the one action `path` names. One of Files' verbs on the workspace's own folder
     /// ([`in_workspace_folder`]), which is on no one device, is asked of the workspace, with no
-    /// app started for it; every other action is done in the app that offers it.
+    /// app started for it; every other action is done in the app that offers it. A file read
+    /// by its bare name is first the entry Files shows by that name where the agent acts
+    /// ([`Self::read_where_shown`]).
     pub(super) async fn do_one_value(
         &self,
         path: &str,
@@ -77,6 +79,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             && let Some(action) = parsed.action.as_deref()
             && in_workspace_folder(&parsed, action, &arguments)
         {
+            if reads_by_bare_name(action, &arguments)
+                && let Some(read) = self.read_where_shown(path, &arguments, wait_ms).await
+            {
+                return read;
+            }
             let files = fs_protocol::tree::FILES_APP;
             let value = self
                 .app_in_workspace(files, action, arguments, invocation, wait_ms)
@@ -89,6 +96,37 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             });
         }
         Box::pin(self.do_in_app(path, arguments, invocation, wait_ms)).await
+    }
+
+    /// The read of a file named by its bare name, done by Files where the agent acts, when
+    /// Files is started there and shows an entry by that name: an agent that sees a folder in
+    /// Files on its device and names one of its entries means that entry, as it did before a
+    /// workspace's own folder was read by a path. `None` where nothing of Files is started (a
+    /// turn on a server), or where the folder it shows holds no such entry: the name is then
+    /// a path in the workspace's own folder. What Files refuses for another reason (a file
+    /// that is no text) is its answer.
+    async fn read_where_shown(
+        &self,
+        path: &str,
+        arguments: &serde_json::Map<String, Value>,
+        wait_ms: Option<u64>,
+    ) -> Option<Result<Done, super::Failure>> {
+        let (_, started) = self.providers().await.ok()?;
+        // An app's own instance is named by its number; what a holder serves of the
+        // workspace's documents is not Files showing a folder.
+        let shows = started.iter().any(|(provider, app)| {
+            provider.parse::<u64>().is_ok()
+                && app["app_id"].as_str() == Some(fs_protocol::tree::FILES_APP)
+        });
+        if !shows {
+            return None;
+        }
+        let read = Box::pin(self.do_in_app(path, arguments.clone(), None, wait_ms)).await;
+        let said = match &read {
+            Ok(Done::Invoked { value, .. } | Done::Launched { value, .. }) => outcome(value).text,
+            Err(failure) => failure.message.clone(),
+        };
+        (!said.contains(NOT_SHOWN)).then_some(read)
     }
 
     /// `action` (`open` or `start`) of the app `resolved` names, which runs already: it is there,
@@ -265,6 +303,22 @@ fn reads_workspace_folder(action: &str, arguments: &serde_json::Map<String, Valu
                 .get("file")
                 .and_then(Value::as_str)
                 .is_some_and(|file| !file.trim_start().starts_with(['/', '~'])))
+}
+
+/// What Files says of a name that is neither an absolute path nor an entry of the folder it
+/// shows (`FilesState::named_file` in the Files app): by these words a bare name it does not
+/// show is known, and is then read as a path in the workspace's own folder.
+const NOT_SHOWN: &str = "an entry of the folder shown";
+
+/// Whether `action` with `arguments` reads a file named by its bare name, with no folder
+/// before it: as much the name of an entry of the folder Files shows as a path in the
+/// workspace's own folder.
+fn reads_by_bare_name(action: &str, arguments: &serde_json::Map<String, Value>) -> bool {
+    action == fs_protocol::tree::READ_TEXT
+        && arguments
+            .get("file")
+            .and_then(Value::as_str)
+            .is_some_and(|file| !file.trim().is_empty() && !file.contains('/'))
 }
 
 /// Whether `arguments` are those of an app's own `open` of a file: they name the file's

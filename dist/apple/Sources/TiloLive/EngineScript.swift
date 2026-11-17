@@ -287,7 +287,7 @@ public enum EngineScript {
       // the person's providers. It stands here, in no function a page's script could print.
       const pass = %PASS%;
       const providers = new Set(%PROVIDERS%);
-      const agentActions = new Set(['read', 'create-agent', 'set-agent-on-host']);
+      const agentActions = new Set(['read', 'create-agent', 'set-agent-on-host', 'retire-agent']);
       const holds = given => {
         if (typeof given !== 'string' || !pass || given.length !== pass.length) return false;
         let differs = 0;
@@ -358,8 +358,9 @@ public enum EngineScript {
           return true;
         },
         // The agents the workspace keeps (Chat's `chat.agent`), asked of the workspace's server
-        // as the person on this device: their read, one agent's read, and the two actions that
-        // make a person's assistant. Nothing else of Chat's document is asked this way.
+        // as the person on this device: their read, one agent's read, the two actions that
+        // make a person's assistant, and the one that takes back a second one made in the same
+        // moment. Nothing else of Chat's document is asked this way.
         async agents(given, action, argument, item) {
           const named = item === null || item === undefined || (typeof item === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(item));
           if (!holds(given) || !agentActions.has(action) || !named || (item && action !== 'read')) return unknown('chat.agent', action);

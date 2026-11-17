@@ -121,6 +121,11 @@ way. It reads text up to one mebibyte: a document, a spreadsheet, a PDF or a pic
 with the name of what reads it. Both read where the workspace is kept, so neither opens a window
 nor needs a computer of yours to be on.
 
+A bare name (`notes.md`, with no folder before it) that an agent asks on a computer where Files
+is open is first the entry by that name of the folder Files shows there, as the agent sees it
+listed. A name that folder does not hold, every path with a folder in it, and every name asked
+where Files is not open (an agent working on your server) is a file of the workspace's folder.
+
 `write-file` writes a file into a folder, making the folders on the way: from `text`, up to 256
 KiB, or from `content`, the `tilo.content:` reference an upload or another app's export answered,
 so a PDF Writer made lands in a task's folder. A name that is taken is refused; `replace: true`

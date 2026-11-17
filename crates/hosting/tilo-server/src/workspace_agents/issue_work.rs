@@ -8,7 +8,9 @@
 //!
 //! - Before a session it makes the issue's place when it has none (a note in Notes, linked from
 //!   the issue as Tasks' own "Write a note" links one, and a folder named for the issue), says
-//!   the session began, and tells it what the note reads now.
+//!   the session began, and tells it what the note reads now. The folder is made in the
+//!   workspace's files by Files' own `new-folder`, as the agent on its turn: an agent whose
+//!   rules refuse it Files has none, and its session is told so.
 //! - After a session it counts what the session cost and how long it worked.
 //! - A session that could not finish (the issue's budget, the day's limit, too many steps, a
 //!   failure) is written on the issue as stopped, with its plain line. Nothing here writes `done`.
@@ -17,7 +19,10 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tasks_model::{Asked, Issue, IssueAsk, MOST_LOST_SESSIONS, StoppedWhy, Work};
-use tilo_actions::remote::Caller;
+use tilo_actions::api::ActionAddress;
+use tilo_actions::remote::{
+    APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, RemoteActionTarget, workspace_provider,
+};
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::{Outcome, TASKS, invoke_named, money};
@@ -25,6 +30,8 @@ use crate::workspaces::Workspaces;
 
 /// The app that keeps the workspace's notes.
 const NOTES: &str = "so.tilo.notes";
+/// The app that keeps the workspace's files: its one folder, the tree its members mount.
+const FILES: &str = "so.tilo.file-explorer";
 /// Where Notes publishes the pages it keeps its notes in: the resource that makes a note.
 fn notes_pages() -> String {
     ui::resource::chain_resource_id(&ui::resource::DocumentId::derived(
@@ -93,6 +100,8 @@ impl Kept {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Place {
     pub(super) folder: String,
+    /// Why the folder could not be made, when it could not: it is named and is not there.
+    pub(super) no_folder: Option<String>,
     /// The note's resource in Notes; empty when none could be made.
     pub(super) note: String,
     /// Why no note could be made, when none could.
@@ -243,7 +252,9 @@ impl IssueWork {
 
     /// The issue's place, made when it has none: its folder's path and its note, kept on the
     /// issue, and what the note reads now. A note that cannot be made leaves the place with its
-    /// folder alone, and the turn is told so.
+    /// folder alone, and the turn is told so. The folder is made in the workspace's files
+    /// before every session ([`Self::make_folder`]); one that cannot be made keeps its name,
+    /// and the turn is told it is not there.
     pub(super) async fn place(&self, workspaces: &Workspaces, issue: &Kept) -> Place {
         let kept = issue.work.clone().unwrap_or_default();
         let folder = if kept.folder.is_empty() {
@@ -272,6 +283,10 @@ impl IssueWork {
                 tracing::warn!(workspace = %self.workspace, issue = %self.issue, %error, "an issue's place is not kept");
             }
         }
+        let no_folder = self.make_folder(&folder).await.err();
+        if let Some(error) = &no_folder {
+            tracing::warn!(workspace = %self.workspace, issue = %self.issue, %error, "an issue's folder is not made");
+        }
         let text = if note.is_empty() {
             None
         } else {
@@ -279,10 +294,37 @@ impl IssueWork {
         };
         Place {
             folder,
+            no_folder,
             note,
             no_note,
             text,
         }
+    }
+
+    /// Make the folder `folder` in the workspace's files, with the folders on the way to it:
+    /// Files' own `new-folder` by a path in the workspace, asked as the agent on this turn, so
+    /// with what its rules allow it of Files. A folder that is there is left as it is: every
+    /// session asks, none makes a second one, and one its person took away is there again.
+    ///
+    /// # Errors
+    /// The agent's rules refuse it Files, the path is none of the workspace, or the workspace
+    /// did not take the change: why the folder is not there, in words the turn is told.
+    async fn make_folder(&self, folder: &str) -> Result<(), String> {
+        let (parent, name) = folder.rsplit_once('/').unwrap_or(("", folder));
+        let mut arguments = Map::new();
+        arguments.insert("parent".into(), json!(parent));
+        arguments.insert("name".into(), json!(name));
+        let target = RemoteActionTarget {
+            provider: workspace_provider(&self.workspace),
+            address: ActionAddress {
+                resource: format!("{APPLICATION_RESOURCE_PREFIX}{FILES}"),
+                action: "new-folder".to_owned(),
+            },
+        };
+        let asked = InvokeArgument::Json(arguments);
+        super::invoke_at(&self.service, &self.caller, target, asked)
+            .await
+            .map(drop)
     }
 
     /// The document Notes keeps of the workspace.
@@ -464,10 +506,17 @@ pub(super) fn with_place(request: &str, work: &Work, place: &Place) -> String {
         );
         request.push_str(&note);
     }
-    let folder = format!(
-        "\n- The folder `{}` in the workspace's files: put files there.",
-        place.folder
-    );
+    let folder = match place.no_folder.as_deref() {
+        None => format!(
+            "\n- The folder `{}` in the workspace's files: put files there.",
+            place.folder
+        ),
+        Some(why) => format!(
+            "\n- It has no folder: `{}` could not be made in the workspace's files ({why}). \
+             Put no files there; keep what a later session needs in its note or its thread.",
+            place.folder
+        ),
+    };
     request.push_str(&folder);
     if let Some(text) = place.text.as_deref().filter(|text| !text.is_empty()) {
         request.push_str("\n\nThe note as it reads now:\n");

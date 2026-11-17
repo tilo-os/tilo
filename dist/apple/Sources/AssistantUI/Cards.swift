@@ -238,16 +238,37 @@ struct ModelCard: View {
     @Environment(AssistantModel.self) private var model
     @State private var chosen: ModelChoice?
 
+    /// The providers the offered models are of, each once, in the order they are offered.
+    static func providers(of models: [ModelChoice]) -> [String] {
+        var named: [String] = []
+        for choice in models where !named.contains(choice.provider) { named.append(choice.provider) }
+        return named
+    }
+
+    /// What the box says beside its name: the chosen model's provider, or the one provider
+    /// every offered model is of. Where models of several are offered and none is chosen yet,
+    /// it names no provider: the menu tells them apart.
+    static func note(chosen: ModelChoice?, among models: [ModelChoice]) -> String {
+        if let chosen { return chosen.provider }
+        let named = providers(of: models)
+        return named.count == 1 ? named[0] : ""
+    }
+
     var body: some View {
+        let providers = ModelCard.providers(of: models)
         Bubble { MarkdownText(text: AssistantWords.needsModel.said) }
-        CardBox(name: AssistantWords.model.said, note: chosen?.provider ?? models.first?.provider ?? "") {
+        CardBox(name: AssistantWords.model.said, note: ModelCard.note(chosen: chosen, among: models)) {
             if let chosen { Settled(words: AssistantWords.answersOn.said(["model": chosen.name])) }
             Menu {
-                ForEach(models) { choice in
-                    Button(choice.name) {
-                        chosen = choice
-                        model.choose(choice.id)
+                if providers.count > 1 {
+                    // Models of several providers stand under their provider's name.
+                    ForEach(providers, id: \.self) { provider in
+                        Section(provider) {
+                            ForEach(models.filter { $0.provider == provider }) { pick($0) }
+                        }
                     }
+                } else {
+                    ForEach(models) { pick($0) }
                 }
             } label: {
                 Text((chosen == nil ? AssistantWords.chooseModel : AssistantWords.change).said)
@@ -257,6 +278,13 @@ struct ModelCard: View {
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
+        }
+    }
+
+    private func pick(_ choice: ModelChoice) -> some View {
+        Button(choice.name) {
+            chosen = choice
+            model.choose(choice.id)
         }
     }
 }

@@ -13,6 +13,11 @@ public struct Notice: Equatable, Sendable {
     /// The answer offered as a button, where the piece asks something: the one the assistant
     /// expects first. Beside it the system offers Open.
     public var answer: Answer?
+    /// What the person's Tilo offers under it, the expected one first. Where it offers
+    /// something, these are the buttons, and `answer` is not shown beside them.
+    public var offers: [Offer] = []
+    /// The agent whose own telling carried the offers, by name: said with them.
+    public var offeredBy: String?
 
     public enum Kind: String, Sendable, CaseIterable {
         /// Something waits for the person's yes: a question, a secret, a sign-in.
@@ -38,6 +43,12 @@ public struct Notice: Equatable, Sendable {
     }
 
     public var interrupts: Bool { kind != .quiet }
+
+    /// What the system shows as the notice's words: its body, and under it who offers the
+    /// buttons, where an agent does.
+    public var words: String {
+        offeredBy.map { "\(body)\n\(AssistantWords.offeredBy.said(["name": $0]))" } ?? body
+    }
 }
 
 /// Which pieces are told to the person outside the window, and how.
@@ -49,13 +60,23 @@ public enum NoticePlan {
     /// The button that gives the offered answer, and the one that opens the app at the piece.
     public static let answerAction = "assistant.answer"
     public static let openAction = "assistant.open"
+    /// What a button's name begins with when it is one of the piece's offers: the offer's id follows.
+    public static let offerAction = "assistant.offer."
+    /// The system shows a handful of buttons under a notification; Open is one of them.
+    public static let mostOffers = 3
 
     public static func notice(for item: Item, in chat: Chat) -> Notice? {
         func made(_ kind: Notice.Kind, _ body: String, answer: Notice.Answer? = nil) -> Notice {
             // What interrupts says what the assistant chose to say there; what did not says why.
             let said = kind == .quiet ? body : item.notice.map(Markdown.plain) ?? body
-            return Notice(item: item.id, chat: chat, kind: kind, title: AssistantWords.assistant.said,
-                          subtitle: item.isImportant ? AssistantWords.important.said : nil, body: said, answer: answer)
+            var notice = Notice(item: item.id, chat: chat, kind: kind, title: AssistantWords.assistant.said,
+                                subtitle: item.isImportant ? AssistantWords.important.said : nil, body: said, answer: answer)
+            // What did not interrupt offers nothing to press: it is read in the app.
+            if kind != .quiet {
+                notice.offers = Array((item.offers.filter(\.isMain) + item.offers.filter { !$0.isMain }).prefix(mostOffers))
+                notice.offeredBy = notice.offers.compactMap(\.by).first
+            }
+            return notice
         }
         switch item.content {
         case .question(let asked) where asked.waits:
@@ -83,8 +104,45 @@ public enum NoticePlan {
     /// The name the system keeps a notice's buttons under. One per kind and offered answer, so
     /// the same answer always finds the same buttons.
     public static func category(of notice: Notice) -> String {
+        if !notice.offers.isEmpty {
+            return "assistant.\(notice.kind.rawValue).offers." + notice.offers.map { "\($0.id.value)=\($0.title)" }.joined(separator: "|")
+        }
         guard let answer = notice.answer else { return "assistant.\(notice.kind.rawValue)" }
         return "assistant.\(notice.kind.rawValue).\(answer.title)"
+    }
+}
+
+/// Why a piece did not notify its person, as the line the app says it in. Their Tilo decides
+/// whether a thing reaches them and gives the reason as a code; nothing here judges anything.
+public enum Quiet {
+    /// - Parameters:
+    ///   - title: a few words for what did not notify; empty where it has none.
+    ///   - code: their Tilo's word for why. `no-rule`: the person said nothing about what is
+    ///     important. `nothing-holds`: every line of their rule waits on `fact`, which is
+    ///     `value` now. `judged`: their own model decided by their rule, `words` is its line.
+    ///     `unjudged`: no model could be asked, `words` says why.
+    public static func line(about title: String, code: String, fact: String = "", value: String = "", words: String = "") -> String {
+        var why: String
+        var after = ""
+        switch code {
+        case "no-rule": why = AssistantWords.quietNoRule.said
+        case "nothing-holds" where !fact.isEmpty: why = AssistantWords.quietWhile.said(["fact": fact, "value": value])
+        case "judged" where !words.isEmpty: why = words
+        case "unjudged":
+            why = AssistantWords.quietUnjudged.said
+            after = words
+        default: why = AssistantWords.quietByRule.said
+        }
+        func ended(_ sentence: String) -> String {
+            let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let last = trimmed.last, !".!?…".contains(last) else { return trimmed }
+            return trimmed + "."
+        }
+        why = ended(why)
+        let what = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let line = what.isEmpty ? AssistantWords.quietLinePlain.said(["why": why])
+            : AssistantWords.quietLine.said(["what": what, "why": why])
+        return after.isEmpty ? line : "\(line) \(ended(after))"
     }
 }
 

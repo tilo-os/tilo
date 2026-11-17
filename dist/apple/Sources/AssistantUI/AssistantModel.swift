@@ -32,6 +32,8 @@ public final class AssistantModel {
     public private(set) var setup = Setup.unknown
     /// What Tilo said before it asked whether to pair this device, kept while its code is compared.
     public private(set) var pairingSaid: [String] = []
+    /// What the person was told while no device of theirs was looking. Nil: nothing to say of it.
+    public private(set) var sinceLeft: SinceLeft?
 
     public var place = Place.chat(.main)
     public var showsSidebar = true
@@ -56,6 +58,9 @@ public final class AssistantModel {
     @ObservationIgnored public var told: ((Item, Chat) -> Void)?
     /// Called for each piece that changed, so what was told about it can be taken back.
     @ObservationIgnored public var settled: ((Item, Chat) -> Void)?
+    /// Called for a piece that was told and now offers other things to press: what the system
+    /// still shows of it is brought up to date, and nothing is told again.
+    @ObservationIgnored public var offered: ((Item, Chat) -> Void)?
     @ObservationIgnored private var listeners: [Task<Void, Never>] = []
     @ObservationIgnored private var chats: [Chat: Task<Void, Never>] = [:]
 
@@ -83,6 +88,7 @@ public final class AssistantModel {
         follow(source.tasks()) { $0.tasks = $1 }
         follow(source.automations()) { $0.automations = $1 }
         follow(source.supervision()) { $0.supervision = $1 }
+        follow(source.sinceLeft()) { $0.sinceLeft = $1 }
         listen(.main)
     }
 
@@ -100,6 +106,7 @@ public final class AssistantModel {
         tasks = await first(source.tasks()) ?? []
         automations = await first(source.automations()) ?? []
         supervision = await first(source.supervision()) ?? Supervision()
+        sinceLeft = await first(source.sinceLeft()) ?? nil
         for chat in [Chat.main] + subAgents.map({ Chat.subAgent($0.id) }) {
             guard let change = await first(source.conversation(chat)) else { continue }
             var conversation = Conversation()
@@ -153,9 +160,17 @@ public final class AssistantModel {
             // words arrived: the person's Tilo said what it is a moment later. It is told now.
             // A piece that had something to tell before is settled: an answered question is
             // not told again for the mark it carries.
-            let was = before.first { $0.id == item.id }.flatMap { NoticePlan.notice(for: $0, in: chat)?.kind }
-            if was == nil, let now = NoticePlan.notice(for: item, in: chat)?.kind, now != .quiet {
+            // Why a piece did not notify is said the same way: listed once, when their Tilo says it.
+            let held = before.first { $0.id == item.id }
+            let was = held.flatMap { NoticePlan.notice(for: $0, in: chat)?.kind }
+            let now = NoticePlan.notice(for: item, in: chat)
+            if now != nil, was == nil || (was == .quiet && now?.interrupts == true) {
                 told?(item, chat)
+            } else if let held, now?.interrupts == true, item.raised > held.raised {
+                // Their Tilo raised it again because it insists and nobody saw it: it is told once more.
+                told?(item, chat)
+            } else if let held, now?.interrupts == true, item.waits || held.offers.isEmpty, item.offers != held.offers {
+                offered?(item, chat)
             } else {
                 settled?(item, chat)
             }
@@ -168,6 +183,11 @@ public final class AssistantModel {
     public func saw(_ item: Item.ID, in chat: Chat) {
         let source = source
         Task { await source.seen(item, in: chat) }
+    }
+
+    /// The person pressed one of the things offered with a piece, where they were told of it.
+    public func press(_ offer: Offer.ID, of item: Item.ID, in chat: Chat) {
+        Task { await self.call { try await self.source.take(offer, of: item, in: chat) } }
     }
 
     public func conversation(_ chat: Chat) -> Conversation {

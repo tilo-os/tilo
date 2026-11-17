@@ -446,8 +446,18 @@ is no piece: the answer stands under a line with the cause's name, and is a remi
 brief, or carries the mark, as the entry says. A piece that becomes one of these after its
 words arrived is told then, once. What the person saw, opened from its notification or
 arriving in the conversation they look at, is acknowledged to their server, which then tells
-them of it nowhere else. Not built: the line that says why something did not notify, what
-happened since the person left, and a notification's buttons from the entry's own actions.
+them of it nowhere else.
+
+What their server kept from notifying is listed with no sound and no banner, and its words
+say why, from the reason their server gives (`Quiet.line`): no rule of theirs, a line of
+their rule that waits on something, their own model's line, or that nobody could judge it.
+The buttons under a notice are the ones the entry offers (`Item.offers`), the expected one
+first, and a press invokes that action as the person and tells their server which one it
+was; an action of another app than Chat is not offered there, and neither is a permission
+that is to stay. A thing that insists is told again each time their server raises it, until
+the person saw it. What came while no device of theirs was looking (`since-you-left`) is one
+message at the top of the new stretch of the main chat: what waits, what was done without
+asking, what else came in.
 
 **Told while the app is closed** takes what nothing here makes: an App ID for
 `so.tilo.assistant` with Push Notifications and a profile for it, `aps-environment` in

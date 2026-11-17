@@ -31,7 +31,10 @@ async fn tree_of(hosted: &crate::harness::hosted::Hosted, workspace: &str) -> Tr
 }
 
 /// [`tree_of`], read from the workspaces a server keeps.
-async fn tree_kept(workspaces: &tilo_server::workspaces::Workspaces, workspace: &str) -> Tree {
+pub(super) async fn tree_kept(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+) -> Tree {
     let index = workspaces
         .resource_document(workspace, FILES_APP, &tree_document())
         .await

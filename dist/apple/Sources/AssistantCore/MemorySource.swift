@@ -26,6 +26,8 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         public var setup: Setup = .ready
         /// The models a provider offers once it is linked.
         public var offered: [ModelChoice] = []
+        /// What the person was told while they were away.
+        public var sinceLeft: SinceLeft?
 
         public init() {}
     }
@@ -44,6 +46,8 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     private let pairingCode: String?
     private let pairingAsk: PairingAsk?
     private let setupNow: Broadcast<Setup>
+    private let sinceNow: Broadcast<SinceLeft?>
+    private var presses: [Press] = []
     private let offered: [ModelChoice]
     private var linked: [ModelChoice] = []
     private var keys: [ProviderChoice.ID: Secret] = [:]
@@ -65,6 +69,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         pairingCode = content.pairingCode
         pairingAsk = content.pairingAsk
         setupNow = Broadcast(content.setup)
+        sinceNow = Broadcast(content.sinceLeft)
         offered = content.offered
         var feeds: [Chat: Feed] = [.main: Feed(content.main)]
         for agent in content.subAgents {
@@ -148,6 +153,38 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     // MARK: The first run
 
     public func setup() -> AsyncStream<Setup> { setupNow.stream() }
+
+    // MARK: Being told
+
+    /// One press of something offered with a piece.
+    public struct Press: Equatable, Sendable {
+        public var offer: Offer.ID
+        public var item: Item.ID
+        public var chat: Chat
+
+        public init(offer: Offer.ID, item: Item.ID, chat: Chat) {
+            self.offer = offer
+            self.item = item
+            self.chat = chat
+        }
+    }
+
+    /// Every offer the person pressed, in order: for a test.
+    public var pressed: [Press] { lock.withLock { presses } }
+
+    public func sinceLeft() -> AsyncStream<SinceLeft?> { sinceNow.stream() }
+
+    /// As if the person's Tilo had counted what happened while they were away.
+    public func setSinceLeft(_ since: SinceLeft?) {
+        sinceNow.set(since)
+    }
+
+    public func take(_ offer: Offer.ID, of item: Item.ID, in chat: Chat) async throws {
+        guard feed(chat)?.all.first(where: { $0.id == item })?.offers.contains(where: { $0.id == offer }) == true else {
+            throw SourceProblem.refused("This is no longer offered.")
+        }
+        lock.withLock { presses.append(Press(offer: offer, item: item, chat: chat)) }
+    }
 
     public func makeAssistant() async throws {
         try signedIn()

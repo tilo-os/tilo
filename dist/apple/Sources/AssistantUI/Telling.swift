@@ -23,6 +23,7 @@ public final class Teller: NSObject {
         // Every kind has its category from the start, so a push finds its buttons too.
         for kind in Notice.Kind.allCases { register("assistant.\(kind.rawValue)", answer: nil) }
         model.told = { [weak self] item, chat in self?.tell(item, in: chat) }
+        model.offered = { [weak self] item, chat in self?.bring(item, in: chat) }
         model.settled = { [weak self] item, _ in
             // Answered here or on another device: nothing is left to answer under the notification.
             if !item.waits { self?.withdraw(item.id) }
@@ -38,21 +39,45 @@ public final class Teller: NSObject {
     public func tell(_ item: Item, in chat: Chat) {
         guard let notice = NoticePlan.notice(for: item, in: chat) else { return }
         // What the person sees arrive is not told again, and their Tilo hears that they saw it.
-        if notice.interrupts && looksAt(chat) {
-            model.saw(item.id, in: chat)
+        // Why something did not notify is not listed for what they are looking at either.
+        if looksAt(chat) {
+            if notice.interrupts { model.saw(item.id, in: chat) }
             return
         }
+        hand(notice, of: item, quietly: false)
+    }
+
+    /// What is offered with a piece changed after it was told: the notice the system still
+    /// shows of it is brought up to date, without a sound and without lighting the screen.
+    /// A notice the person put away is not brought back.
+    public func bring(_ item: Item, in chat: Chat) {
+        guard let notice = NoticePlan.notice(for: item, in: chat), notice.interrupts else { return }
+        let request = Teller.request(item.id)
+        center.getDeliveredNotifications { [weak self] delivered in
+            guard delivered.contains(where: { $0.request.identifier == request }) else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.hand(notice, of: item, quietly: true) }
+            }
+        }
+    }
+
+    private func hand(_ notice: Notice, of item: Item, quietly: Bool) {
         let content = UNMutableNotificationContent()
         content.title = notice.title
         if let subtitle = notice.subtitle { content.subtitle = subtitle }
-        content.body = notice.body
+        content.body = notice.words
         // What did not interrupt is listed without a sound and without lighting the screen.
-        content.interruptionLevel = notice.interrupts ? .active : .passive
-        content.sound = notice.interrupts ? .default : nil
-        content.threadIdentifier = Teller.name(chat)
+        let sounds = notice.interrupts && !quietly
+        content.interruptionLevel = sounds ? .active : .passive
+        content.sound = sounds ? .default : nil
+        content.threadIdentifier = Teller.name(notice.chat)
         content.categoryIdentifier = NoticePlan.category(of: notice)
-        var fields = ["item": item.id.value, "chat": Teller.name(chat)]
-        if let answer = notice.answer {
+        var fields = ["item": item.id.value, "chat": Teller.name(notice.chat)]
+        if !notice.offers.isEmpty {
+            // The buttons are the ones the person's Tilo offers with it, the expected one first.
+            register(content.categoryIdentifier,
+                     buttons: notice.offers.map { (NoticePlan.offerAction + $0.id.value, $0.title) })
+        } else if let answer = notice.answer {
             fields["question"] = answer.question.value
             fields["choice"] = answer.choice.value
             register(content.categoryIdentifier, answer: answer.title)
@@ -72,12 +97,14 @@ public final class Teller: NSObject {
     }
 
     private func register(_ identifier: String, answer: String?) {
+        register(identifier, buttons: answer.map { [(NoticePlan.answerAction, $0)] } ?? [])
+    }
+
+    private func register(_ identifier: String, buttons: [(name: String, title: String)]) {
         guard categories[identifier] == nil else { return }
-        var actions: [UNNotificationAction] = []
-        if let answer {
-            // An answer acts for the person: the phone is unlocked first, and the app need not come forward.
-            actions.append(UNNotificationAction(identifier: NoticePlan.answerAction, title: answer,
-                                                options: [.authenticationRequired]))
+        // An answer acts for the person: the phone is unlocked first, and the app need not come forward.
+        var actions = buttons.map {
+            UNNotificationAction(identifier: $0.name, title: $0.title, options: [.authenticationRequired])
         }
         actions.append(UNNotificationAction(identifier: NoticePlan.openAction, title: AssistantWords.open.said,
                                             options: [.foreground]))
@@ -88,7 +115,9 @@ public final class Teller: NSObject {
 
     private func took(_ action: String, _ fields: [String: String]) {
         guard let item = fields["item"], let chat = Teller.chat(fields["chat"]) else { return }
-        if action == NoticePlan.answerAction, let question = fields["question"], let choice = fields["choice"] {
+        if action.hasPrefix(NoticePlan.offerAction) {
+            model.press(Offer.ID(String(action.dropFirst(NoticePlan.offerAction.count))), of: Item.ID(item), in: chat)
+        } else if action == NoticePlan.answerAction, let question = fields["question"], let choice = fields["choice"] {
             model.answer(Question.ID(question), with: Choice.ID(choice))
         } else if action == NoticePlan.openAction || action == UNNotificationDefaultActionIdentifier {
             model.show(Item.ID(item), in: chat)
@@ -121,7 +150,9 @@ extension Teller: UNUserNotificationCenterDelegate {
         _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .list, .sound])
+        // What did not interrupt is listed and nothing more.
+        let listed = notification.request.content.interruptionLevel == .passive
+        completionHandler(listed ? [.list] : [.banner, .list, .sound])
     }
 
     public nonisolated func userNotificationCenter(
