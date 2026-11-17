@@ -358,7 +358,6 @@ portal-shortcut-not-taken = Press a key with Ctrl, Alt, Shift or Super.
 portal-share-title = Share your screen with { $app }?
 portal-share-detail = { $app } sees what you share, and nothing else.
 portal-share-share = Share
-portal-share-remember = Remember this choice
 portal-remote-title = Let { $app } control this computer?
 portal-remote-detail = { $app } sees the screen you share and drives the input you allow.
 portal-remote-devices = It asks to control: { $devices }

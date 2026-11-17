@@ -37,7 +37,7 @@ use tilo_service::{Answer, Question, Questions, Services};
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerState, FileRequest, FileType};
 use tilo_sheets::portal::{
     Body, Device, Dialog, Field, PortalEffect, PortalState, Prompt, PromptField, PromptKind,
-    Remember, Shortcut,
+    Shortcut,
 };
 use tilo_sheets::{SheetState as _, word, words};
 
@@ -75,7 +75,7 @@ enum Plan {
     /// Confirming is the answer; the question asks nothing else.
     Confirm,
     /// The ticked rows are the answer, named as the question names them.
-    Rows { names: Vec<String>, remember: bool },
+    Rows { names: Vec<String> },
     /// The rows are shortcut bindings.
     Bind(Vec<Binding>),
     /// A launcher's name and icon.
@@ -639,7 +639,7 @@ impl Shown {
                     ..Answer::default()
                 })
             }
-            Plan::Rows { names, remember } => {
+            Plan::Rows { names } => {
                 let Body::Devices(devices) = &dialog.body else {
                     return Err(word("portal-no-such-field"));
                 };
@@ -650,7 +650,6 @@ impl Shown {
                         .filter(|(device, _)| device.selected)
                         .map(|(_, name)| name.clone())
                         .collect(),
-                    remember: *remember && self.remember,
                     ..Answer::default()
                 })
             }
@@ -1084,7 +1083,6 @@ fn usb(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
                 .iter()
                 .map(|device| device.id.clone())
                 .collect(),
-            remember: false,
         },
     ))
 }
@@ -1224,13 +1222,7 @@ fn share(handle: &str, who: &str, details: Value, remote: bool) -> Option<(Dialo
         .map(|source| source.choice.clone())
         .collect();
     if asked.sources.is_empty() {
-        return Some((
-            dialog,
-            Plan::Rows {
-                names,
-                remember: asked.may_remember,
-            },
-        ));
+        return Some((dialog, Plan::Rows { names }));
     }
     dialog.body = if asked.multiple {
         Body::Devices(
@@ -1248,19 +1240,10 @@ fn share(handle: &str, who: &str, details: Value, remote: bool) -> Option<(Dialo
         Body::Answers {
             choices: asked.sources.iter().map(source_label).collect(),
             suggested: 0,
-            remember: asked.may_remember.then(|| Remember {
-                label: word("portal-share-remember"),
-                on: false,
-            }),
+            remember: None,
         }
     };
-    Some((
-        dialog,
-        Plan::Rows {
-            names,
-            remember: asked.may_remember,
-        },
-    ))
+    Some((dialog, Plan::Rows { names }))
 }
 
 /// How the source the app offers reads.

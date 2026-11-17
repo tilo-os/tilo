@@ -16,6 +16,7 @@ use crate::Published as _;
 use crate::auth::FRONTEND_BUS_NAME;
 use crate::dbus_tests::{SessionBus, asked};
 use crate::remote_desktop::{InputInjector, RemoteInput, device_type};
+use crate::restore::restore_key;
 use crate::streams::{
     CaptureSource, CaptureStreams, SourceKind, Stream, StreamRequest, cursor_mode,
 };
@@ -96,7 +97,6 @@ struct Bed {
     frontend: zbus::Connection,
     stranger: zbus::Connection,
     _backend: zbus::Connection,
-    _grants: tempfile::TempDir,
 }
 
 async fn bed() -> Bed {
@@ -105,7 +105,6 @@ async fn bed() -> Bed {
     let questions = Questions::new();
     let streams = Arc::new(Streams::default());
     let seat = Arc::new(Seat::default());
-    let grants = tempfile::tempdir().expect("directory");
     let authenticator = PortalAuthenticator::session_bus(
         backend.clone(),
         Arc::new(|app: &str, _: Option<&str>| Some(PortalCaller::new(app))),
@@ -116,9 +115,6 @@ async fn bed() -> Bed {
         tilo_documents::Documents::new(),
     )
     .with_consents(crate::consent::Consents::new(questions.clone(), None))
-    .with_grants(crate::restore::Grants::load(Some(
-        grants.path().join("restore.json"),
-    )))
     .with_streams(Arc::clone(&streams) as Arc<dyn CaptureStreams>)
     .with_input(Arc::clone(&seat) as Arc<dyn InputInjector>);
     portal.serve(&backend).await.expect("served");
@@ -137,7 +133,6 @@ async fn bed() -> Bed {
         frontend,
         stranger,
         _backend: backend,
-        _grants: grants,
     }
 }
 
@@ -324,8 +319,39 @@ async fn a_shared_screen_is_published_until_the_person_stops_it() {
     assert!(bed.portal.poll(), "the published state changed");
 }
 
+async fn select_devices(bed: &Bed, name: &str, options: Options) {
+    let (code, _) = call(
+        &bed.frontend,
+        REMOTE,
+        "SelectDevices",
+        &(
+            path(&request(&format!("{name}-devices"))),
+            path(&session(name)),
+            APP,
+            options,
+        ),
+    )
+    .await
+    .expect("replied");
+    assert_eq!(code, 0, "{name} devices selected");
+}
+
+fn persisted(results: &HashMap<String, OwnedValue>) -> u32 {
+    results["persist_mode"]
+        .try_clone()
+        .expect("clone")
+        .try_into()
+        .expect("u")
+}
+
+fn restoring(restore: &OwnedValue) -> Options {
+    let mut options = Options::new();
+    options.insert("restore_data".into(), restore.try_clone().expect("clone"));
+    options
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn a_remembered_share_starts_again_without_asking() {
+async fn a_remembered_share_starts_again_without_asking_only_in_this_session() {
     let bed = bed().await;
     create(&bed, SCREENCAST, "first").await;
     let mut options = Options::new();
@@ -340,23 +366,61 @@ async fn a_remembered_share_starts_again_without_asking() {
     )
     .await;
     assert_eq!(code, 0);
-    let persist: u32 = results["persist_mode"]
-        .try_clone()
-        .expect("clone")
-        .try_into()
-        .expect("u");
-    assert_eq!(persist, 2);
+    assert_eq!(persisted(&results), 1, "never remembered until revoked");
     let restore = results["restore_data"].try_clone().expect("clone");
 
     create(&bed, SCREENCAST, "again").await;
-    let mut options = Options::new();
+    let mut options = restoring(&restore);
     options.insert("types".into(), OwnedValue::from(3_u32));
-    options.insert("restore_data".into(), restore);
     assert_eq!(select_sources(&bed, "again", options).await, 0);
     let (code, results) = start(&bed, SCREENCAST, "again", None).await;
     assert_eq!(code, 0, "no question asked");
     assert_eq!(nodes(&results).len(), 1);
-    assert_eq!(bed.portal.grants().resources().len(), 2);
+    assert_eq!(
+        restore_key(&results),
+        restore_key(&restoring(&restore)),
+        "the same key handed back"
+    );
+    assert_eq!(bed.portal.grants().resources().len(), 1, "no new grant");
+
+    let restarted = self::bed().await;
+    create(&restarted, SCREENCAST, "restarted").await;
+    let mut options = restoring(&restore);
+    options.insert("types".into(), OwnedValue::from(3_u32));
+    assert_eq!(select_sources(&restarted, "restarted", options).await, 0);
+    let (code, _) = start(
+        &restarted,
+        SCREENCAST,
+        "restarted",
+        Some(picking(&["window:w1"], false)),
+    )
+    .await;
+    assert_eq!(code, 0, "asked again after a restart");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remote_desktop_always_asks_for_its_devices() {
+    let bed = bed().await;
+    create(&bed, REMOTE, "first").await;
+    let mut devices = Options::new();
+    devices.insert("types".into(), OwnedValue::from(device_type::POINTER));
+    devices.insert("persist_mode".into(), OwnedValue::from(2_u32));
+    select_devices(&bed, "first", devices).await;
+    let (code, results) = start(&bed, REMOTE, "first", Some(Answer::default())).await;
+    assert_eq!(code, 0);
+    assert_eq!(persisted(&results), 1);
+    let restore = results["restore_data"].try_clone().expect("clone");
+
+    create(&bed, REMOTE, "again").await;
+    select_devices(&bed, "again", restoring(&restore)).await;
+    let (code, _) = start(&bed, REMOTE, "again", Some(Answer::default())).await;
+    assert_eq!(code, 0, "asked again for the keyboard and pointer");
+
+    let restarted = self::bed().await;
+    create(&restarted, REMOTE, "restarted").await;
+    select_devices(&restarted, "restarted", restoring(&restore)).await;
+    let (code, _) = start(&restarted, REMOTE, "restarted", Some(Answer::default())).await;
+    assert_eq!(code, 0, "asked after a restart");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -365,20 +429,7 @@ async fn a_remote_desktop_drives_only_while_its_session_lives() {
     create(&bed, REMOTE, "remote").await;
     let mut devices = Options::new();
     devices.insert("types".into(), OwnedValue::from(device_type::POINTER));
-    let (code, _) = call(
-        &bed.frontend,
-        REMOTE,
-        "SelectDevices",
-        &(
-            path(&request("remote-devices")),
-            path(&session("remote")),
-            APP,
-            devices,
-        ),
-    )
-    .await
-    .expect("replied");
-    assert_eq!(code, 0);
+    select_devices(&bed, "remote", devices).await;
     let notify = |from: zbus::Connection| async move {
         from.call_method(
             Some(BUS_NAME),

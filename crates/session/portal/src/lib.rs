@@ -292,9 +292,7 @@ impl Portal {
             inhibitions: Inhibitions::default(),
             requests: lifecycle::Requests::default(),
             captures: captures::Captures::new(&sessions),
-            grants: restore::Grants::load(
-                private_state_root().map(|root| root.join("tilo/portal/restore.json")),
-            ),
+            grants: restore::Grants::default(),
             permissions: permission_store::PermissionStore::load(
                 private_state_root().map(|root| root.join("tilo/portal/permissions.json")),
             ),
@@ -340,13 +338,6 @@ impl Portal {
     #[must_use]
     pub const fn clipboards(&self) -> &clipboard::Clipboards {
         &self.clipboards
-    }
-
-    /// The same, keeping remembered shares in `grants`.
-    #[must_use]
-    pub fn with_grants(mut self, grants: restore::Grants) -> Self {
-        self.grants = grants;
-        self
     }
 
     /// The same, keeping the frontend's permissions and restore data in

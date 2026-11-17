@@ -357,7 +357,6 @@ portal-shortcut-not-taken = Drücke eine Taste mit Strg, Alt, Umschalt oder Supe
 portal-share-title = Deinen Bildschirm mit { $app } teilen?
 portal-share-detail = { $app } sieht, was du teilst, und nichts sonst.
 portal-share-share = Teilen
-portal-share-remember = Diese Wahl merken
 portal-remote-title = { $app } diesen Rechner steuern lassen?
 portal-remote-detail = { $app } sieht den geteilten Bildschirm und steuert die Eingaben, die du erlaubst.
 portal-remote-devices = Es möchte steuern: { $devices }
