@@ -316,6 +316,14 @@ impl Calendar {
                     "the calendar holds no event of this invitation to cancel",
                 ));
             }
+            (Some(held), _) if !self.made_by_invitation(&held, &event) => {
+                return Err(Refusal::new(
+                    "the calendar holds an event under this invitation's identity that no \
+                     invitation of its sender made, or that a calendar server keeps: such an \
+                     event is its person's, theirs to change or remove, so tell them what the \
+                     invitation says",
+                ));
+            }
             (Some(_), true) => self.delete_event(&id)?,
             (None, false) => {
                 self.notes.entry(event.id.to_string()).or_default();
@@ -852,6 +860,24 @@ impl Calendar {
         }
         self.uploads.prune(SETTLED_KEPT);
         self.deletes.prune(SETTLED_KEPT);
+    }
+
+    /// Whether `held` is the event an invitation of `sent`'s organiser made
+    /// and no calendar server keeps: the only event an invitation changes or
+    /// takes out. An event its person entered themselves has no organiser,
+    /// and one a calendar server keeps is theirs to change where they keep
+    /// it, so text of a caller's own writing under its identity reaches
+    /// neither.
+    fn made_by_invitation(&self, held: &Event, sent: &Event) -> bool {
+        let organizer = |event: &Event| {
+            let id = event.organizer?;
+            let by = event.attendees.iter().find(|attendee| attendee.id == id)?;
+            let email = by.email.trim().to_ascii_lowercase();
+            (!email.is_empty()).then_some(email)
+        };
+        held.calendar_id.is_none()
+            && !self.remote.contains_key(&held.id.to_string())
+            && organizer(held).is_some_and(|by| organizer(sent) == Some(by))
     }
 
     fn project_exists(&self, project: Option<crate::model::Id>) -> Result<(), Refusal> {
