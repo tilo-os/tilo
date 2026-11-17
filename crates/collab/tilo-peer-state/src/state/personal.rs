@@ -1,4 +1,4 @@
-//! One person's own documents: the store behind `(app, personal)` records.
+//! One person's own documents: the store behind `(app, personal)` resources.
 //!
 //! Every device of the person keeps its own copy, opened on the profile's
 //! identity root. A signed write is admitted when the device that made it
@@ -14,14 +14,14 @@
 //! the store is the identity itself, and its documents travel only between
 //! devices that already share it.
 //!
-//! One record of the store is the store's own: the certificates of the
+//! One resource of the store is the store's own: the certificates of the
 //! person's devices, as each device knows them ([`DEVICES_APP`]). A device
 //! lists the certificates it holds there and admits the ones it reads there,
 //! each checked as the certificate a device shows for itself is — signed by
 //! the root, current, not revoked, not a store node's — so every device of
 //! the person comes to know the others, whichever of them it met.
 //!
-//! No document, that record included, is handed to a device this store
+//! No document, that resource included, is handed to a device this store
 //! holds no such certificate of: not as a snapshot when a link starts, and
 //! not as a write while it lasts. A device never met is told who this one
 //! is, and catches up once the certificate it shows is admitted.
@@ -45,30 +45,32 @@ use neighbour_wire::{RefusalReason, WriteRefusal};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
-use tilo_action_policy::{Authority, Party, TreePath};
+use tilo_action_policy::{Authority, Grantee, Party, TreePath};
 use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 use web_time::{Duration, SystemTime};
 
 pub mod link;
+pub mod scopes;
 
-/// The version of [`PersonalStore::durable`] this build writes, and the one
-/// it still reads: a store kept before refusals were held there opens with
-/// none.
-const STORE_VERSION: u32 = 2;
-/// The version it held before, which this build still opens.
-const STORE_VERSION_PLAIN: u32 = 1;
+use scopes::resource_owner;
+
+/// The version of [`PersonalStore::durable`] this build writes.
+const STORE_VERSION: u32 = 3;
+/// The version it held before devices kept each other's own resources, which
+/// this build still opens: with none kept to hand on.
+const STORE_VERSION_UNOWNED: u32 = 2;
 
 /// A write's clock may lead or trail the receiving device by this much.
 const CLOCK_SKEW: Duration = Duration::from_secs(300);
 
-/// The app the record of the person's devices is filed under: the identity's
-/// own, which no installed app publishes records as.
+/// The app the resource of the person's devices is filed under: the identity's
+/// own, which no installed app publishes resources as.
 const DEVICES_APP: &str = "so.tilo.identity";
-/// The kind of the person's record that lists their devices: one entry per
+/// The kind of the person's resource that lists their devices: one entry per
 /// device, its key in hex naming its certificate's postcard bytes.
 const DEVICES_KIND: &str = "identity.devices";
-/// The most devices that record names to this device: entries past it are
+/// The most devices that resource names to this device: entries past it are
 /// not read, and this device adds none.
 const MAX_DEVICES: usize = 256;
 /// The longest certificate one entry of it carries.
@@ -102,9 +104,25 @@ pub struct PersonalStore {
     /// Whether what this device refuses moved since it was last asked: the
     /// links send the sets it names.
     refusals_moved: bool,
-    /// Whether the certificates this device holds moved since the record of
+    /// Whether the certificates this device holds moved since the resource of
     /// the person's devices was last published: the links publish it again.
     devices_moved: bool,
+    /// The newest whole state each device signed of a resource of its own
+    /// subtree ([`scopes`]), as that device signed it: what this device hands
+    /// on to a sibling the owner is not linked to, unchanged.
+    owned: BTreeMap<Route, SignedOp>,
+}
+
+/// Where a write a store decides came from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// This device signed it.
+    Local,
+    /// The device on the link signed it.
+    Sent,
+    /// The device on the link hands on what another device signed of its
+    /// own subtree.
+    Relayed,
 }
 
 impl PersonalStore {
@@ -125,6 +143,7 @@ impl PersonalStore {
             refusals_moved: false,
             // This device's own certificate is not listed yet.
             devices_moved: true,
+            owned: BTreeMap::new(),
         })
     }
 
@@ -135,11 +154,11 @@ impl PersonalStore {
     }
 
     /// The store's key in the routing key's text form: the cluster every
-    /// record of this person's own is routed under.
+    /// resource of this person's own is routed under.
     ///
     /// It is derived from the identity root alone, so two devices of one
     /// person agree on where a document lives without either naming the
-    /// other, and an app's own route for one of its records names the same
+    /// other, and an app's own route for one of its resources names the same
     /// cluster as the store that carries it.
     #[must_use]
     pub fn store_key(&self) -> String {
@@ -227,7 +246,7 @@ impl PersonalStore {
     fn file_refusal(
         &mut self,
         app: &str,
-        record: &str,
+        resource: &str,
         envelope: &SignedOp,
         reason: &str,
         key: &dyn DeviceSigner,
@@ -253,11 +272,11 @@ impl PersonalStore {
         let mut refusal = WriteRefusal {
             workspace: self.store_key(),
             app: app.into(),
-            record: record.into(),
+            record: resource.into(),
             author,
             seq: envelope.seq,
             operation: format!("{}:{}", envelope.artifact.0, envelope.seq),
-            changes: self.unheld_changes(app, record, envelope),
+            changes: self.unheld_changes(app, resource, envelope),
             reason: RefusalReason::of(reason),
             detail: reason.into(),
             by: self.device.device_public_key,
@@ -286,9 +305,9 @@ impl PersonalStore {
     /// The changes of `envelope`'s write this store does not hold, as their
     /// hashes: what the author's history joins a refusal to. A whole-document
     /// snapshot names the writes it brings, never the ones already here.
-    fn unheld_changes(&self, app: &str, record: &str, envelope: &SignedOp) -> Vec<[u8; 32]> {
+    fn unheld_changes(&self, app: &str, resource: &str, envelope: &SignedOp) -> Vec<[u8; 32]> {
         let mut changes = change_hashes(&envelope.payload);
-        let Some(held) = self.documents.get(&Self::route(app, record)) else {
+        let Some(held) = self.documents.get(&Self::route(app, resource)) else {
             return changes;
         };
         // A copy shares the document until asked to change it, so reading every
@@ -366,20 +385,20 @@ impl PersonalStore {
             .certificates
             .insert(certificate.device_public_key, verified);
         // A certificate this device did not hold is one its siblings may
-        // lack: the record of the person's devices is published with it.
+        // lack: the resource of the person's devices is published with it.
         self.devices_moved |= held.as_ref().is_none_or(|held| **held != *certificate);
         Ok(held.is_none())
     }
 
-    /// The route of the record that lists the person's devices.
+    /// The route of the resource that lists the person's devices.
     fn devices_route() -> Route {
         Self::route(DEVICES_APP, &collab_types::person_document_id(DEVICES_KIND))
     }
 
-    /// Whether `record` of `app` is the record that lists the person's
+    /// Whether `resource` of `app` is the resource that lists the person's
     /// devices: the store's own, which no app reads or is handed.
-    fn is_devices_document(app: &str, record: &str) -> bool {
-        app == DEVICES_APP && record == collab_types::person_document_id(DEVICES_KIND)
+    fn is_devices_document(app: &str, resource: &str) -> bool {
+        app == DEVICES_APP && resource == collab_types::person_document_id(DEVICES_KIND)
     }
 
     /// Whether this store holds a certificate for `device` that makes it one
@@ -394,10 +413,10 @@ impl PersonalStore {
     /// Whether `message` is `remote`'s to be sent. A document of the person's
     /// goes only to a device already verified as one of theirs: a device that
     /// has shown no certificate, one of another person's, a revoked one and
-    /// one whose certificate ran out are sent none, the record of the
+    /// one whose certificate ran out are sent none, the resource of the
     /// person's devices included. What this device refuses is told to the
     /// device whose writes it is about and to the person's devices, and to
-    /// no one else: a refusal names the record it is of.
+    /// no one else: a refusal names the resource it is of.
     #[cfg_attr(
         target_arch = "wasm32",
         allow(dead_code, reason = "the page's session wires its own links")
@@ -454,7 +473,7 @@ impl PersonalStore {
     }
 
     /// The certificates this device holds, of devices that are the person's
-    /// now, that the record of their devices does not list or lists an
+    /// now, that the resource of their devices does not list or lists an
     /// earlier certificate for: what this device adds to it, while it has
     /// room.
     fn unlisted_devices(&self, now: SystemTime) -> Vec<DeviceCert> {
@@ -490,7 +509,7 @@ impl PersonalStore {
             .collect()
     }
 
-    /// Admit the devices the record of the person's devices lists that this
+    /// Admit the devices the resource of the person's devices lists that this
     /// one does not hold, or holds an earlier certificate of. Each is
     /// admitted as the certificate a device shows for itself is: one the
     /// root did not sign, one that does not hold now, a revoked device's and
@@ -523,7 +542,7 @@ impl PersonalStore {
         learned
     }
 
-    /// The record of the person's devices was written: admit what it lists,
+    /// The resource of the person's devices was written: admit what it lists,
     /// and have it published again when it lacks what this device holds.
     /// Returns whether a device was learned from it.
     fn devices_written(&mut self, now: SystemTime) -> bool {
@@ -532,9 +551,9 @@ impl PersonalStore {
         learned
     }
 
-    /// The record of the person's devices as the frame to publish, when the
+    /// The resource of the person's devices as the frame to publish, when the
     /// certificates this device holds moved since it last was: with every
-    /// one of them it lacked, whole, so a device that never held the record
+    /// one of them it lacked, whole, so a device that never held the resource
     /// reads it as well as one that did. `None` while nothing moved, and on
     /// a device the person revoked.
     fn take_devices_update(
@@ -636,17 +655,17 @@ impl PersonalStore {
         }
     }
 
-    /// Whether this store holds `record` of `app`.
+    /// Whether this store holds `resource` of `app`.
     #[must_use]
-    pub fn holds_document(&self, app: &str, record: &str) -> bool {
-        self.documents.contains_key(&Self::route(app, record))
+    pub fn holds_document(&self, app: &str, resource: &str) -> bool {
+        self.documents.contains_key(&Self::route(app, resource))
     }
 
     /// The whole document, as a device receiving it would save it.
     #[must_use]
-    pub fn document(&self, app: &str, record: &str) -> Option<Vec<u8>> {
+    pub fn document(&self, app: &str, resource: &str) -> Option<Vec<u8>> {
         self.documents
-            .get(&Self::route(app, record))
+            .get(&Self::route(app, resource))
             .map(|held| held.doc.saved())
     }
 
@@ -656,7 +675,7 @@ impl PersonalStore {
         let devices = Self::devices_route();
         self.documents
             .iter()
-            // The record of the person's devices is the store's own.
+            // The resource of the person's devices is the store's own.
             .filter(|(route, _)| **route != devices)
             .map(|(route, held)| DocumentRow {
                 app_id: route.app.clone(),
@@ -671,36 +690,35 @@ impl PersonalStore {
             .collect()
     }
 
-    fn route(app: &str, record: &str) -> Route {
+    fn route(app: &str, resource: &str) -> Route {
         Route {
             app: app.into(),
-            record: record.into(),
+            record: resource.into(),
         }
     }
 
-    /// Sign `mutation` of `record` with this device's key, admit it, and
+    /// Sign `mutation` of `resource` with this device's key, admit it, and
     /// return the frame to publish to the person's other devices.
     pub fn publish(
         &mut self,
         app: &str,
-        record: &str,
+        resource: &str,
         mutation: &DocumentMutation,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         let author = Ed25519PublicKey::from_bytes(key.device_public_key());
-        let signed = self.sign(app, record, mutation, &author, key, now)?;
-        self.admit_local(app, record, signed.clone(), key, now)?;
-        Ok(self.frame(app, record, signed))
+        let signed = self.sign(app, resource, mutation, &author, key, now)?;
+        self.admit_local(app, resource, signed, key, now)
     }
 
     /// Admit a write this device signed itself: what an app publishing one of
-    /// its own records does, as `admit_local_app_document` does in a
+    /// its own resources does, as `admit_local_app_document` does in a
     /// workspace. Returns the frame to publish to the person's other devices.
     pub fn admit_local(
         &mut self,
         app: &str,
-        record: &str,
+        resource: &str,
         envelope: SignedOp,
         key: &dyn DeviceSigner,
         now: SystemTime,
@@ -709,7 +727,9 @@ impl PersonalStore {
             return Err("this device signs its own writes".into());
         }
         let mut candidate = self.clone();
-        let refused = candidate.write(app, record, &envelope, now, true).err();
+        let refused = candidate
+            .write(app, resource, &envelope, now, Origin::Local)
+            .err();
         *self = candidate;
         if let Some(refused) = refused {
             // A write this device could not decide is no verdict on it.
@@ -719,14 +739,37 @@ impl PersonalStore {
             // The store's verdict on the person's own write is filed like a
             // sibling's: what its history shows, and what a notice is made of.
             let reason = refused.to_string();
-            // The record of their devices is the store's, not a write of
+            // The resource of their devices is the store's, not a write of
             // theirs: nobody is told of it.
-            if !Self::is_devices_document(app, record) {
-                self.file_refusal(app, record, &envelope, &reason, key, now)?;
+            if !Self::is_devices_document(app, resource) {
+                self.file_refusal(app, resource, &envelope, &reason, key, now)?;
             }
             return Err(reason);
         }
-        Ok(self.frame(app, record, envelope))
+        // A change of this device's own subtree goes out as the whole document
+        // it leaves, signed here: what a sibling keeps to hand on for this
+        // device, which a change alone could not be.
+        if resource_owner(resource) == Some(self.device.device_public_key)
+            && matches!(
+                DocumentMutation::decode(&envelope.payload),
+                Ok(DocumentMutation::Incremental(_))
+            )
+            && let Some(whole) = self.document(app, resource)
+        {
+            let author = Ed25519PublicKey::from_bytes(self.device.device_public_key);
+            let snapshot = self.sign(
+                app,
+                resource,
+                &DocumentMutation::Snapshot(whole),
+                &author,
+                key,
+                now,
+            )?;
+            self.write(app, resource, &snapshot, now, Origin::Local)
+                .map_err(|refused| refused.to_string())?;
+            return Ok(self.frame(app, resource, snapshot));
+        }
+        Ok(self.frame(app, resource, envelope))
     }
 
     /// What this device says first to whoever is on a link, before that
@@ -768,6 +811,16 @@ impl PersonalStore {
         let routes: Vec<Route> = self.documents.keys().cloned().collect();
         let mut messages = Vec::with_capacity(routes.len());
         for route in routes {
+            // Another device's own resource is handed on as that device signed
+            // it, or not at all: this device cannot sign it.
+            if let Some(owner) = resource_owner(&route.record)
+                && owner != self.device.device_public_key
+            {
+                if let Some(envelope) = self.owned.get(&route) {
+                    messages.push(self.frame(&route.app, &route.record, envelope.clone()));
+                }
+                continue;
+            }
             let Some(held) = self.documents.get(&route) else {
                 continue;
             };
@@ -906,17 +959,29 @@ impl PersonalStore {
         else {
             return Err("not a document message".into());
         };
-        let refused = if cluster_id != self.store_key()
-            || peer != peer_handle(&source)
-            || envelope.author.as_bytes() != &source
-        {
+        let author = *envelope.author.as_bytes();
+        // A device hands on another's own resource only as its owner signed it,
+        // and only once it is one of the person's devices itself.
+        let origin = if author == source {
+            Origin::Sent
+        } else if resource_owner(&document_id) == Some(author) && self.holds_device(&source, now) {
+            Origin::Relayed
+        } else {
+            return Err("transport author or store key mismatch".to_owned());
+        };
+        let refused = if cluster_id != self.store_key() || peer != peer_handle(&author) {
             crate::AdmissionError::Rejected("transport author or store key mismatch".to_owned())
         } else {
-            match self.write(&app_id, &document_id, &envelope, now, false) {
+            match self.write(&app_id, &document_id, &envelope, now, origin) {
                 Ok(outcome) => return Ok(outcome),
                 Err(reason) => reason,
             }
         };
+        // What a device hands on is no write of its own, and its author did
+        // not send it here: nobody is told of a refusal of it.
+        if origin == Origin::Relayed {
+            return Err(refused.to_string());
+        }
         // A write this device could not decide is no verdict on it: nothing is
         // filed, and its author's next write proceeds.
         if refused.is_device_failure() {
@@ -924,7 +989,7 @@ impl PersonalStore {
         }
         // The store's verdict on this one write is now a fact it keeps: the
         // write's author is told, and its history joins it to the write. The
-        // record of the person's devices is no write of theirs to be told of.
+        // resource of the person's devices is no write of theirs to be told of.
         let reason = refused.to_string();
         if !Self::is_devices_document(&app_id, &document_id) {
             self.file_refusal(&app_id, &document_id, &envelope, &reason, key, now)?;
@@ -934,21 +999,21 @@ impl PersonalStore {
 
     /// The one admission: the signed write is the author's own, its device is
     /// certified by the root and live, its route is this store, and what it
-    /// changes merges into the record. Everything is decided in a copy, so a
+    /// changes merges into the resource. Everything is decided in a copy, so a
     /// refusal leaves the store as it was.
     fn write(
         &mut self,
         app: &str,
-        record: &str,
+        resource: &str,
         envelope: &SignedOp,
         now: SystemTime,
-        local: bool,
+        origin: Origin,
     ) -> Result<ReceiveOutcome, crate::AdmissionError> {
         let source = *envelope.author.as_bytes();
         if self.revoked_here() {
             return Err("this device was revoked".into());
         }
-        if local {
+        if origin == Origin::Local {
             if source != self.device.device_public_key {
                 return Err("this device signs its own writes".into());
             }
@@ -960,65 +1025,58 @@ impl PersonalStore {
         }
         let store_key = self.store_key();
         let admitted =
-            DocumentAdmission::from_op(&store_key, app, record, envelope).map_err(err)?;
+            DocumentAdmission::from_op(&store_key, app, resource, envelope).map_err(err)?;
         if self.exact.get(&admitted.key) == Some(&admitted.operation_id) {
             return Ok(ReceiveOutcome {
                 duplicate: true,
                 ..Default::default()
             });
         }
-        let payload =
-            collab_types::validate_whole_document_payload_route(app, &store_key, record, envelope)
-                .map_err(err)?;
+        let payload = collab_types::validate_whole_document_payload_route(
+            app, &store_key, resource, envelope,
+        )
+        .map_err(err)?;
         let WholeDocumentPayload::Cleartext(mutation) = payload else {
             return Err("a personal document is cleartext between its devices".into());
         };
         if envelope.kind != OpKind::Change {
             return Err("the personal store admits document changes".into());
         }
-        let route = Self::route(app, record);
+        let route = Self::route(app, resource);
         let route_existed = self.documents.contains_key(&route);
         if !route_existed && matches!(mutation, DocumentMutation::Incremental(_)) {
             return Err("the change arrived before the document it changes".into());
         }
-        let mut candidate = self
-            .documents
-            .get(&route)
-            .cloned()
-            .unwrap_or_else(|| PeerDocument {
-                doc: AutoCommit::new().into(),
-                channel: InboundState::default(),
-                encryption_required: false,
-                covered: BTreeMap::new(),
-                covered_snapshot: None,
-                sealed: backend::SealedLog::default(),
-            });
-        candidate
-            .channel
-            .artifacts
-            .insert(envelope.artifact, ArtifactKind::Note);
-        candidate
-            .channel
-            .artifact_apps
-            .insert(envelope.artifact, app.into());
-        candidate
-            .channel
-            .artifact_resources
-            .insert(envelope.artifact, record.into());
-        candidate.channel.workspace.clone_from(&store_key);
+        let owner = resource_owner(resource);
+        if origin == Origin::Relayed {
+            if !matches!(mutation, DocumentMutation::Snapshot(_)) {
+                return Err("a device's own resource is handed on whole".into());
+            }
+            if self.holds_newer(&route, envelope) {
+                return Ok(ReceiveOutcome {
+                    duplicate: true,
+                    ..Default::default()
+                });
+            }
+        }
+        let mut candidate = self.candidate(&route, envelope, &store_key);
         let mut validated = candidate.channel.clone();
         validated.surfaces = default_surfaces();
-        // The person owns every node of their own store: each write is
-        // decided as the edit of its record that it is.
-        let authority = Authority::person(Party::default().owning(TreePath::root()));
-        collab_types::validate_admitted_inbound_op(
-            envelope,
-            &authority,
-            &mut validated,
-            now,
-            CLOCK_SKEW,
-        )
-        .map_err(|error| format!("the write is not admitted: {error}"))?;
+        // The person owns every node of their own store, and each device acts
+        // as itself in it: a resource of one device's own subtree is that
+        // device's alone, and every other write is decided as the edit of its
+        // document that it is.
+        let grantees = vec![Grantee::person(hex::encode(source))];
+        let authority = Authority::person(Party::new(grantees, []).owning(TreePath::root()));
+        // What a device hands on was signed when its owner wrote it, which may
+        // be long before: its age is no reason to refuse it.
+        let validate = if origin == Origin::Relayed {
+            collab_types::validate_replayed_inbound_op
+        } else {
+            collab_types::validate_admitted_inbound_op
+        };
+        validate(envelope, &authority, &mut validated, now, CLOCK_SKEW)
+            .map_err(|error| format!("the write is not admitted: {error}"))?;
         candidate.channel = validated;
         collab_types::check_claimed(envelope)?;
         if let DocumentMutation::Incremental(bytes) = &mutation {
@@ -1036,9 +1094,20 @@ impl PersonalStore {
                 }
             };
         self.exact.insert(&admitted).map_err(err)?;
+        // The owner's newest whole state of its own resource is what this
+        // device hands on for it.
+        if owner == Some(source)
+            && matches!(mutation, DocumentMutation::Snapshot(_))
+            && self
+                .owned
+                .get(&route)
+                .is_none_or(|kept| kept.seq < envelope.seq)
+        {
+            self.owned.insert(route.clone(), envelope.clone());
+        }
         self.documents.insert(route, candidate);
-        self.landed(&source, app, record, envelope.seq);
-        let learned = Self::is_devices_document(app, record) && self.devices_written(now);
+        self.landed(&source, app, resource, envelope.seq);
+        let learned = Self::is_devices_document(app, resource) && self.devices_written(now);
         Ok(ReceiveOutcome {
             changed,
             metadata_changed: changed || learned,
@@ -1046,16 +1115,61 @@ impl PersonalStore {
         })
     }
 
+    /// Whether this device holds a state of `route` its author signed as new
+    /// as `envelope` or newer: an older one handed on late is no news.
+    fn holds_newer(&self, route: &Route, envelope: &SignedOp) -> bool {
+        self.documents
+            .get(route)
+            .and_then(|held| held.channel.last_seq_per_author.get(&envelope.author))
+            .is_some_and(|seen| *seen >= envelope.seq)
+    }
+
+    /// The document `route` names as a write `envelope` makes of it starts
+    /// from: the one held, or an empty one, routed in the store `store_key`.
+    fn candidate(&self, route: &Route, envelope: &SignedOp, store_key: &str) -> PeerDocument {
+        let mut candidate = self
+            .documents
+            .get(route)
+            .cloned()
+            .unwrap_or_else(|| PeerDocument {
+                doc: AutoCommit::new().into(),
+                channel: InboundState::default(),
+                encryption_required: false,
+                covered: BTreeMap::new(),
+                covered_snapshot: None,
+                sealed: backend::SealedLog::default(),
+            });
+        let state = &mut candidate.channel;
+        state
+            .artifacts
+            .insert(envelope.artifact, ArtifactKind::Note);
+        state
+            .artifact_apps
+            .insert(envelope.artifact, route.app.clone());
+        state
+            .artifact_resources
+            .insert(envelope.artifact, route.record.clone());
+        store_key.clone_into(&mut state.workspace);
+        // A resource of a device's own subtree is that device's, as a member's
+        // own document in a workspace is that member's.
+        if let Some(owner) = resource_owner(&route.record) {
+            state
+                .artifact_owners
+                .insert(envelope.artifact, hex::encode(owner));
+        }
+        candidate
+    }
+
     /// The author's whole state is offered on every link, so a write at or
     /// past a refused one on the same route means that one landed too: what
     /// this device refused of this author is cleared.
-    fn landed(&mut self, author: &[u8; 32], app: &str, record: &str, seq: u64) {
+    fn landed(&mut self, author: &[u8; 32], app: &str, resource: &str, seq: u64) {
         let before = self.refusals.len();
         self.refusals.retain(|refusal| {
             !(refusal.by == self.device.device_public_key
                 && refusal.author == *author
                 && refusal.app == app
-                && refusal.record == record
+                && refusal.record == resource
                 && refusal.seq <= seq)
         });
         self.refusals_moved |= self.refusals.len() != before;
@@ -1064,7 +1178,7 @@ impl PersonalStore {
     fn sign(
         &self,
         app: &str,
-        record: &str,
+        resource: &str,
         mutation: &DocumentMutation,
         author: &Ed25519PublicKey,
         key: &dyn DeviceSigner,
@@ -1076,7 +1190,7 @@ impl PersonalStore {
         let store_key = self.store_key();
         let seq = self
             .documents
-            .get(&Self::route(app, record))
+            .get(&Self::route(app, resource))
             .and_then(|held| held.channel.last_seq_per_author.get(author))
             .copied()
             .unwrap_or(0)
@@ -1084,9 +1198,9 @@ impl PersonalStore {
             .ok_or("sequence exhausted")?;
         let mut op = SignedOp::new_unsigned(
             mutation.encode().map_err(err)?,
-            collab_types::document_artifact_id(app, &store_key, record),
+            collab_types::document_artifact_id(app, &store_key, resource),
             Ed25519PublicKey::from_bytes(*author.as_bytes()),
-            collab_types::document_attestation_id(app, &store_key, record),
+            collab_types::document_attestation_id(app, &store_key, resource),
             OpKind::Change,
             now,
             seq,
@@ -1095,15 +1209,15 @@ impl PersonalStore {
         Ok(op)
     }
 
-    fn frame(&self, app: &str, record: &str, envelope: SignedOp) -> NeighbourMsg {
+    fn frame(&self, app: &str, resource: &str, envelope: SignedOp) -> NeighbourMsg {
         NeighbourMsg::AppDocument {
             peer: peer_handle(envelope.author.as_bytes()),
             app_id: app.into(),
             cluster_id: self.store_key(),
-            document_id: record.into(),
+            document_id: resource.into(),
             envelope: Box::new(envelope),
             // The person's own store holds only theirs: none is a member's own
-            // record of a workspace.
+            // resource of a workspace.
             own: None,
         }
     }
@@ -1139,6 +1253,15 @@ impl PersonalStore {
             exact: self.exact.encode().map_err(err)?,
             refusals: self.refusals.clone(),
             told: self.told.iter().copied().collect(),
+            owned: self
+                .owned
+                .iter()
+                .map(|(route, envelope)| DurableOwned {
+                    app: route.app.clone(),
+                    record: route.record.clone(),
+                    envelope: envelope.clone(),
+                })
+                .collect(),
         };
         postcard::to_allocvec(&durable).map_err(err)
     }
@@ -1152,8 +1275,8 @@ impl PersonalStore {
             postcard::from_bytes::<Durable>(bytes)
                 .map(|durable| durable.device.device_public_key)
                 .or_else(|_| {
-                    postcard::from_bytes::<DurablePlain>(bytes)
-                        .map(|plain| plain.device.device_public_key)
+                    postcard::from_bytes::<DurableUnowned>(bytes)
+                        .map(|unowned| unowned.device.device_public_key)
                 })
                 .ok()
         )
@@ -1162,30 +1285,31 @@ impl PersonalStore {
     /// Open the store `bytes` holds, as `device`, which must be the device
     /// that kept them.
     pub fn restore(bytes: &[u8], device: &DeviceCert, now: SystemTime) -> Result<Self, String> {
-        // A store kept before refusals were held beside the revocations is
-        // read as one holding none: the person's documents are never lost to
-        // a field added later.
+        // A store kept before devices kept each other's own resources is read
+        // as one keeping none: the person's documents are never lost to a
+        // field added later, and each device hands its own on again.
         let durable: Durable = match postcard::from_bytes(bytes) {
             Ok(durable) => durable,
             Err(error) => {
-                let plain: DurablePlain = postcard::from_bytes(bytes).map_err(err)?;
-                if plain.version != STORE_VERSION_PLAIN {
+                let unowned: DurableUnowned = postcard::from_bytes(bytes).map_err(err)?;
+                if unowned.version != STORE_VERSION_UNOWNED {
                     return Err(error.to_string());
                 }
                 Durable {
-                    version: STORE_VERSION_PLAIN,
-                    root: plain.root,
-                    device: plain.device,
-                    certificates: plain.certificates,
-                    revocations: plain.revocations,
-                    documents: plain.documents,
-                    exact: plain.exact,
-                    refusals: Vec::new(),
-                    told: Vec::new(),
+                    version: STORE_VERSION_UNOWNED,
+                    root: unowned.root,
+                    device: unowned.device,
+                    certificates: unowned.certificates,
+                    revocations: unowned.revocations,
+                    documents: unowned.documents,
+                    exact: unowned.exact,
+                    refusals: unowned.refusals,
+                    told: unowned.told,
+                    owned: Vec::new(),
                 }
             }
         };
-        if durable.version != STORE_VERSION && durable.version != STORE_VERSION_PLAIN {
+        if durable.version != STORE_VERSION && durable.version != STORE_VERSION_UNOWNED {
             return Err(format!(
                 "the personal store is version {}, this build reads {STORE_VERSION}",
                 durable.version
@@ -1216,6 +1340,9 @@ impl PersonalStore {
             channel.artifact_apps.insert(artifact, document.app);
             channel.artifact_resources.insert(artifact, document.record);
             channel.workspace.clone_from(&store_key);
+            if let Some(owner) = resource_owner(&route.record) {
+                channel.artifact_owners.insert(artifact, hex::encode(owner));
+            }
             channel.surfaces = default_surfaces();
             channel.last_seq_per_author = document
                 .watermarks
@@ -1246,6 +1373,16 @@ impl PersonalStore {
             }
         }
         store.told = durable.told.into_iter().collect();
+        for kept in durable.owned {
+            let route = Self::route(&kept.app, &kept.record);
+            // Only a document held here, and its owner's own signature of it.
+            if store.documents.contains_key(&route)
+                && resource_owner(&kept.record) == Some(*kept.envelope.author.as_bytes())
+                && collab_types::verify_op(&kept.envelope).is_ok()
+            {
+                store.owned.insert(route, kept.envelope);
+            }
+        }
         // A device revoked after it kept these bytes keeps none of them.
         if store.revoked_here() {
             store.forget_documents();
@@ -1305,12 +1442,14 @@ struct Durable {
     exact: Vec<u8>,
     refusals: Vec<WriteRefusal>,
     told: Vec<[u8; 32]>,
+    owned: Vec<DurableOwned>,
 }
 
-/// The store as it was kept before it held refusals: this build reads it so
-/// a person's own documents survive the field being added.
+/// The store as it was kept before devices kept each other's own resources:
+/// this build reads it so a person's own documents survive the field being
+/// added.
 #[derive(Serialize, Deserialize)]
-struct DurablePlain {
+struct DurableUnowned {
     version: u32,
     root: [u8; 32],
     device: DeviceCert,
@@ -1318,6 +1457,16 @@ struct DurablePlain {
     revocations: Vec<RevocationEntry>,
     documents: Vec<DurableDocument>,
     exact: Vec<u8>,
+    refusals: Vec<WriteRefusal>,
+    told: Vec<[u8; 32]>,
+}
+
+/// A device's own resource as its owner last signed it whole.
+#[derive(Serialize, Deserialize)]
+struct DurableOwned {
+    app: String,
+    record: String,
+    envelope: SignedOp,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1358,16 +1507,16 @@ impl PeerPersonal {
         self.read(PersonalStore::store_key)
     }
 
-    /// Whether this device holds `record` of `app`.
+    /// Whether this device holds `resource` of `app`.
     #[must_use]
-    pub fn holds_document(&self, app: &str, record: &str) -> bool {
-        self.read(|store| store.holds_document(app, record))
+    pub fn holds_document(&self, app: &str, resource: &str) -> bool {
+        self.read(|store| store.holds_document(app, resource))
     }
 
     /// The whole document, as a device receiving it would save it.
     #[must_use]
-    pub fn document(&self, app: &str, record: &str) -> Option<Vec<u8>> {
-        self.read(|store| store.document(app, record))
+    pub fn document(&self, app: &str, resource: &str) -> Option<Vec<u8>> {
+        self.read(|store| store.document(app, resource))
     }
 
     /// Every document held, by what it belongs to.
@@ -1381,12 +1530,12 @@ impl PeerPersonal {
     pub fn admit_local(
         &self,
         app: &str,
-        record: &str,
+        resource: &str,
         envelope: SignedOp,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
-        self.write(|store| store.admit_local(app, record, envelope, key, now))
+        self.write(|store| store.admit_local(app, resource, envelope, key, now))
     }
 
     /// Every refusal this device holds: its own and its siblings' on its own
@@ -1434,15 +1583,15 @@ mod tests {
         tilo_clock::wall()
     }
 
-    /// A record with `field` set to `value`, as an app's first write of it.
-    fn record(field: &str, value: &str) -> DocumentMutation {
+    /// A resource with `field` set to `value`, as an app's first write of it.
+    fn resource(field: &str, value: &str) -> DocumentMutation {
         let mut doc = AutoCommit::new();
         doc.put(automerge::ROOT, field, value).unwrap();
         doc.commit_edit("tube", field);
         DocumentMutation::Snapshot(doc.save())
     }
 
-    /// Changes that depend on no other write of the record.
+    /// Changes that depend on no other write of the resource.
     fn change(field: &str, value: &str) -> DocumentMutation {
         let mut doc = AutoCommit::new();
         doc.put(automerge::ROOT, field, value).unwrap();
@@ -1497,7 +1646,7 @@ mod tests {
             let mut a = PersonalStore::open(root_key, a_cert, now()).unwrap();
             let mut b = PersonalStore::open(root_key, b_cert, now()).unwrap();
 
-            a.publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
+            a.publish("tube", "prefs", &resource("theme", "dark"), &a_key, now())
                 .unwrap();
             // A hands its documents to no device it holds no certificate of:
             // until B says who it is, A tells it who A is and nothing else.
@@ -1558,7 +1707,7 @@ mod tests {
             let mut stranger =
                 PersonalStore::open(other.verifying_key().to_bytes(), other_cert.clone(), now())
                     .unwrap();
-            a.publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
+            a.publish("tube", "prefs", &resource("theme", "dark"), &a_key, now())
                 .unwrap();
 
             // Its certificate is not this identity's: A refuses it outright.
@@ -1612,7 +1761,7 @@ mod tests {
             let (b_key, b_cert) = device(&root, 3, DeviceCapabilities::member());
             let mut a = PersonalStore::open(root_key, a_cert, now()).unwrap();
             let mut b = PersonalStore::open(root_key, b_cert.clone(), now()).unwrap();
-            a.publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
+            a.publish("tube", "prefs", &resource("theme", "dark"), &a_key, now())
                 .unwrap();
             a.receive(&a_key, b_key.verifying_key().to_bytes(), b.hello(), now())
                 .unwrap();
@@ -1654,7 +1803,7 @@ mod tests {
             let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
             let mut a = PersonalStore::open(root.verifying_key().to_bytes(), a_cert, now()).unwrap();
             let published = a
-                .publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
+                .publish("tube", "prefs", &resource("theme", "dark"), &a_key, now())
                 .unwrap();
             let before = a.durable().unwrap();
             let outcome = a
@@ -1673,7 +1822,7 @@ mod tests {
             let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
             let (_, b_cert) = device(&root, 3, DeviceCapabilities::member());
             let mut a = PersonalStore::open(root_key, a_cert.clone(), now()).unwrap();
-            a.publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
+            a.publish("tube", "prefs", &resource("theme", "dark"), &a_key, now())
                 .unwrap();
             let kept = a.durable().unwrap();
 
@@ -1756,7 +1905,7 @@ mod tests {
         let (c_key, c_cert) = device(&root, 5, DeviceCapabilities::member());
         let mut a = PersonalStore::open(root.verifying_key().to_bytes(), a_cert, now()).unwrap();
         let mut b = PersonalStore::open(root.verifying_key().to_bytes(), b_cert, now()).unwrap();
-        a.publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
+        a.publish("tube", "prefs", &resource("theme", "dark"), &a_key, now())
             .unwrap();
         // B introduces itself and catches up, and a write of its is admitted
         // before the revocation.
@@ -1818,7 +1967,7 @@ mod tests {
         assert!(!heard.changed && !heard.metadata_changed);
     }
 
-    /// The write `mutation` makes of `record`, as `author`'s own store signs
+    /// The write `mutation` makes of `resource`, as `author`'s own store signs
     /// it: what a link carries, and what a verdict names.
     fn write(
         mutation: &DocumentMutation,
@@ -1881,7 +2030,7 @@ mod tests {
         (key, cert)
     }
 
-    /// The record of the person's devices listing `certificates` as they
+    /// The resource of the person's devices listing `certificates` as they
     /// are, as a device holding them would write it.
     fn devices_document(certificates: &[DeviceCert]) -> DocumentMutation {
         let mut doc = AutoCommit::new();
@@ -1918,7 +2067,7 @@ mod tests {
             .any(|held| held.device_public_key == device.device_public_key)
     }
 
-    /// `author` writes the record of the person's devices as `mutation` and
+    /// `author` writes the resource of the person's devices as `mutation` and
     /// `reader`, which holds its certificate, receives the write.
     fn hand_on(
         author_key: &SigningKey,
@@ -2008,7 +2157,7 @@ mod tests {
                 3,
                 "this device, the one met, the one learned"
             );
-            // Nobody is told a write of theirs was refused: the record is the
+            // Nobody is told a write of theirs was refused: the resource is the
             // store's own, and an app's listing never shows it.
             assert!(a.write_refusals().is_empty());
             assert!(a.rows().is_empty());
@@ -2016,7 +2165,7 @@ mod tests {
         }
 
         phase a_revocation_wins_over_a_certificate_that_was_passed_on;
-        // A device learned from the record is one its person revoked as soon as
+        // A device learned from the resource is one its person revoked as soon as
         // the revocation arrives: it is no device of theirs here from then on,
         // and listing it again changes nothing.
         {
@@ -2052,7 +2201,7 @@ mod tests {
             hand_on(&b_key, &mut b, &a_key, &mut a, &devices_document(&[later])).unwrap();
             assert!(!a.holds_device(&gone.device_public_key, now()));
             assert!(a.admits_device(&gone.device_public_key, now()).is_err());
-            // And A lists it to no one: what it adds to the record leaves it out.
+            // And A lists it to no one: what it adds to the resource leaves it out.
             assert!(
                 !a.unlisted_devices(now())
                     .iter()
@@ -2105,15 +2254,15 @@ mod tests {
             )
             .unwrap();
             assert_eq!(label(&a).as_deref(), Some("renamed phone"));
-            // What A adds to the record is the later one, once: it settles.
+            // What A adds to the resource is the later one, once: it settles.
             a.take_devices_update(&a_key, now()).unwrap();
             assert!(a.take_devices_update(&a_key, now()).unwrap().is_none());
             assert!(a.unlisted_devices(now()).is_empty());
         }
 
         phase no_more_devices_are_taken_from_the_record_than_it_may_name;
-        // The record names at most [`MAX_DEVICES`] devices to a device: entries
-        // past that are not read, and a device adds none to a full record.
+        // The resource names at most [`MAX_DEVICES`] devices to a device: entries
+        // past that are not read, and a device adds none to a full resource.
         {
             let root = SigningKey::from_bytes(&[1; 32]);
             let root_key = root.verifying_key().to_bytes();
@@ -2129,9 +2278,9 @@ mod tests {
             assert_eq!(
                 a.devices().len(),
                 MAX_DEVICES + 2,
-                "this device, the one met, and no more than the record may name"
+                "this device, the one met, and no more than the resource may name"
             );
-            // The record is full: A adds neither itself nor the device it met.
+            // The resource is full: A adds neither itself nor the device it met.
             let entries = |store: &PersonalStore| {
                 let held = store
                     .documents
@@ -2146,7 +2295,7 @@ mod tests {
         }
 
         phase a_device_of_another_person_is_told_of_no_device_and_teaches_none;
-        // A device of another person is handed the record of none of the
+        // A device of another person is handed the resource of none of the
         // person's devices, at the start of a link or while it lasts, and
         // nothing it lists is admitted: who the person's devices are is said
         // only between them.
@@ -2162,7 +2311,7 @@ mod tests {
                     if PersonalStore::is_devices_document(app_id, document_id))
             };
 
-            // A's record lists itself and the device it met.
+            // A's resource lists itself and the device it met.
             let published = a.take_devices_update(&a_key, now()).unwrap().unwrap();
             assert!(devices(&published));
             // One of the person's devices is handed it, live and catching up.
@@ -2236,7 +2385,7 @@ mod tests {
             let (_, short) = certificate(&root, root_key, [5; 32], "short-lived", 1, Some(expires));
             let mut a = PersonalStore::open(root_key, a_cert.clone(), kept_at).unwrap();
             assert!(a.admit_device(&short, kept_at).unwrap());
-            a.publish("tube", "prefs", &record("theme", "dark"), &a_key, kept_at)
+            a.publish("tube", "prefs", &resource("theme", "dark"), &a_key, kept_at)
                 .unwrap();
             let kept = a.durable().unwrap();
 
@@ -2255,7 +2404,7 @@ mod tests {
         // while it lasts, are handed to a device only while this store holds a
         // certificate that makes it one of the person's: not to one that showed
         // none, one of another person's, a revoked one, or one whose certificate
-        // ran out. A refusal names its record to its author and to no stranger.
+        // ran out. A refusal names its resource to its author and to no stranger.
         {
             let root = SigningKey::from_bytes(&[1; 32]);
             let root_key = root.verifying_key().to_bytes();
@@ -2263,7 +2412,7 @@ mod tests {
             let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
             let mut a = PersonalStore::open(root_key, a_cert, now()).unwrap();
             let written = a
-                .publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
+                .publish("tube", "prefs", &resource("theme", "dark"), &a_key, now())
                 .unwrap();
             // Whether `device` is handed a document at `at`: in what it catches
             // up from, and of what is written while its link lasts.
@@ -2343,7 +2492,7 @@ mod tests {
         }
     }
 
-    /// The op `author` signs for `mutation` of the record of the person's
+    /// The op `author` signs for `mutation` of the resource of the person's
     /// devices in the store keyed `store_key`.
     fn devices_write(
         mutation: &DocumentMutation,
