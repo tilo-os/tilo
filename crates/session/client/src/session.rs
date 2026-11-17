@@ -486,9 +486,11 @@ struct Task {
     /// the host replays only what came after it. Kept for the session task's
     /// lifetime only: it describes what this page has received.
     positions: BTreeMap<WorkspaceId, Vec<u8>>,
-    /// The on-demand records this page opened, by retained channel: opened
-    /// again after every resubscription.
-    opened_records: BTreeMap<[u8; 32], (WorkspaceId, DocumentRoute)>,
+    /// The on-demand records this page opened, by workspace and retained
+    /// channel: opened again after every resubscription. A channel names a
+    /// record by its app and id alone, so the same record of two workspaces
+    /// (each one's layout, an app's own record) shares it.
+    opened_records: BTreeMap<(WorkspaceId, [u8; 32]), DocumentRoute>,
     /// The routes this session was asked to open ([`Cmd::OpenRoute`]):
     /// in a workspace that sends records when opened, each is opened as a
     /// record too, so it arrives.
@@ -2477,3 +2479,5 @@ mod tests {
 mod iroh_connect_tests;
 #[cfg(test)]
 mod late_admission_tests;
+#[cfg(test)]
+mod opened_records_tests;
