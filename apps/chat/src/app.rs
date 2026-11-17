@@ -421,6 +421,9 @@ pub struct ChatApp {
     // `adopt_own_member`: what was said under one of these is still
     // this person, so their lines go on reading as theirs.
     pub(crate) former_ids: Vec<MemberId>,
+    /// The device this window runs on, as its host names it: what an answer
+    /// to a question says it was pressed on.
+    pub(crate) device: Option<String>,
 
     // The OS permission gate: routes channel participation + file-embed
     // hydration through the toolkit's permission model. Refreshed from the
@@ -783,6 +786,7 @@ impl ChatApp {
             body_text_inset: std::cell::Cell::new(0.0),
             mention_paint_cache: std::cell::RefCell::new(None),
             former_ids: Vec::new(),
+            device: None,
             // Default to the deterministic local bus; the live binary
             // (`ChatApp::new`) upgrades to the real transport. This keeps
             // `--shots`/tests from binding a real iroh endpoint per instance.
@@ -2809,6 +2813,7 @@ pub(crate) mod menus;
 pub(crate) mod message_bar;
 mod own_delete;
 mod people;
+mod question;
 #[cfg(feature = "samples")]
 mod scenarios;
 mod submission;

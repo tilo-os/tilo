@@ -273,6 +273,8 @@ pub struct Message {
     pub author_name: Option<String>,
     /// The window it shares live, and whether it still does.
     pub share: Option<crate::record::WindowShare>,
+    /// What it asks one person, and where that question stands.
+    pub question: Option<crate::question::Question>,
     /// How many times a person asked the agent again for an answer to this
     /// message (`retry`): the attempt the agent answers in now.
     pub attempts: u32,
@@ -731,6 +733,7 @@ mod tests {
             acting: None,
             author_name: None,
             share: None,
+            question: None,
             attempts: 0,
             sending: false,
         }

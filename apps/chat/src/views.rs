@@ -133,6 +133,9 @@ pub struct Message {
     /// it ended, drawn under the words it wrote. `None` on every ordinary message.
     #[serde(default)]
     pub work: Option<Work>,
+    /// What it asks one person, as its card reads to the page's reader.
+    #[serde(default)]
+    pub question: Option<crate::question_card::QuestionShown>,
     /// Retrying this reply asks the agent again: it failed, it is the reply the agent would
     /// write now (no newer reply has replaced it), and nobody has asked again yet.
     #[serde(default)]
@@ -222,6 +225,7 @@ impl Message {
             attachments: Vec::new(),
             pinned: false,
             work: None,
+            question: None,
             retry: false,
             retry_summons: None,
             attempts: 0,
@@ -448,6 +452,9 @@ impl Channel {
                 attachments: row.attachments.iter().map(Attachment::of).collect(),
                 pinned: row.pinned,
                 work: row.work.as_ref().map(work_of),
+                question: row.question.as_ref().and_then(|asked| {
+                    question::shown_to(asked, me, rows.get(index + 1..).unwrap_or_default())
+                }),
                 // Retry is offered on the reply a person may ask again — the current attempt's,
                 // which failed — and it names the message that reply answered.
                 retry: retryable(rows, row),
@@ -684,6 +691,8 @@ impl ViewResource for Channel {
     const APP: &'static str = "chat";
 }
 
+#[path = "views_question.rs"]
+mod question;
 #[path = "views_turn.rs"]
 mod turn;
 pub use turn::{TURN_KIND, Turn};
@@ -1018,6 +1027,9 @@ fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
             message,
             &cx.key(format!("reactions-{}", message.id)),
         ));
+    }
+    if let Some(shown) = &message.question {
+        body.push(question::card(c, message, shown, cx));
     }
     if let Some(work) = &message.work
         && work.failed()
@@ -1490,6 +1502,7 @@ mod tests {
             acting: None,
             author_name: None,
             share: None,
+            question: None,
             attempts: 0,
             sending: false,
         }
@@ -2454,6 +2467,7 @@ mod tests {
                 acting: None,
                 author_name: None,
                 share: None,
+                question: None,
                 attempts: 0,
                 sending: false,
             });

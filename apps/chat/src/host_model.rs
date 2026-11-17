@@ -133,6 +133,14 @@ impl ChatApp {
                 label.push_str(&stream.reasoning);
             }
         }
+        // What it asks and how the question stands, as its card says it.
+        if let Some(question) = self.question_shown(message) {
+            let spoken = question.spoken();
+            if !spoken.is_empty() {
+                label.push('\n');
+                label.push_str(&spoken);
+            }
+        }
         label
     }
 

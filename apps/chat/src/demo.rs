@@ -874,6 +874,28 @@ pub fn apply_part_doc(
     author: &str,
     invoke: impl Into<Invoke<ChatPart>>,
 ) -> Result<(), ApiError> {
+    apply_part_doc_as(
+        part,
+        chat,
+        |replica| replica.as_invoker(author),
+        None,
+        invoke,
+    )
+}
+
+/// [`apply_part_doc`] attributed as `attribute` says: a person at a device
+/// of theirs, an agent acting for one, a bot, as a host admits each. With
+/// `now_ms` it is applied at that time, the action's own.
+///
+/// # Errors
+/// As [`apply_part_doc`].
+pub fn apply_part_doc_as(
+    part: &mut AutoCommit,
+    chat: &Chat,
+    attribute: impl FnOnce(Replica<ChatPart>) -> Replica<ChatPart>,
+    now_ms: Option<i64>,
+    invoke: impl Into<Invoke<ChatPart>>,
+) -> Result<(), ApiError> {
     use automerge::ReadDoc as _;
     use ui::framework::Chained as _;
     let invoke = invoke.into();
@@ -890,12 +912,14 @@ pub fn apply_part_doc(
         commit_genesis(part);
     }
     let mut action = invoke
-        .build(ui::tilo_resource::origin_now_ms())
+        .build(now_ms.unwrap_or_else(ui::tilo_resource::origin_now_ms))
         .map_err(ApiError::InvalidArguments)?;
     ChatPart::prepare(&mut action, chat, &[]).map_err(ApiError::Failed)?;
-    let mut replica = Replica::<ChatPart>::from_doc(std::mem::take(part))
-        .as_invoker(author)
+    let mut replica = attribute(Replica::<ChatPart>::from_doc(std::mem::take(part)))
         .in_app(<crate::ChatShell as ui::framework::ResourceApp>::ID, "Chat");
+    if let Some(now_ms) = now_ms {
+        replica.set_now_ms(now_ms);
+    }
     let applied = replica.apply_action(&action).map(drop);
     std::mem::swap(part, replica.doc_mut());
     applied

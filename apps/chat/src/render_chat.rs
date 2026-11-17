@@ -745,6 +745,7 @@ mod attach_picker;
 mod composer;
 mod members;
 mod messages;
+mod question;
 mod thread;
 
 pub(crate) use agent_work::agent_work_accessible_description;
@@ -773,6 +774,8 @@ pub(crate) struct RowM {
     work_h: f64,
     reasoning_h: f64,
     pub(crate) resource_h: f64,
+    /// The question the message asks, drawn under what it carries.
+    question_h: f64,
     att_h: f64,
     react_h: f64,
     edited_h: f64,
@@ -801,6 +804,7 @@ impl RowM {
             work_h: 0.0,
             reasoning_h: 0.0,
             resource_h: 0.0,
+            question_h: 0.0,
             att_h: 0.0,
             react_h: 0.0,
             edited_h: 0.0,
@@ -824,6 +828,7 @@ impl RowM {
             + self.work_h
             + self.reasoning_h
             + self.resource_h
+            + self.question_h
             + self.edited_h
             + self.att_h
             + self.react_h
@@ -904,6 +909,7 @@ mod tests {
             acting: None,
             author_name: None,
             share: None,
+            question: None,
             attempts: 0,
             sending: false,
         };
@@ -1094,6 +1100,7 @@ mod tests {
                 work_h: 96.0,
                 reasoning_h: 0.0,
                 resource_h: 0.0,
+            question_h: 0.0,
                 att_h: 0.0,
                 react_h: 0.0,
                 edited_h: 0.0,

@@ -928,6 +928,7 @@ impl ChatApp {
             Hit::GrowShare(message) => self.grow_share(&message),
             Hit::ShrinkShare(message) => self.shrink_share(&message),
             Hit::StopShare(message) => self.stop_share(doc, &message),
+            Hit::Answer { msg, answer } => self.answer_question(doc, &msg, &answer),
             Hit::SwitchShare(message, access) => self.switch_share(doc, &message, access),
             Hit::ShareWindowPanel if self.can_participate() => self.open_share_panel(None),
             Hit::ShareAccess(access) => self.choose_share_access(access),
