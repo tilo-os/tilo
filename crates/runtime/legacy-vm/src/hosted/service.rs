@@ -499,7 +499,7 @@ impl Service {
             let Ok(mut vm) = entry.vm.try_lock() else {
                 continue;
             };
-            if let Err(error) = vm.poll() {
+            if let Err(error) = vm.poll(held_sessions(&entry)) {
                 eprintln!("tilo-legacy hosted: {}: {error}", entry.id());
             }
             let measured = (self.weigh)(&vm);
@@ -1371,6 +1371,22 @@ impl Service {
 fn end_sessions(entry: &Entry, grace: Duration) {
     end_session(entry, Kind::Apps, grace);
     end_session(entry, Kind::Browser, grace);
+}
+
+/// The sessions the host started in `entry`'s VM that are still running: what
+/// keeps the VM awake between the commands run in it, as its guest's own
+/// programs do.
+fn held_sessions(entry: &Entry) -> u32 {
+    [Kind::Browser, Kind::Apps]
+        .into_iter()
+        .filter(|kind| {
+            lock(session_slot(entry, *kind))
+                .as_ref()
+                .is_some_and(|session| session.life().alive())
+        })
+        .count()
+        .try_into()
+        .unwrap_or(u32::MAX)
 }
 
 fn session_slot(entry: &Entry, kind: Kind) -> &Mutex<Option<Arc<Browser>>> {

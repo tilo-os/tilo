@@ -261,6 +261,14 @@ impl Life {
         lock(&self.state).up
     }
 
+    /// Whether its session is still running: it started and has not ended. A
+    /// session alive between commands is what keeps its VM awake
+    /// (`docs/hosted-browser.md`, "Where it runs").
+    #[must_use]
+    pub fn alive(&self) -> bool {
+        lock(&self.state).ended.is_none()
+    }
+
     #[must_use]
     pub fn provider(&self) -> Option<String> {
         lock(&self.state).provider.clone()
