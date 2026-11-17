@@ -902,6 +902,10 @@ impl ChainCore {
             .with_invoker(invoker.clone())
             .with_change(tilo_actions::Action::change_kind(action))
             .in_step();
+        // The agent session and purpose the invocation came with.
+        if let Some(ambient) = tilo_actions::invoking_context() {
+            context = context.enriched_by(&ambient);
+        }
         if let Some(place) = place.filter(|place| !place.trim().is_empty()) {
             context = context.with_facet(tilo_actions::ActionFacet::new(
                 tilo_actions::PLACE_FACET,

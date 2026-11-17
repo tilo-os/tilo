@@ -2950,12 +2950,14 @@ pub(crate) fn execute_resource_operation(
                 ),
             };
             let op = op.with_target(target.as_ref());
-            crate::widget::start_operation(
-                &mut *widget,
-                &op,
-                &mut crate::widget::Edits::lend(doc),
-                path,
-            )
+            tilo_actions::with_invoking_context(ambient.cloned(), || {
+                crate::widget::start_operation(
+                    &mut *widget,
+                    &op,
+                    &mut crate::widget::Edits::lend(doc),
+                    path,
+                )
+            })
             .map_err(tilo_actions::ApiError::Failed)?
             .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?
         };

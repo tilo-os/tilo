@@ -178,6 +178,14 @@ pub fn invoking_context() -> Option<ActionContext> {
     INVOKING.with(|current| current.borrow().clone())
 }
 
+/// Call `work` with `context` as the [`invoking_context`]: an operation the
+/// app carries out itself (a write into a part of a chain) keeps the agent
+/// session and purpose its invocation came with.
+pub fn with_invoking_context<T>(context: Option<ActionContext>, work: impl FnOnce() -> T) -> T {
+    let _invoking = InvokingScope::enter(context);
+    work()
+}
+
 /// Sets [`invoking_context`] for one apply and restores the outer value.
 struct InvokingScope(Option<ActionContext>);
 
