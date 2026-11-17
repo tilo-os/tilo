@@ -607,7 +607,7 @@ impl ContentBackend for DirBackend {
             // `syncfs`), rather than a flush per small item.
             match self.receive(&mut &bytes[..], self.durable && !cfg!(target_os = "linux")) {
                 Ok((tmp, hash, len)) => received.push((index, tmp, hash, len)),
-                Err(error) => outcomes[index] = Some(Err(error)),
+                Err(error) => note(&mut outcomes, index, Err(error)),
             }
         }
         match self.admit_received(&mut outcomes, &received) {
