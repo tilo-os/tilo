@@ -16,12 +16,13 @@ use tilo_session_client::{Cmd, Outbox};
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tilo_actions::remote::{ActorPlace, InvocationReceipt, InvocationState};
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 
-use super::{Ledger, Needs, Outcome, Performed, Worker, is_part};
+use super::{Job, Ledger, Needs, Outcome, Performed, Shared, Worker, is_part};
 use tilo_relay_protocol::WorkspaceId;
 
 /// The record at `route` as the session's replica holds it, and whether the
@@ -441,6 +442,12 @@ impl Worker {
     /// under what its app calls it now, unless the index already does. A
     /// record of the workspace itself (its layout, its emoji), the index, and
     /// a part of a record's chain are no records of their own there.
+    ///
+    /// What an app calls a record is read from the whole record, so it is not
+    /// read on every write: a record this service has not named yet is named
+    /// at once (an answer that says done means the index lists it), and a
+    /// record written since is named again once, [`RENAME_AFTER`] after it
+    /// last was, however many writes it took meanwhile.
     pub(super) fn index_record(&mut self, workspace_id: WorkspaceId, route: &DocumentRoute) {
         if route.record.is_empty()
             || is_part(&route.record)
@@ -449,6 +456,20 @@ impl Worker {
         {
             return;
         }
+        match self.named.get(route) {
+            Some(named) => {
+                let wait = RENAME_AFTER.saturating_sub(named.elapsed());
+                queue_rename(&self.shared, workspace_id, route, wait);
+            }
+            None => self.rename(workspace_id, route),
+        }
+    }
+
+    /// Read what the record at `route` is called and name it so in its app's
+    /// index ([`Self::index_record`]).
+    pub(super) fn rename(&mut self, workspace_id: WorkspaceId, route: &DocumentRoute) {
+        self.shared.renaming.lock_recover().remove(route);
+        self.named.insert(route.clone(), Instant::now());
         if let Err(reason) = self.name_in_index(workspace_id, route) {
             tracing::warn!(app = %route.app_id, record = %route.record, %reason,
                 "workspace actions: a record is not named in its workspace's index");
@@ -533,6 +554,46 @@ impl Worker {
         // request's answer waits on covers it: done means the host holds the
         // record and the index that names it.
         self.commit(workspace_id, &index_route, &mutation)
+    }
+}
+
+/// How long after a record's name was read it is read again when the record
+/// took more writes: a burst of writes reads it once, not once each.
+const RENAME_AFTER: Duration = Duration::from_secs(2);
+
+/// Have the record at `route` named again in `wait`, unless that is asked
+/// already ([`Worker::index_record`]).
+fn queue_rename(
+    shared: &Arc<Shared>,
+    workspace_id: WorkspaceId,
+    route: &DocumentRoute,
+    wait: Duration,
+) {
+    if !shared.renaming.lock_recover().insert(route.clone()) {
+        return;
+    }
+    let queue = move |shared: &Shared, route: DocumentRoute| {
+        let sent = shared.jobs.lock_recover().as_ref().is_some_and(|jobs| {
+            jobs.send((Instant::now(), Job::Rename(workspace_id, route.clone())))
+                .is_ok()
+        });
+        if !sent {
+            shared.renaming.lock_recover().remove(&route);
+        }
+    };
+    if wait.is_zero() {
+        queue(shared, route.clone());
+        return;
+    }
+    let (later, route) = (Arc::clone(shared), route.clone());
+    let spawned = std::thread::Builder::new()
+        .name("record-rename".into())
+        .spawn(move || {
+            std::thread::sleep(wait);
+            queue(&later, route);
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "workspace actions: a record's name is not read again");
     }
 }
 

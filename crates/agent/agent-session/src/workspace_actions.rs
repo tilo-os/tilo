@@ -220,6 +220,9 @@ enum Job {
     /// A workspace's notebook or folder took a write: its notes and their files in the
     /// folder are brought into step ([`notes_folder`]).
     NotesFolder(WorkspaceId),
+    /// A record written since its name was last read: its name in its app's index is
+    /// read again ([`publish`]).
+    Rename(WorkspaceId, DocumentRoute),
 }
 
 impl Job {
@@ -240,6 +243,7 @@ impl Job {
             Self::Joined(_) => "joined",
             Self::Forget(_) => "forget",
             Self::NotesFolder(_) => "notes-folder",
+            Self::Rename(..) => "rename",
         }
     }
 
@@ -256,7 +260,8 @@ impl Job {
             | Self::Invocations { workspace_id, .. }
             | Self::Changed { workspace_id, .. }
             | Self::Arrived { workspace_id, .. }
-            | Self::NotesFolder(workspace_id) => Some(*workspace_id),
+            | Self::NotesFolder(workspace_id)
+            | Self::Rename(workspace_id, _) => Some(*workspace_id),
             Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
         }
     }
@@ -282,7 +287,8 @@ impl Job {
             | Self::Arrived { .. }
             | Self::Joined(_)
             | Self::Forget(_)
-            | Self::NotesFolder(_) => Keys::Joined,
+            | Self::NotesFolder(_)
+            | Self::Rename(..) => Keys::Joined,
         }
     }
 }
@@ -314,6 +320,8 @@ struct Shared {
     witnesses: bounded::Witnesses,
     /// Workspaces whose notes and folder wait for a pass to bring them into step.
     projecting: Mutex<HashSet<WorkspaceId>>,
+    /// Records whose name in their app's index waits to be read again.
+    renaming: Mutex<HashSet<DocumentRoute>>,
 }
 
 /// The host's page actions over every record of its workspaces.
@@ -340,6 +348,7 @@ impl WorkspaceActions {
                 puts: tilo_actions::remote::HostedContentPuts::default(),
                 witnesses: bounded::Witnesses::default(),
                 projecting: Mutex::default(),
+                renaming: Mutex::default(),
             }),
             catalogue,
         }
@@ -1239,6 +1248,8 @@ struct Worker {
     /// The notebook and folder of the workspaces whose notes were projected last, as the
     /// last pass left them ([`notes_folder::Followed`]).
     notes_followed: HashMap<WorkspaceId, notes_folder::Followed>,
+    /// When each record's name was last read for its app's index ([`publish`]).
+    named: HashMap<DocumentRoute, Instant>,
 }
 
 /// The API's answer for an action it has nothing by that address.
@@ -1359,6 +1370,7 @@ impl Worker {
             canonical: canonical::CanonicalReads::default(),
             notes_failures: HashMap::new(),
             notes_followed: HashMap::new(),
+            named: HashMap::new(),
         }
     }
 
@@ -1705,6 +1717,7 @@ impl Worker {
                 } => done.complete(self.invocations(workspace_id, &caller, &query)),
                 Job::Joined(workspace_id) => self.resume(workspace_id),
                 Job::NotesFolder(workspace_id) => self.notes_pass(workspace_id),
+                Job::Rename(workspace_id, route) => self.rename(workspace_id, &route),
                 Job::Forget(workspace_id) => self.forget(workspace_id),
                 Job::Content {
                     workspace_id,
