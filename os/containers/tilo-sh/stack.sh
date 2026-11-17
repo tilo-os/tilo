@@ -2132,6 +2132,45 @@ forward_tcp() {
 # cannot carry: the drop-in serves these through its own datagram channel.
 forward_udp() { printf '%s\n' "$packet_port,$iroh_port,$link_port"; }
 
+# The sockets of the ssh masters on this machine: an ssh that multiplexes
+# commands names itself `ssh: <socket> [mux]`, and every generation of the
+# drop-in's master keeps one.
+mux_sockets() {
+  local proc line
+  for proc in /proc/[0-9]*; do
+    [[ -O $proc && -r $proc/cmdline ]] || continue
+    line=$(tr '\0' '\n' < "$proc/cmdline" 2>/dev/null) || continue
+    line=${line%%$'\n'*}
+    [[ $line == 'ssh: '*' [mux]' ]] || continue
+    line=${line#ssh: }
+    line=${line%' [mux]'}
+    [[ -S $line ]] && printf '%s\n' "$line"
+  done
+}
+
+# cancel_forwards COMMA,PORTS: frees the ports `PORTS` were forwarded on. A
+# client asking a shared ssh master to forward exits without taking the
+# forward with it, and the master keeps listening: the stack's ports would
+# stay taken after it is down, and the next up would find them in use. Each
+# port is cancelled on every master; one a master does not carry changes
+# nothing there.
+cancel_forwards() {
+  local sockets port socket
+  local -a ports=()
+  IFS=, read -r -a ports <<< "${1:-}"
+  ((${#ports[@]})) || return 0
+  command -v ssh >/dev/null 2>&1 || return 0
+  sockets=$(mux_sockets) || true
+  [[ -n $sockets ]] || return 0
+  while IFS= read -r socket; do
+    for port in "${ports[@]}"; do
+      [[ -n $port ]] || continue
+      ssh -S "$socket" -O cancel -L "127.0.0.1:$port:127.0.0.1:$port" forward-cancel \
+        </dev/null >/dev/null 2>&1 || true
+    done
+  done <<< "$sockets"
+}
+
 # The environment the stack on the build server runs with: the caller's
 # TILO_SH_* (they configure the stack), with this side's state and mode
 # replaced, and the container's own cargo, which needs no drop-in there. The
@@ -2200,6 +2239,7 @@ up_remote() {
   if ! wait_remote_up; then
     # Nothing is left holding the ports for a stack that did not come up.
     stop_supervisor
+    cancel_forwards "$(forward_tcp)"
     return 1
   fi
 }
@@ -2288,6 +2328,9 @@ down_remote() {
     say 'the stack on the build server did not answer (above): its services may still be running there'
   fi
   stop_supervisor
+  # Its ports are this machine's again: the master keeps a forward after the
+  # client that asked for it ends, and the next up would find them in use.
+  cancel_forwards "$(forward_tcp)"
   if [[ -n $wipe ]]; then
     if ((stopped)) && remote_shell "rm -rf $(printf '%q' "$remote_state")" 2>/dev/null; then
       # This machine keeps what it printed and its connection's log, and nothing else.
