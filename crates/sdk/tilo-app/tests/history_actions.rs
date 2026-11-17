@@ -618,6 +618,34 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase another_member_reads_the_history_and_moves_no_ones_view;
+    {
+        // A reviewer the workspace let in lists who changed the record and compares versions:
+        // reads of the record, which move no one's focus or viewport, theirs neither.
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        app.invoke(Board::RENAME.with("Filled")).unwrap();
+        let reviewer = || {
+            tilo_actions::ActionInvoker::person("person:reviewer")
+                .with_participant(tilo_actions::ParticipantId::new("reviewer").unwrap())
+        };
+        let before = history(&mut app)["now"].clone();
+        app.invoke(Board::RENAME.with("Reviewed")).unwrap();
+        for invoker in [tilo_actions::ActionInvoker::person("person:reviewer"), reviewer()] {
+            let listed = app
+                .call_by(invoker, "test.board", "history", json!({"last": 50}))
+                .expect("another member reads the history")
+                .value
+                .expect("history answers");
+            let versions = listed["versions"].as_array().expect("versions");
+            assert!(
+                versions.iter().any(|version| version["what"]["args"]["title"] == "Filled"),
+                "{listed}"
+            );
+        }
+        app.call_by(reviewer(), "test.board", "diff", json!({"from": before}))
+            .expect("another member compares versions");
+    }
+
     phase a_field_edit_without_a_message_is_named_by_the_fields_title;
     {
         let mut app = TestApp::<BoardApp>::new().unwrap();

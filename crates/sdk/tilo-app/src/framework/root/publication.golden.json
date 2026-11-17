@@ -705,6 +705,7 @@
           }
         },
         "tags": [
+          "read:record",
           "audience:agents"
         ]
       },
@@ -759,6 +760,7 @@
           }
         },
         "tags": [
+          "read:record",
           "audience:agents"
         ]
       },

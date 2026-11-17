@@ -279,7 +279,11 @@ fn view(
         },
     )
     .of_kind(ActionKind::Read)
-    .with_description(description);
+    .with_description(description)
+    // A read of the record's own versions, which moves nothing: anyone who may read the record
+    // may run it — a reviewer listing who changed a form included — and it moves no one's focus
+    // or viewport, the caller's own neither.
+    .reads_record();
     if let Some(icon) = icon_of(id) {
         spec = spec.with_icon(icon);
     }
