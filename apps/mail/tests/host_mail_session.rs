@@ -13,6 +13,228 @@ use tilo_mail_session::{Attachment, LiveMailSession, MailSession};
 use mail::fake_imap::{FakeImap, Layout};
 use mail::fake_servers::{FakeSmtp, server_identity};
 
+use std::sync::{Arc, Mutex, PoisonError};
+use tilo_actions::remote::person_accounts::FetchedMessage;
+use tilo_mail_session::{InboxHeard, InboxSeen, WatchPace};
+
+/// What a watch told, as a test reads it.
+#[derive(Default)]
+struct Told {
+    looks: Mutex<Vec<(Vec<String>, InboxSeen)>>,
+    lost: Mutex<Vec<String>>,
+}
+
+impl InboxHeard for Told {
+    fn arrived(&self, messages: Vec<FetchedMessage>, seen: InboxSeen) {
+        let subjects = messages
+            .into_iter()
+            .map(|message| message.subject)
+            .collect();
+        self.looks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((subjects, seen));
+    }
+
+    fn lost(&self, reason: &str) {
+        self.lost
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(reason.to_owned());
+    }
+}
+
+impl Told {
+    /// The subjects of everything told so far, in the order it was told.
+    fn subjects(&self) -> Vec<String> {
+        self.looks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .flat_map(|(subjects, _)| subjects.clone())
+            .collect()
+    }
+
+    /// Where the watch has read up to, once it looked.
+    fn seen(&self) -> Option<InboxSeen> {
+        self.looks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .last()
+            .map(|(_, seen)| *seen)
+    }
+
+    fn losses(&self) -> usize {
+        self.lost
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+}
+
+/// A pace a test does not wait long for.
+fn quick() -> WatchPace {
+    let short = std::time::Duration::from_millis(50);
+    WatchPace {
+        renew: std::time::Duration::from_secs(60),
+        poll: short,
+        retry: short,
+        retry_most: std::time::Duration::from_millis(200),
+    }
+}
+
+/// A host watching an inbox with no window open tells each message that
+/// arrives once and nothing that was there before, stops when the watch is
+/// let go, and a watch started where it stopped tells what arrived in
+/// between.
+#[test]
+fn a_watched_inbox_tells_each_arrival_once_and_nothing_that_was_there() {
+    let runtime = ui::rt::app();
+    let (tls, certificate) = server_identity();
+    let imap = runtime
+        .block_on(FakeImap::start(Layout::Plain, tls))
+        .expect("the test server starts");
+    let arrives = |subject: &str| {
+        imap.append(
+            "INBOX",
+            &note("Ana <ana@veeza.example>", subject, subject, "Hello."),
+            &[],
+        );
+    };
+    arrives("Was there");
+    let account = account(imap.port, 465);
+    let secret = accounts::Secret::password("fixture-password");
+    let session = LiveMailSession::also_trusting(vec![certificate]).pacing(quick());
+    let told = Arc::new(Told::default());
+
+    let watching = session
+        .watch(&account, &secret, None, told.clone())
+        .expect("the watch starts");
+    ui::testing::wait_until("the inbox to be watched", || imap.idling() > 0);
+    assert!(
+        told.subjects().is_empty(),
+        "what was there before is no arrival"
+    );
+    assert_eq!(told.seen().map(|seen| seen.uid), Some(1));
+
+    arrives("First");
+    ui::testing::wait_until("the arrival to be told", || told.subjects().len() == 1);
+    arrives("Second");
+    arrives("Third");
+    ui::testing::wait_until("the next two to be told", || told.subjects().len() == 3);
+    assert_eq!(told.subjects(), ["First", "Second", "Third"]);
+    let seen = told.seen().expect("the watch looked");
+    assert_eq!(seen.uid, 4);
+    assert_eq!(imap.logins(), 1, "one connection watches");
+
+    drop(watching);
+    ui::testing::wait_until("the watch to stop", || imap.idling() == 0);
+    arrives("While nobody watched");
+
+    // A watch started where the last one stopped tells what arrived since.
+    let again = Arc::new(Told::default());
+    let _watching = session
+        .watch(&account, &secret, Some(seen), again.clone())
+        .expect("the watch starts");
+    ui::testing::wait_until("what arrived in between to be told", || {
+        again.subjects() == ["While nobody watched"]
+    });
+
+    // A folder its server numbered anew starts over: nothing in it is an
+    // arrival.
+    let renumbered = Arc::new(Told::default());
+    let _other = session
+        .watch(
+            &account,
+            &secret,
+            Some(InboxSeen {
+                uid_validity: seen.uid_validity.saturating_add(1),
+                uid: 1,
+            }),
+            renumbered.clone(),
+        )
+        .expect("the watch starts");
+    ui::testing::wait_until("the renumbered folder to be looked at", || {
+        renumbered.seen().is_some()
+    });
+    assert!(renumbered.subjects().is_empty());
+    assert_eq!(renumbered.seen().map(|seen| seen.uid), Some(5));
+}
+
+/// A watch whose server drops it comes back by itself, tells what arrived
+/// while it was away once, and keeps watching.
+#[test]
+fn a_watch_comes_back_after_its_server_drops_it_and_misses_nothing() {
+    let runtime = ui::rt::app();
+    let (tls, certificate) = server_identity();
+    let imap = runtime
+        .block_on(FakeImap::start(Layout::Plain, tls))
+        .expect("the test server starts");
+    let arrives = |subject: &str| {
+        imap.append(
+            "INBOX",
+            &note("Ana <ana@veeza.example>", subject, subject, "Hello."),
+            &[],
+        );
+    };
+    let account = account(imap.port, 465);
+    let secret = accounts::Secret::password("fixture-password");
+    let session = LiveMailSession::also_trusting(vec![certificate]).pacing(quick());
+    let told = Arc::new(Told::default());
+    let _watching = session
+        .watch(&account, &secret, None, told.clone())
+        .expect("the watch starts");
+    ui::testing::wait_until("the inbox to be watched", || imap.idling() > 0);
+
+    imap.drop_connections();
+    arrives("While away");
+    ui::testing::wait_until("the watch to come back and tell it", || {
+        told.subjects() == ["While away"]
+    });
+    assert!(told.losses() >= 1, "the loss was told");
+    assert!(imap.logins() >= 2, "the watch signed in again");
+
+    ui::testing::wait_until("the inbox to be watched again", || imap.idling() > 0);
+    arrives("After");
+    ui::testing::wait_until("the watch to tell what arrives next", || {
+        told.subjects() == ["While away", "After"]
+    });
+}
+
+/// A server that cannot tell of a change is asked again and again instead.
+#[test]
+fn a_server_that_cannot_tell_of_a_change_is_asked_again_and_again() {
+    let runtime = ui::rt::app();
+    let (tls, certificate) = server_identity();
+    let imap = runtime
+        .block_on(FakeImap::start(Layout::Plain, tls))
+        .expect("the test server starts");
+    imap.without_idle();
+    let account = account(imap.port, 465);
+    let secret = accounts::Secret::password("fixture-password");
+    let session = LiveMailSession::also_trusting(vec![certificate]).pacing(quick());
+    let told = Arc::new(Told::default());
+    let _watching = session
+        .watch(&account, &secret, None, told.clone())
+        .expect("the watch starts");
+    ui::testing::wait_until("the inbox to be looked at", || told.seen().is_some());
+
+    imap.append(
+        "INBOX",
+        &note("Ana <ana@veeza.example>", "Asked for", "asked", "Hello."),
+        &[],
+    );
+    ui::testing::wait_until("the arrival to be found by asking", || {
+        told.subjects() == ["Asked for"]
+    });
+    assert_eq!(
+        imap.idling(),
+        0,
+        "nothing idles on a server that cannot tell"
+    );
+    assert_eq!(imap.logins(), 1, "the one connection is asked again");
+}
+
 /// The account that reaches `imap` and `smtp`.
 fn account(imap_port: u16, smtp_port: u16) -> accounts::Account {
     let mut account = accounts::Account::new("ada@example.test", "email");

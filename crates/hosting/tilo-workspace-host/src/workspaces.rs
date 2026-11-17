@@ -80,6 +80,11 @@ mod peer_parts;
 mod person_models;
 #[cfg(not(target_arch = "wasm32"))]
 mod person_settings;
+// The inboxes such a host watches for its people, with no window open.
+#[cfg(not(target_arch = "wasm32"))]
+mod mail_watch;
+#[cfg(not(target_arch = "wasm32"))]
+pub use mail_watch::MailListening;
 // A person's own model, asked for whatever this host runs for them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod person_model;
@@ -989,6 +994,10 @@ struct WorkspacesInner {
     /// its people keep ([`Workspaces::mail_session`]).
     #[cfg(not(target_arch = "wasm32"))]
     mail_session: std::sync::RwLock<person_settings::Session>,
+    /// The inboxes this host watches, and who listens for them
+    /// ([`mail_watch`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    mail_watches: mail_watch::MailWatches,
     /// What the changes a record's repair kept wait for, by record, so a
     /// member's write to it is only tried against them when it could release
     /// one ([`repaired_documents`]).
@@ -1257,6 +1266,8 @@ impl Workspaces {
                 mail_session: std::sync::RwLock::new(Arc::new(
                     tilo_mail_session::LiveMailSession::default(),
                 )),
+                #[cfg(not(target_arch = "wasm32"))]
+                mail_watches: mail_watch::MailWatches::default(),
                 #[cfg(feature = "agents")]
                 repairs: repaired_documents::Repairs::default(),
                 content: content::ContentSlot::default(),

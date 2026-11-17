@@ -50,6 +50,9 @@ const ANSWER_WORDS: usize = 512 * 1024;
 const READ_WORDS: usize = 768 * 1024;
 /// The words kept of a message whose whole does not fit its answer.
 const EXCERPT_WORDS: usize = 2 * 1024;
+/// The most messages a watch tells at once: one that was away for long tells
+/// the newest of what it missed.
+const WATCH_MOST: u32 = 200;
 
 type ImapSession = async_imap::Session<tilo_account_probe::imap::SecureStream>;
 
@@ -131,6 +134,92 @@ pub trait MailSession: Send + Sync {
         secret: &accounts::Secret,
         marking: &MarkMail,
     ) -> Result<(), String>;
+
+    /// Watch `account`'s inbox until the answer is dropped, telling `heard`
+    /// each message that reaches it after `seen`: after now, when nothing
+    /// was seen of it yet. A watch that loses its server reaches for it
+    /// again by itself.
+    ///
+    /// # Errors
+    /// The watch could not be started at all.
+    fn watch(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+        seen: Option<InboxSeen>,
+        heard: Arc<dyn InboxHeard>,
+    ) -> Result<Watching, String>;
+}
+
+/// Where a watch of an inbox has read up to: the numbering its server gave
+/// the folder, and the newest `UID` seen under it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InboxSeen {
+    pub uid_validity: u32,
+    pub uid: u32,
+}
+
+/// What a watch of an inbox tells whoever started it.
+pub trait InboxHeard: Send + Sync {
+    /// `messages` reached the inbox, oldest first, and the watch has read up
+    /// to `seen`. The first look at an inbox, and the look after its server
+    /// numbered it anew, tell no message, only where the watch starts: what
+    /// was there before is no arrival.
+    fn arrived(&self, messages: Vec<FetchedMessage>, seen: InboxSeen);
+
+    /// The watch lost its server for `reason`, and reaches for it again.
+    fn lost(&self, reason: &str);
+}
+
+/// A watch of one account's inbox, for as long as this is held: dropping it
+/// stops the watch.
+pub struct Watching {
+    stop: Option<Box<dyn FnOnce() + Send + Sync>>,
+}
+
+impl Watching {
+    /// A watch that `stop` ends.
+    #[must_use]
+    pub fn new(stop: impl FnOnce() + Send + Sync + 'static) -> Self {
+        Self {
+            stop: Some(Box::new(stop)),
+        }
+    }
+}
+
+impl Drop for Watching {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            stop();
+        }
+    }
+}
+
+/// How a watch paces itself.
+#[derive(Clone, Copy, Debug)]
+pub struct WatchPace {
+    /// How long a server is left to tell of a change before the watch says
+    /// it still listens: a server drops a connection that only waits for
+    /// half an hour.
+    pub renew: Duration,
+    /// How often a server that cannot tell of a change is asked instead.
+    pub poll: Duration,
+    /// How long the watch waits before it reaches for a server it lost. The
+    /// wait doubles with each loss in a row,
+    pub retry: Duration,
+    /// up to this.
+    pub retry_most: Duration,
+}
+
+impl Default for WatchPace {
+    fn default() -> Self {
+        Self {
+            renew: Duration::from_secs(25 * 60),
+            poll: Duration::from_secs(60),
+            retry: Duration::from_secs(15),
+            retry_most: Duration::from_secs(10 * 60),
+        }
+    }
 }
 
 /// A file a message carries: the bytes the host holds of it and the name and
@@ -155,6 +244,8 @@ pub struct LiveMailSession {
     runtime: OnceLock<Result<tokio::runtime::Runtime, String>>,
     /// Each account's signed-in session, from its last request to its next.
     kept: Mutex<HashMap<String, Kept>>,
+    /// How the watches this starts pace themselves.
+    pace: WatchPace,
 }
 
 /// A signed-in session between two requests, and when its server last
@@ -194,7 +285,15 @@ impl LiveMailSession {
             smtp_trust: extra,
             runtime: OnceLock::new(),
             kept: Mutex::default(),
+            pace: WatchPace::default(),
         }
+    }
+
+    /// The same sessions, their watches paced by `pace`.
+    #[must_use]
+    pub fn pacing(mut self, pace: WatchPace) -> Self {
+        self.pace = pace;
+        self
     }
 }
 
@@ -290,6 +389,23 @@ impl MailSession for LiveMailSession {
             }),
         )
     }
+
+    fn watch(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+        seen: Option<InboxSeen>,
+        heard: Arc<dyn InboxHeard>,
+    ) -> Result<Watching, String> {
+        let inbox = Inbox {
+            tls: self.tls.clone(),
+            account: account.clone(),
+            secret: secret.clone(),
+            pace: self.pace,
+        };
+        let task = self.started()?.spawn(inbox.watch(seen, heard));
+        Ok(Watching::new(move || task.abort()))
+    }
 }
 
 impl LiveMailSession {
@@ -298,18 +414,23 @@ impl LiveMailSession {
         &self,
         work: impl std::future::Future<Output = Result<T, String>>,
     ) -> Result<T, String> {
-        let runtime = self.runtime.get_or_init(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .thread_name("mail-session")
-                .enable_all()
-                .build()
-                .map_err(|_| "could not start the mail session".to_string())
-        });
-        match runtime {
-            Ok(runtime) => runtime.block_on(work),
-            Err(reason) => Err(reason.clone()),
-        }
+        self.started()?.block_on(work)
+    }
+
+    /// The runtime every session's connection lives on, started when it is
+    /// first needed.
+    fn started(&self) -> Result<&tokio::runtime::Runtime, String> {
+        self.runtime
+            .get_or_init(|| {
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .thread_name("mail-session")
+                    .enable_all()
+                    .build()
+                    .map_err(|_| "could not start the mail session".to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     /// Run `work` on the account's signed-in session: the one its last
@@ -383,41 +504,50 @@ impl LiveMailSession {
         account: &accounts::Account,
         secret: &accounts::Secret,
     ) -> Result<ImapSession, String> {
-        let host = field(account, "imap_host")
-            .filter(|host| !host.trim().is_empty())
-            .ok_or_else(|| "account has no IMAP server".to_string())?;
-        let port = port_of(account, "imap_port", 993);
-        let user = field(account, "username")
-            .or_else(|| field(account, "email"))
-            .ok_or_else(|| "account has no IMAP login name".to_string())?;
-        if secret.password.is_empty() {
-            return Err("account has no saved password".into());
-        }
-        let user = login_name(&user)?;
-        let password = login_name(&secret.password)?;
-        let config = match &self.tls {
-            Some(config) => Arc::clone(config),
-            None => Arc::new(
-                tilo_net::client_config_with_roots(tilo_net::system_roots())
-                    .map_err(|_| "could not initialize secure protocol versions".to_string())?,
-            ),
-        };
-        // The connection is secured as the sign-in probe secured it when the
-        // account was added: TLS from the first byte, or upgraded with
-        // STARTTLS before the sign-in is sent.
-        let security = accounts::email::imap_security_of(&account.config);
-        let client =
-            tilo_account_probe::imap::open(&host, port, security, config, NETWORK_TIMEOUT).await?;
-        timeout(NETWORK_TIMEOUT, client.login(user, password))
-            .await
-            .map_err(|_| "IMAP server did not answer before the timeout".to_string())?
-            .map_err(|(error, _)| match error {
-                async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_) => {
-                    "IMAP server rejected the saved credential".to_string()
-                }
-                _ => "IMAP server closed the connection unexpectedly".to_string(),
-            })
+        sign_in(self.tls.clone(), account, secret).await
     }
+}
+
+/// Open the account's connection, secured as its settings say, and sign in.
+async fn sign_in(
+    tls: Option<Arc<rustls::ClientConfig>>,
+    account: &accounts::Account,
+    secret: &accounts::Secret,
+) -> Result<ImapSession, String> {
+    let host = field(account, "imap_host")
+        .filter(|host| !host.trim().is_empty())
+        .ok_or_else(|| "account has no IMAP server".to_string())?;
+    let port = port_of(account, "imap_port", 993);
+    let user = field(account, "username")
+        .or_else(|| field(account, "email"))
+        .ok_or_else(|| "account has no IMAP login name".to_string())?;
+    if secret.password.is_empty() {
+        return Err("account has no saved password".into());
+    }
+    let user = login_name(&user)?;
+    let password = login_name(&secret.password)?;
+    let config = match &tls {
+        Some(config) => Arc::clone(config),
+        None => Arc::new(
+            tilo_net::client_config_with_roots(tilo_net::system_roots())
+                .map_err(|_| "could not initialize secure protocol versions".to_string())?,
+        ),
+    };
+    // The connection is secured as the sign-in probe secured it when the
+    // account was added: TLS from the first byte, or upgraded with
+    // STARTTLS before the sign-in is sent.
+    let security = accounts::email::imap_security_of(&account.config);
+    let client =
+        tilo_account_probe::imap::open(&host, port, security, config, NETWORK_TIMEOUT).await?;
+    timeout(NETWORK_TIMEOUT, client.login(user, password))
+        .await
+        .map_err(|_| "IMAP server did not answer before the timeout".to_string())?
+        .map_err(|(error, _)| match error {
+            async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_) => {
+                "IMAP server rejected the saved credential".to_string()
+            }
+            _ => "IMAP server closed the connection unexpectedly".to_string(),
+        })
 }
 
 /// What an account's session is kept under: the account, and where and as
@@ -1272,6 +1402,141 @@ fn parse_env_addresses(list: &str) -> Vec<(String, String)> {
             }
         })
         .collect()
+}
+
+/// One account's inbox, as a watch reaches it.
+struct Inbox {
+    tls: Option<Arc<rustls::ClientConfig>>,
+    account: accounts::Account,
+    secret: accounts::Secret,
+    pace: WatchPace,
+}
+
+impl Inbox {
+    /// Watch the inbox for good: over one connection for as long as its
+    /// server keeps it, then over the next, waiting longer before each try
+    /// while the server stays lost.
+    async fn watch(self, mut seen: Option<InboxSeen>, heard: Arc<dyn InboxHeard>) {
+        let mut wait = self.pace.retry;
+        loop {
+            let lost = match self.watch_connected(&mut seen, &*heard, &mut wait).await {
+                Ok(never) => match never {},
+                Err(reason) => reason,
+            };
+            heard.lost(&lost);
+            tokio::time::sleep(wait).await;
+            wait = wait.saturating_mul(2).min(self.pace.retry_most);
+        }
+    }
+
+    /// Watch over one connection until its server is lost, which is the
+    /// only way this ends.
+    async fn watch_connected(
+        &self,
+        seen: &mut Option<InboxSeen>,
+        heard: &dyn InboxHeard,
+        wait: &mut Duration,
+    ) -> Result<std::convert::Infallible, String> {
+        let unanswered = || "IMAP server did not answer before the timeout".to_string();
+        let mut session = sign_in(self.tls.clone(), &self.account, &self.secret).await?;
+        let tells = timeout(NETWORK_TIMEOUT, session.capabilities())
+            .await
+            .map_err(|_| unanswered())?
+            .map_err(|e| e.to_string())?
+            .has_str("IDLE");
+        loop {
+            // Each round looks at the inbox afresh: what arrived while
+            // nothing watched it, and what the wait just over heard of.
+            let inbox = timeout(NETWORK_TIMEOUT, session.select("INBOX"))
+                .await
+                .map_err(|_| unanswered())?
+                .map_err(|e| e.to_string())?;
+            timeout(
+                REQUEST_TIMEOUT,
+                take_arrivals(&mut session, &inbox, seen, heard),
+            )
+            .await
+            .map_err(|_| unanswered())??;
+            // The server answers: the next loss starts its waits over.
+            *wait = self.pace.retry;
+            if tells {
+                let mut idle = session.idle();
+                timeout(NETWORK_TIMEOUT, idle.init())
+                    .await
+                    .map_err(|_| unanswered())?
+                    .map_err(|e| e.to_string())?;
+                // The wait ends when the server tells of a change, or when
+                // it is time to say the watch still listens: either way the
+                // inbox is looked at again.
+                let (told, _stop) = idle.wait_with_timeout(self.pace.renew);
+                told.await.map_err(|e| e.to_string())?;
+                session = timeout(NETWORK_TIMEOUT, idle.done())
+                    .await
+                    .map_err(|_| unanswered())?
+                    .map_err(|e| e.to_string())?;
+            } else {
+                tokio::time::sleep(self.pace.poll).await;
+            }
+        }
+    }
+}
+
+/// Tell `heard` what reached the selected `inbox` after `seen`, and move
+/// `seen` past it.
+async fn take_arrivals(
+    session: &mut ImapSession,
+    inbox: &async_imap::types::Mailbox,
+    seen: &mut Option<InboxSeen>,
+    heard: &dyn InboxHeard,
+) -> Result<(), String> {
+    let uid_validity = inbox.uid_validity.unwrap_or(0);
+    // The newest number the folder has given out. A server that does not
+    // say which comes next is asked for the numbers it holds.
+    let newest = match inbox.uid_next {
+        Some(next) => next.saturating_sub(1),
+        None => session
+            .uid_search("ALL")
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .max()
+            .unwrap_or(0),
+    };
+    let after = match *seen {
+        Some(mark) if mark.uid_validity == uid_validity => mark.uid,
+        _ => {
+            // The first look, or a folder its server numbered anew: what it
+            // holds now was there before, and is no arrival.
+            let mark = InboxSeen {
+                uid_validity,
+                uid: newest,
+            };
+            *seen = Some(mark);
+            heard.arrived(Vec::new(), mark);
+            return Ok(());
+        }
+    };
+    if newest <= after {
+        return Ok(());
+    }
+    let first = after
+        .saturating_add(1)
+        .max(newest.saturating_sub(WATCH_MOST.saturating_sub(1)));
+    let now_min = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs().cast_signed() / 60);
+    let mut messages = fetch_set(session, uid_validity, &format!("{first}:*"), now_min).await?;
+    messages.retain(|message| message.uid > after);
+    messages.sort_by_key(|message| message.uid);
+    let mark = InboxSeen {
+        uid_validity,
+        uid: messages
+            .last()
+            .map_or(newest, |message| message.uid.max(newest)),
+    };
+    *seen = Some(mark);
+    heard.arrived(messages, mark);
+    Ok(())
 }
 
 #[cfg(test)]
