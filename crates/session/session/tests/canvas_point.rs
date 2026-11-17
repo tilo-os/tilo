@@ -300,6 +300,44 @@ fn a_dragged_rectangle_is_filled_by_the_notes() {
     the_rectangle_is_filled("my notes", "so.tilo.lang.notes");
 }
 
+/// A rectangle dragged just under an inbox that hugs its few rows, on ground that is free on the
+/// screen though the inbox's place could grow into it: what is found there fills the rectangle,
+/// at its corner, never below the height the inbox could grow to.
+#[test]
+fn a_rectangle_under_a_hugging_place_is_filled_where_it_was_dragged() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    point_and_say(&mut session, (x + w * 0.1, y + h * 0.08), "my mails");
+    let inbox = wait_for(&mut session, "the inbox placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.resource.contains("so.tilo.lang.mail"))
+    });
+    let (ix, iy, _, ih) = wait_for(&mut session, "the inbox on screen", |session| {
+        place_on_screen(session, &inbox)
+    });
+    let from = (ix, iy + ih + 60.0);
+    let to = (ix + w * 0.4, (from.1 + 260.0).min(y + h - 20.0));
+    frame_and_say(&mut session, from, to, "my notes");
+    let notes = wait_for(&mut session, "the notes placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.resource.contains("so.tilo.lang.notes"))
+    });
+    let (px, py, _, _) = wait_for(&mut session, "the notes on screen", |session| {
+        place_on_screen(session, &notes)
+    });
+    assert!(
+        near(px, from.0) && near(py, from.1),
+        "the notes stand at the rectangle's corner {from:?}, not below the inbox's tallest \
+         height: {:?} (inbox drawn to {})",
+        (px, py),
+        iy + ih
+    );
+}
+
 /// A click and what is found there: its surface's top-left stands at the point clicked, the
 /// handle's band over it.
 #[test]
