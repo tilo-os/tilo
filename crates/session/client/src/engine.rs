@@ -238,6 +238,23 @@ pub struct Engine {
     /// What this device last named its workspaces' hosts as: the address it wrote, and which
     /// workspaces it wrote it to ([`Self::name_own_hosts`]).
     named_hosts: std::sync::Mutex<NamedHosts>,
+    /// Where this device's own workspace service keeps the workspaces it holds, under the state
+    /// the engine was opened on; `None` for an engine that keeps no state.
+    service_root: Option<std::path::PathBuf>,
+    /// Where a workspace this device makes is founded: its own workspace service, once it is open
+    /// ([`Self::serve_founding`]).
+    founder: std::sync::OnceLock<Arc<dyn Founder>>,
+}
+
+/// Founds a workspace this device made: places it on this device's own workspace service and
+/// enrolls this device in it as a member.
+pub trait Founder: Send + Sync {
+    /// Found `workspace` under `name`, answered once this device holds it.
+    fn found(
+        &self,
+        workspace: WorkspaceId,
+        name: String,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
 }
 
 /// What [`Engine::name_own_hosts`] last named: the address of the endpoint it named, and the
@@ -439,6 +456,8 @@ impl Engine {
             held: HeldWrites::default(),
             kept: std::sync::Mutex::default(),
             named_hosts: std::sync::Mutex::default(),
+            service_root: None,
+            founder: std::sync::OnceLock::new(),
         }
     }
 
@@ -461,6 +480,7 @@ impl Engine {
         )));
         let owner = open_file_with(&path, Arc::clone(&shown) as Arc<dyn FileHost>)?;
         let mut engine = Self::holding(owner.clone(), shown, identity, ownership);
+        engine.service_root = Some(state.join("tilo").join("workspace-service"));
         // What the workspaces' other devices reach this one at, keeping the frames each brings: a
         // device that holds a workspace is a store device of it.
         engine.directed = match tilo_peer_state::store::Store::open(frames_path(state), FRAMES_KEPT)
@@ -502,6 +522,13 @@ impl Engine {
         let identity = identity::device_identity()
             .ok_or("this computer has no identity yet, so it holds no workspace")?;
         Self::open(identity, state, workspaces, ownership)
+    }
+
+    /// Where this device's own workspace service keeps its workspaces; `None` for an engine that
+    /// keeps no state.
+    #[must_use]
+    pub fn service_root(&self) -> Option<std::path::PathBuf> {
+        self.service_root.clone()
     }
 
     /// The workspace ids this device holds.
@@ -1837,72 +1864,45 @@ impl Engine {
         .map_err(|error| error.to_string())
     }
 
-    /// Found `workspace` — made on this layout under `name` — when this device made it
-    /// and nothing here holds it yet: who is in it, who may invite and what its apps record become
-    /// the workspace's own, hosted here. `endpoint` is where other devices reach this one, which
-    /// the workspace's record keeps as its host's address. A workspace this device may not own, or
-    /// one that could not be published, stays the layout's own.
+    /// Found `workspace`, made on this layout under `name`, when this device made it and nothing
+    /// here holds it yet: it is placed on this device's own workspace service, and this device
+    /// holds it as a member from then on. A workspace this device may not own, or one that could
+    /// not be placed, stays the layout's own.
     #[cfg(target_os = "linux")]
-    pub async fn found(
-        &self,
-        workspace: WorkspaceId,
-        name: &str,
-        endpoint: Option<&iroh_base::EndpointAddr>,
-    ) {
+    pub async fn found(&self, workspace: WorkspaceId, name: &str) {
         if self.holds(workspace)
             || self.unfounded.lock_recover().contains(&workspace)
             || !self.founding.lock_recover().insert(workspace)
         {
             return;
         }
-        self.found_here(workspace, name, endpoint).await;
+        self.found_here(workspace, name).await;
         self.founding.lock_recover().remove(&workspace);
     }
 
     /// [`Self::found`] once nothing else founds `workspace`.
     #[cfg(target_os = "linux")]
-    async fn found_here(
-        &self,
-        workspace: WorkspaceId,
-        name: &str,
-        endpoint: Option<&iroh_base::EndpointAddr>,
-    ) {
-        let identity = self.identity();
-        if !identity.device_cert.capabilities.can_own_workspaces {
+    async fn found_here(&self, workspace: WorkspaceId, name: &str) {
+        if !self.identity().device_cert.capabilities.can_own_workspaces {
             return;
         }
-        // A session with nowhere other devices reach this one founds the workspace all the same:
-        // its records and its governance are held here, and its own host's address is named in the
-        // record once this device has one ([`Self::name_own_hosts`]).
-        let host_hint = match endpoint {
-            Some(endpoint) => match self.own_host_hint(&workspace.to_string(), endpoint) {
-                Ok(hint) => Some(hint),
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        %workspace,
-                        "this device's own host of the workspace could not be named"
-                    );
-                    return;
-                }
-            },
-            None => None,
+        let Some(founder) = self.founder.get().cloned() else {
+            tracing::warn!(%workspace, "this device's workspace service is not open, so the workspace stays the layout's own");
+            return;
         };
-        let founded = self.owner.create_workspace(
-            workspace,
-            name,
-            &identity.device_cert,
-            identity.signer.as_ref(),
-            host_hint.as_ref(),
-            tilo_clock::wall(),
-        );
-        match founded.await {
-            Ok(_) => self.bind(workspace),
+        match founder.found(workspace, name.to_owned()).await {
+            Ok(()) => self.bind(workspace),
             Err(error) => {
                 tracing::warn!(%error, %workspace, "the workspace was not founded here");
                 self.unfounded.lock_recover().insert(workspace);
             }
         }
+    }
+
+    /// Found workspaces through `founder` from now on: this device's own workspace service, once
+    /// it is open. The first one handed stays.
+    pub fn serve_founding(&self, founder: Arc<dyn Founder>) {
+        let _ = self.founder.set(founder);
     }
 
     /// Name where this device's own host of each workspace it hosts is reached at `endpoint`:

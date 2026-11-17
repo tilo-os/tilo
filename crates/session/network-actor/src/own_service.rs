@@ -26,22 +26,22 @@ use workspace_service::{ServiceSlot, WorkspaceService};
 /// This device's workspace host, once it is open: shared by the network (which
 /// opens it) and the actor (which joins its workspaces through it).
 #[derive(Clone)]
-pub struct LocalHost(Arc<Inner>);
+pub struct OwnService(Arc<Inner>);
 
 struct Inner {
     slot: ServiceSlot,
     host: Mutex<Option<Arc<WorkspaceService>>>,
 }
 
-impl std::fmt::Debug for LocalHost {
+impl std::fmt::Debug for OwnService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LocalHost")
+        f.debug_struct("OwnService")
             .field("open", &self.get().is_some())
             .finish()
     }
 }
 
-impl LocalHost {
+impl OwnService {
     /// A host not open yet, and the deferred handlers that serve it once it
     /// is, for the router.
     #[must_use]

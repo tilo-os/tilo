@@ -2726,7 +2726,7 @@ mod tests {
         let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
         let person = hex::encode(cert.user_public_key);
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Layout", None));
+        pollster::block_on(engine.found(workspace, "Layout"));
         assert!(
             engine.holds(workspace),
             "the layout's workspace is held here"

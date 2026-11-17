@@ -22043,6 +22043,7 @@ dependencies = [
  "tilo-workspace-directory",
  "tilo-workspace-join",
  "tilo-workspace-keys",
+ "tilo-workspace-service",
  "tilolang-cli",
  "tilolang-mail",
  "tilolang-process",

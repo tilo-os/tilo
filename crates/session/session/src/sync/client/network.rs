@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use iroh::{EndpointAddr, EndpointId};
 use tilo_endpoint_reachability::Reachability;
+use tilo_network_actor::own_service::OwnService;
 use tilo_network_actor::{HostIdentity, NetCmd, NetEvent};
 use tilo_session_client::Cmd;
 use tilo_session_client::network::Event;
@@ -144,7 +145,7 @@ impl Serving {
         bound: Bound,
         link: Option<Arc<KeyLink>>,
         actions: Arc<std::sync::OnceLock<DeviceActions>>,
-        protocols: tilo_network_actor::local_host::Protocols,
+        protocols: tilo_network_actor::own_service::Protocols,
         documents: Option<super::PeerDocuments>,
     ) -> Self {
         Self {
@@ -168,7 +169,7 @@ pub(crate) struct Beside {
     /// The protocols the session answers besides its own, handed over before the endpoint binds: an
     /// endpoint's protocols are fixed once it is bound, so whatever answers on it is here from the
     /// first pass.
-    pub(crate) protocols: tilo_network_actor::local_host::Protocols,
+    pub(crate) protocols: tilo_network_actor::own_service::Protocols,
     /// Where what admission takes in from another device is handed to this device's apps: `None` on
     /// a session that serves no apps.
     pub(crate) documents: Option<super::PeerDocuments>,
@@ -256,6 +257,8 @@ struct Listening {
     actor_task: tokio::task::JoinHandle<()>,
     carrying: tokio::task::JoinHandle<()>,
     attending: Option<tokio::task::JoinHandle<()>>,
+    /// This device's own workspace service, which holds what it founds.
+    own_service: Option<OwnService>,
 }
 
 /// The session's ends of the peer network's thread: what the client hears, what only this desktop keeps,
@@ -297,6 +300,7 @@ pub(super) fn run(
             actor_task,
             carrying,
             attending,
+            own_service,
         }) = listening(
             identity.as_ref(),
             engine.as_ref(),
@@ -321,6 +325,7 @@ pub(super) fn run(
             link,
             engine,
             identity,
+            own_service,
         };
         while let Some(command) = commands.recv().await {
             let Some(taken) = carry_host(&actor, &events, &asking, command).await else {
@@ -409,10 +414,13 @@ struct Asking {
     link: Option<Arc<KeyLink>>,
     engine: Option<Arc<Engine>>,
     identity: Option<HostIdentity>,
+    /// This device's own workspace service: a workspace founded here is placed on it, and an
+    /// invitation that names it is redeemed with it in process.
+    own_service: Option<OwnService>,
 }
 
 /// One thing the peer network asks a workspace's host for: someone's invitation redeemed into their
-/// workspace, or one of the person's own workspaces entered at the device hosting it.
+/// workspace, or one of the person's own workspaces entered at the device serving_own it.
 enum Ask {
     Invitation(Box<super::Enrolling>),
     Entry(Box<super::Entering>),
@@ -453,6 +461,7 @@ impl Asking {
         let network = self.network.clone();
         let events = self.events.clone();
         let channels = self.link.clone();
+        let own_service = self.own_service.clone();
         tokio::spawn(async move {
             let result = match ask {
                 Ask::Invitation(request) => {
@@ -464,6 +473,7 @@ impl Asking {
                         &events,
                         *request,
                         channels.as_deref(),
+                        own_service.as_ref(),
                     )
                     .await
                 }
@@ -542,7 +552,7 @@ async fn listening(
     );
     // This device's app wire is served on the same endpoint: another of the person's devices
     // reaches what this one publishes here, beside the workspaces' own traffic.
-    let mut served: tilo_network_actor::local_host::Protocols = Vec::new();
+    let mut served: tilo_network_actor::own_service::Protocols = Vec::new();
     // What the session serves beside its own peer networks: this device's exit for the person's other
     // devices, when it offers one.
     served.extend(protocols);
@@ -570,39 +580,36 @@ async fn listening(
         // leave through it.
         let _ = actions.set(device);
     }
-    if let (Some(identity), Some(engine)) = (identity, engine) {
-        // A link this device hands out names this endpoint, so the joins those links are redeemed
-        // by are answered here: this device's own owner admits whoever a link it signed is for.
-        served.push((
-            tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN.to_vec(),
-            Box::<dyn iroh::protocol::DynProtocolHandler>::from(
-                tilo_peer_state::join_transport::WorkspaceJoinProtocol::new(
-                    tilo_peer_state::join_answer::JoinAnswer(
-                        tilo_peer_state::owner::OwnerJoinWorkspaces::new(
-                            engine.owner().clone(),
-                            std::sync::Arc::clone(&identity.signer),
-                        ),
-                    ),
-                ),
-            ),
-        ));
-        // The workspaces this device holds, for their own devices to sync with and catch up from:
-        // the same link every workspace host answers on.
-        served.extend(engine.direct_protocols());
-    }
+    // This device's own workspace service answers here: the workspaces it founds are held there,
+    // and their other devices and members join, sync and act with it on its own ALPNs. A device
+    // action service of the session's own, pushed above, answers that ALPN in its place.
+    let (own_service, serving_own) = match identity.zip(engine).map(|_| OwnService::deferred()) {
+        Some((service, protocols)) => (
+            Some(service.clone()),
+            Some(tilo_network_actor::OwnServing { service, protocols }),
+        ),
+        None => (None, None),
+    };
     let (actor, actor_task) = tilo_network_actor::Actor::spawn_serving(
         endpoint.clone(),
         lookup,
         identity.cloned(),
         Arc::new(std::sync::Mutex::new(Vec::new())),
         reachability.clone(),
+        serving_own,
         served,
     );
-    // The devices that take part in this device's workspaces through it reach the rest of each
-    // workspace, and its apps, through this peer network.
-    if let Some(members) = engine.and_then(|engine| engine.members()) {
-        let _ = actor.send(NetCmd::ServeMembers(members)).await;
+    if let (Some(service), Some(identity), Some(engine)) = (&own_service, identity, engine) {
+        match super::own_service::open(service, identity, engine, endpoint.clone()).await {
+            Ok(_) => {
+                let _ = actor.send(NetCmd::OwnServiceReady).await;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "this device's workspace service did not open, so it founds no workspace");
+            }
+        }
     }
+    let founding_link = link.clone();
     let (events, carrying, attending) = heard(
         identity.is_some(),
         arrivals,
@@ -611,6 +618,18 @@ async fn listening(
         link,
         documents,
     );
+    // A workspace this device makes is founded on its own service from now on.
+    if let (Some(service), Some(identity), Some(engine)) = (&own_service, identity, engine) {
+        engine.serve_founding(Arc::new(super::own_service::Founding {
+            service: service.clone(),
+            endpoint: endpoint.clone(),
+            identity: identity.clone(),
+            engine: Arc::downgrade(engine),
+            network: actor.clone(),
+            events: events.clone(),
+            link: founding_link,
+        }));
+    }
     if ready.send(Ok((publisher, addr, reachability))).is_err() {
         return None;
     }
@@ -621,6 +640,7 @@ async fn listening(
         actor_task,
         carrying,
         attending,
+        own_service,
     })
 }
 
