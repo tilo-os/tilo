@@ -828,7 +828,7 @@ const VIEW_DESCRIPTION: &str = "Optional: answer with a view when the answer is 
 /// The property naming parts that cannot be done, with the reason.
 pub const UNABLE: &str = "unable";
 
-fn parts_schema() -> Value {
+pub(crate) fn parts_schema() -> Value {
     json!({
         "type": "array",
         "description":
@@ -854,7 +854,7 @@ fn parts_schema() -> Value {
 /// is: told to the person as one line per item.
 pub const PROGRESS: &str = "progress";
 
-fn progress_schema() -> Value {
+pub(crate) fn progress_schema() -> Value {
     json!({
         "type": "object",
         "description":
@@ -873,7 +873,7 @@ fn progress_schema() -> Value {
     })
 }
 
-fn unable_schema() -> Value {
+pub(crate) fn unable_schema() -> Value {
     json!({
         "type": "array",
         "description": "Parts you cannot do with the operations available, each with the reason.",

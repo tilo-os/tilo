@@ -786,19 +786,27 @@ impl LoopState {
     /// made the task the request asked for did that part, exactly as an `invoke` of the app's
     /// own operation would have. Without this a part done by a program stays undone, the
     /// finish is refused, and the model is pushed to open the app's window to satisfy it.
+    ///
+    /// A program that changed nothing and answered — "summarise what changed in my notes" read
+    /// and printed — did the part in each app it read: a question is done by its answer, and its
+    /// finish was refused for want of a change nobody asked for.
     pub(super) fn program_did(&mut self, step: &ui::tilo_reference::ProgramStep) {
         if step.outcome != ui::tilo_reference::StepOutcome::Done {
             return;
         }
-        let mut apps: Vec<&str> = step
+        let mut apps: Vec<String> = step
             .changes
             .iter()
-            .map(|change| change.resource.app.as_str())
+            .map(|change| change.resource.app.clone())
             .filter(|app| !app.is_empty())
             .collect();
+        if apps.is_empty() && step.answer.iter().any(|line| !line.trim().is_empty()) {
+            apps = self.programs.apps_named(&step.program);
+        }
+        apps.sort();
         apps.dedup();
         for app in apps {
-            *self.done_apps.entry(app.to_owned()).or_default() += 1;
+            *self.done_apps.entry(app).or_default() += 1;
         }
     }
 
@@ -2025,7 +2033,16 @@ impl Session {
                 }
                 Ok(Handled::Finish(finish))
             }
-            crate::programs::TILO => self.run_program(run, state, call),
+            crate::programs::TILO => {
+                // A program may be the request's first step: what a step says of the request (the
+                // separate things it asks for, how far it got, what cannot be done) rides on
+                // whichever tool the step is.
+                let mut input = call.input.clone();
+                self.name_part_applications(&mut input);
+                state.absorb_parts(&input);
+                self.tell_progress(run, state, &input)?;
+                self.run_program(run, state, call)
+            }
             tools::INVOKE => {
                 // An id copied without its routing prefix names the one
                 // shown operation with that address; everything below sees

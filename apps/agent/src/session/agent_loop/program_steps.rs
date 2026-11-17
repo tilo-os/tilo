@@ -21,6 +21,11 @@ const CHANGED_NOTHING: &str = "\nIt changed nothing: no record matched what the 
      for, so your reply was not shown. Find what the person means another way, or tell them it \
      is not there.";
 
+/// What the model reads after a program that changed something and carried no reply: the change
+/// is done, and what is left is to tell the person, never another step.
+const CHANGED_UNSAID: &str = "\nIt ran: the change is made. Nothing is left to run; finish \
+     with `plan` and your reply to the person, saying what you did in their words.";
+
 /// The app that keeps each person's own views, in their own record: a task's view answer is
 /// one of them, until the person keeps or discards it.
 pub(crate) const VIEWS_APP: &str = "so.tilo.lang.views";
@@ -41,9 +46,28 @@ pub(in crate::session) struct ProgramWorld {
     /// What each served app declares, compacted ([`programs::compact_declarations`]), by alias:
     /// what the model writes its programs from without asking `describe` first.
     declared: BTreeMap<String, String>,
+    /// The app each alias a program names stands for (`notes` for `so.tilo.lang.notes`).
+    apps: BTreeMap<String, String>,
 }
 
 impl ProgramWorld {
+    /// The apps `source` reads or acts in, by the aliases it names (`find(notes.Note)` reads
+    /// Notes): where a program that answered a question did its part.
+    pub(in crate::session) fn apps_named(&self, source: &str) -> Vec<String> {
+        self.apps
+            .iter()
+            .filter(|(alias, _)| {
+                source.match_indices(&format!("{alias}.")).any(|(at, _)| {
+                    !source[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                })
+            })
+            .map(|(_, app)| app.clone())
+            .collect()
+    }
+
     /// Whether `source` calls one of the actions the apps declare (`tasks.check(`): a program
     /// meant to change something, rather than only to read.
     pub(in crate::session) fn calls_an_action(&self, source: &str) -> bool {
@@ -123,6 +147,25 @@ fn served_apps(catalogue: &crate::surface::Catalogue) -> Vec<(String, String)> {
     served
 }
 
+/// The ids of the apps whose records the session serves (`tl:<app>:<root>`).
+fn served_app_ids(catalogue: &crate::surface::Catalogue) -> Vec<String> {
+    let mut apps: Vec<String> = Vec::new();
+    for offer in &catalogue.offers {
+        if let Some((app, _)) = offer
+            .descriptor
+            .address
+            .resource
+            .strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+            && !app.is_empty()
+            && !apps.iter().any(|seen| seen == app)
+        {
+            apps.push(app.to_owned());
+        }
+    }
+    apps
+}
+
 impl Session {
     /// Read the workspace's tilolang hosts once per task: what each declares, for the first message's
     /// app lines.
@@ -160,8 +203,20 @@ impl Session {
                 }
             }
         }
+        for app in &mounted {
+            state
+                .programs
+                .apps
+                .insert(app.alias.clone(), app.app.clone());
+        }
         state.programs.mounted = mounted;
         state.programs.served = served_apps(&catalogue);
+        for app in served_app_ids(&catalogue) {
+            state
+                .programs
+                .apps
+                .insert(programs::alias_of(&app).to_owned(), app);
+        }
         self.describe_served(run, state, &catalogue)?;
         Ok(())
     }
@@ -335,6 +390,9 @@ impl Session {
         let ran = !answered.failed && step.outcome == ui::tilo_reference::StepOutcome::Done;
         if ran && changed_nothing && program.reply.is_some() {
             text.push_str(CHANGED_NOTHING);
+        }
+        if ran && changed > 0 && program.reply.is_none() {
+            text.push_str(CHANGED_UNSAID);
         }
         let reply = program
             .reply
