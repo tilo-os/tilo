@@ -22,7 +22,6 @@ use tilo_sibling_unlock::material::{Attestation, Material};
 use tilo_sibling_unlock::seal;
 use tilo_sibling_unlock::token::{Sealing, Sibling, TOKEN_TYPE, TOKEN_VERSION, Token};
 use tilo_sibling_unlock::tpm::{self, Tpm};
-use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_unlock_protocol::{
     BootId, BootKeyCert, Challenge, PROTOCOL_VERSION, SlotId, UnlockRequest, attest,
 };
