@@ -232,6 +232,8 @@ pub(crate) struct UpSurface {
     /// The desktop's icon object and whether one was sent.
     pub icon: Option<crate::toplevel_icon::UpIcon>,
     pub icon_pushed: bool,
+    /// The desktop's colour objects for this surface.
+    pub color: crate::color::UpSurfaceColor,
 }
 
 pub(crate) enum UpRole {
@@ -294,6 +296,8 @@ pub(crate) struct Pushed {
     fullscreen: Option<(bool, Option<String>)>,
     viewport: Option<crate::viewporter::Viewport>,
     content_type: Option<u32>,
+    /// The image description (by identity) and rendering intent the desktop's surface was given.
+    pub color: Option<Option<(u32, u32)>>,
 }
 
 /// Whether `value` differs from what was pushed, recording it as pushed.
@@ -858,6 +862,7 @@ impl State {
             modal_sent: None,
             icon: None,
             icon_pushed: false,
+            color: crate::color::UpSurfaceColor::default(),
         });
         self.request_surface_feedback(id);
         self.request_fractional_scale(id);
@@ -866,6 +871,7 @@ impl State {
         self.ensure_shortcuts_inhibitor(id);
         self.ensure_dialog(id);
         self.push_icon(id);
+        self.ensure_up_feedback(id);
         true
     }
 
@@ -1089,6 +1095,7 @@ impl State {
             }
         }
         self.push_protocol_state(id, viewport, content_type);
+        self.push_color(id);
     }
 
     /// A surface's viewport and content type, which the desktop has objects of its own for.
@@ -1140,6 +1147,11 @@ impl State {
     /// The surface's content: its buffer when it changed (or the desktop never had it), the
     /// damage, the frame callbacks this desktop was not asked for yet, and the commit.
     fn push_content(&mut self, id: &ObjectId) {
+        // A surface whose image description is not ready on the desktop yet shows nothing new
+        // until it is, so no frame is ever shown in the wrong colour.
+        if self.color_waits(id) {
+            return;
+        }
         let Some(up) = self.up.as_ref() else {
             return;
         };
@@ -1533,6 +1545,7 @@ impl State {
             us.surface.destroy();
         }
         self.surface_feedback.remove(id);
+        self.color_surface_gone(id);
         self.presentation_surface_gone(id);
         self.seat.surface_gone(id);
     }

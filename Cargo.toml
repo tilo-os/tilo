@@ -429,6 +429,7 @@ members = [
     "crates/runtime/env-tools",
 
     # Session
+    "crates/session/color-params",
     "crates/session/color-pipeline",
     "crates/session/compositor",
     "crates/session/app-keeper",

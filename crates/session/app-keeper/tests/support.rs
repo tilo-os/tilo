@@ -212,6 +212,13 @@ impl Rig {
         self.attach_desktop(desktop_with(640, 480, 1.0, formats));
     }
 
+    /// A new desktop that `configure` changed before the keeper is attached to it.
+    pub fn attach_new_with(&mut self, configure: impl FnOnce(&mut Compositor)) {
+        let mut compositor = desktop(640, 480);
+        configure(&mut compositor);
+        self.attach_desktop(compositor);
+    }
+
     fn attach_desktop(&mut self, mut compositor: Compositor) {
         let socket = compositor.connect_client().expect("desktop connection");
         self.keeper.attach(socket).expect("attach");
@@ -520,6 +527,7 @@ pub struct Heard {
     /// The serials of the pings it read.
     pub pings: Vec<u32>,
     pending_size: Option<(i32, i32, Vec<u32>)>,
+    pub color: crate::color::ColorSeen,
 }
 
 /// What a tablet, a tool and a pad told the app.
@@ -1150,6 +1158,9 @@ impl Dispatch<WlRegistry, ()> for Heard {
                 }
                 "xdg_activation_v1" => {
                     heard.activation = Some(registry.bind(name, 1, qh, ()));
+                }
+                "wp_color_manager_v1" => {
+                    heard.color.manager = Some(registry.bind(name, version.min(1), qh, ()));
                 }
                 "wp_presentation" => {
                     heard.presentation = Some(registry.bind(name, version.min(2), qh, ()));

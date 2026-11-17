@@ -2719,6 +2719,20 @@ impl Compositor {
         self.data.state.window_color(id)
     }
 
+    /// Advertise only those of the colour-management `features` (`wp_color_manager_v1.feature`
+    /// values) it supports to clients that bind it from now on, as a desktop on a less capable
+    /// display would.
+    #[cfg(feature = "test-support")]
+    pub fn limit_color_features(&mut self, features: &[u32]) {
+        self.data
+            .state
+            .protocols
+            .color_manager
+            .support
+            .features
+            .retain(|feature| features.contains(feature));
+    }
+
     /// What the X11 window `id` says about its program: its process, class,
     /// desktop start-up and icon. `None` for a Wayland window.
     pub fn x11_identity(&self, id: u64) -> Option<&X11Identity> {

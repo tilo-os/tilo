@@ -17701,12 +17701,14 @@ name = "tilo-app-keeper"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "neighbour-wire",
  "rustix 1.1.6",
  "serde",
  "serde_json",
  "smithay",
  "tempfile",
  "tilo-app-keeper",
+ "tilo-color-params",
  "tilo-compositor",
  "tilo-files",
  "tracing",
@@ -18463,6 +18465,14 @@ dependencies = [
  "serde_json",
  "tilo-fs-client",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-color-params"
+version = "0.1.0"
+dependencies = [
+ "wayland-protocols",
  "workspace-hack",
 ]
 
@@ -23066,6 +23076,7 @@ dependencies = [
  "neighbour-wire",
  "settings-store",
  "smithay",
+ "tilo-color-params",
  "tilo-color-pipeline",
  "wayland-protocols",
  "workspace-hack",
@@ -28992,6 +29003,7 @@ dependencies = [
  "tilo-clipboard",
  "tilo-clock",
  "tilo-cloud-files",
+ "tilo-color-params",
  "tilo-color-pipeline",
  "tilo-compositor",
  "tilo-connectivity-service",

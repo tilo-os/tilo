@@ -19,6 +19,9 @@ mod support;
 #[path = "clipboard.rs"]
 mod clipboard;
 
+#[path = "color.rs"]
+mod color;
+
 #[path = "dmabuf.rs"]
 mod dmabuf;
 

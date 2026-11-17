@@ -32,6 +32,8 @@ wayland-protocols = { version = "0.32.12", features = ["client", "server", "unst
 wayland-protocols-misc = { version = "0.3.10", features = ["client"] }
 serde.workspace = true
 serde_json.workspace = true
+# The rules an app's colour-management requests are checked by, the compositor's own.
+tilo-color-params = { path = "../color-params" }
 # The control socket's frames: the length prefix every session socket uses.
 wire-frame = { path = "../../system/wire-frame" }
 # A socket in a directory of any depth.
@@ -48,6 +50,8 @@ workspace-hack = { version = "0.1" }
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tilo-app-keeper = { path = ".", features = ["test-support"] }
 tilo-compositor = { path = "../compositor", features = ["test-support"] }
+# The colour a window's description says, as the desktop reads it back.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
 tempfile.workspace = true
 wayland-client = { workspace = true }
 wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }

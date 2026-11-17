@@ -45,6 +45,7 @@
 
 mod activation;
 mod child;
+mod color;
 mod control;
 mod cursor_shape;
 mod data_device;
@@ -658,6 +659,7 @@ impl Data {
         if self.state.up.take().is_some() {
             self.desktop_lost = Some((Instant::now(), None));
             self.state.hold_all();
+            self.state.hold_color();
             self.state.hold_data_device();
             self.state.hold_primary_selection();
             self.state.hold_pointer_constraints();

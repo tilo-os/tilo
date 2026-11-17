@@ -82,6 +82,8 @@ pub(crate) struct Upstream {
         wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1,
     >,
     pub dialog: Option<wayland_protocols::xdg::dialog::v1::client::xdg_wm_dialog_v1::XdgWmDialogV1>,
+    /// The desktop's colour manager.
+    pub color: Option<crate::color::UpColor>,
     pub toplevel_icon: Option<
         wayland_protocols::xdg::toplevel_icon::v1::client::xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1,
     >,
@@ -176,6 +178,7 @@ impl Upstream {
                 idle_inhibit: None,
                 shortcuts_inhibit: None,
                 dialog: None,
+                color: None,
                 toplevel_icon: None,
                 icon_sizes: Vec::new(),
                 presentation_version: 0,
@@ -352,6 +355,7 @@ fn bind_global(
         "zwp_keyboard_shortcuts_inhibit_manager_v1" => {
             up.shortcuts_inhibit = Some(registry.bind(name, 1, qh, ()));
         }
+        "wp_color_manager_v1" => crate::color::UpColor::bind(up, registry, name, version),
         "xdg_wm_dialog_v1" => {
             up.dialog = Some(registry.bind(name, 1, qh, ()));
         }
@@ -406,6 +410,7 @@ impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
         // An app that took a tablet seat before this desktop attached gets its devices on the
         // desktop's seat once both the manager and the seat are bound.
         state.ensure_upstream_tablet_seat();
+        state.ensure_up_color_outputs();
     }
 }
 
@@ -779,6 +784,7 @@ impl State {
         self.desktop_pointer_constraints();
         self.desktop_relative_pointers();
         self.desktop_pointer_gestures();
+        self.desktop_color_ready();
         self.ready_once = true;
         self.windows_changed = true;
     }
