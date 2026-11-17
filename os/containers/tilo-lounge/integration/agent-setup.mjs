@@ -419,7 +419,11 @@ for (const line of [
   {jsonrpc: '2.0', id: 2, method: 'tools/call', params: {name: 'tilo_ls', arguments: {}}},
 ]) server.stdin.write(`${JSON.stringify(line)}\n`);
 const beside = `(() => { const row = (globalThis.tiloMount?.people?.() ?? []).find(person => person.agent && /Claude Code/.test(person.label ?? '')); return !!row && JSON.stringify(row).includes(${JSON.stringify(doing)}); })()`;
-await until(first, beside, `Claude Code present, with "${doing}" beside its name`, stepLimit(3));
+// Its MCP server's own answers, on a failure: whether the tool call was
+// answered tells a slow presence from a call that never ran.
+if (!await first.waitFor(beside, {timeout: stepLimit(3)}).catch(() => false)) {
+  await fail(`Claude Code present, with "${doing}" beside its name never happened; its MCP server said: ${answers.slice(-1500) || 'nothing'}; the page: ${(await pageText(first)).slice(0, 400)}`);
+}
 report.mcp = answers.slice(0, 2000);
 const signedUp = await person(first);
 mark('the agent is present beside its name');
@@ -453,7 +457,7 @@ const call = async (name, args) => {
     sleep(stepLimit(4)).then(() => ({error: {message: 'no answer'}})),
   ]);
   const said = (answer.result?.content ?? []).map(block => block.text).join('\n') || JSON.stringify(answer);
-  (report.secondAgent ??= []).push({name, args, said: said.slice(0, 400)});
+  (report.secondAgent ??= []).push({name, args, said: said.slice(0, 400), link: (said.match(/link: \S+/) ?? [null])[0]});
   if (answer.error || answer.result?.isError) await fail(`the second agent's ${name} ${JSON.stringify(args)} failed: ${said}`);
   return said;
 };
@@ -489,8 +493,14 @@ const openedWindow = app => `(() => {
   if (state?.state === 'could-not-open') return 'could not open: ' + (state.reason ?? '');
   return state && (state.state === 'landed' || state.state === 'drawn') ? state.state : '';
 })()`;
-const opened = await until(first, openedWindow('so.tilo.notes'),
-  'the person\'s tab showing the Notes window the second agent opened', stepLimit(3));
+// On a failure, what the page held: its windows' states and the apps its
+// navigation names, which tells a window never placed from one never landed.
+const windowsHeld = `JSON.stringify({
+  windows: globalThis.tiloMount?.state?.()?.windows ?? null,
+  entries: (globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).map(entry => ({app: entry.app, tab: entry.route?.tab})),
+})`;
+const opened = await first.waitFor(openedWindow('so.tilo.notes'), {timeout: stepLimit(3)}).catch(() => '')
+  || await fail(`the person's tab showing the Notes window the second agent opened never happened: ${await briefly(first, windowsHeld, '(the page did not answer)')}; the second agent was answered: ${JSON.stringify(report.secondAgent ?? []).slice(0, 1500)}`);
 if (opened.startsWith('could not open')) await fail(`the Notes window the second agent opened ${opened}`);
 const windowText = `(() => {
   const out = [];
