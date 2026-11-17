@@ -41,6 +41,7 @@ pub use crate::notifications::RESOURCE as NOTIFICATIONS_RESOURCE;
 use crate::options::start_collaboration;
 pub use crate::options::{AppSocket, Machine, Options, no_session_actions};
 pub use crate::platform::keys::{KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE};
+use crate::platform::records::{Held, Source};
 pub use crate::records::Records;
 pub use crate::rotation::Accelerometer;
 pub use crate::run::{Backend, Reach};
@@ -260,13 +261,8 @@ impl Session {
         // it current from the player Quick Settings already reads, so the
         // widget is a view of that one reading.
         let music = tilo_desktop::widgets::Music::default();
-        // The workspace's activity: the shell's own document, and the records
-        // its apps keep in the store. The shell records into it, the model
-        // reads it, and the apps this session runs reach the same model.
-        // This device's records, as its store keeps them: the workspaces' app records, which the
-        // activity's history reads and the person's mentions are looked for in. Every write that
-        // lands in that store is noted in the one change stream the roles that follow records
-        // read, so neither of them watches the records itself.
+        // The session's own store, where the activity and the mentions keep what this device saw,
+        // and the one stream of record changes the roles that follow records read.
         let records_store: Option<crate::platform::Store> = options
             .search
             .records
@@ -1341,10 +1337,11 @@ impl Session {
             handle.clone(),
             options.person.clone(),
             crate::automation::Feeds {
-                // The workspaces' records, whose changes a shortcut can answer.
-                records: records_store
-                    .clone()
-                    .map(|store| (store, crate::platform::records::Changes::clone(&changes))),
+                // What the workspaces hold, whose changes a shortcut can answer.
+                held: engine.as_ref().map(|engine| {
+                    let held = Held::over(Arc::clone(engine), changes.clone());
+                    (Arc::new(held) as Source, changes.clone())
+                }),
                 // Which of the person's devices this one is, and which of
                 // them are online: each schedule runs on one of them.
                 fabric: sync.as_ref().and_then(|sync| sync.fabric()),
@@ -1539,10 +1536,7 @@ impl Session {
                 // The workspaces' records are the engine's: what their apps and the person's
                 // other devices write lands there, never in the session's own store.
                 records: engine.as_ref().map(|engine| {
-                    Rc::new(crate::platform::records::Held::over(
-                        std::sync::Arc::clone(engine),
-                        crate::platform::records::Changes::clone(&changes),
-                    )) as Rc<dyn crate::platform::records::Records>
+                    Rc::new(Held::over(Arc::clone(engine), changes.clone())) as Rc<_>
                 }),
                 notices: Some(crate::notifications::RoleNotices::of(&notifications)),
                 name: Rc::new(move |person: &str| {
