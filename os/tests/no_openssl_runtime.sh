@@ -215,14 +215,16 @@ else
   bad 'Music does not carry a Rust-native full-track resolver'
 fi
 
-host_runtime="$(sed -n '/# Minimal runtime/,/# Copy binaries/p' "$repo/os/Containerfile.host")"
-if sed -e "/rpm -q --qf.*openssl sbsigntools/d" \
-       -e '/^[[:space:]]*openvpn NetworkManager-openvpn openssh/d' \
-       -e '/^[[:space:]]*ModemManager fwupd .*xargs/d' <<<"$host_runtime" \
-    | grep -Eq '^[[:space:]]+(NetworkManager-openvpn|ModemManager|fwupd)[[:space:]\\]'; then
+server_runtime="$(sed -n '/^# ---- Runtime image ----/,/^# ---- Programs ----/p' "$repo/os/Containerfile.host")"
+# The prune reads what the base actually installed and removes only those
+# packages; a protected one (mokutil, which the shim requires) must not be named.
+prune="$(grep -F "awk '/^(" <<<"$server_runtime" || true)"
+if grep -Eq '^[[:space:]]+(NetworkManager-openvpn|ModemManager|fwupd)[[:space:]\\]' <<<"$server_runtime"; then
   bad 'headless server image installs VPN/modem/firmware stacks outside its appliance role'
-elif ! grep -Fq "rpm -q --qf '%{NAME}\\n' openssl sbsigntools efitools mokutil pesign nss-tools gnutls-utils git git-core" \
-      <<<"$host_runtime"; then
+elif [ -z "$prune" ] \
+     || ! grep -Fq "rpm -qa --qf '%{NAME}\\n'" <<<"$server_runtime" \
+     || ! grep -Fq 'openssl|sbsigntools|efitools|pesign|nss-tools|gnutls-utils|git|git-core' <<<"$prune" \
+     || grep -Fq mokutil <<<"$prune"; then
   bad 'headless server does not purge avoidable OpenSSL consumers inherited from its base'
 else
   ok 'headless server excludes the OpenSSL-linked VPN plugin and unused hardware daemons'
