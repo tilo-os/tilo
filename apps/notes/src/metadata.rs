@@ -427,8 +427,9 @@ mod tests {
                         edited: Some(envelope.timestamp),
                     }
                 );
-                let mut registry = tilo_actions::ActionRegistry::new();
-                <crate::PagePart as ui::tilo_resource::Resource>::register(&mut registry);
+                let registry = tilo_actions::ActionRegistry::with(
+                    ui::tilo_resource::group::register::<crate::PagePart>,
+                );
                 tilo_actions::replay(&mut peer, &envelope, &registry).unwrap();
                 let mut peer_index = NoteDateIndex::default();
                 peer_index.sync(&peer, Some(page));

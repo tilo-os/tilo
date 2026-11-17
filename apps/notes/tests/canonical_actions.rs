@@ -27,8 +27,9 @@ fn duplicate_subtree_round_trips_rich_content_and_mints_fresh_ids() {
         let encoded = actions::encode(&action);
         let mut a = doc.clone();
         let mut b = doc.clone();
-        let mut registry = tilo_actions::ActionRegistry::new();
-        <notes::PagePart as ui::tilo_resource::Resource>::register(&mut registry);
+        let registry = tilo_actions::ActionRegistry::with(
+            ui::tilo_resource::group::register::<notes::PagePart>,
+        );
         let dispatched = tilo_actions::dispatch(
             &mut a,
             &action,
@@ -369,8 +370,9 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
             &mut tilo_actions::LocalTransport::new(),
         )
         .unwrap();
-        let mut registry = tilo_actions::ActionRegistry::new();
-        <notes::PagePart as ui::tilo_resource::Resource>::register(&mut registry);
+        let registry = tilo_actions::ActionRegistry::with(
+            ui::tilo_resource::group::register::<notes::PagePart>,
+        );
         tilo_actions::replay(&mut b, dispatched.envelope(), &registry).unwrap();
         assert_eq!(a.get_heads(), b.get_heads());
         notes::read::validate(&a).unwrap();
