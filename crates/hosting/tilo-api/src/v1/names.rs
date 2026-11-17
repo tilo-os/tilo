@@ -178,7 +178,7 @@ fn rest_mention(text: &str) -> Option<Mention> {
                 len: text.len().saturating_sub(used.len()),
             });
         }
-        if let Some(arg) = rest.strip_prefix("/runs/") {
+        if let Some(arg) = rest.strip_prefix("/invocations/") {
             let (arg, used) = token(arg);
             return Some(Mention {
                 call: Call::Status,
@@ -305,7 +305,7 @@ fn render(call: Call, arg: Option<&str>, surface: Surface) -> String {
                 || format!("GET /v1/workspaces/{WORKSPACE}/links"),
                 |arg| format!("GET /v1/workspaces/{WORKSPACE}/links?path={arg}"),
             ),
-            Call::Status => format!("GET /v1/workspaces/{WORKSPACE}/runs/{{run}}"),
+            Call::Status => format!("GET /v1/workspaces/{WORKSPACE}/invocations/{{invocation}}"),
         },
     }
 }
@@ -368,8 +368,11 @@ mod tests {
             "GET /v1/workspaces/{workspace}/resources/notes/Todo?cursor=x reads it"
         );
         assert_eq!(
-            said("go to GET /v1/workspaces/…/runs/run-1", Surface::Rest),
-            "go to GET /v1/workspaces/…/runs/{run}"
+            said(
+                "go to GET /v1/workspaces/…/invocations/run-1",
+                Surface::Rest
+            ),
+            "go to GET /v1/workspaces/…/invocations/{invocation}"
         );
     }
 

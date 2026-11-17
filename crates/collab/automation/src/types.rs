@@ -1,4 +1,4 @@
-//! What the checker knows about a value before the run produces it.
+//! What the checker knows about a value before the invocation produces it.
 
 use std::fmt;
 
@@ -113,7 +113,7 @@ impl Ty {
 /// Whether a value of type `from` can satisfy `param`, and why not.
 pub(crate) fn assignable(from: &Ty, param: &ActionParam) -> Result<(), String> {
     let fits = match (from, param.ty) {
-        // An optional parameter takes a null as "not given"; the run omits it.
+        // An optional parameter takes a null as "not given"; the invocation omits it.
         (Ty::Null, _) => param.nullable || !param.required,
         // Plain text may be passed where a secret is wanted; the reverse
         // would leak the secret into an ordinary field.
@@ -151,7 +151,7 @@ pub(crate) fn assignable(from: &Ty, param: &ActionParam) -> Result<(), String> {
     Ok(())
 }
 
-/// Check a constant against `param` exactly as the run will bind it.
+/// Check a constant against `param` exactly as the invocation will bind it.
 pub(crate) fn literal_fits(value: &Value, param: &ActionParam) -> Result<(), String> {
     let mut supplied = serde_json::Map::new();
     supplied.insert(param.name.to_string(), value.clone());

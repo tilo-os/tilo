@@ -57,7 +57,8 @@ export class SurfaceChanged extends Refused {
 
 /**
  * The call waits for the person to allow it. `url` is where they answer it
- * when the host names one; `wait()` follows the run until they decide and
+ * when the host names one; `wait()` follows the invocation until they decide
+ * and
  * answers what it finished with (a `Key` for a key that was created).
  */
 export class AskPending extends Error {
@@ -73,7 +74,7 @@ export class AskPending extends Error {
     follow: (() => Promise<Record<string, unknown>>) | null = null,
   ) {
     super(
-      `waiting for the person${invocationId ? `: run ${invocationId}` : ""}${url ? ` at ${url}` : ""}`,
+      `waiting for the person${invocationId ? `: invocation ${invocationId}` : ""}${url ? ` at ${url}` : ""}`,
     );
     this.name = "AskPending";
     this.url = url;
@@ -82,10 +83,12 @@ export class AskPending extends Error {
     this.#follow = follow;
   }
 
-  /** Follow the run until the person decides, then its answer. */
+  /** Follow the invocation until the person decides, then its answer. */
   async wait(): Promise<unknown> {
     if (this.#follow === null) {
-      throw new ProtocolError("this ask cannot be waited on: it names no run to follow");
+      throw new ProtocolError(
+        "this ask cannot be waited on: it names no invocation to follow",
+      );
     }
     return this.#follow();
   }

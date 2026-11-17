@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Project` is the app's `chip_design.project` at `chip-design/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Connection",
@@ -129,7 +129,7 @@ class Project(Resource):
         return self.action("import-report", json=json)
 
     def import_report_many(self, items: list[ImportReportArgs]) -> list[dict[str, Any]]:
-        """Runs `import-report` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `import-report` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("import-report", items)
 
     def remove_report(self, *, report: str) -> None:
@@ -137,7 +137,7 @@ class Project(Resource):
         return self.action("remove-report", report=report)
 
     def remove_report_many(self, items: list[RemoveReportArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-report` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-report` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-report", items)
 
     def import_verification(self, *, json: str) -> None:
@@ -145,7 +145,7 @@ class Project(Resource):
         return self.action("import-verification", json=json)
 
     def import_verification_many(self, items: list[ImportVerificationArgs]) -> list[dict[str, Any]]:
-        """Runs `import-verification` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `import-verification` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("import-verification", items)
 
     def remove_verification(self, *, report: str) -> None:
@@ -153,7 +153,7 @@ class Project(Resource):
         return self.action("remove-verification", report=report)
 
     def remove_verification_many(self, items: list[RemoveVerificationArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-verification` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-verification` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-verification", items)
 
     def add_node(self,
@@ -177,7 +177,7 @@ class Project(Resource):
         return self.action("add-node", **args)
 
     def add_node_many(self, items: list[AddNodeArgs]) -> list[dict[str, Any]]:
-        """Runs `add-node` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-node` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-node", items)
 
     def set_shape(self,
@@ -189,7 +189,7 @@ class Project(Resource):
         return self.action("set-shape", node=node, shape=shape)
 
     def set_shape_many(self, items: list[SetShapeArgs]) -> list[dict[str, Any]]:
-        """Runs `set-shape` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-shape` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-shape", items)
 
     def remove_node(self, *, node: str) -> None:
@@ -197,7 +197,7 @@ class Project(Resource):
         return self.action("remove-node", node=node)
 
     def remove_node_many(self, items: list[RemoveNodeArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-node` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-node` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-node", items)
 
     def connect(self,
@@ -211,7 +211,7 @@ class Project(Resource):
         return self.action("connect", from_node=from_node, from_port=from_port, to_node=to_node, to_port=to_port)
 
     def connect_many(self, items: list[ConnectArgs]) -> list[dict[str, Any]]:
-        """Runs `connect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `connect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("connect", items)
 
     def disconnect(self,
@@ -223,7 +223,7 @@ class Project(Resource):
         return self.action("disconnect", node=node, port=port)
 
     def disconnect_many(self, items: list[DisconnectArgs]) -> list[dict[str, Any]]:
-        """Runs `disconnect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `disconnect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("disconnect", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

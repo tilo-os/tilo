@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Document` is the app's `word-processor.document` at `word-processor/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Author",
@@ -234,7 +234,7 @@ class Document(Resource):
         return self.action("delete-row", table=table, row=row)
 
     def delete_row_many(self, items: list[DeleteRowArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-row` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-row` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-row", items)
 
     def delete_column(self,
@@ -246,7 +246,7 @@ class Document(Resource):
         return self.action("delete-column", table=table, column=column)
 
     def delete_column_many(self, items: list[DeleteColumnArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-column` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-column` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-column", items)
 
     def delete_table(self, *, table: str) -> None:
@@ -254,7 +254,7 @@ class Document(Resource):
         return self.action("delete-table", table=table)
 
     def delete_table_many(self, items: list[DeleteTableArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-table` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-table` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-table", items)
 
     def delete_image(self, *, image: str) -> None:
@@ -262,7 +262,7 @@ class Document(Resource):
         return self.action("delete-image", image=image)
 
     def delete_image_many(self, items: list[DeleteImageArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-image` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-image", items)
 
     def accept_change(self, *, change: str) -> None:
@@ -270,7 +270,7 @@ class Document(Resource):
         return self.action("accept-change", change=change)
 
     def accept_change_many(self, items: list[AcceptChangeArgs]) -> list[dict[str, Any]]:
-        """Runs `accept-change` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `accept-change` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("accept-change", items)
 
     def reject_change(self, *, change: str) -> None:
@@ -278,7 +278,7 @@ class Document(Resource):
         return self.action("reject-change", change=change)
 
     def reject_change_many(self, items: list[RejectChangeArgs]) -> list[dict[str, Any]]:
-        """Runs `reject-change` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `reject-change` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reject-change", items)
 
     def accept_all_changes(self) -> None:
@@ -286,7 +286,7 @@ class Document(Resource):
         return self.action("accept-all-changes")
 
     def accept_all_changes_many(self, items: list[AcceptAllChangesArgs]) -> list[dict[str, Any]]:
-        """Runs `accept-all-changes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `accept-all-changes` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("accept-all-changes", items)
 
     def reject_all_changes(self) -> None:
@@ -294,7 +294,7 @@ class Document(Resource):
         return self.action("reject-all-changes")
 
     def reject_all_changes_many(self, items: list[RejectAllChangesArgs]) -> list[dict[str, Any]]:
-        """Runs `reject-all-changes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `reject-all-changes` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reject-all-changes", items)
 
     def add_comment(self,
@@ -308,7 +308,7 @@ class Document(Resource):
         return self.action("add-comment", block=block, start=start, end=end, text=text)
 
     def add_comment_many(self, items: list[AddCommentArgs]) -> list[dict[str, Any]]:
-        """Runs `add-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-comment", items)
 
     def reply_to_comment(self,
@@ -326,7 +326,7 @@ class Document(Resource):
         return self.action("reply-to-comment", **args)
 
     def reply_to_comment_many(self, items: list[ReplyToCommentArgs]) -> list[dict[str, Any]]:
-        """Runs `reply-to-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `reply-to-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reply-to-comment", items)
 
     def resolve_comment(self, *, comment: str) -> None:
@@ -334,7 +334,7 @@ class Document(Resource):
         return self.action("resolve-comment", comment=comment)
 
     def resolve_comment_many(self, items: list[ResolveCommentArgs]) -> list[dict[str, Any]]:
-        """Runs `resolve-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `resolve-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("resolve-comment", items)
 
     def adopt_comments(self) -> None:
@@ -342,7 +342,7 @@ class Document(Resource):
         return self.action("adopt-comments")
 
     def adopt_comments_many(self, items: list[AdoptCommentsArgs]) -> list[dict[str, Any]]:
-        """Runs `adopt-comments` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `adopt-comments` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("adopt-comments", items)
 
     def set_page_margins(self,
@@ -356,7 +356,7 @@ class Document(Resource):
         return self.action("set-page-margins", top=top, right=right, bottom=bottom, left=left)
 
     def set_page_margins_many(self, items: list[SetPageMarginsArgs]) -> list[dict[str, Any]]:
-        """Runs `set-page-margins` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-page-margins` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-page-margins", items)
 
     def generate_toc(self) -> None:
@@ -364,7 +364,7 @@ class Document(Resource):
         return self.action("generate-toc")
 
     def generate_toc_many(self, items: list[GenerateTocArgs]) -> list[dict[str, Any]]:
-        """Runs `generate-toc` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `generate-toc` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("generate-toc", items)
 
     def note_file_written(self, *, digest: str) -> None:
@@ -372,7 +372,7 @@ class Document(Resource):
         return self.action("note-file-written", digest=digest)
 
     def note_file_written_many(self, items: list[NoteFileWrittenArgs]) -> list[dict[str, Any]]:
-        """Runs `note-file-written` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `note-file-written` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("note-file-written", items)
 
     def share_image(self) -> None:

@@ -798,7 +798,7 @@ impl WorkspaceDocumentsLink for RelayRecordsLink {
             id: question.id,
             agent_id,
             agent_label: question.device_label,
-            run: question.run,
+            title: question.title,
             action_label: question.action_label,
             resource_label: question.resource_label,
             arguments: question.arguments,

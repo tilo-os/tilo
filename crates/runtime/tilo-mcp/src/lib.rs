@@ -37,7 +37,7 @@ mod step;
 mod turns;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use step::{DeclaredRun, STEP, STEP_RUN, SURFACE_STRUCTURED};
+use step::{DeclaredInvocation, STEP, STEP_INVOCATION, SURFACE_STRUCTURED};
 use tilo_actions::remote::{
     ActionHost, Caller, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow,
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
@@ -127,12 +127,12 @@ pub struct McpServer<H> {
     /// The invocations of this session a watch follows, oldest first, each
     /// with where its latest phase falls in the watch's sequence
     /// ([`crate::watch`]).
-    pub(crate) runs: std::sync::Mutex<Vec<agent::watch::Run>>,
+    pub(crate) invocations: std::sync::Mutex<Vec<agent::watch::WatchedInvocation>>,
     /// Who waits for the next run event of this session: one of its invocations
     /// starting, being held for its person, or ending ([`McpServer::runs_moved`]).
     pub(crate) run_waiters: std::sync::Mutex<Vec<tilo_actions::remote::Completer<()>>>,
     /// What this session's invocations changed, oldest first: where taking
-    /// one's run back finds its changes ([`McpServer::undo_run`]).
+    /// one's invocation back finds its changes ([`McpServer::undo_invocation`]).
     pub(crate) undoable: std::sync::Mutex<std::collections::VecDeque<agent::Undoable>>,
 }
 
@@ -680,7 +680,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             task: tokio::sync::Mutex::new(None),
             acted: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
-            runs: std::sync::Mutex::default(),
+            invocations: std::sync::Mutex::default(),
             run_waiters: std::sync::Mutex::default(),
             undoable: std::sync::Mutex::default(),
         }
@@ -1399,14 +1399,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .and_then(Value::as_str)
             .map(str::to_owned);
         let step = self.step_gesture(metadata, invocation.as_deref())?;
-        let declared = Self::step_run(metadata)?;
+        let declared = Self::step_invocation(metadata)?;
         let structured = metadata
             .and_then(|metadata| metadata.pointer(SURFACE_STRUCTURED))
             .and_then(Value::as_bool)
             .unwrap_or(false);
         STEP.scope(
             step,
-            STEP_RUN.scope(
+            STEP_INVOCATION.scope(
                 declared,
                 self.call_named(parse::<ToolCall>(params), structured),
             ),
@@ -1503,14 +1503,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 Detail::deserialize(detail).map_err(|_| "detail must be compact or full")?;
             *self.detail.lock_recover() = detail;
         }
-        // Every connection is one agent run, so its edits are attributed to
-        // it in history and undo, whatever transport it came over. A host
-        // that names the run itself (the HTTP endpoint) has done so already.
-        // A client that connects again may continue the run it had, so its
-        // undo still reaches what it did before.
-        let continued = match params.pointer(SURFACE_RUN) {
+        // Every connection is one agent session, so its edits are attributed
+        // to it in history and undo, whatever transport it came over. A host
+        // that names the session itself (the HTTP endpoint) has done so
+        // already. A client that connects again may continue the session it
+        // had, so its undo still reaches what it did before.
+        let continued = match params.pointer(SURFACE_SESSION) {
             None | Some(Value::Null) => None,
-            Some(run) => Some(continued_run(run)?),
+            Some(session) => Some(continued_session(session)?),
         };
         let label: String = params
             .pointer("/clientInfo/name")
@@ -1544,7 +1544,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         {
             fields.insert("agent".into(), json!(agent));
         }
-        let mut answer = json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"run":run,"execution_id":self.caller.execution_id()}}},"serverInfo":server});
+        let mut answer = json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"session":run,"execution_id":self.caller.execution_id()}}},"serverInfo":server});
         if self.surface == Surface::Agent
             && let Some(fields) = answer.as_object_mut()
         {
@@ -2954,13 +2954,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// ([`STEP`]).
     fn context(&self) -> Option<tilo_actions::ActionContext> {
         self.agent_session().map(|mut run| {
-            // A call naming the run it is a step of (`_meta` run) is
+            // A call naming the invocation it is a step of (`_meta` invocation) is
             // attributed to that run's title, which is what people read in
             // history and see in presence, not the connection's own label,
             // and names the run's id, which tells the agent's runs apart
             // there. It says both as its own: a host that names the run
             // itself still keeps what the agent declared.
-            if let Some(declared) = DeclaredRun::current() {
+            if let Some(declared) = DeclaredInvocation::current() {
                 declared.onto(&mut run);
             }
             tilo_actions::ActionContext {
@@ -3090,23 +3090,24 @@ const OPENED_PEER: &str = "/update/output/value/peer_id";
 /// to keep version 1's rows.
 const SURFACE: &str = "so.tilo.mcp";
 const SURFACE_DETAIL: &str = "/capabilities/experimental/so.tilo.mcp/detail";
-/// The agent run a client continues: `{"so.tilo.mcp": {"run": "mcp:…"}}`
+/// The agent session a client continues: `{"so.tilo.mcp": {"session": "mcp:…"}}`
 /// with the id its earlier connection was answered with, or one it chose.
-/// Provenance only, like every run: it names whose steps `undo` takes back,
-/// never what the connection may do.
-const SURFACE_RUN: &str = "/capabilities/experimental/so.tilo.mcp/run";
-/// The longest run id a client may name.
-const MAX_RUN_ID: usize = 96;
+/// Provenance only: it names whose steps `undo` takes back, never what the
+/// connection may do.
+const SURFACE_SESSION: &str = "/capabilities/experimental/so.tilo.mcp/session";
+/// The longest session id a client may name.
+const MAX_SESSION_ID: usize = 96;
 
-/// The run id a client asks to continue, checked.
-fn continued_run(run: &Value) -> Result<String, &'static str> {
-    run.as_str()
+/// The session id a client asks to continue, checked.
+fn continued_session(session: &Value) -> Result<String, &'static str> {
+    session
+        .as_str()
         .map(str::trim)
         .filter(|id| {
-            (1..=MAX_RUN_ID).contains(&id.len()) && id.chars().all(|c| c.is_ascii_graphic())
+            (1..=MAX_SESSION_ID).contains(&id.len()) && id.chars().all(|c| c.is_ascii_graphic())
         })
         .map(str::to_owned)
-        .ok_or("run must be 1 to 96 printable characters without spaces: a run id from history or the run an earlier initialize answered")
+        .ok_or("session must be 1 to 96 printable characters without spaces: a session id from history or the session an earlier initialize answered")
 }
 /// Rows per page when the caller names no limit.
 const DEFAULT_PAGE: u32 = 64;

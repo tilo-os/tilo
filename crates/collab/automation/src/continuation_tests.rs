@@ -9,16 +9,16 @@ use crate::tests::{
     run_with, shortcut,
 };
 use crate::{
-    Binding, Condition, InvocationId, InvocationMode, InvocationOutcome, InvocationReport,
-    InvocationRequest, InvocationTrigger, NoShortcuts, Selector, Shortcut, Step, StepKind,
-    StepPath, StepStatus, check, run,
+    AutomationInvocationId, Binding, Condition, InvocationMode, InvocationOutcome,
+    InvocationReport, InvocationRequest, InvocationTrigger, NoShortcuts, Selector, Shortcut, Step,
+    StepKind, StepPath, StepStatus, check, run,
 };
 use tilo_actions::remote::InvokeArgument;
 
 /// Run `shortcut` again from `from`, on top of what `origin` recorded. A
-/// continued run is a run of its own, as the API starts one: the steps
+/// continued invocation is one of its own, as the API starts one: the steps
 /// before `from` are taken from `origin`'s record, and `from` and the rest
-/// run under this run's own invocations.
+/// run under its own action invocations.
 fn continue_from(
     host: &FakeHost,
     shortcut: &Shortcut,
@@ -30,7 +30,7 @@ fn continue_from(
         &Hooks::default(),
         InvocationRequest {
             shortcut,
-            invocation: InvocationId::new(),
+            invocation: AutomationInvocationId::new(),
             caller: caller(),
             mode: InvocationMode::Unattended,
             trigger: InvocationTrigger::Manual,
@@ -45,7 +45,7 @@ fn continue_from(
 }
 
 tilo_test_env::scenario! {
-    fn a_run_continues_from_a_step_of_an_earlier_run;
+    fn an_invocation_continues_from_a_step_of_an_earlier_invocation;
 
     phase continuing_from_a_step_does_not_do_the_steps_before_it_again;
     {
@@ -77,14 +77,14 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &sendable,
-            InvocationId::new(),
+            AutomationInvocationId::new(),
             InvocationMode::Unattended,
         );
         assert_eq!(first.outcome, InvocationOutcome::Completed, "{first:?}");
         assert_eq!(
             host.started().len(),
             3,
-            "the first run does all three steps"
+            "the first invocation does all three steps"
         );
 
         // The person fixed the third step and runs from it.
@@ -119,16 +119,16 @@ tilo_test_env::scenario! {
             ))
         );
         // The steps before the one it goes on from are taken from what the first
-        // run produced: the same steps, under the same invocations, with the
-        // output that ran. A run of its own would have given them fresh ones.
-        assert_ne!(second.invocation, first.invocation, "a continued run is a run of its own");
+        // invocation produced: the same steps, under the same invocations, with the
+        // output that ran. An invocation of its own would have given them fresh ones.
+        assert_ne!(second.invocation, first.invocation, "a continued invocation is one of its own");
         assert_eq!(second.steps.len(), 3, "{second:?}");
         for (earlier, later) in first.steps.iter().zip(&second.steps).take(2) {
             assert_eq!(later.path, earlier.path);
             assert_eq!(later.step, earlier.step);
             assert_eq!(later.invocation, earlier.invocation);
-            // A taken step reports what it produced, as the first run did, so a
-            // report of the continued run shows the list's output.
+            // A taken step reports what it produced, as the first invocation did, so
+            // the continued invocation's report shows the list's output.
             assert_eq!(later.status, earlier.status);
         }
         assert!(
@@ -141,7 +141,7 @@ tilo_test_env::scenario! {
         );
         assert_ne!(
             second.steps[2].invocation, first.steps[2].invocation,
-            "the step the person fixed runs again, under this run's own invocation"
+            "the step the person fixed runs again, under its own action invocation"
         );
     }
 
@@ -165,12 +165,12 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &tidy,
-            InvocationId::new(),
+            AutomationInvocationId::new(),
             InvocationMode::Unattended,
         );
         assert_eq!(first.outcome, InvocationOutcome::Completed, "{first:?}");
         // The second step now reads the list differently; the list itself must
-        // not run again, so the value it reads is the one the first run saw.
+        // not run again, so the value it reads is the one the first invocation saw.
         let mut fixed = tidy;
         fixed.steps[1] = invoke(
             "make",
@@ -188,14 +188,14 @@ tilo_test_env::scenario! {
                 .map(|request| request.target.address.action.as_str())
                 .collect::<Vec<_>>(),
             ["list", "create", "create"],
-            "the list is read once: the continued run takes it from the invocation"
+            "the list is read once: the continued invocation takes it from the invocation"
         );
         assert_eq!(
             started.get(2).map(|request| request.argument.clone()),
             Some(InvokeArgument::Json(
                 json!({"title": "a"}).as_object().unwrap().clone()
             )),
-            "and the list it reads is the one the first run saw"
+            "and the list it reads is the one the first invocation saw"
         );
     }
 
@@ -243,7 +243,7 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &tidy,
-            InvocationId::new(),
+            AutomationInvocationId::new(),
             InvocationMode::Unattended,
         );
         assert_eq!(first.outcome, InvocationOutcome::Completed, "{first:?}");
@@ -304,7 +304,7 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &tidy,
-            InvocationId::new(),
+            AutomationInvocationId::new(),
             InvocationMode::Unattended,
         );
         assert!(
@@ -317,7 +317,7 @@ tilo_test_env::scenario! {
                 .map(|request| request.target.address.action.as_str())
                 .collect::<Vec<_>>(),
             ["list"],
-            "the run stops at the step that failed: nothing reaches the host for it"
+            "the invocation stops at the step that failed: nothing reaches the host for it"
         );
 
         // The person fixed the step that failed: continuing from it runs it

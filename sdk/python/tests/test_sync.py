@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tilo import AskPending, Key, Refused, Resource, Run, Tilo
+from tilo import AskPending, Invocation, Key, Refused, Resource, Tilo
 
 from fake_api import PDF, TODO, WORKSPACE_ID, FakeApi
 
@@ -40,26 +40,26 @@ def test_a_sync_run_group_names_the_run(api):
     with Tilo(key=api.key, url=URL, http=api.client(URL)) as tilo:
         workspace = tilo.workspace("jane-doe")
 
-        with workspace.run("Fill Jane's application") as group:
+        with workspace.invocation("Fill Jane's application") as group:
             workspace.do(f"{PDF}#read-form-fields")
 
         call = api.asked("POST", "/actions/read-form-fields")[-1]
-        assert call["headers"]["tilo-run"] == group.id
-        assert call["headers"]["tilo-run-title"] == "Fill Jane's application"
+        assert call["headers"]["tilo-invocation"] == group.id
+        assert call["headers"]["tilo-invocation-title"] == "Fill Jane's application"
 
         undone = group.undo()
         assert undone["status"] == "ok"
-        assert api.undone == [group.runs[-1]]
+        assert api.undone == [group.invocations[-1]]
 
 
 def test_a_sync_run_is_followed_to_its_result(api):
     api.append_pending = True
 
     with Tilo(key=api.key, url=URL, http=api.client(URL)) as tilo:
-        run = tilo.workspace("jane-doe").do(f"{TODO}#append-paragraph", text="Buy milk")
+        invocation = tilo.workspace("jane-doe").do(f"{TODO}#append-paragraph", text="Buy milk")
 
-        assert isinstance(run, Run)
-        assert run.result() == {"appended": "c01e"}
+        assert isinstance(invocation, Invocation)
+        assert invocation.result() == {"appended": "c01e"}
 
 
 def test_a_sync_watch_is_walked_one_event_at_a_time(api):
@@ -93,14 +93,16 @@ def test_a_sync_key_is_minted_and_listed(api):
         assert key.grant == "g-root"
 
 
-def test_a_sync_listing_of_runs_is_walked_to_the_oldest(api):
+def test_a_sync_listing_of_invocations_is_walked_to_the_oldest(api):
     with Tilo(key=api.key, url=URL, http=api.client(URL)) as tilo:
         workspace = tilo.workspace("jane-doe")
         workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
         workspace.do(f"{TODO}#append-paragraph", text="Buy bread")
-        runs = workspace.runs(limit=1)
-        assert runs.total == 2
-        assert [run.id for run in runs] == [listed["id"] for listed in reversed(api.runs)]
+        listed_invocations = workspace.invocations(limit=1)
+        assert listed_invocations.total == 2
+        assert [listed.id for listed in listed_invocations] == [
+            listed["id"] for listed in reversed(api.invocations)
+        ]
 
 
 def test_a_sync_branch_answers_the_new_workspace(api):

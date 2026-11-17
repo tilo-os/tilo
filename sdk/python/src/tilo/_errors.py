@@ -70,9 +70,11 @@ SURFACE_CHANGED = "surface_changed"
 class AskPending(Exception):
     """The call waits for the person to allow it.
 
-    `invocation_id` is the run they are answering, `url` where they answer it
+    `invocation_id` is the invocation they are answering, `url` where they
+    answer it
     when the API names one, and `question` what they are asked.
-    `ask.wait()` follows the run until they decide, and returns its answer: the
+    `ask.wait()` follows the invocation until they decide, and returns its
+    answer: the
     answer itself from the sync client, a coroutine to await from the async one.
     """
 
@@ -97,20 +99,22 @@ class AskPending(Exception):
     def _describe(url: str | None, invocation_id: str | None) -> str:
         parts = ["waiting for the person"]
         if invocation_id:
-            parts.append(f"run {invocation_id}")
+            parts.append(f"invocation {invocation_id}")
         if url:
             parts.append(f"at {url}")
         return ": ".join([parts[0], ", ".join(parts[1:])]) if len(parts) > 1 else parts[0]
 
     def wait(self) -> Any:
-        """Follow the run until the person decides, then its answer."""
+        """Follow the invocation until the person decides, then its answer."""
         if self._loop is None:
             return self._wait()
         return self._loop.run(self._wait())
 
     async def _wait(self) -> Any:
         if self._follow is None:
-            raise ProtocolError("this ask cannot be waited on: it names no run")
+            raise ProtocolError(
+                "this ask cannot be waited on: it names no invocation"
+            )
         answer = self._follow()
         if inspect.isawaitable(answer):
             answer = await answer

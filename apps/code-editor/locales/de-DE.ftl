@@ -15,7 +15,7 @@ code-editor-claim-pane = Das Terminal geöffnet
 code-editor-run = Das Terminal gebeten, { $command } auszuführen
 code-editor-rerun = Das Terminal gebeten, einen Befehl erneut auszuführen
 code-editor-rerun-test = Das Terminal gebeten, { $test } erneut auszuführen
-code-editor-record-run = { $command } im Terminal ausgeführt
+code-editor-record-command = { $command } im Terminal ausgeführt
 
 ## Codehilfe: der Sprachserver hinter Vorschlägen, Problemen und Gehe zu Definition
 code-editor-code-help-unavailable = { $language }: Codehilfe nicht verfügbar
@@ -118,7 +118,7 @@ code-editor-project-run = Im Terminal ausführen
 code-editor-project-rerun = Im Terminal erneut ausführen
 code-editor-project-rerun-test = Test im Terminal erneut ausführen
 code-editor-project-stop = Im Terminal stoppen
-code-editor-project-record-run = Terminallauf erfassen
+code-editor-project-record-command = Terminallauf erfassen
 
 ## What the app is called in a window and in the launcher
 code-editor-app-title = Code-Editor

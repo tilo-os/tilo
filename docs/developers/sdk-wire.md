@@ -8,8 +8,8 @@ JSON instead of agent text: `https://mcp.tilo.sh/mcp` for the account and
 [the API](api.md) instead, which answers the same values over `/v1`.
 
 There is no second API. Every structured answer is made by the call that answers text, from
-the same read of the same app, and names what the text names: the same paths, the same run
-ids, the same errors.
+the same read of the same app, and names what the text names: the same paths, the same
+invocation ids, the same errors.
 
 ## Asking for typed answers
 
@@ -31,11 +31,11 @@ The other keys under `so.tilo.mcp`:
 | key | meaning |
 |---|---|
 | `structured` | `true`: typed answers, as this document. |
-| `run` | `{"id": "…", "title": "…"}`: the run this call is a step of (see [Runs](#runs)). `title` is shown where people read history; `id` groups, so it is stable for the whole run. |
-| `step` | What `run.id` is shorthand for, when a caller wants grouping without naming a run: every call carrying the same `step` is one undo step. Agents that run tilolang programs use it. |
+| `invocation` | `{"id": "…", "title": "…"}`: the invocation this call is a step of (see [Invocations](#invocations)). `title` is shown where people read history; `id` groups, so it is stable for the whole group. |
+| `step` | What `invocation.id` is shorthand for, when a caller wants grouping without naming one: every call carrying the same `step` is one undo step. Agents that run tilolang programs use it. |
 
-`structured` and `run` are read per call; `run.id` and `step` never grant anything. They only
-say whose changes are taken back together.
+`structured` and `invocation` are read per call; `invocation.id` and `step` never grant
+anything. They only say whose changes are taken back together.
 
 ## Answers
 
@@ -218,57 +218,57 @@ to one resource and what is under it.
 ```json
 {"events": [
   {"kind": "change", "path": "notes/Todo", "change": "c1a2…",
-   "sentence": "added \"Buy milk\"", "by": "Jane", "run": "Fill Jane's application",
-   "time_ms": 1730000000000, "undone": false},
-  {"kind": "run", "phase": "started", "invocation_id": "3f0c…",
-   "path": "notes/Todo#append-paragraph", "run": "Fill Jane's application",
-   "run_id": "mcp:…", "time_ms": 1730000000000},
-  {"kind": "run", "phase": "succeeded", "invocation_id": "3f0c…", "path": "notes/Todo#append-paragraph",
-   "run": "Fill Jane's application", "run_id": "mcp:…", "time_ms": 1730000000001},
+   "sentence": "added \"Buy milk\"", "by": "Jane", "title": "Fill Jane's application",
+   "group": "mcp:…", "time_ms": 1730000000000, "undone": false},
+  {"kind": "invocation", "phase": "started", "invocation_id": "3f0c…",
+   "path": "notes/Todo#append-paragraph", "title": "Fill Jane's application",
+   "group": "mcp:…", "time_ms": 1730000000000},
+  {"kind": "invocation", "phase": "succeeded", "invocation_id": "3f0c…", "path": "notes/Todo#append-paragraph",
+   "title": "Fill Jane's application", "group": "mcp:…", "time_ms": 1730000000001},
   {"kind": "presence", "here": [{"who": "…", "name": "Jane", "kind": "person"},
                                 {"who": "agent:…", "name": "Claude Code", "kind": "agent"}]}
  ],
  "cursor": "…"}
 ```
 
-- **change** — a step in the watched resource's history: who made it (`by`, or the run's
+- **change** — a step in the watched resource's history: who made it (`by`, or the group's
   title), what it did (`sentence`), and whether it has been taken back. A change under a
   watched path is named by its own path.
-- **run** — one of this session's invocations starting or finishing (`started`, `succeeded`,
-  `failed`, `cancelled`). `run` is the agent run's title and `run_id` its id: the same run a
-  group of calls is attributed to.
+- **invocation** — one of this session's invocations starting or finishing (`started`,
+  `succeeded`, `failed`, `cancelled`). `title` is the group's title and `group` its id: the
+  same group a set of calls is attributed to.
 - **presence** — who is in the workspace, whenever that changes: its people and the agents its
   roster names, as the desktop's people panel lists them. A host that keeps no roster reports
   no presence rather than an empty workspace.
 
 An answer with no events still carries the cursor to ask again from. A caller that got its
 cursor from an earlier answer only ever sees each event once. A held watch reads the watched
-resource's history about twice a second and the host's runs and roster on every look, so a
+resource's history about twice a second and the host's invocations and roster on every look, so a
 change reaches a watching caller within a second of it landing. The stream is a long poll, not a
 push: one `tools/call` at a time, straight through the same POST path every other call takes.
 
-## Runs
+## Invocations
 
-`async with ws.run("Fill Jane's application")` names one run:
+`async with ws.invocation("Fill Jane's application")` names one invocation:
 
 ```json
 "_meta": {"so.tilo.mcp": {"structured": true,
-                          "run": {"id": "fill-jane", "title": "Fill Jane's application"}}}
+                          "invocation": {"id": "fill-jane", "title": "Fill Jane's application"}}}
 ```
 
-Every call inside it carries the same `run.id`. Then:
+Every call inside it carries the same `invocation.id`. Then:
 
 - **One undo step.** Every change those calls make to one app is recorded as one step of that
-  app's history, as one tilolang program is, so the app's `undo` takes the whole run back in
+  app's history, as one tilolang program is, so the app's `undo` takes the whole group back in
   that app with `{"path": "<resource>#undo", "args": {"steps": 1}}`.
-- **One run in history.** History, activity and presence name it `Fill Jane's application`,
-  not the connection's own label. `run.id` groups within the connection that names it: two
-  clients naming the same id never share a step, because the step is derived from the
-  connection's own execution and agent run as well as the id.
-- **One step for `undo task`.** The `tilo` tool answers `steps` (`history task`) with the run's
-  steps and `undo task` takes them back, each app's one step at a time.
+- **One group in history.** History, activity and presence name it `Fill Jane's application`,
+  not the connection's own label. `invocation.id` groups within the connection that names it:
+  two clients naming the same id never share a step, because the step is derived from the
+  connection's own execution and agent session as well as the id.
+- **One step for `undo task`.** The `tilo` tool answers `steps` (`history task`) with the
+  group's steps and `undo task` takes them back, each app's one step at a time.
 
-A call naming no `run` is a step of its own, as it is for an agent.
+A call naming no `invocation` is a step of its own, as it is for an agent.
 
 ## Errors the SDK maps
 
@@ -277,7 +277,7 @@ A call naming no `run` is a step of its own, as it is for an agent.
 | `status: "failed"`, `error.code`, `error.message` | `Refused(code, message)` |
 | `error.next_steps` | `Refused.next_steps` |
 | `status: "pending"` with `ask` | `AskPending(ask.url, invocation_id)` |
-| `status: "pending"` without `ask` | `Run` (follow with `tilo_status` / `tilo_watch`) |
+| `status: "pending"` without `ask` | `Invocation` (follow with `tilo_status` / `tilo_watch`) |
 | `isError: true` with no `structuredContent` | `ProtocolError` (the call itself was malformed) |
 | HTTP 401 with `{"error": {"code": "key_revoked", "revoked_at_ms"?}}` | `KeyRevoked` (`revoked_at_ms`), a `KeyRefused` |
 | HTTP 401 with `{"error": {"code": "key_expired", "expired_at_ms"?}}` | `KeyExpired` (`expired_at_ms`), a `KeyRefused` |

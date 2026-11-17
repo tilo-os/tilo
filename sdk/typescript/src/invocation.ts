@@ -1,4 +1,4 @@
-/** A run: an action that has not finished, and what to do with it. */
+/** An invocation: an action that has not finished, and what to do with it. */
 
 import type { Endpoint } from "./endpoint.ts";
 import { type ActionAnswer, type Event, resultOf } from "./models.ts";
@@ -11,7 +11,7 @@ import { ProtocolError } from "./errors.ts";
  * `cancel()` stops it and `undo()` takes back what it changed. Once it is
  * done, `link` is the link to the record it changed, when it changed one.
  */
-export class Run<Result = unknown> {
+export class Invocation<Result = unknown> {
   readonly endpoint: Endpoint;
   readonly invocationId: string;
   path: string | null;
@@ -25,10 +25,10 @@ export class Run<Result = unknown> {
   }
 
   toString(): string {
-    return `Run(${this.invocationId})`;
+    return `Invocation(${this.invocationId})`;
   }
 
-  /** The resource whose action the run is, `app/resource` without the action. */
+  /** The resource whose action the invocation is, `app/resource` without the action. */
   get resource(): string | null {
     if (this.path === null || !this.path.includes("#")) {
       return null;
@@ -36,7 +36,7 @@ export class Run<Result = unknown> {
     return this.path.split("#")[0] ?? null;
   }
 
-  /** The run's whole answer once it is no longer pending. */
+  /** The invocation's whole answer once it is no longer pending. */
   async answer(timeoutMs: number | null = null): Promise<ActionAnswer> {
     const answer = await this.endpoint.wait(this.invocationId, timeoutMs);
     this.note(answer);
@@ -48,30 +48,32 @@ export class Run<Result = unknown> {
     return resultOf(await this.answer(timeoutMs)) as Result;
   }
 
-  /** Stop the run. */
+  /** Stop the invocation. */
   async cancel(): Promise<ActionAnswer> {
     const answer = await this.endpoint.cancel(this.invocationId);
     this.note(answer);
     return answer;
   }
 
-  /** The run's events, from started to succeeded, failed or cancelled. */
+  /** The invocation's events, from started to succeeded, failed or cancelled. */
   output(): AsyncGenerator<Event> {
     return this.endpoint.output(this.invocationId);
   }
 
-  /** Take the run back: its app's one step. */
+  /** Take the invocation back: its app's one step. */
   async undo(): Promise<ActionAnswer> {
     if (this.path === null) {
       await this.answer();
     }
     if (this.resource === null) {
-      throw new ProtocolError("this run names no resource, so there is no app step to undo");
+      throw new ProtocolError(
+        "this invocation names no resource, so there is no app step to undo",
+      );
     }
     return this.endpoint.undo(this.invocationId);
   }
 
-  /** What the run's answer says about where it reached. */
+  /** What the invocation's answer says about where it reached. */
   private note(answer: ActionAnswer): void {
     if (answer.path !== null && answer.path !== "") {
       this.path = answer.path;

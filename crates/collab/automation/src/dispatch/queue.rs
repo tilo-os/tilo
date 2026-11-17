@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::remote::ActionHostError;
 
 use super::{Firing, MAX_QUEUED_FIRINGS};
-use crate::run::{InvocationOutcome, InvocationReport, StepFailure, StepStatus};
+use crate::invocation::{InvocationOutcome, InvocationReport, StepFailure, StepStatus};
 
 pub const BACKOFF_FIRST: Duration = Duration::from_secs(1);
 pub const BACKOFF_MAX: Duration = Duration::from_secs(600);
@@ -86,7 +86,7 @@ pub struct FiringQueue {
 }
 
 impl FiringQueue {
-    /// Queue `firing` behind the others. A run already queued is not queued
+    /// Queue `firing` behind the others. An invocation already queued is not queued
     /// again. Beyond [`MAX_QUEUED_FIRINGS`] the oldest is dropped and
     /// returned dead-lettered as [`FELL_BEHIND`].
     pub fn push(&mut self, firing: Firing, now_ms: i64) -> Option<DeadLetter> {
@@ -123,7 +123,7 @@ impl FiringQueue {
         self.queued.front().map(|queued| queued.not_before_ms)
     }
 
-    /// Settle the head with how its run went.
+    /// Settle the head with how its invocation went.
     pub fn finished(&mut self, report: &InvocationReport, now_ms: i64) -> Finished {
         let Some(head) = self.queued.front_mut() else {
             return Finished::Done;
@@ -180,9 +180,9 @@ impl FiringQueue {
             })
     }
 
-    /// Settle the head when the workspace refused what its run changed: the
+    /// Settle the head when the workspace refused what its invocation changed: the
     /// changes before the refused one stand and those after it were
-    /// dropped, so the run is half done. It runs again with backoff, from
+    /// dropped, so the invocation is half done. It runs again with backoff, from
     /// the workspace's records as they now stand, so a bot that plans from the
     /// state it reads (an import that resumes where it stopped) finishes
     /// the job; once [`MAX_REFUSED_ATTEMPTS`] are spent it is dead-lettered
@@ -231,8 +231,8 @@ impl FiringQueue {
 mod tests {
     use super::*;
     use crate::StepPath;
-    use crate::run::{
-        InvocationId, InvocationMode, InvocationOutcome, InvocationReport, StepFailure,
+    use crate::invocation::{
+        AutomationInvocationId, InvocationMode, InvocationOutcome, InvocationReport, StepFailure,
     };
     use crate::shortcut::TriggerSpec;
 
@@ -244,14 +244,14 @@ mod tests {
                 app_id: None,
                 from: None,
             },
-            invocation: InvocationId(uuid::Uuid::from_bytes([n; 16])),
+            invocation: AutomationInvocationId(uuid::Uuid::from_bytes([n; 16])),
             inputs: serde_json::Map::new(),
             cause: None,
             event: format!("e{n}"),
         }
     }
 
-    fn report(invocation: InvocationId, outcome: InvocationOutcome) -> InvocationReport {
+    fn report(invocation: AutomationInvocationId, outcome: InvocationOutcome) -> InvocationReport {
         InvocationReport {
             invocation,
             shortcut: "s".into(),
@@ -379,7 +379,7 @@ mod tests {
                 action: "b".into(),
             };
             let mut denied = report(firing(1).invocation, failed(outside()));
-            denied.steps.push(crate::run::StepEntry {
+            denied.steps.push(crate::invocation::StepEntry {
                 path: StepPath::root().child(0),
                 step: "post".into(),
                 invocation: None,
@@ -483,7 +483,7 @@ mod tests {
                 at = at_ms;
             }
             let Finished::DeadLettered(dead) = queue.refused("refused", at) else {
-                panic!("its runs are spent");
+                panic!("its invocations are spent");
             };
             assert_eq!((dead.firing, dead.reason.as_str()), (firing(1), "refused"));
             assert_eq!(

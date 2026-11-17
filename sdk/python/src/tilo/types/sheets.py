@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Workbook` is the app's `sheets.workbook` at `sheets/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Area",
@@ -288,7 +288,7 @@ class Workbook(Resource):
         return self.action("set-title", title=title)
 
     def set_title_many(self, items: list[SetTitleArgs]) -> list[dict[str, Any]]:
-        """Runs `set-title` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-title` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-title", items)
 
     def set_records(self,
@@ -325,7 +325,7 @@ class Workbook(Resource):
         return self.action("duplicate-sheet", sheet=sheet)
 
     def duplicate_sheet_many(self, items: list[DuplicateSheetArgs]) -> list[dict[str, Any]]:
-        """Runs `duplicate-sheet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `duplicate-sheet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("duplicate-sheet", items)
 
     def delete_sheet(self, *, sheet: str) -> None:
@@ -333,7 +333,7 @@ class Workbook(Resource):
         return self.action("delete-sheet", sheet=sheet)
 
     def delete_sheet_many(self, items: list[DeleteSheetArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-sheet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-sheet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-sheet", items)
 
     def set_cells(self,
@@ -401,7 +401,7 @@ class Workbook(Resource):
         return self.action("insert-rows", **args)
 
     def insert_rows_many(self, items: list[InsertRowsArgs]) -> list[dict[str, Any]]:
-        """Runs `insert-rows` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `insert-rows` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("insert-rows", items)
 
     def delete_rows(self,
@@ -427,7 +427,7 @@ class Workbook(Resource):
         return self.action("insert-columns", **args)
 
     def insert_columns_many(self, items: list[InsertColumnsArgs]) -> list[dict[str, Any]]:
-        """Runs `insert-columns` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `insert-columns` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("insert-columns", items)
 
     def delete_columns(self,
@@ -439,7 +439,7 @@ class Workbook(Resource):
         return self.action("delete-columns", sheet=sheet, columns=columns)
 
     def delete_columns_many(self, items: list[DeleteColumnsArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-columns` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-columns` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-columns", items)
 
     def import_sheets(self,
@@ -458,7 +458,7 @@ class Workbook(Resource):
         return self.action("import-sheets", **args)
 
     def import_sheets_many(self, items: list[ImportSheetsArgs]) -> list[dict[str, Any]]:
-        """Runs `import-sheets` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `import-sheets` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("import-sheets", items)
 
     def add_chart(self,
@@ -472,7 +472,7 @@ class Workbook(Resource):
         return self.action("add-chart", sheet=sheet, range=range, kind=kind, title=title)
 
     def add_chart_many(self, items: list[AddChartArgs]) -> list[dict[str, Any]]:
-        """Runs `add-chart` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-chart` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-chart", items)
 
     def edit_chart(self,
@@ -495,7 +495,7 @@ class Workbook(Resource):
         return self.action("edit-chart", **args)
 
     def edit_chart_many(self, items: list[EditChartArgs]) -> list[dict[str, Any]]:
-        """Runs `edit-chart` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `edit-chart` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("edit-chart", items)
 
     def delete_chart(self,
@@ -507,7 +507,7 @@ class Workbook(Resource):
         return self.action("delete-chart", sheet=sheet, chart=chart)
 
     def delete_chart_many(self, items: list[DeleteChartArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-chart` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-chart` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-chart", items)
 
     def rename_sheet(self,
@@ -519,7 +519,7 @@ class Workbook(Resource):
         return self.action("rename-sheet", sheet=sheet, name=name)
 
     def rename_sheet_many(self, items: list[RenameSheetArgs]) -> list[dict[str, Any]]:
-        """Runs `rename-sheet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `rename-sheet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rename-sheet", items)
 
     def comment(self,
@@ -532,7 +532,7 @@ class Workbook(Resource):
         return self.action("comment", sheet=sheet, range=range, text=text)
 
     def comment_many(self, items: list[CommentArgs]) -> list[dict[str, Any]]:
-        """Runs `comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("comment", items)
 
     def reply(self,
@@ -544,7 +544,7 @@ class Workbook(Resource):
         return self.action("reply", comment=comment, text=text)
 
     def reply_many(self, items: list[ReplyArgs]) -> list[dict[str, Any]]:
-        """Runs `reply` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `reply` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reply", items)
 
     def edit_comment(self,
@@ -556,7 +556,7 @@ class Workbook(Resource):
         return self.action("edit-comment", comment=comment, body=body)
 
     def edit_comment_many(self, items: list[EditCommentArgs]) -> list[dict[str, Any]]:
-        """Runs `edit-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `edit-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("edit-comment", items)
 
     def delete_comment(self, *, comment: str) -> None:
@@ -564,7 +564,7 @@ class Workbook(Resource):
         return self.action("delete-comment", comment=comment)
 
     def delete_comment_many(self, items: list[DeleteCommentArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-comment", items)
 
     def export_xlsx_content(self) -> None:

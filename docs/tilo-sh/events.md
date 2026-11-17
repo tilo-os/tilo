@@ -10,12 +10,12 @@ happened in a workspace, from a cursor. An API server also posts the same events
 
 | Kind | What it says |
 | :--- | :--- |
-| `change` | A step in a record's history: its path, what it did (`sentence`), who (`by`), the run, and whether it has been undone |
-| `run` | An invocation starting or finishing: `started`, `succeeded`, `failed` or `cancelled`, with its invocation id, path and run |
+| `change` | A step in a record's history: its path, what it did (`sentence`), who (`by`), the group, and whether it has been undone |
+| `invocation` | An invocation starting or finishing: `started`, `succeeded`, `failed` or `cancelled`, with its id, path, title and group |
 | `presence` | Who is in the workspace, and their agents, whenever that changes |
 
 The stream is the workspace's `events` route of the [API](../developers/api.md): server-sent events, its
-answers named `change`, `run` and `presence`. Each event's `id` is a cursor: reconnecting with
+answers named `change`, `invocation` and `presence`. Each event's `id` is a cursor: reconnecting with
 `Last-Event-ID` resumes after it, so a caller that keeps its cursor sees each event once. A comment line
 every 15 seconds keeps an idle connection open.
 
@@ -48,7 +48,16 @@ async def main() -> None:
     await workspace.do("notes#create-page", title="Arrivals", markdown="- 09:40 Jane Doe\n")
 
     event = await asyncio.wait_for(watcher, timeout=30)
-    print("kind:", event.kind, "path:", event.path, "sentence:", event.sentence, "run:", event.run)
+    print(
+        "kind:",
+        event.kind,
+        "path:",
+        event.path,
+        "sentence:",
+        event.sentence,
+        "invocation:",
+        event.invocation,
+    )
     await tilo.aclose()
 
 
@@ -78,7 +87,16 @@ const event = await Promise.race([
   watcher,
   new Promise<never>((_, reject) => setTimeout(() => reject(new Error("no change in 30s")), 30000)),
 ]);
-console.log("kind:", event.kind, "path:", event.path, "sentence:", event.sentence, "run:", event.run);
+console.log(
+  "kind:",
+  event.kind,
+  "path:",
+  event.path,
+  "sentence:",
+  event.sentence,
+  "invocation:",
+  event.invocation,
+);
 process.exit(0);
 ```
 
@@ -99,12 +117,13 @@ kill "$watching"
 grep -A1 '^event: change' events.txt | head -2
 ```
 
-The call's own `run` events arrive too; the example reads past them to the first `change`, which names the
-app, the record, the sentence a person would read, and the run that made it.
+The call's own `invocation` events arrive too; the example reads past them to the first `change`, which
+names the app, the record, the sentence a person would read, and the invocation that made it.
 
-## Watching one run
+## Watching one invocation
 
-A `Run` has the same stream narrowed to itself: `run.output()` answers its events, from `started` to
+An `Invocation` has the same stream narrowed to itself: `invocation.output()` answers its events, from
+`started` to
 `succeeded`, `failed` or `cancelled`, and stops there. That is how a caller follows a long action without
 polling its status.
 
@@ -124,5 +143,5 @@ no watch verb today.
 
 ## Where next
 
-- [Runs and history](runs-and-history.md): what a `change` event is a step of.
+- [Invocations and history](invocations-and-history.md): what a `change` event is a step of.
 - [Approvals](approvals.md): the events a person's answer releases.

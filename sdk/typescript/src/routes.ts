@@ -66,15 +66,15 @@ export const routes = {
   action: (workspace: string, path: string, action: string) =>
     `${PREFIX}/workspaces/${segment(workspace)}/resources/${encodePath(path)}/actions/${segment(action)}`,
 
-  runs: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/runs`,
-  run: (workspace: string, run: string) =>
-    `${PREFIX}/workspaces/${segment(workspace)}/runs/${segment(run)}`,
-  runCancel: (workspace: string, run: string) =>
-    `${PREFIX}/workspaces/${segment(workspace)}/runs/${segment(run)}/cancel`,
-  runUndo: (workspace: string, run: string) =>
-    `${PREFIX}/workspaces/${segment(workspace)}/runs/${segment(run)}/undo`,
-  runOutput: (workspace: string, run: string) =>
-    `${PREFIX}/workspaces/${segment(workspace)}/runs/${segment(run)}/output`,
+  invocations: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/invocations`,
+  invocation: (workspace: string, invocation: string) =>
+    `${PREFIX}/workspaces/${segment(workspace)}/invocations/${segment(invocation)}`,
+  invocationCancel: (workspace: string, invocation: string) =>
+    `${PREFIX}/workspaces/${segment(workspace)}/invocations/${segment(invocation)}/cancel`,
+  invocationUndo: (workspace: string, invocation: string) =>
+    `${PREFIX}/workspaces/${segment(workspace)}/invocations/${segment(invocation)}/undo`,
+  invocationOutput: (workspace: string, invocation: string) =>
+    `${PREFIX}/workspaces/${segment(workspace)}/invocations/${segment(invocation)}/output`,
 
   search: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/search`,
   export: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/export`,

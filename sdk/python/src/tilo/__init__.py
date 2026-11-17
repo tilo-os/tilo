@@ -13,7 +13,7 @@ async with AsyncTilo() as tilo:
 """
 
 from ._client import AccountKeys, AsyncTilo, SignIn, Tilo, Workspaces
-from ._endpoint import RunGroup
+from ._endpoint import InvocationGroup
 from ._errors import (
     AskPending,
     KeyExpired,
@@ -36,8 +36,8 @@ from ._models import (
     Person,
     ProgramAnswer,
     Row,
-    RunInfo,
-    RunList,
+    InvocationInfo,
+    InvocationList,
     Usage,
     WorkspaceExport,
     WorkspaceInfo,
@@ -45,9 +45,9 @@ from ._models import (
     WorkspaceUsage,
 )
 from ._resource import Entry, FieldMap, Resource
-from ._run import Run
+from ._invocation import Invocation
 from ._transport import HttpTransport, NativeTransport, Transport
-from ._workspace import Files, Members, RunOpening, Workspace, WorkspaceKeys
+from ._workspace import Files, InvocationOpening, Members, Workspace, WorkspaceKeys
 
 __version__ = "0.1.0"
 
@@ -78,11 +78,11 @@ __all__ = [
     "Refused",
     "Resource",
     "Row",
-    "Run",
-    "RunGroup",
-    "RunInfo",
-    "RunList",
-    "RunOpening",
+    "Invocation",
+    "InvocationGroup",
+    "InvocationInfo",
+    "InvocationList",
+    "InvocationOpening",
     "SignIn",
     "SurfaceChanged",
     "Tilo",

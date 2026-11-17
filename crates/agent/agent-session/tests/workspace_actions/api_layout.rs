@@ -20,7 +20,7 @@ async fn did_in_run(agent: &mut Mcp<'_>, path: &str, args: serde_json::Value) ->
         .post(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                      "params": {"name": "tilo_do", "arguments": {"path": path, "args": args},
                                 "_meta": {"so.tilo.mcp": {"structured": true,
-                                                          "run": {"id": "visa-1", "title": RUN}}}}}))
+                                                          "invocation": {"id": "visa-1", "title": RUN}}}}}))
         .await;
     assert_eq!(status, 200, "{reply}");
     let answer = &reply["result"]["structuredContent"];

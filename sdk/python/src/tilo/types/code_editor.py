@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Project` is the app's `code_editor.project` at `code-editor/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Command",
@@ -42,7 +42,7 @@ __all__ = [
     "RecordRelaySessionArgs",
     "ClaimPaneArgs",
     "StopArgs",
-    "RecordRunArgs",
+    "RecordCommandArgs",
 ]
 
 class Command(TypedDict):
@@ -187,7 +187,7 @@ StopArgs = TypedDict("StopArgs", {
 })
 """The arguments of `stop`."""
 
-RecordRunArgs = TypedDict("RecordRunArgs", {
+RecordCommandArgs = TypedDict("RecordCommandArgs", {
     "command": "str",
     "cwd": "str",
     "started_ms": "int",
@@ -201,11 +201,11 @@ RecordRunArgs = TypedDict("RecordRunArgs", {
     "request": NotRequired["str | None"],
     "run": "str",
 })
-"""The arguments of `record-run`."""
+"""The arguments of `record-command`."""
 
 class Project(Resource):
     """Code Editor — `code_editor.project`."""
-    __surface__ = "so.tilo.code-editor@56df09e9edab1ff1"
+    __surface__ = "so.tilo.code-editor@75fb383bba126522"
     files: list[Entry[Entry]]
     buffers: dict[str, Any]
     @property
@@ -230,7 +230,7 @@ class Project(Resource):
         return self.action("new-file", **args)
 
     def new_file_many(self, items: list[NewFileArgs]) -> list[dict[str, Any]]:
-        """Runs `new-file` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `new-file` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("new-file", items)
 
     def new_folder(self,
@@ -247,7 +247,7 @@ class Project(Resource):
         return self.action("new-folder", **args)
 
     def new_folder_many(self, items: list[NewFolderArgs]) -> list[dict[str, Any]]:
-        """Runs `new-folder` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `new-folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("new-folder", items)
 
     def rename(self,
@@ -259,7 +259,7 @@ class Project(Resource):
         return self.action("rename", entry=entry, name=name)
 
     def rename_many(self, items: list[RenameArgs]) -> list[dict[str, Any]]:
-        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rename", items)
 
     def move_entry(self,
@@ -278,7 +278,7 @@ class Project(Resource):
         return self.action("move-entry", **args)
 
     def move_entry_many(self, items: list[MoveEntryArgs]) -> list[dict[str, Any]]:
-        """Runs `move-entry` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `move-entry` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("move-entry", items)
 
     def replace_text(self,
@@ -290,7 +290,7 @@ class Project(Resource):
         return self.action("replace-text", file=file, text=text)
 
     def replace_text_many(self, items: list[ReplaceTextArgs]) -> list[dict[str, Any]]:
-        """Runs `replace-text` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `replace-text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("replace-text", items)
 
     def replace_range(self,
@@ -302,7 +302,7 @@ class Project(Resource):
         return self.action("replace-range", at=at, text=text)
 
     def replace_range_many(self, items: list[ReplaceRangeArgs]) -> list[dict[str, Any]]:
-        """Runs `replace-range` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `replace-range` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("replace-range", items)
 
     def delete(self, *, entry: str) -> None:
@@ -310,7 +310,7 @@ class Project(Resource):
         return self.action("delete", entry=entry)
 
     def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
-        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete", items)
 
     def record_entry(self,
@@ -332,7 +332,7 @@ class Project(Resource):
         return self.action("record-entry", **args)
 
     def record_entry_many(self, items: list[RecordEntryArgs]) -> list[dict[str, Any]]:
-        """Runs `record-entry` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record-entry` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-entry", items)
 
     def record_text(self,
@@ -344,7 +344,7 @@ class Project(Resource):
         return self.action("record-text", file=file, text=text)
 
     def record_text_many(self, items: list[RecordTextArgs]) -> list[dict[str, Any]]:
-        """Runs `record-text` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record-text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-text", items)
 
     def record_target(self,
@@ -360,7 +360,7 @@ class Project(Resource):
         return self.action("record-target", **args)
 
     def record_target_many(self, items: list[RecordTargetArgs]) -> list[dict[str, Any]]:
-        """Runs `record-target` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record-target` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-target", items)
 
     def record_relay_session(self,
@@ -374,7 +374,7 @@ class Project(Resource):
         return self.action("record-relay-session", **args)
 
     def record_relay_session_many(self, items: list[RecordRelaySessionArgs]) -> list[dict[str, Any]]:
-        """Runs `record-relay-session` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record-relay-session` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-relay-session", items)
 
     def claim_pane(self,
@@ -390,7 +390,7 @@ class Project(Resource):
         return self.action("claim-pane", **args)
 
     def claim_pane_many(self, items: list[ClaimPaneArgs]) -> list[dict[str, Any]]:
-        """Runs `claim-pane` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `claim-pane` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("claim-pane", items)
 
     def run(self, *, command: str) -> Any:
@@ -414,10 +414,10 @@ class Project(Resource):
         return self.action("stop")
 
     def stop_many(self, items: list[StopArgs]) -> list[dict[str, Any]]:
-        """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("stop", items)
 
-    def record_run(self,
+    def record_command(self,
         *,
         command: str,
         cwd: str,
@@ -448,11 +448,11 @@ class Project(Resource):
         if request is not None:
             args["request"] = request
         args["run"] = run
-        return self.action("record-run", **args)
+        return self.action("record-command", **args)
 
-    def record_run_many(self, items: list[RecordRunArgs]) -> list[dict[str, Any]]:
-        """Runs `record-run` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
-        return self.many("record-run", items)
+    def record_command_many(self, items: list[RecordCommandArgs]) -> list[dict[str, Any]]:
+        """Runs `record-command` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("record-command", items)
 
     def reveal(self,
         *,
@@ -525,6 +525,6 @@ class Project(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_file", "new_file_many", "new_folder", "new_folder_many", "rename", "rename_many", "move_entry", "move_entry_many", "replace_text", "replace_text_many", "replace_range", "replace_range_many", "delete", "delete_many", "record_entry", "record_entry_many", "record_text", "record_text_many", "record_target", "record_target_many", "record_relay_session", "record_relay_session_many", "claim_pane", "claim_pane_many", "run", "rerun", "rerun_test", "stop", "stop_many", "record_run", "record_run_many", "reveal", "find", "search_project", "go_to_line", "toggle_bottom_panel", "next_theme", "go_to_problems", "go_to_search", "go_to_terminal", "toggle_sidebar", "toggle_language_servers", "toggle_format_on_save"})
+    __actions__ = frozenset({"new_file", "new_file_many", "new_folder", "new_folder_many", "rename", "rename_many", "move_entry", "move_entry_many", "replace_text", "replace_text_many", "replace_range", "replace_range_many", "delete", "delete_many", "record_entry", "record_entry_many", "record_text", "record_text_many", "record_target", "record_target_many", "record_relay_session", "record_relay_session_many", "claim_pane", "claim_pane_many", "run", "rerun", "rerun_test", "stop", "stop_many", "record_command", "record_command_many", "reveal", "find", "search_project", "go_to_line", "toggle_bottom_panel", "next_theme", "go_to_problems", "go_to_search", "go_to_terminal", "toggle_sidebar", "toggle_language_servers", "toggle_format_on_save"})
 
 

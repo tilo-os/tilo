@@ -208,7 +208,7 @@ fn log_saved(written: &[Written], outcome: &Result<(), String>) {
 }
 
 /// The changes `mutation` carries, short hashes, for the log: each change of
-/// a run of them, or the heads of a whole record.
+/// an invocation of them, or the heads of a whole record.
 fn changes_of(mutation: &DocumentMutation) -> Vec<String> {
     let hashes = match mutation {
         DocumentMutation::Incremental(bytes) => {

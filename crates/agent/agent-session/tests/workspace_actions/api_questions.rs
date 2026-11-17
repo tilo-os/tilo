@@ -52,7 +52,7 @@ async fn asking(mcp: &mut Mcp<'_>) -> Value {
         .post(json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
                      "params": {"name": "tilo_do",
                                 "arguments": {"path": REMOVE, "args": {"book": "book:dusk"}},
-                                "_meta": {"so.tilo.mcp": {"run": {"id": "visa-1",
+                                "_meta": {"so.tilo.mcp": {"invocation": {"id": "visa-1",
                                                                   "title": RUN}}}}}))
         .await;
     assert_eq!(status, 200, "{reply}");
@@ -245,7 +245,7 @@ async fn a_page_holding_the_root_answers_what_the_agent_asks_through_the_api() {
     // declares it, on which record and where.
     let question = &asked[0];
     assert_eq!(question.agent_label, "Jane Doe’s agent");
-    assert_eq!(question.run, RUN);
+    assert_eq!(question.title, RUN);
     assert_eq!(question.action_label, "Remove from library");
     assert_eq!(
         question.resource_label, "1 book",

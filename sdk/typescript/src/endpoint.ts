@@ -28,7 +28,7 @@ import {
 } from "./models.ts";
 import { API_VERSION, query as queryString, routes, splitAction } from "./routes.ts";
 import { frames } from "./sse.ts";
-import { Run } from "./run.ts";
+import { Invocation } from "./invocation.ts";
 import {
   collect,
   type HeadersLike,
@@ -46,18 +46,18 @@ export const VERSION = "0.1.0";
 const MAX_WAIT_SECONDS = 60;
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-const storage = new AsyncLocalStorage<RunGroup>();
+const storage = new AsyncLocalStorage<InvocationGroup>();
 
 /**
- * A run a group of calls is attributed to: `Tilo-Run` names it on every call
- * and `Tilo-Run-Title` its title, so the apps record one undo step and
- * history names each of them.
+ * An invocation group a set of calls is attributed to: `Tilo-Invocation`
+ * names it on every call and `Tilo-Invocation-Title` its title, so the apps
+ * record one undo step and history names each of them.
  *
  * `links` are the links to every record its calls changed, each once, in the
  * order first changed; `link` is the one link when they changed one record,
- * else `null`: a run across several records hands over `links`.
+ * else `null`: a group across several records hands over `links`.
  */
-export class RunGroup {
+export class InvocationGroup {
   readonly id: string;
   readonly title: string;
   readonly workspace: string;
@@ -73,22 +73,22 @@ export class RunGroup {
   }
 
   /**
-   * Take back exactly what the run's calls changed, in every record. The
+   * Take back exactly what its calls changed, in every record. The
    * host refuses, changing nothing, when someone else's change stands on top
-   * of the run's in a record.
+   * of the group's in a record.
    */
   async undo(): Promise<ActionAnswer> {
     const last = this.invocations.at(-1);
     if (last === undefined) {
-      throw new ProtocolError("the run made no call to take back");
+      throw new ProtocolError("the invocation group made no call to take back");
     }
     return this.endpoint.undo(last);
   }
 
   /** @internal */
   note(answer: ActionAnswer): void {
-    if (answer.run !== null && !this.invocations.includes(answer.run)) {
-      this.invocations.push(answer.run);
+    if (answer.invocation !== null && !this.invocations.includes(answer.invocation)) {
+      this.invocations.push(answer.invocation);
     }
     for (const link of linksOf(answer)) {
       if (!this.links.includes(link)) {
@@ -97,12 +97,12 @@ export class RunGroup {
     }
   }
 
-  /** @internal The headers a call of this run carries. */
+  /** @internal The headers a call of this group carries. */
   headers(): Record<string, string> {
-    return { "tilo-run": this.id, "tilo-run-title": this.title };
+    return { "tilo-invocation": this.id, "tilo-invocation-title": this.title };
   }
 
-  /** The link to the one record the run changed, or `null`. */
+  /** The link to the one record it changed, or `null`. */
   get link(): string | null {
     return this.links.length === 1 ? (this.links[0] ?? null) : null;
   }
@@ -117,13 +117,13 @@ export function linksOf(answer: ActionAnswer): string[] {
   return found.filter((link) => link !== "");
 }
 
-/** Run `body` with `group` the run every call inside is a step of. */
-export function withinRun<T>(group: RunGroup, body: () => Promise<T>): Promise<T> {
+/** Run `body` with `group` the invocation group every call inside is a step of. */
+export function withinInvocation<T>(group: InvocationGroup, body: () => Promise<T>): Promise<T> {
   return storage.run(group, body);
 }
 
-/** The run the current call is a step of, when one is open. */
-export function currentGroup(): RunGroup | null {
+/** The invocation group the current call is a step of, when one is open. */
+export function currentGroup(): InvocationGroup | null {
   return storage.getStore() ?? null;
 }
 
@@ -261,7 +261,7 @@ export class Endpoint {
   }
 
   /**
-   * One action, its arguments the body: its result, the `Run` that follows
+   * One action, its arguments the body: its result, the `Invocation` that follows
    * it, or `AskPending` when it waits for the person. `surface` is the app's
    * version of it, for a call made through generated types.
    */
@@ -282,7 +282,7 @@ export class Endpoint {
       if (answer.ask !== null) {
         throw this.askOf(answer);
       }
-      return new Run(this, answer.run ?? "", answer.path ?? path);
+      return new Invocation(this, answer.invocation ?? "", answer.path ?? path);
     }
     return resultOf(answer);
   }
@@ -316,14 +316,14 @@ export class Endpoint {
       if (answer.ask !== null) {
         throw this.askOf(answer);
       }
-      return this.wait(answer.run ?? "");
+      return this.wait(answer.invocation ?? "");
     }
     return answer;
   }
 
   /** The `AskPending` an answer that waits for the person is. */
   askOf(answer: ActionAnswer): AskPending {
-    const run = answer.run ?? "";
+    const run = answer.invocation ?? "";
     const url = typeof answer.ask?.url === "string" ? answer.ask.url : null;
     return new AskPending(url, run, answer.ask, async () => {
       const settled = await this.wait(run);
@@ -332,15 +332,15 @@ export class Endpoint {
     });
   }
 
-  /** Follow a run until it is no longer pending, its whole answer. */
-  async wait(run: string, timeoutMs: number | null = null): Promise<ActionAnswer> {
+  /** Follow an invocation until it is no longer pending, its whole answer. */
+  async wait(invocation: string, timeoutMs: number | null = null): Promise<ActionAnswer> {
     const deadline = timeoutMs === null ? null : Date.now() + timeoutMs;
     for (;;) {
       const seconds = deadline === null
         ? MAX_WAIT_SECONDS
         : Math.max(0, Math.min(MAX_WAIT_SECONDS, Math.ceil((deadline - Date.now()) / 1000)));
       const answer = actionAnswerOf(
-        await this.answer("GET", routes.run(this.id, run), {
+        await this.answer("GET", routes.invocation(this.id, invocation), {
           query: { wait: seconds },
           idempotent: false,
         }),
@@ -349,26 +349,29 @@ export class Endpoint {
         return answer;
       }
       if (deadline !== null && Date.now() >= deadline) {
-        throw new ProtocolError(`the run ${run} is still running`);
+        throw new ProtocolError(`the invocation ${invocation} is still running`);
       }
     }
   }
 
-  /** The run as it stands now, without waiting. */
-  async run(run: string): Promise<ActionAnswer> {
+  /** The invocation as it stands now, without waiting. */
+  async invocation(invocation: string): Promise<ActionAnswer> {
     return actionAnswerOf(
-      await this.answer("GET", routes.run(this.id, run), { query: { wait: 0 }, idempotent: false }),
+      await this.answer("GET", routes.invocation(this.id, invocation), {
+        query: { wait: 0 },
+        idempotent: false,
+      }),
     );
   }
 
-  /** Stop a run. */
-  async cancel(run: string): Promise<ActionAnswer> {
-    return actionAnswerOf(await this.answer("POST", routes.runCancel(this.id, run)));
+  /** Stop an invocation. */
+  async cancel(invocation: string): Promise<ActionAnswer> {
+    return actionAnswerOf(await this.answer("POST", routes.invocationCancel(this.id, invocation)));
   }
 
-  /** Take back what a run changed: the invocation, or every call of the run it is a step of. */
-  async undo(run: string): Promise<ActionAnswer> {
-    return actionAnswerOf(await this.answer("POST", routes.runUndo(this.id, run)));
+  /** Take back what an invocation changed: the one call, or every call of its group. */
+  async undo(invocation: string): Promise<ActionAnswer> {
+    return actionAnswerOf(await this.answer("POST", routes.invocationUndo(this.id, invocation)));
   }
 
   /** Run a tilolang program as one step. */
@@ -381,16 +384,17 @@ export class Endpoint {
   }
 
   /**
-   * A run's events, from started to succeeded, failed or cancelled. The
-   * stream ends with the run.
+   * An invocation's events, from started to succeeded, failed or cancelled.
+   * The stream ends with it.
    */
-  async *output(run: string): AsyncGenerator<Event> {
-    yield* this.stream(routes.runOutput(this.id, run), null, null);
+  async *output(invocation: string): AsyncGenerator<Event> {
+    yield* this.stream(routes.invocationOutput(this.id, invocation), null, null);
   }
 
   /**
    * The workspace's events as they happen, `path`'s alone or everything under
-   * it: each change, each run starting or finishing, and who is there. The
+   * it: each change, each invocation starting or finishing, and who is there.
+   * The
    * cursor is kept, so a stream that ends is read on from where it stopped.
    */
   async *events(path: string | null = null): AsyncGenerator<Event> {

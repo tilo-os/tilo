@@ -8,12 +8,12 @@
  * resource's path (`discord/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -442,7 +442,7 @@ export interface Guild extends tilo.Resource {
     mirror_channels?: boolean;
     map_roles?: boolean;
   }): Promise<void>;
-  /** Runs `connect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `connect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   connectMany(items: ConnectArgs[]): Promise<tilo.ActionAnswer[]>;
   observeLayout(args: {
     bot_user: string;
@@ -450,7 +450,7 @@ export interface Guild extends tilo.Resource {
     roles: RoleInfo[];
     emojis: EmojiInfo[];
   }): Promise<void>;
-  /** Runs `observe-layout` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `observe-layout` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   observeLayoutMany(items: ObserveLayoutArgs[]): Promise<tilo.ActionAnswer[]>;
   // the app's `map` action is named as a field of this kind: run it with
   // `action("map")`.
@@ -459,7 +459,7 @@ export interface Guild extends tilo.Resource {
     tilo: string;
     keep_apart?: boolean;
   }): Promise<void>;
-  /** Runs `unmap` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `unmap` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   unmapMany(items: UnmapArgs[]): Promise<tilo.ActionAnswer[]>;
   send(args: {
     op: SendOp;
@@ -516,7 +516,7 @@ export interface Guild extends tilo.Resource {
   beginConnect(args: {
     state_sha256: string;
   }): Promise<void>;
-  /** Runs `begin-connect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `begin-connect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   beginConnectMany(items: BeginConnectArgs[]): Promise<tilo.ActionAnswer[]>;
   offerLink(args: {
     check: string;
@@ -526,7 +526,7 @@ export interface Guild extends tilo.Resource {
     avatar?: string;
     interaction?: string;
   }): Promise<void>;
-  /** Runs `offer-link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `offer-link` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   offerLinkMany(items: OfferLinkArgs[]): Promise<tilo.ActionAnswer[]>;
   offerSignIn(args: {
     check: string;
@@ -536,17 +536,17 @@ export interface Guild extends tilo.Resource {
     display_name?: string;
     avatar?: string;
   }): Promise<void>;
-  /** Runs `offer-sign-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `offer-sign-in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   offerSignInMany(items: OfferSignInArgs[]): Promise<tilo.ActionAnswer[]>;
   completeLink(args: {
     proof: string;
   }): Promise<void>;
-  /** Runs `complete-link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `complete-link` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   completeLinkMany(items: CompleteLinkArgs[]): Promise<tilo.ActionAnswer[]>;
   setSignIn(args: {
     page: string;
   }): Promise<void>;
-  /** Runs `set-sign-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-sign-in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setSignInMany(items: SetSignInArgs[]): Promise<tilo.ActionAnswer[]>;
   answerInteraction(args: {
     op: AnswerInteractionOp;
@@ -557,40 +557,40 @@ export interface Guild extends tilo.Resource {
     display_name?: string;
     avatar?: string;
   }): Promise<void>;
-  /** Runs `rename-link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `rename-link` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   renameLinkMany(items: RenameLinkArgs[]): Promise<tilo.ActionAnswer[]>;
   setLinkPhoto(args: {
     discord_user: string;
     avatar: string;
     photo: string;
   }): Promise<void>;
-  /** Runs `set-link-photo` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-link-photo` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setLinkPhotoMany(items: SetLinkPhotoArgs[]): Promise<tilo.ActionAnswer[]>;
   unlink(args: {
     discord_user: string;
   }): Promise<void>;
-  /** Runs `unlink` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `unlink` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   unlinkMany(items: UnlinkArgs[]): Promise<tilo.ActionAnswer[]>;
   blockPersona(args: {
     discord_user: string;
   }): Promise<void>;
-  /** Runs `block-persona` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `block-persona` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   blockPersonaMany(items: BlockPersonaArgs[]): Promise<tilo.ActionAnswer[]>;
   unblockPersona(args: {
     discord_user: string;
   }): Promise<void>;
-  /** Runs `unblock-persona` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `unblock-persona` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   unblockPersonaMany(items: UnblockPersonaArgs[]): Promise<tilo.ActionAnswer[]>;
   rememberAvatar(args: {
     hash: string;
     blob: string;
   }): Promise<void>;
-  /** Runs `remember-avatar` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remember-avatar` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rememberAvatarMany(items: RememberAvatarArgs[]): Promise<tilo.ActionAnswer[]>;
   finishImport(args: {
     tilo_only: string[];
   }): Promise<void>;
-  /** Runs `finish-import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `finish-import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   finishImportMany(items: FinishImportArgs[]): Promise<tilo.ActionAnswer[]>;
   applyEmoji(args: {
     op: EmojiSpec;
@@ -605,12 +605,12 @@ export interface Guild extends tilo.Resource {
     was?: string;
     deleted?: boolean;
   }): Promise<void>;
-  /** Runs `settle-emoji` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `settle-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   settleEmojiMany(items: SettleEmojiArgs[]): Promise<tilo.ActionAnswer[]>;
   reportVoice(args?: {
     problem?: string;
   }): Promise<void>;
-  /** Runs `report-voice` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `report-voice` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   reportVoiceMany(items: ReportVoiceArgs[]): Promise<tilo.ActionAnswer[]>;
   myLink(): Promise<void>;
   linkOffer(args: {

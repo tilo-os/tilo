@@ -5,7 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// The position of a step: indices through nested blocks, with the branch
-/// taken and, at run time, the loop iteration. `0`, `2.then.1`,
+/// taken and, when it runs, the loop iteration. `0`, `2.then.1`,
 /// `3.each[4].0`. A checker error names the step it is about with this; a
 /// run derives each invocation id from it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -43,7 +43,7 @@ impl StepPath {
         self.join("else")
     }
 
-    /// A loop body; `iteration` is known at run time only.
+    /// A loop body; `iteration` is known only when it runs.
     #[must_use]
     pub fn each(&self, iteration: Option<usize>) -> Self {
         match iteration {

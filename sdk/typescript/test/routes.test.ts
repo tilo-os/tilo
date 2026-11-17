@@ -21,11 +21,11 @@ describe("a path into a route", () => {
     );
   });
 
-  it("encodes a workspace and a run", () => {
+  it("encodes a workspace and an invocation", () => {
     expect(routes.workspace("a b")).toBe("/v1/workspaces/a%20b");
     expect(routes.branches("a b")).toBe("/v1/workspaces/a%20b/branches");
     expect(routes.unattended("a b")).toBe("/v1/workspaces/a%20b/unattended");
-    expect(routes.run("ws-1", "run/1")).toBe("/v1/workspaces/ws-1/runs/run%2F1");
+    expect(routes.invocation("ws-1", "run/1")).toBe("/v1/workspaces/ws-1/invocations/run%2F1");
     expect(routes.content("ws-1", "tilo.content:abc")).toBe(
       "/v1/workspaces/ws-1/content/tilo.content%3Aabc",
     );
@@ -73,10 +73,10 @@ describe("a server-sent event stream", () => {
   it("joins a frame's data lines and survives a split anywhere", async () => {
     const seen = [];
     for await (const frame of frames(
-      await chunks("ev", "ent: run\nda", 'ta: {"phase":\n', 'data: "started"}\n\n'),
+      await chunks("ev", "ent: invocation\nda", 'ta: {"phase":\n', 'data: "started"}\n\n'),
     )) {
       seen.push(frame);
     }
-    expect(seen).toEqual([{ id: null, event: "run", data: '{"phase":\n"started"}' }]);
+    expect(seen).toEqual([{ id: null, event: "invocation", data: '{"phase":\n"started"}' }]);
   });
 });

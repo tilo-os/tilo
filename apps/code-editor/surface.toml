@@ -167,7 +167,7 @@ id = "stop"
 kind = "undoable"
 
 [[resources.verbs]]
-id = "record-run"
+id = "record-command"
 kind = "undoable"
 params = [
   { name = "command", type = "text", required = true, schema = { type = "string" } },

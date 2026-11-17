@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Collection` is the app's `clocks.collection` at `clocks/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Alarm",
@@ -177,7 +177,7 @@ class Collection(Resource):
         return self.action("add-world-clock", city=city, timezone=timezone)
 
     def add_world_clock_many(self, items: list[AddWorldClockArgs]) -> list[dict[str, Any]]:
-        """Runs `add-world-clock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-world-clock` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-world-clock", items)
 
     def remove_world_clock(self, *, world_clock: str) -> None:
@@ -185,7 +185,7 @@ class Collection(Resource):
         return self.action("remove-world-clock", world_clock=world_clock)
 
     def remove_world_clock_many(self, items: list[RemoveWorldClockArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-world-clock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-world-clock` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-world-clock", items)
 
     def add_alarm(self,
@@ -199,7 +199,7 @@ class Collection(Resource):
         return self.action("add-alarm", label=label, hour=hour, minute=minute, weekdays=weekdays)
 
     def add_alarm_many(self, items: list[AddAlarmArgs]) -> list[dict[str, Any]]:
-        """Runs `add-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-alarm` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-alarm", items)
 
     def set_alarm_enabled(self,
@@ -211,7 +211,7 @@ class Collection(Resource):
         return self.action("set-alarm-enabled", alarm=alarm, enabled=enabled)
 
     def set_alarm_enabled_many(self, items: list[SetAlarmEnabledArgs]) -> list[dict[str, Any]]:
-        """Runs `set-alarm-enabled` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-alarm-enabled` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-alarm-enabled", items)
 
     def edit_alarm(self,
@@ -226,7 +226,7 @@ class Collection(Resource):
         return self.action("edit-alarm", alarm=alarm, label=label, hour=hour, minute=minute, weekdays=weekdays)
 
     def edit_alarm_many(self, items: list[EditAlarmArgs]) -> list[dict[str, Any]]:
-        """Runs `edit-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `edit-alarm` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("edit-alarm", items)
 
     def remove_alarm(self, *, alarm: str) -> None:
@@ -234,7 +234,7 @@ class Collection(Resource):
         return self.action("remove-alarm", alarm=alarm)
 
     def remove_alarm_many(self, items: list[RemoveAlarmArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-alarm` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-alarm", items)
 
     def add_timer(self,
@@ -246,7 +246,7 @@ class Collection(Resource):
         return self.action("add-timer", label=label, seconds=seconds)
 
     def add_timer_many(self, items: list[AddTimerArgs]) -> list[dict[str, Any]]:
-        """Runs `add-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-timer", items)
 
     def pause_timer(self, *, timer: str) -> None:
@@ -254,7 +254,7 @@ class Collection(Resource):
         return self.action("pause-timer", timer=timer)
 
     def pause_timer_many(self, items: list[PauseTimerArgs]) -> list[dict[str, Any]]:
-        """Runs `pause-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `pause-timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("pause-timer", items)
 
     def resume_timer(self, *, timer: str) -> None:
@@ -262,7 +262,7 @@ class Collection(Resource):
         return self.action("resume-timer", timer=timer)
 
     def resume_timer_many(self, items: list[ResumeTimerArgs]) -> list[dict[str, Any]]:
-        """Runs `resume-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `resume-timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("resume-timer", items)
 
     def add_minute(self, *, timer: str) -> None:
@@ -270,7 +270,7 @@ class Collection(Resource):
         return self.action("add-minute", timer=timer)
 
     def add_minute_many(self, items: list[AddMinuteArgs]) -> list[dict[str, Any]]:
-        """Runs `add-minute` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-minute` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-minute", items)
 
     def remove_timer(self, *, timer: str) -> None:
@@ -278,7 +278,7 @@ class Collection(Resource):
         return self.action("remove-timer", timer=timer)
 
     def remove_timer_many(self, items: list[RemoveTimerArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-timer", items)
 
     def start_stopwatch(self) -> None:
@@ -286,7 +286,7 @@ class Collection(Resource):
         return self.action("start-stopwatch")
 
     def start_stopwatch_many(self, items: list[StartStopwatchArgs]) -> list[dict[str, Any]]:
-        """Runs `start-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `start-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("start-stopwatch", items)
 
     def pause_stopwatch(self) -> None:
@@ -294,7 +294,7 @@ class Collection(Resource):
         return self.action("pause-stopwatch")
 
     def pause_stopwatch_many(self, items: list[PauseStopwatchArgs]) -> list[dict[str, Any]]:
-        """Runs `pause-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `pause-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("pause-stopwatch", items)
 
     def lap(self) -> None:
@@ -302,7 +302,7 @@ class Collection(Resource):
         return self.action("lap")
 
     def lap_many(self, items: list[LapArgs]) -> list[dict[str, Any]]:
-        """Runs `lap` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `lap` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("lap", items)
 
     def reset_stopwatch(self) -> None:
@@ -310,7 +310,7 @@ class Collection(Resource):
         return self.action("reset-stopwatch")
 
     def reset_stopwatch_many(self, items: list[ResetStopwatchArgs]) -> list[dict[str, Any]]:
-        """Runs `reset-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `reset-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reset-stopwatch", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -332,7 +332,7 @@ class OnDevices(Resource):
         return self.action("keep", device=device, kept=kept)
 
     def keep_many(self, items: list[KeepArgs]) -> list[dict[str, Any]]:
-        """Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("keep", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

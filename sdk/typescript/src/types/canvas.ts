@@ -8,12 +8,12 @@
  * resource's path (`canvas/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -639,21 +639,21 @@ export interface Artwork extends tilo.Resource {
     split?: number[];
     merge?: boolean;
   }): Promise<void>;
-  /** Runs `edit-marks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `edit-marks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   editMarksMany(items: EditMarksArgs[]): Promise<tilo.ActionAnswer[]>;
   removeMarks(args?: {
     ids?: string[];
     layer?: string;
     along?: number[][];
   }): Promise<void>;
-  /** Runs `remove-marks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-marks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeMarksMany(items: RemoveMarksArgs[]): Promise<tilo.ActionAnswer[]>;
   arrange(args: {
     ids: string[];
     to: string;
     of?: string;
   }): Promise<void>;
-  /** Runs `arrange` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `arrange` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   arrangeMany(items: ArrangeArgs[]): Promise<tilo.ActionAnswer[]>;
   addLayer(args: {
     name: string;
@@ -663,7 +663,7 @@ export interface Artwork extends tilo.Resource {
     above?: string;
     texture?: number;
   }): Promise<void>;
-  /** Runs `add-layer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addLayerMany(items: AddLayerArgs[]): Promise<tilo.ActionAnswer[]>;
   editLayer(args: {
     id: string;
@@ -680,12 +680,12 @@ export interface Artwork extends tilo.Resource {
     invert?: boolean;
     clip?: boolean;
   }): Promise<void>;
-  /** Runs `edit-layer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `edit-layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   editLayerMany(items: EditLayerArgs[]): Promise<tilo.ActionAnswer[]>;
   removeLayer(args: {
     id: string;
   }): Promise<void>;
-  /** Runs `remove-layer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeLayerMany(items: RemoveLayerArgs[]): Promise<tilo.ActionAnswer[]>;
   setArtwork(args?: {
     title?: string;
@@ -696,17 +696,17 @@ export interface Artwork extends tilo.Resource {
     crop?: number[];
     fit?: string;
   }): Promise<void>;
-  /** Runs `set-artwork` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-artwork` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setArtworkMany(items: SetArtworkArgs[]): Promise<tilo.ActionAnswer[]>;
   saveMedium(args: {
     medium: MediumSpec;
   }): Promise<void>;
-  /** Runs `save-medium` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `save-medium` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   saveMediumMany(items: SaveMediumArgs[]): Promise<tilo.ActionAnswer[]>;
   removeMedium(args: {
     id: string;
   }): Promise<void>;
-  /** Runs `remove-medium` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-medium` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeMediumMany(items: RemoveMediumArgs[]): Promise<tilo.ActionAnswer[]>;
   align(args: {
     ids: string[];
@@ -714,7 +714,7 @@ export interface Artwork extends tilo.Resource {
     distribute?: string;
     to?: string;
   }): Promise<void>;
-  /** Runs `align` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `align` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   alignMany(items: AlignArgs[]): Promise<tilo.ActionAnswer[]>;
   setReference(args?: {
     image?: string;
@@ -723,7 +723,7 @@ export interface Artwork extends tilo.Resource {
     visible?: boolean;
     remove?: boolean;
   }): Promise<void>;
-  /** Runs `set-reference` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-reference` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setReferenceMany(items: SetReferenceArgs[]): Promise<tilo.ActionAnswer[]>;
   importSvg(args: {
     svg: string;
@@ -735,7 +735,7 @@ export interface Artwork extends tilo.Resource {
     path: string;
     title?: string;
   }): Promise<void>;
-  /** Runs `open-picture` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `open-picture` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   openPictureMany(items: OpenPictureArgs[]): Promise<tilo.ActionAnswer[]>;
   newArtwork(args?: {
     title?: string;
@@ -748,12 +748,12 @@ export interface Artwork extends tilo.Resource {
     ground_colour?: string;
     medium?: string;
   }): Promise<void>;
-  /** Runs `new-artwork` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `new-artwork` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   newArtworkMany(items: NewArtworkArgs[]): Promise<tilo.ActionAnswer[]>;
   openArtwork(args: {
     file: string;
   }): Promise<void>;
-  /** Runs `open-artwork` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `open-artwork` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   openArtworkMany(items: OpenArtworkArgs[]): Promise<tilo.ActionAnswer[]>;
   select(args?: {
     rect?: number[];
@@ -780,7 +780,7 @@ export interface Artwork extends tilo.Resource {
     ids: string[];
     op: string;
   }): Promise<void>;
-  /** Runs `combine` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `combine` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   combineMany(items: CombineArgs[]): Promise<tilo.ActionAnswer[]>;
   look(args?: {
     region?: number[];
@@ -838,13 +838,13 @@ export interface RecentArtworks extends tilo.Resource {
     device: string;
     recent: Recent;
   }): Promise<void>;
-  /** Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rememberMany(items: RememberArgs[]): Promise<tilo.ActionAnswer[]>;
   forget(args: {
     device: string;
     path: string;
   }): Promise<void>;
-  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 

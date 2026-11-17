@@ -38,10 +38,11 @@ use tilo_actions::remote::workspace_provider;
 use tilo_actions::remote::{Confirmation, Pending, pending};
 use tilo_actions::{ExecutionLocus, OperationKind};
 use tilo_automation::{
-    ActionCatalog, AskRequest, Binding, ConfirmationRequest, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE,
-    InvocationHooks, InvocationId, InvocationMode, InvocationOutcome, InvocationReport,
-    InvocationTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule,
-    Shortcut, StepPath, StopWatch, TriggerSpec, shortcut_id_of, shortcut_resource_id,
+    ActionCatalog, AskRequest, AutomationInvocationId, Binding, ConfirmationRequest,
+    FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, InvocationHooks, InvocationMode, InvocationOutcome,
+    InvocationReport, InvocationTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION,
+    SHORTCUTS_APP_ID, Schedule, Shortcut, StepPath, StopWatch, TriggerSpec, shortcut_id_of,
+    shortcut_resource_id,
 };
 use tilo_desktop_model::Workspace;
 
@@ -710,7 +711,7 @@ pub struct RunningInvocation {
     pub shortcut: String,
     /// What the shortcut is called, for a person reading the answer.
     pub name: String,
-    pub invocation: InvocationId,
+    pub invocation: AutomationInvocationId,
     /// The step the run has reached, as it last said where it was.
     pub at: Option<String>,
     /// Why it is being stopped, once someone has.
@@ -727,7 +728,7 @@ impl RunningInvocations {
     }
 
     /// Note a run as over.
-    pub fn leave(&self, invocation: InvocationId) {
+    pub fn leave(&self, invocation: AutomationInvocationId) {
         if let Ok(mut running) = self.running.lock() {
             running.retain(|other| other.invocation != invocation);
         }
@@ -735,7 +736,7 @@ impl RunningInvocations {
 
     /// Note where run `run` has reached. A stop only lands while the run is
     /// between two answers, so the last place it named is where it ends.
-    fn moved(&self, invocation: InvocationId, at: &str) {
+    fn moved(&self, invocation: AutomationInvocationId, at: &str) {
         if let Ok(mut running) = self.running.lock()
             && let Some(running) = running
                 .iter_mut()
@@ -746,7 +747,7 @@ impl RunningInvocations {
     }
 
     /// Whether run `run` has been told to stop, and why.
-    fn stopped(&self, invocation: InvocationId) -> Option<String> {
+    fn stopped(&self, invocation: AutomationInvocationId) -> Option<String> {
         self.running
             .lock()
             .ok()?
@@ -871,7 +872,7 @@ pub fn run_mode(confirmation: Option<&Confirmation>) -> InvocationMode {
 /// How one run starts.
 #[derive(Clone, Debug)]
 pub struct InvocationStart {
-    pub invocation: InvocationId,
+    pub invocation: AutomationInvocationId,
     pub trigger: InvocationTrigger,
     pub mode: InvocationMode,
     /// Values for the shortcut's inputs.
@@ -890,7 +891,7 @@ pub struct ApiHooks {
     runtime: tokio::runtime::Handle,
     /// The runs going, so one of them can be stopped from elsewhere.
     invocations: RunningInvocations,
-    invocation: InvocationId,
+    invocation: AutomationInvocationId,
 }
 
 impl ApiHooks {
@@ -899,7 +900,7 @@ impl ApiHooks {
         confirmation: Option<Confirmation>,
         runtime: tokio::runtime::Handle,
         invocations: RunningInvocations,
-        invocation: InvocationId,
+        invocation: AutomationInvocationId,
     ) -> Self {
         Self {
             confirmation,
@@ -1014,7 +1015,7 @@ pub struct SheetHooks {
     runtime: tokio::runtime::Handle,
     /// The runs going, so one of them can be stopped from elsewhere.
     invocations: RunningInvocations,
-    invocation: InvocationId,
+    invocation: AutomationInvocationId,
 }
 
 impl SheetHooks {
@@ -1024,7 +1025,7 @@ impl SheetHooks {
         shortcut: impl Into<String>,
         runtime: tokio::runtime::Handle,
         invocations: RunningInvocations,
-        invocation: InvocationId,
+        invocation: AutomationInvocationId,
     ) -> Self {
         Self {
             prompts,
@@ -1153,7 +1154,11 @@ impl FinishedInvocations {
 
     /// The run `run` produced of `shortcut`, when it is one this broker kept.
     #[must_use]
-    pub fn report(&self, invocation: InvocationId, shortcut: &str) -> Option<InvocationReport> {
+    pub fn report(
+        &self,
+        invocation: AutomationInvocationId,
+        shortcut: &str,
+    ) -> Option<InvocationReport> {
         self.kept
             .lock()
             .ok()?
@@ -1458,7 +1463,7 @@ mod tests {
             workspace: workspace.into(),
             shortcut: shortcut.into(),
             name: name.into(),
-            invocation: InvocationId::new(),
+            invocation: AutomationInvocationId::new(),
             at: None,
             stopped: None,
         }

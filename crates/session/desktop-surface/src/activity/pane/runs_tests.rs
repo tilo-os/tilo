@@ -103,7 +103,7 @@ fn ask(
 }
 
 /// The terminal's own record of the run the request became, and its answer to the request.
-fn record_run(doc: &mut AutoCommit, id: &str, exit: i64, at: i64) {
+fn record_invocation(doc: &mut AutoCommit, id: &str, exit: i64, at: i64) {
     let run = entry(doc, "runs", id, "a0");
     doc.put(&run, "command", "cargo test -p signup").unwrap();
     doc.put(&run, "cwd", "/home/ada/signup").unwrap();
@@ -131,7 +131,8 @@ fn record_run(doc: &mut AutoCommit, id: &str, exit: i64, at: i64) {
     doc.put(
         &value,
         "settled",
-        serde_json::json!({"state": "done", "result": {"run": id, "exit": exit}}).to_string(),
+        serde_json::json!({"state": "done", "result": {"invocation": id, "exit": exit}})
+            .to_string(),
     )
     .unwrap();
     doc.commit_with(CommitOptions::default().with_time(at.saturating_add(3)));
@@ -232,7 +233,7 @@ tilo_test_env::scenario! {
             10,
         );
         fixture.as_terminal();
-        record_run(&mut fixture.doc, "req-1", 101, 11);
+        record_invocation(&mut fixture.doc, "req-1", 101, 11);
         fixture.as_agent();
         ask(
             &mut fixture.doc,
@@ -312,7 +313,7 @@ tilo_test_env::scenario! {
 
         // The second command ends: the run did that last, and is running nothing.
         fixture.as_terminal();
-        record_run(&mut fixture.doc, "req-2", 0, 30);
+        record_invocation(&mut fixture.doc, "req-2", 0, 30);
         let served = fixture.sessions();
         let run = served
             .sessions

@@ -1,7 +1,7 @@
 //! The API, `/v1`: JSON over HTTP, resource-oriented, as
 //! `docs/developers/api.md` describes it.
 //!
-//! Every route is a call of the key's run ([`Session::call`]): the same tool
+//! Every route is a call of the key's agent session ([`Session::call`]): the same tool
 //! calls an agent makes over MCP, answered typed. There is no second
 //! implementation underneath, only the mapping of routes to calls and of
 //! typed answers to HTTP:
@@ -43,9 +43,9 @@ use std::sync::Arc;
 pub const API_VERSION: &str = "1";
 /// The header every answer names the API's version in.
 pub const VERSION_HEADER: &str = "tilo-api-version";
-/// The header a call names the run it is a step of in, and its title.
-pub const RUN_HEADER: &str = "tilo-run";
-pub const RUN_TITLE_HEADER: &str = "tilo-run-title";
+/// The header naming the invocation a call is a step of, and its title.
+pub const INVOCATION_HEADER: &str = "tilo-invocation";
+pub const INVOCATION_TITLE_HEADER: &str = "tilo-invocation-title";
 /// The header a call made through generated types names their surface in.
 pub const SURFACE_HEADER: &str = "tilo-surface";
 /// How long an action is waited for when the caller does not say.
@@ -299,8 +299,8 @@ struct Caller<'a> {
     query: HashMap<String, String>,
     headers: &'a HeaderMap,
     body: &'a [u8],
-    /// The run the call is a step of, as its headers name it.
-    run: Option<Value>,
+    /// The invocation group the call is a step of, as its headers name it.
+    group: Option<Value>,
     /// The invocation an idempotent action runs as.
     invocation: Option<String>,
 }
@@ -335,8 +335,8 @@ impl<'a> Caller<'a> {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
         };
-        let run = header(RUN_HEADER)
-            .map(|id| json!({"id": id, "title": header(RUN_TITLE_HEADER).unwrap_or(id)}));
+        let group = header(INVOCATION_HEADER)
+            .map(|id| json!({"id": id, "title": header(INVOCATION_TITLE_HEADER).unwrap_or(id)}));
         Ok(Self {
             server,
             grant,
@@ -347,7 +347,7 @@ impl<'a> Caller<'a> {
                 .collect(),
             headers: request.headers,
             body: request.body,
-            run,
+            group,
             invocation: None,
         })
     }
@@ -394,7 +394,14 @@ impl<'a> Caller<'a> {
         arguments: Value,
     ) -> Result<(Value, Option<String>), ApiError> {
         let workspace = Some(self.workspace()).filter(|workspace| !workspace.is_empty());
-        call_in(&self.session, workspace, self.run.clone(), tool, arguments).await
+        call_in(
+            &self.session,
+            workspace,
+            self.group.clone(),
+            tool,
+            arguments,
+        )
+        .await
     }
 
     /// An account action: its `result`.
@@ -405,7 +412,7 @@ impl<'a> Caller<'a> {
                 workspace: None,
                 tool: "tilo_do",
                 arguments: json!({"path": path, "args": args}),
-                run: self.run.clone(),
+                group: self.group.clone(),
             })
             .await?;
         let typed = typed_answer(&answer)?;
@@ -424,8 +431,9 @@ impl<'a> Caller<'a> {
             "listResources" | "readResource" | "search" | "getLink" | "viewResource" => {
                 self.resource_operation(operation.id).await
             }
-            "runAction" | "listRuns" | "getRun" | "cancelRun" | "undoRun" | "runOutput" => {
-                self.run_operation(operation.id).await
+            "runAction" | "listInvocations" | "getInvocation" | "cancelInvocation"
+            | "undoInvocation" | "invocationOutput" => {
+                self.invocation_operation(operation.id).await
             }
             "listWebhooks" | "createWebhook" | "deleteWebhook" => {
                 self.webhook_operation(operation.id)
@@ -520,7 +528,7 @@ impl<'a> Caller<'a> {
 
     /// Turn running commands unattended in the route's workspace on or off:
     /// done at once when off, or answered `202` while the person is asked,
-    /// followed at the run it names like an action's.
+    /// followed at the invocation it names like an action's.
     async fn set_unattended(&self) -> Result<Answer, ApiError> {
         let change: answers::UnattendedChange = self.json_body()?;
         let call = with(
@@ -610,28 +618,28 @@ impl<'a> Caller<'a> {
         }
     }
 
-    /// Actions, and following, stopping and undoing their runs.
-    async fn run_operation(&self, id: &str) -> Result<Answer, ApiError> {
+    /// Actions, and following, stopping and undoing their invocations.
+    async fn invocation_operation(&self, id: &str) -> Result<Answer, ApiError> {
         let ws = self.workspace();
-        let run = self.params.get("run");
+        let invocation = self.params.get("invocation");
         match id {
             "runAction" => self.run_action().await,
-            "listRuns" => self.list_runs().await,
-            "getRun" => self.get_run().await,
-            "cancelRun" => {
-                let args = json!({"invocation_id": run, "cancel": true});
+            "listInvocations" => self.list_invocations().await,
+            "getInvocation" => self.get_invocation().await,
+            "cancelInvocation" => {
+                let args = json!({"invocation_id": invocation, "cancel": true});
                 action_answer(self.call("tilo_status", args).await?, &ws)
             }
-            // Exactly what the run changed, in every record, as the host takes a run back.
-            "undoRun" => {
-                let args = json!({"invocation_id": run, "undo": true});
+            // Exactly what the invocation changed, in every record, as the host takes one back.
+            "undoInvocation" => {
+                let args = json!({"invocation_id": invocation, "undo": true});
                 action_answer(self.call("tilo_status", args).await?, &ws)
             }
             _ => Ok(Answer::Stream {
                 content_type: "text/event-stream",
                 body: events::stream(
                     events::Watch::new(Arc::clone(&self.session), ws, None, None),
-                    Some(run.to_owned()),
+                    Some(invocation.to_owned()),
                 ),
             }),
         }
@@ -665,7 +673,7 @@ impl<'a> Caller<'a> {
         let source = SessionExport {
             session: Arc::clone(&self.session),
             workspace: Some(ws).filter(|ws| !ws.is_empty()),
-            run: self.run.clone(),
+            group: self.group.clone(),
         };
         Ok(Answer::Stream {
             content_type: "application/json",
@@ -733,7 +741,7 @@ impl<'a> Caller<'a> {
                         workspace: Some(ws),
                         tool: "tilo",
                         arguments: serde_json::to_value(program).unwrap_or_default(),
-                        run: self.run.clone(),
+                        group: self.group.clone(),
                     })
                     .await?;
                 shaped::<answers::ProgramAnswer>(typed_answer(&answer)?).map(Answer::ok)
@@ -883,9 +891,9 @@ impl<'a> Caller<'a> {
         action_answer(answered, &ws)
     }
 
-    /// A page of the workspace's runs, newest first: what `tilo_ls
-    /// workspace/runs` answers.
-    async fn list_runs(&self) -> Result<Answer, ApiError> {
+    /// A page of the workspace's invocations, newest first: what `tilo_ls
+    /// workspace/invocations` answers.
+    async fn list_invocations(&self) -> Result<Answer, ApiError> {
         let limit = self
             .query("limit")
             .map(|limit| {
@@ -905,9 +913,9 @@ impl<'a> Caller<'a> {
         shaped::<answers::InvocationList>(with(listed, "text", said)).map(Answer::ok)
     }
 
-    async fn get_run(&self) -> Result<Answer, ApiError> {
+    async fn get_invocation(&self) -> Result<Answer, ApiError> {
         let ws = self.workspace();
-        let asked = json!({"invocation_id": self.params.get("run")});
+        let asked = json!({"invocation_id": self.params.get("invocation")});
         let now = std::time::Instant::now();
         let until = now
             .checked_add(std::time::Duration::from_millis(self.wait_ms(0)))
@@ -1087,7 +1095,7 @@ impl<'a> Caller<'a> {
                 "a webhook posts to an https URL (or plain http to this machine)",
             ));
         }
-        let kinds = ["change", "run", "presence"];
+        let kinds = ["change", "invocation", "presence"];
         if let Some(unknown) = new
             .events
             .iter()
@@ -1095,7 +1103,7 @@ impl<'a> Caller<'a> {
         {
             return Err(ApiError::new(
                 "invalid_arguments",
-                format!("{unknown} is no kind of event: change, run or presence"),
+                format!("{unknown} is no kind of event: change, invocation or presence"),
             ));
         }
         let (Ok(id), Ok(secret)) = (crate::store::secret(12), crate::store::secret(32)) else {
@@ -1121,13 +1129,13 @@ impl<'a> Caller<'a> {
     }
 }
 
-/// `tool` with `arguments` in `workspace` (`None` for the account), as
-/// `run`: its typed answer and what it said in words, a refusal when it says
-/// it failed.
+/// `tool` with `arguments` in `workspace` (`None` for the account), in the
+/// invocation group `group`: its typed answer and what it said in words, a
+/// refusal when it says it failed.
 async fn call_in(
     session: &Session,
     workspace: Option<String>,
-    run: Option<Value>,
+    group: Option<Value>,
     tool: &'static str,
     arguments: Value,
 ) -> Result<(Value, Option<String>), ApiError> {
@@ -1136,7 +1144,7 @@ async fn call_in(
             workspace,
             tool,
             arguments,
-            run,
+            group,
         })
         .await?;
     let typed = typed_answer(&answer)?;
@@ -1203,7 +1211,7 @@ trait ExportSource: Send + Sync {
 struct SessionExport {
     session: Arc<Session>,
     workspace: Option<String>,
-    run: Option<Value>,
+    group: Option<Value>,
 }
 
 impl ExportSource for SessionExport {
@@ -1223,7 +1231,7 @@ impl ExportSource for SessionExport {
         call_in(
             &self.session,
             self.workspace.clone(),
-            self.run.clone(),
+            self.group.clone(),
             "tilo_ls",
             args,
         )
@@ -1240,7 +1248,7 @@ impl ExportSource for SessionExport {
         let (typed, _) = call_in(
             &self.session,
             self.workspace.clone(),
-            self.run.clone(),
+            self.group.clone(),
             "tilo_read",
             args,
         )
@@ -1464,7 +1472,7 @@ async fn stream_content(
                 workspace: Some(workspace.clone()).filter(|workspace| !workspace.is_empty()),
                 tool: "tilo_get",
                 arguments: json!({"content": content, "offset": offset}),
-                run: None,
+                group: None,
             })
             .await;
         let piece = match answer {
@@ -1519,18 +1527,22 @@ fn range_of(value: &str) -> Option<(u64, Option<u64>)> {
 
 fn action_answer(mut answer: Value, workspace: &str) -> Result<Answer, ApiError> {
     if let Some(fields) = answer.as_object_mut()
-        && let Some(run) = fields.remove("invocation_id")
+        && let Some(invocation) = fields.remove("invocation_id")
     {
-        fields.insert("run".into(), run);
+        fields.insert("invocation".into(), invocation);
     }
     let pending = answer.get("status").and_then(Value::as_str) == Some("pending");
-    let run = answer.get("run").and_then(Value::as_str).map(str::to_owned);
+    let invocation = answer
+        .get("invocation")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let body = shaped::<answers::ActionAnswer>(answer)?;
     if pending {
         return Ok(Answer::Json {
             status: StatusCode::ACCEPTED,
             body,
-            location: run.map(|run| format!("/v1/workspaces/{workspace}/runs/{run}")),
+            location: invocation
+                .map(|invocation| format!("/v1/workspaces/{workspace}/invocations/{invocation}")),
         });
     }
     Ok(Answer::ok(body))

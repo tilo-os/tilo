@@ -17,9 +17,15 @@
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use tilo_ui::history_source::revert::{RevertError, Slot, latest_run_by, plan_revert, revert_run};
-use tilo_ui::history_source::run_undo::{StepState, refuse_run, undo_run, unreachable_steps};
-use tilo_ui::history_source::runs::{AgentSession, RunStep, read_runs, record_run};
+use tilo_ui::history_source::invocation_undo::{
+    StepState, refuse_invocation, undo_invocation, unreachable_steps,
+};
+use tilo_ui::history_source::invocations::{
+    AgentSession, InvocationStep, read_invocations, record_invocation,
+};
+use tilo_ui::history_source::revert::{
+    RevertError, Slot, latest_invocation_by, plan_revert, revert_invocation,
+};
 use tilo_ui::history_source::{AuthorDirectory, HistorySource, entry_id_from_hash};
 use tilo_ui::permissions::MemberId;
 use tilo_ui::state::State;
@@ -130,8 +136,8 @@ fn agent_writes_two_paragraphs(report: &mut Report) -> (String, String) {
 /// The run covering everything the agent authored, found the way a caller with
 /// no recorded run finds it: the maximal contiguous band under the agent's
 /// actor.
-fn agents_run(doc: &mut AutoCommit) -> tilo_ui::history_source::revert::ChangeRun {
-    latest_run_by(doc, &actor_hex(AGENT)).expect("the agent authored something")
+fn agents_run(doc: &mut AutoCommit) -> tilo_ui::history_source::revert::ChangeRange {
+    latest_invocation_by(doc, &actor_hex(AGENT)).expect("the agent authored something")
 }
 
 fn directory() -> AuthorDirectory {
@@ -197,7 +203,7 @@ tilo_test_env::scenario! {
                 .expect("merge");
 
             let run = agents_run(&mut alice.doc);
-            let out = revert_run(&mut alice.doc, &run, Some(&actor_hex(AGENT)), &directory())
+            let out = revert_invocation(&mut alice.doc, &run, Some(&actor_hex(AGENT)), &directory())
                 .expect("the run is in this document");
             // The caller commits — that is what stamps and attributes the undo.
             alice.commit_action_authored(None, None, Some(MemberId::person(PERSON)));
@@ -226,7 +232,7 @@ tilo_test_env::scenario! {
             let versions_before = tilo_resource::history::versions(&mut report.doc).len();
             let run = agents_run(&mut report.doc);
             report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
-            revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+            revert_invocation(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
             tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
             let versions = tilo_resource::history::versions(&mut report.doc);
@@ -267,7 +273,7 @@ tilo_test_env::scenario! {
 
             let run = agents_run(&mut report.doc);
             report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
-            revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+            revert_invocation(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
             tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
             bob.merge(&mut report.doc).expect("peers merge");
@@ -322,7 +328,7 @@ tilo_test_env::scenario! {
             );
 
             report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
-            let out = revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &dir).expect("run");
+            let out = revert_invocation(&mut report.doc, &run, Some(&actor_hex(AGENT)), &dir).expect("run");
             tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
             assert!(
@@ -369,7 +375,7 @@ tilo_test_env::scenario! {
             let run = agents_run(&mut report.doc);
             report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
             let out =
-                revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+                revert_invocation(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
             tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
             assert!(
@@ -402,7 +408,7 @@ tilo_test_env::scenario! {
                 .step_for(PHOTO_EDITOR, "file:/photos/figure-1.png")
                 .unwrap();
             let out =
-                revert_run(&mut photo, &step.run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+                revert_invocation(&mut photo, &step.range, Some(&actor_hex(AGENT)), &directory()).expect("run");
             tilo_resource::history::commit_stamped_at(&mut photo, 1_780_000_500);
 
             assert!(
@@ -430,12 +436,12 @@ tilo_test_env::scenario! {
             let run = agents_run(&mut report.doc);
 
             report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
-            revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+            revert_invocation(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
             tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
             let once = report.body();
 
             let again =
-                revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+                revert_invocation(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
             tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_500);
 
             assert_eq!(report.body(), once, "the second undo changed nothing");
@@ -461,7 +467,7 @@ tilo_test_env::scenario! {
             // A different document entirely — the ids name nothing here.
             let (mut other, _) = Report::started_by_a_person();
             assert_eq!(
-                revert_run(&mut other.doc, &run, Some(&actor_hex(AGENT)), &directory()),
+                revert_invocation(&mut other.doc, &run, Some(&actor_hex(AGENT)), &directory()),
                 Err(RevertError::UnknownRun),
                 "an id from another artifact is refused, not applied to whatever matches"
             );
@@ -493,7 +499,7 @@ tilo_test_env::scenario! {
                     &mut report.doc,
                 ),
             ];
-            let report_out = undo_run(&run, Some(&actor_hex(AGENT)), &directory(), &mut open);
+            let report_out = undo_invocation(&run, Some(&actor_hex(AGENT)), &directory(), &mut open);
             drop(open);
             tilo_resource::history::commit_stamped_at(&mut photo, 1_780_000_500);
             tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_500);
@@ -528,7 +534,7 @@ tilo_test_env::scenario! {
                 "file:/reports/q3.tilo-doc".into(),
                 &mut report.doc,
             )];
-            let out = undo_run(&run, Some(&actor_hex(AGENT)), &directory(), &mut open);
+            let out = undo_invocation(&run, Some(&actor_hex(AGENT)), &directory(), &mut open);
             drop(open);
 
             assert!(out.is_refusal(), "nothing was attempted: {out:?}");
@@ -550,7 +556,7 @@ tilo_test_env::scenario! {
             let (_workspace, _photo, _report, run) = one_instruction_two_apps();
             let missing = unreachable_steps(&run, |_| false);
             assert_eq!(missing.len(), 2, "nothing is open");
-            let refused = refuse_run(&run, &missing);
+            let refused = refuse_invocation(&run, &missing);
             assert!(refused.is_refusal());
             assert_eq!(
                 refused.unreachable_apps(),
@@ -560,7 +566,7 @@ tilo_test_env::scenario! {
             // With one open, the other is still named — and the report distinguishes
             // "could not" from "chose not to".
             let missing = unreachable_steps(&run, |s| s.app == WORD_PROCESSOR);
-            let refused = refuse_run(&run, &missing);
+            let refused = refuse_invocation(&run, &missing);
             assert_eq!(refused.unreachable_apps(), vec![PHOTO_EDITOR]);
             assert!(
                 refused
@@ -583,7 +589,7 @@ tilo_test_env::scenario! {
                 .merge(&mut workspace)
                 .expect("workspaces merge");
 
-            let there = read_runs(&peer_workspace);
+            let there = read_invocations(&peer_workspace);
             assert_eq!(there.len(), 1, "the run crossed to the peer");
             let run = &there[0];
             assert_eq!(run.label, "Crop the photograph and put it in the report");
@@ -606,7 +612,7 @@ tilo_test_env::scenario! {
                     &mut report.doc,
                 ),
             ];
-            let out = undo_run(run, Some(&actor_hex(AGENT)), &directory(), &mut open);
+            let out = undo_invocation(run, Some(&actor_hex(AGENT)), &directory(), &mut open);
             drop(open);
             assert!(out.is_complete(), "the peer undid it too: {out:?}");
             assert_eq!(crop(&photo), (4000, 3000));
@@ -635,9 +641,9 @@ tilo_test_env::scenario! {
             // An instruction that changed nothing has nothing to undo, and a record
             // claiming otherwise would put an affordance on screen that can only fail.
             let mut r = workspace();
-            assert!(record_run(&mut r, "did nothing", None, &[]).is_none());
+            assert!(record_invocation(&mut r, "did nothing", None, &[]).is_none());
             r.commit();
-            assert!(read_runs(&r).is_empty());
+            assert!(read_invocations(&r).is_empty());
         }
 
         {
@@ -655,7 +661,7 @@ tilo_test_env::scenario! {
                 .clone();
 
             assert!(
-                latest_run_by(&mut report.doc, &genesis.actor).is_none(),
+                latest_invocation_by(&mut report.doc, &genesis.actor).is_none(),
                 "the genesis is not a run anybody can undo"
             );
             let rows = HistorySource::new().entries(&mut report.doc);
@@ -693,7 +699,7 @@ tilo_test_env::scenario! {
     {
         {
             // A chip reading "Claude" next to a line knows one thing: whose line it is.
-            // That is enough — `latest_run_by` turns an identity into the band, and the
+            // That is enough — `latest_invocation_by` turns an identity into the band, and the
             // band is what gets inverted. No band has to have been named, and nothing
             // has to have been recorded in advance.
             let (mut report, _intro) = Report::started_by_a_person();
@@ -708,10 +714,10 @@ tilo_test_env::scenario! {
                 id
             });
 
-            let run = latest_run_by(&mut report.doc, &actor_hex(AGENT)).expect("the chip's author");
+            let run = latest_invocation_by(&mut report.doc, &actor_hex(AGENT)).expect("the chip's author");
             report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
             let out =
-                revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+                revert_invocation(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
             tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
             assert_eq!(
@@ -749,10 +755,10 @@ tilo_test_env::scenario! {
                 id
             });
 
-            let run = latest_run_by(&mut report.doc, &actor_hex(AGENT)).expect("agent");
+            let run = latest_invocation_by(&mut report.doc, &actor_hex(AGENT)).expect("agent");
             report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
             let out =
-                revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+                revert_invocation(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
             tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
             assert_eq!(
@@ -828,31 +834,31 @@ fn one_instruction_two_apps() -> (AutoCommit, AutoCommit, Report, AgentSession) 
         id
     });
 
-    let photo_run = latest_run_by(&mut photo, &actor_hex(AGENT)).expect("the agent cropped");
+    let photo_run = latest_invocation_by(&mut photo, &actor_hex(AGENT)).expect("the agent cropped");
     let report_run = agents_run(&mut report.doc);
 
     let mut workspace = workspace();
     let steps = vec![
-        RunStep {
+        InvocationStep {
             app: PHOTO_EDITOR.into(),
             record: "file:/photos/figure-1.png".into(),
-            run: photo_run,
+            range: photo_run,
             what: vec![tilo_actions::Described::new(tilo_actions::Did::verb(
                 tilo_actions::ActionKey::new(PHOTO_EDITOR, "document", "crop"),
                 [],
             ))],
         },
-        RunStep {
+        InvocationStep {
             app: WORD_PROCESSOR.into(),
             record: "file:/reports/q3.tilo-doc".into(),
-            run: report_run,
+            range: report_run,
             what: vec![tilo_actions::Described::new(tilo_actions::Did::verb(
                 tilo_actions::ActionKey::new(WORD_PROCESSOR, "document", "place-figure"),
                 [],
             ))],
         },
     ];
-    record_run(
+    record_invocation(
         &mut workspace,
         "Crop the photograph and put it in the report",
         Some(&actor_hex(AGENT)),
@@ -861,6 +867,8 @@ fn one_instruction_two_apps() -> (AutoCommit, AutoCommit, Report, AgentSession) 
     .expect("a run with steps is recorded");
     tilo_resource::history::commit_stamped_at(&mut workspace, 1_780_000_400);
 
-    let run = read_runs(&workspace).pop().expect("the run reads back");
+    let run = read_invocations(&workspace)
+        .pop()
+        .expect("the run reads back");
     (workspace, photo, report, run)
 }

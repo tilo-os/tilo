@@ -8,12 +8,12 @@
  * resource's path (`chip-design/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -108,22 +108,22 @@ export interface Project extends tilo.Resource {
   importReport(args: {
     json: string;
   }): Promise<void>;
-  /** Runs `import-report` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `import-report` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   importReportMany(items: ImportReportArgs[]): Promise<tilo.ActionAnswer[]>;
   removeReport(args: {
     report: string;
   }): Promise<void>;
-  /** Runs `remove-report` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-report` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeReportMany(items: RemoveReportArgs[]): Promise<tilo.ActionAnswer[]>;
   importVerification(args: {
     json: string;
   }): Promise<void>;
-  /** Runs `import-verification` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `import-verification` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   importVerificationMany(items: ImportVerificationArgs[]): Promise<tilo.ActionAnswer[]>;
   removeVerification(args: {
     report: string;
   }): Promise<void>;
-  /** Runs `remove-verification` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-verification` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeVerificationMany(items: RemoveVerificationArgs[]): Promise<tilo.ActionAnswer[]>;
   addNode(args: {
     node: string;
@@ -133,18 +133,18 @@ export interface Project extends tilo.Resource {
     y: number;
     output_width?: number;
   }): Promise<void>;
-  /** Runs `add-node` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-node` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addNodeMany(items: AddNodeArgs[]): Promise<tilo.ActionAnswer[]>;
   setShape(args: {
     node: string;
     shape: number[];
   }): Promise<void>;
-  /** Runs `set-shape` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-shape` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setShapeMany(items: SetShapeArgs[]): Promise<tilo.ActionAnswer[]>;
   removeNode(args: {
     node: string;
   }): Promise<void>;
-  /** Runs `remove-node` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-node` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeNodeMany(items: RemoveNodeArgs[]): Promise<tilo.ActionAnswer[]>;
   connect(args: {
     from_node: string;
@@ -152,13 +152,13 @@ export interface Project extends tilo.Resource {
     to_node: string;
     to_port: string;
   }): Promise<void>;
-  /** Runs `connect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `connect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   connectMany(items: ConnectArgs[]): Promise<tilo.ActionAnswer[]>;
   disconnect(args: {
     node: string;
     port: string;
   }): Promise<void>;
-  /** Runs `disconnect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `disconnect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   disconnectMany(items: DisconnectArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 

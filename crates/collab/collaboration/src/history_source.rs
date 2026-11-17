@@ -69,19 +69,19 @@ pub fn is_group_marker(patches: &[automerge::Patch]) -> bool {
 /// Prefix of the root keys holding this document's cross-application runs.
 /// Namespaced like [`GROUPS_KEY`] so
 /// it cannot collide with an app's own schema.
-pub const RUNS_KEY: &str = "tilo:run:";
+pub const INVOCATIONS_KEY: &str = "tilo:run:";
 
 /// True when every patch lands inside a run record — the change did nothing
 /// but record bookkeeping, already on screen as a band, so a "1 field" row
 /// under it would be noise. An empty patch set is not a marker.
-pub fn is_run_marker(patches: &[automerge::Patch]) -> bool {
+pub fn is_invocation_marker(patches: &[automerge::Patch]) -> bool {
     !patches.is_empty()
         && patches.iter().all(|p| match p.path.first() {
-            Some((_, Prop::Map(k))) => k.starts_with(RUNS_KEY),
+            Some((_, Prop::Map(k))) => k.starts_with(INVOCATIONS_KEY),
             Some(_) => false,
             None => match &p.action {
                 PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => {
-                    key.starts_with(RUNS_KEY)
+                    key.starts_with(INVOCATIONS_KEY)
                 }
                 _ => false,
             },
@@ -107,13 +107,13 @@ pub fn is_description_marker(patches: &[automerge::Patch]) -> bool {
 }
 
 /// Whether a change only wrote history's own metadata about other changes:
-/// names of runs ([`GROUPS_KEY`]), cross-app runs ([`RUNS_KEY`]) and
+/// names of runs ([`GROUPS_KEY`]), cross-app runs ([`INVOCATIONS_KEY`]) and
 /// descriptions ([`DESCRIPTIONS_KEY`]). Such a change is neither a row nor an undo step.
 pub fn is_history_metadata(patches: &[automerge::Patch]) -> bool {
     !patches.is_empty()
         && patches.iter().all(|patch| {
             let one = std::slice::from_ref(patch);
-            is_group_marker(one) || is_run_marker(one) || is_description_marker(one)
+            is_group_marker(one) || is_invocation_marker(one) || is_description_marker(one)
         })
 }
 

@@ -1862,7 +1862,7 @@ tilo_test_env::scenario! {
         let undo = |r: &mut Replica| {
             r.history(&HistoryEdit::Undo {
                 steps: None,
-                run: None,
+                invocation: None,
                 by: None,
                 to: None,
                 step: None,
@@ -2037,7 +2037,7 @@ tilo_test_env::scenario! {
         );
         ada.history(&HistoryEdit::Undo {
             steps: None,
-            run: None,
+            invocation: None,
             by: None,
             to: None,
             step: None,

@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Workspace` is the app's `maps.workspace` at `maps/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Category",
@@ -194,7 +194,7 @@ class Workspace(Resource):
         return self.action("accept-places", places=places)
 
     def accept_places_many(self, items: list[AcceptPlacesArgs]) -> list[dict[str, Any]]:
-        """Runs `accept-places` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `accept-places` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("accept-places", items)
 
     def commit_search(self, *, query: str) -> None:
@@ -202,7 +202,7 @@ class Workspace(Resource):
         return self.action("commit-search", query=query)
 
     def commit_search_many(self, items: list[CommitSearchArgs]) -> list[dict[str, Any]]:
-        """Runs `commit-search` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `commit-search` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("commit-search", items)
 
     def clear_recents(self) -> None:
@@ -210,7 +210,7 @@ class Workspace(Resource):
         return self.action("clear-recents")
 
     def clear_recents_many(self, items: list[ClearRecentsArgs]) -> list[dict[str, Any]]:
-        """Runs `clear-recents` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `clear-recents` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("clear-recents", items)
 
     def accept_route(self,
@@ -235,7 +235,7 @@ class Workspace(Resource):
         return self.action("accept-route", **args)
 
     def accept_route_many(self, items: list[AcceptRouteArgs]) -> list[dict[str, Any]]:
-        """Runs `accept-route` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `accept-route` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("accept-route", items)
 
     def clear_route(self) -> None:
@@ -243,7 +243,7 @@ class Workspace(Resource):
         return self.action("clear-route")
 
     def clear_route_many(self, items: list[ClearRouteArgs]) -> list[dict[str, Any]]:
-        """Runs `clear-route` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `clear-route` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("clear-route", items)
 
     def accept_transit(self,
@@ -266,7 +266,7 @@ class Workspace(Resource):
         return self.action("accept-transit", **args)
 
     def accept_transit_many(self, items: list[AcceptTransitArgs]) -> list[dict[str, Any]]:
-        """Runs `accept-transit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `accept-transit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("accept-transit", items)
 
     def clear_transit(self) -> None:
@@ -274,7 +274,7 @@ class Workspace(Resource):
         return self.action("clear-transit")
 
     def clear_transit_many(self, items: list[ClearTransitArgs]) -> list[dict[str, Any]]:
-        """Runs `clear-transit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `clear-transit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("clear-transit", items)
 
     def search(self, *, query: str) -> None:
@@ -340,7 +340,7 @@ class OfflineAreas(Resource):
         return self.action("record", device=device, region=region)
 
     def record_many(self, items: list[RecordArgs]) -> list[dict[str, Any]]:
-        """Runs `record` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record", items)
 
     def forget(self,
@@ -352,7 +352,7 @@ class OfflineAreas(Resource):
         return self.action("forget", device=device, area=area)
 
     def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
-        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("forget", items)
 
     def clear(self, *, device: str) -> None:
@@ -360,7 +360,7 @@ class OfflineAreas(Resource):
         return self.action("clear", device=device)
 
     def clear_many(self, items: list[ClearArgs]) -> list[dict[str, Any]]:
-        """Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("clear", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

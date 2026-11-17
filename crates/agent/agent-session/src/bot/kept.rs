@@ -28,7 +28,7 @@ use serde_json::Value;
 use tilo_actions::policy::Rule;
 use tilo_lock::MutexRecover as _;
 
-use super::api::RunStep;
+use super::api::AutomationStep;
 use super::host_steps::{HostStepError, Keeps};
 
 /// The longest a note's instruction, style or guidance may be.
@@ -159,7 +159,7 @@ pub fn note_value(note: &Note) -> Value {
 /// The steps of one run that advanced a count.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Counted {
-    run: String,
+    invocation: String,
     steps: BTreeSet<String>,
 }
 
@@ -188,7 +188,7 @@ impl Kept {
     ///
     /// # Errors
     /// The name is too long, or the program keeps too many counts.
-    pub fn count(&mut self, step: &RunStep, name: &str) -> Result<u64, String> {
+    pub fn count(&mut self, step: &AutomationStep, name: &str) -> Result<u64, String> {
         if name.len() > MAX_COUNT_NAME_BYTES {
             return Err(format!(
                 "a count's name is at most {MAX_COUNT_NAME_BYTES} bytes"
@@ -200,10 +200,10 @@ impl Kept {
         if self
             .counted
             .as_ref()
-            .is_none_or(|counted| counted.run != step.run)
+            .is_none_or(|counted| counted.invocation != step.invocation)
         {
             self.counted = Some(Counted {
-                run: step.run.clone(),
+                invocation: step.invocation.clone(),
                 steps: BTreeSet::new(),
             });
         }
@@ -286,7 +286,7 @@ impl Kept {
 
 /// Kept in memory only: for a host with nowhere to write, and for tests.
 impl Keeps for Mutex<Kept> {
-    fn count(&self, step: &RunStep, name: &str) -> Result<u64, HostStepError> {
+    fn count(&self, step: &AutomationStep, name: &str) -> Result<u64, HostStepError> {
         self.lock_recover()
             .count(step, name)
             .map_err(HostStepError::Refused)
@@ -313,9 +313,9 @@ mod tests {
 
     use super::*;
 
-    fn step(run: &str, step: &str) -> RunStep {
-        RunStep {
-            run: run.into(),
+    fn step(run: &str, step: &str) -> AutomationStep {
+        AutomationStep {
+            invocation: run.into(),
             step: step.into(),
         }
     }

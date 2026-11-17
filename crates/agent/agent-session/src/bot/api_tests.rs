@@ -97,7 +97,7 @@ impl ApiMember for FakeMember {
 
     fn find_in_history(
         &self,
-        step: &RunStep,
+        step: &AutomationStep,
         actor: &Actor,
     ) -> Option<(DocumentRoute, ActionContext)> {
         self.history
@@ -105,7 +105,7 @@ impl ApiMember for FakeMember {
             .unwrap()
             .iter()
             .find(|(_, context)| {
-                RunStep::of(context).as_ref() == Some(step)
+                AutomationStep::of(context).as_ref() == Some(step)
                     && context.invoker.as_ref().map(|invoker| &invoker.acting.by) == Some(actor)
             })
             .cloned()
@@ -118,7 +118,7 @@ impl ApiMember for FakeMember {
     fn queued_in_history(
         &self,
         _route: &DocumentRoute,
-        _step: &RunStep,
+        _step: &AutomationStep,
         _actor: &Actor,
         _field: &str,
     ) -> Vec<String> {
@@ -237,9 +237,9 @@ fn a_step_is_recorded_as_the_bot_with_its_run_step_and_cause() {
     assert!(by.acting.is_bot());
     assert_eq!(by.acting.acted_for_person(), Some("ada"));
     assert_eq!(
-        RunStep::of(&context),
-        Some(RunStep {
-            run: "r1".into(),
+        AutomationStep::of(&context),
+        Some(AutomationStep {
+            invocation: "r1".into(),
             step: "0".into()
         })
     );

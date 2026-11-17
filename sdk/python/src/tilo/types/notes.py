@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Notebook` is the app's `notes.notebook` at `notes/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "MarkdownFile",
@@ -203,7 +203,7 @@ class Notebook(Resource):
         return self.action("rename", page=page, title=title)
 
     def rename_many(self, items: list[RenameArgs]) -> list[dict[str, Any]]:
-        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rename", items)
 
     def delete(self, *, page: str) -> None:
@@ -211,7 +211,7 @@ class Notebook(Resource):
         return self.action("delete", page=page)
 
     def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
-        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete", items)
 
     def move_note(self,
@@ -230,7 +230,7 @@ class Notebook(Resource):
         return self.action("move-note", **args)
 
     def move_note_many(self, items: list[MoveNoteArgs]) -> list[dict[str, Any]]:
-        """Runs `move-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `move-note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("move-note", items)
 
     def move_up(self, *, page: str) -> None:
@@ -238,7 +238,7 @@ class Notebook(Resource):
         return self.action("move-up", page=page)
 
     def move_up_many(self, items: list[MoveUpArgs]) -> list[dict[str, Any]]:
-        """Runs `move-up` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `move-up` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("move-up", items)
 
     def move_down(self, *, page: str) -> None:
@@ -246,7 +246,7 @@ class Notebook(Resource):
         return self.action("move-down", page=page)
 
     def move_down_many(self, items: list[MoveDownArgs]) -> list[dict[str, Any]]:
-        """Runs `move-down` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `move-down` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("move-down", items)
 
     def indent(self, *, page: str) -> None:
@@ -254,7 +254,7 @@ class Notebook(Resource):
         return self.action("indent", page=page)
 
     def indent_many(self, items: list[IndentArgs]) -> list[dict[str, Any]]:
-        """Runs `indent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `indent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("indent", items)
 
     def outdent(self, *, page: str) -> None:
@@ -262,7 +262,7 @@ class Notebook(Resource):
         return self.action("outdent", page=page)
 
     def outdent_many(self, items: list[OutdentArgs]) -> list[dict[str, Any]]:
-        """Runs `outdent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `outdent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("outdent", items)
 
     def duplicate(self, *, page: str) -> None:
@@ -270,7 +270,7 @@ class Notebook(Resource):
         return self.action("duplicate", page=page)
 
     def duplicate_many(self, items: list[DuplicateArgs]) -> list[dict[str, Any]]:
-        """Runs `duplicate` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `duplicate` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("duplicate", items)
 
     def new_tag(self, *, name: str) -> None:
@@ -278,7 +278,7 @@ class Notebook(Resource):
         return self.action("new-tag", name=name)
 
     def new_tag_many(self, items: list[NewTagArgs]) -> list[dict[str, Any]]:
-        """Runs `new-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `new-tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("new-tag", items)
 
     def tag(self,
@@ -290,7 +290,7 @@ class Notebook(Resource):
         return self.action("tag", page=page, name=name)
 
     def tag_many(self, items: list[TagArgs]) -> list[dict[str, Any]]:
-        """Runs `tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("tag", items)
 
     def delete_tag(self, *, tag: str) -> None:
@@ -298,7 +298,7 @@ class Notebook(Resource):
         return self.action("delete-tag", tag=tag)
 
     def delete_tag_many(self, items: list[DeleteTagArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-tag", items)
 
     def keep_image(self, *, bytes: Any) -> None:
@@ -306,7 +306,7 @@ class Notebook(Resource):
         return self.action("keep-image", bytes=bytes)
 
     def keep_image_many(self, items: list[KeepImageArgs]) -> list[dict[str, Any]]:
-        """Runs `keep-image` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `keep-image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("keep-image", items)
 
     def place_image(self,
@@ -324,7 +324,7 @@ class Notebook(Resource):
         return self.action("place-image", **args)
 
     def place_image_many(self, items: list[PlaceImageArgs]) -> list[dict[str, Any]]:
-        """Runs `place-image` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `place-image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("place-image", items)
 
     def create_page(self,
@@ -365,7 +365,7 @@ class Notebook(Resource):
         return self.action("import-markdown", **args)
 
     def import_markdown_many(self, items: list[ImportMarkdownArgs]) -> list[dict[str, Any]]:
-        """Runs `import-markdown` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `import-markdown` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("import-markdown", items)
 
     def import_markdown_files(self, *, files: list[MarkdownFile]) -> None:
@@ -373,7 +373,7 @@ class Notebook(Resource):
         return self.action("import-markdown-files", files=files)
 
     def import_markdown_files_many(self, items: list[ImportMarkdownFilesArgs]) -> list[dict[str, Any]]:
-        """Runs `import-markdown-files` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `import-markdown-files` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("import-markdown-files", items)
 
     def append_to_note(self,
@@ -397,7 +397,7 @@ class Notebook(Resource):
         return self.action("write-note", page=page, markdown=markdown)
 
     def write_note_many(self, items: list[WriteNoteArgs]) -> list[dict[str, Any]]:
-        """Runs `write-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `write-note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("write-note", items)
 
     def export_markdown_content(self,

@@ -162,8 +162,8 @@ fn step_title(entry: &Value) -> Option<String> {
 
 /// Whether the history entry is someone's edit of what the record holds: an
 /// undo step, which their undo takes back. Content from outside (what a
-/// command printed, recorded) is a run's change too, but nobody's step; and
-/// housekeeping (naming a checkpoint) is no change of the run's at all.
+/// command printed, recorded) is an invocation's change too, but nobody's
+/// step; and housekeeping (naming a checkpoint) is no change of it at all.
 fn is_content(entry: &Value) -> bool {
     entry.get("change_kind").is_none()
 }
@@ -177,7 +177,7 @@ fn in_effect(entry: &Value) -> bool {
 }
 
 /// Who made the change the history entry lists, and what its client called
-/// the run, when it named it.
+/// the group, when it named it.
 fn author(entry: &Value) -> (InvocationBy, Option<String>) {
     let actor = entry.get("actor");
     let acting = actor.and_then(|actor| actor.get("by"));
@@ -192,19 +192,19 @@ fn author(entry: &Value) -> (InvocationBy, Option<String>) {
         }
     } else if acting.and_then(|by| by.get("automation")).is_some() {
         "automation"
-    } else if text(entry, "run_kind") == Some(tilo_actions::context::AGENT_SESSION_GROUP) {
+    } else if text(entry, "group_kind") == Some(tilo_actions::context::AGENT_SESSION_GROUP) {
         "agent"
     } else {
         "person"
     };
     let named = actor.and_then(|actor| text(actor, "name"));
-    let run = text(entry, "run");
+    let group_title = text(entry, "title");
     let name = named
-        .or(run)
+        .or(group_title)
         .or_else(|| text(entry, "by"))
         .unwrap_or("someone");
-    // The member's own id tells its runs apart from another's, whatever
-    // either is named; an automation is no member.
+    // The member's own id tells its invocations apart from another's,
+    // whatever either is named; an automation is no member.
     let id = member
         .and_then(|member| {
             ["agent", "bot", "person"]
@@ -212,8 +212,10 @@ fn author(entry: &Value) -> (InvocationBy, Option<String>) {
                 .find_map(|kind| text(member, kind))
         })
         .map(str::to_owned);
-    // A run goes by its agent's name unless its client named it.
-    let title = run.filter(|run| Some(*run) != named).map(str::to_owned);
+    // A group goes by its agent's name unless its client named it.
+    let title = group_title
+        .filter(|title| Some(*title) != named)
+        .map(str::to_owned);
     (
         InvocationBy {
             name: name.to_owned(),
@@ -225,8 +227,9 @@ fn author(entry: &Value) -> (InvocationBy, Option<String>) {
 }
 
 /// What the history `entries` of the record `record` of `app_id` (oldest
-/// first, each whole) say of each run that changed it: its share, by step.
-/// A change in no step is nobody's run: a person's own edit on a page.
+/// first, each whole) say of each invocation that changed it: its share, by
+/// step. A change in no step is nobody's invocation: a person's own edit on a
+/// page.
 fn shares(app_id: &str, record: &str, entries: &[Value]) -> Vec<(String, Share)> {
     let changes: Vec<&Value> = entries
         .iter()
@@ -370,7 +373,7 @@ fn call_of(id: String, entry: &Entry) -> (Option<String>, Call) {
             kind: kind.to_owned(),
             id: acting.member_id().map(|member| member.id().to_owned()),
         },
-        title: super::said_run_title(&entry.request),
+        title: super::said_invocation_title(&entry.request),
         action,
         addressed,
         written: entry.written.clone(),
@@ -785,8 +788,8 @@ mod tests {
             "change": change,
             "sentence": format!("{by} wrote {change}"),
             "time_ms": time_ms,
-            "run": by,
-            "run_kind": "agent-session",
+            "title": by,
+            "group_kind": "agent-session",
             "actor": {"by": {"member": {"agent": "a"}}, "name": by},
         });
         if let Some(step) = step {

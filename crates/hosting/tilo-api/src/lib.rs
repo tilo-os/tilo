@@ -1318,7 +1318,7 @@ impl Server {
         let Ok(number) = self.store.next_run(&grant.person) else {
             return text(StatusCode::SERVICE_UNAVAILABLE, "sessions are unavailable");
         };
-        let label = session::run_label(&grant.client_name, &params, number);
+        let label = session::agent_session_label(&grant.client_name, &params, number);
         let scope = pinned.map_or_else(
             || grant.scope.clone(),
             |workspace| store::Scope::Workspace(workspace.to_owned()),

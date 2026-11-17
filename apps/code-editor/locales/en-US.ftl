@@ -15,7 +15,7 @@ code-editor-claim-pane = Opened the terminal
 code-editor-run = Asked the terminal to run { $command }
 code-editor-rerun = Asked the terminal to run a command again
 code-editor-rerun-test = Asked the terminal to run { $test } again
-code-editor-record-run = Ran { $command } in the terminal
+code-editor-record-command = Ran { $command } in the terminal
 
 ## Code help: the language server behind suggestions, problems and go to definition
 code-editor-code-help-unavailable = { $language }: code help unavailable
@@ -118,7 +118,7 @@ code-editor-project-run = Run in terminal
 code-editor-project-rerun = Rerun in terminal
 code-editor-project-rerun-test = Rerun test in terminal
 code-editor-project-stop = Stop in terminal
-code-editor-project-record-run = Record terminal run
+code-editor-project-record-command = Record terminal run
 
 ## What the app is called in a window and in the launcher
 code-editor-app-title = Code Editor

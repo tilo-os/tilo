@@ -120,7 +120,7 @@ fn a_bad_passage_is_found_by_diff_and_undone_by_its_run() {
         .iter()
         .find(|version| version["what"]["action"]["action"] == "draw" && version["undone"] == true)
         .unwrap_or_else(|| panic!("the blot step is listed as undone: {history}"));
-    assert_eq!(blot["run_id"], RUN, "{history}");
+    assert_eq!(blot["group"], RUN, "{history}");
     assert_eq!(history["checkpoints"][0]["name"], "before sky rework");
 }
 
@@ -132,11 +132,8 @@ fn carried(versions: &[Value]) -> Vec<Value> {
         .iter()
         .map(|version| {
             let mut version = version.as_object().unwrap().clone();
-            if !["run_id", "by"]
-                .iter()
-                .any(|key| version.contains_key(*key))
-            {
-                for key in ["run", "run_id", "by"] {
+            if !["group", "by"].iter().any(|key| version.contains_key(*key)) {
+                for key in ["title", "group", "by"] {
                     if let Some(value) = before.get(key) {
                         version.insert(key.into(), value.clone());
                     }

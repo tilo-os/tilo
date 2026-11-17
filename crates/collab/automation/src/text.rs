@@ -200,7 +200,7 @@ struct Naming {
 ///
 /// The document is the truth and a step it holds must stay a step it holds:
 /// re-reading a whole program from text would replace every step, giving each
-/// new identity and losing the history, the collaboration and the runs
+/// new identity and losing the history, the collaboration and the invocations
 /// hanging off the ones the person did not touch. So the text is read as a
 /// program and *diffed* against the one the document has — a step whose line
 /// reads the same is the same step, and only the lines that changed become
@@ -2105,7 +2105,7 @@ fn after_the_app<'t>(tail: &'t str, app: &str) -> &'t str {
 /// The resource a line's `on …` note names, as the selector the step holds.
 ///
 /// A quoted resource id names that one resource; a binding names the resource
-/// the run binds; and `any KIND` names the kind, so the step takes the first
+/// the invocation binds; and `any KIND` names the kind, so the step takes the first
 /// resource of it that offers the action.
 fn selector_of(
     shared: &Shared<'_>,

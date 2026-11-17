@@ -24,8 +24,8 @@ use tilo_actions::params::ParamType;
 use tilo_automation::EVENT_INPUT;
 use tilo_automation::dispatch::{AppEvent, DocumentEvent, app_event_object};
 use tilo_automation::{
-    CatchUp, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, FocusTransition, InvocationId, Schedule,
-    ScheduleClaim, Shortcut, TriggerSpec,
+    AutomationInvocationId, CatchUp, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, FocusTransition,
+    Schedule, ScheduleClaim, Shortcut, TriggerSpec,
 };
 
 /// A fire time this far in the past counts as missed rather than on time.
@@ -342,7 +342,7 @@ pub struct Firing {
     pub workspace: String,
     pub shortcut: String,
     pub trigger: TriggerSpec,
-    pub invocation: InvocationId,
+    pub invocation: AutomationInvocationId,
     /// The fire time this device takes, to record in the workspace
     /// ([`WorkspaceTree::claim_schedule`](tilo_desktop_model::WorkspaceTree::claim_schedule))
     /// before the run starts.
@@ -374,7 +374,7 @@ impl Firing {
             workspace: armed.workspace.clone(),
             shortcut: armed.shortcut.id.clone(),
             trigger: trigger.clone(),
-            invocation: InvocationId::new(),
+            invocation: AutomationInvocationId::new(),
             claim: None,
             inputs,
         }
@@ -398,7 +398,7 @@ pub trait TriggerSource: Send {
     ) -> Vec<Firing>;
 
     /// Runs another of the person's devices started; a source holding one for its turn drops it.
-    fn forget_started(&mut self, _started: &BTreeSet<InvocationId>) {}
+    fn forget_started(&mut self, _started: &BTreeSet<AutomationInvocationId>) {}
 
     /// Firings an earlier event produced that were waiting for something to reach the disk and may
     /// run now.
@@ -436,7 +436,7 @@ impl TriggerSource for KeyboardTriggers {
                         workspace: armed.workspace.clone(),
                         shortcut: armed.shortcut.id.clone(),
                         trigger: trigger.clone(),
-                        invocation: InvocationId::new(),
+                        invocation: AutomationInvocationId::new(),
                         claim: None,
                         inputs: Map::new(),
                     })
@@ -830,7 +830,7 @@ impl TriggerSource for ScheduleTriggers {
                                 workspace: armed.workspace.clone(),
                                 shortcut: armed.shortcut.id.clone(),
                                 trigger: trigger.clone(),
-                                invocation: scheduled_run(&key, due),
+                                invocation: scheduled_invocation(&key, due),
                                 inputs: Map::new(),
                                 claim: context.devices.local.as_ref().map(|device| ScheduleClaim {
                                     shortcut: armed.shortcut.id.clone(),
@@ -926,9 +926,10 @@ fn runner_rank(key: &str, due_ms: i64, device: &str) -> ([u8; 32], String) {
     (hasher.finalize().into(), device.to_string())
 }
 
-/// The run a scheduled fire starts: the same for the same fire time, so a fire that is somehow
+/// The invocation a scheduled fire starts: the same for the same fire time, so a
+/// fire that is somehow
 /// handed over twice reuses every invocation id.
-fn scheduled_run(key: &str, due: DateTime<Utc>) -> InvocationId {
+fn scheduled_invocation(key: &str, due: DateTime<Utc>) -> AutomationInvocationId {
     let mut hasher = Sha256::new();
     hasher.update(b"tilo.shortcut.schedule\0");
     hasher.update(key.as_bytes());
@@ -938,7 +939,7 @@ fn scheduled_run(key: &str, due: DateTime<Utc>) -> InvocationId {
     for (byte, digested) in bytes.iter_mut().zip(digest.iter()) {
         *byte = *digested;
     }
-    InvocationId(uuid::Builder::from_custom_bytes(bytes).into_uuid())
+    AutomationInvocationId(uuid::Builder::from_custom_bytes(bytes).into_uuid())
 }
 
 /// The first fire time of `schedule` strictly after `now`, in the wall-clock time `clock` reads.
@@ -1022,7 +1023,7 @@ impl RecordElection {
         due.into_iter().map(|held| held.firing).collect()
     }
 
-    fn forget_started(&mut self, started: &BTreeSet<InvocationId>) {
+    fn forget_started(&mut self, started: &BTreeSet<AutomationInvocationId>) {
         self.held
             .retain(|held| !started.contains(&held.firing.invocation));
     }
@@ -1111,7 +1112,7 @@ impl TriggerSource for RecordChangedTriggers {
         })
     }
 
-    fn forget_started(&mut self, started: &BTreeSet<InvocationId>) {
+    fn forget_started(&mut self, started: &BTreeSet<AutomationInvocationId>) {
         self.election.forget_started(started);
     }
 }
@@ -1173,7 +1174,7 @@ impl TriggerSource for IncomingMessageTriggers {
         })
     }
 
-    fn forget_started(&mut self, started: &BTreeSet<InvocationId>) {
+    fn forget_started(&mut self, started: &BTreeSet<AutomationInvocationId>) {
         self.election.forget_started(started);
     }
 }
@@ -1250,7 +1251,7 @@ impl TriggerHost {
     }
 
     /// Runs another of the person's devices already started: no source starts them here.
-    pub fn forget_started(&mut self, started: &BTreeSet<InvocationId>) {
+    pub fn forget_started(&mut self, started: &BTreeSet<AutomationInvocationId>) {
         for source in &mut self.sources {
             source.forget_started(started);
         }
@@ -1385,7 +1386,7 @@ mod tests {
             assert_eq!(fired.len(), 1, "the fire time runs");
             assert_eq!(
                 fired[0].invocation,
-                scheduled_run(
+                scheduled_invocation(
                     &ledger_key("workspace", "tidy", 0),
                     at("2026-09-25T09:00:00Z")
                 ),

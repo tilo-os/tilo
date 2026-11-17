@@ -853,7 +853,7 @@ fn python_module(app: &App, types: &Types) -> String {
             .to_owned(),
         "and its methods are its actions. A method answers what the app declares; an action"
             .to_owned(),
-        "that takes longer answers a `Run`. A record is the dict the wire carries, and an"
+        "that takes longer answers an `Invocation`. A record is the dict the wire carries, and an"
             .to_owned(),
         "enum whose cases carry fields is an object whose tag the app's schema names. An"
             .to_owned(),
@@ -861,7 +861,7 @@ fn python_module(app: &App, types: &Types) -> String {
             .to_owned(),
         "the file says where it is. An undoable action that answers nothing also has a".to_owned(),
         "`<action>_many`, which applies it to every argument object of a list in a few".to_owned(),
-        "all-or-nothing steps, all of them one run.".to_owned(),
+        "all-or-nothing steps, all of them one invocation group.".to_owned(),
     ];
     out.push_str("\"\"\"");
     for (index, line) in head.iter().enumerate() {
@@ -876,7 +876,7 @@ fn python_module(app: &App, types: &Types) -> String {
     out.push_str("\"\"\"\n\n");
     out.push_str("from __future__ import annotations\n\n");
     out.push_str("from typing import Any, Literal, NotRequired, TypedDict\n");
-    let _ = writeln!(out, "from tilo import Entry, Resource, Run\n");
+    let _ = writeln!(out, "from tilo import Entry, Invocation, Resource\n");
     let mut all: Vec<String> = types
         .declarations
         .iter()
@@ -1245,7 +1245,8 @@ fn python_args(out: &mut String, name: &str, action: &Action) {
     out.push('\n');
 }
 
-/// The bulk call of `action`: `items`, one all-or-nothing step per call, all one run.
+/// The bulk call of `action`: `items`, one all-or-nothing step per call, all one
+/// invocation group.
 fn python_many(out: &mut String, action: &Action, many: &Many) {
     let name = python_name(&format!("{}_many", action.snake));
     let _ = writeln!(
@@ -1255,18 +1256,19 @@ fn python_many(out: &mut String, action: &Action, many: &Many) {
     );
     let text = format!(
         "Runs `{}` for each of `items`: one all-or-nothing step per call, all of them one \
-         run that History lists once and one undo takes back.",
+         invocation group that History lists once and one undo takes back.",
         action.id
     );
     doc(out, &text, 2);
     let _ = writeln!(out, "        return self.many(\"{}\", items)", action.id);
 }
 
-/// What an action answers: what the app declares, and the `Run` that follows one still
-/// running.
+/// What an action answers: what the app declares, and the `Invocation` that
+/// follows one still running.
 fn python_result(action: &Action) -> String {
-    // An action call waits for its run and answers its result: a caller never
-    // gets a `Run` back from a typed method, only what the action produced.
+    // An action call waits for its invocation and answers its result: a caller
+    // never gets an `Invocation` back from a typed method, only what the action
+    // produced.
     action
         .result
         .as_ref()
@@ -1372,7 +1374,7 @@ fn typescript_module(app: &App, types: &Types) -> String {
         "(read-only ones `readonly`) and its methods are the app's actions, named in camel"
             .to_owned(),
         "case and taking the arguments the wire takes them under. An action that takes".to_owned(),
-        "longer answers a `Run`. A record is the object the wire carries, and an enum whose"
+        "longer answers an `Invocation`. A record is the object the wire carries, and an enum whose"
             .to_owned(),
         "cases carry fields is an object whose tag the app's schema names. An action whose"
             .to_owned(),
@@ -1380,7 +1382,7 @@ fn typescript_module(app: &App, types: &Types) -> String {
             .to_owned(),
         "says where it is. An undoable action that answers nothing also has a `<action>Many`,\n\
          which applies it to every argument object of a list in a few all-or-nothing steps,\n\
-         all of them one run."
+         all of them one invocation group."
             .to_owned(),
     ];
     let head: Vec<&str> = head.iter().map(String::as_str).collect();
@@ -1701,10 +1703,11 @@ fn typescript_args_decl(out: &mut String, name: &str, action: &Action) {
     out.push_str("}\n\n");
 }
 
-/// The bulk call of `action`: `items`, one all-or-nothing step per call, all one run.
+/// The bulk call of `action`: `items`, one all-or-nothing step per call, all one
+/// invocation group.
 fn typescript_many(out: &mut String, action: &Action, many: &Many) {
     let text = one_line(&format!(
-        "Runs `{}` for each of `items`: one all-or-nothing step per call, all of them one run \
+        "Runs `{}` for each of `items`: one all-or-nothing step per call, all of them one invocation group \
          that History lists once and one undo takes back.",
         action.id
     ));
@@ -1716,11 +1719,12 @@ fn typescript_many(out: &mut String, action: &Action, many: &Many) {
     );
 }
 
-/// What an action answers: what the app declares, and the `Run` that follows one still
-/// running.
+/// What an action answers: what the app declares, and the `Invocation` that
+/// follows one still running.
 fn typescript_result(action: &Action) -> String {
-    // An action call waits for its run and answers its result: a caller never
-    // gets a `Run` back from a typed method, only what the action produced.
+    // An action call waits for its invocation and answers its result: a caller
+    // never gets an `Invocation` back from a typed method, only what the action
+    // produced.
     action
         .result
         .as_ref()

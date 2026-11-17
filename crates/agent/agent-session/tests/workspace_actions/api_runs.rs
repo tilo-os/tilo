@@ -1,5 +1,5 @@
 //! A workspace's runs, listed through the API on the relay as tilo.sh
-//! hosts it (`GET /v1/workspaces/{workspace}/runs`, `tilo_read
+//! hosts it (`GET /v1/workspaces/{workspace}/invocations`, `tilo_read
 //! workspace/invocations` over MCP): two keys made for the workspace and the
 //! person's own key each run something there, and each of those keys, which
 //! all may read every record there, reads all three, newest first, each with who ran it and how it
@@ -71,13 +71,13 @@ async fn write_letter(key: &Key<'_>, workspace: &str, text: &str, title: &str) -
     )
     .await;
     assert_eq!(status, 200, "{written}");
-    written["run"].as_str().unwrap().to_owned()
+    written["invocation"].as_str().unwrap().to_owned()
 }
 
 /// The page of `workspace`'s runs `query` asks for, as `key` reads it.
 async fn invocations(key: &Key<'_>, workspace: &str, query: &str) -> Value {
     let (status, listed) = key
-        .get(&format!("/v1/workspaces/{workspace}/runs{query}"))
+        .get(&format!("/v1/workspaces/{workspace}/invocations{query}"))
         .await;
     assert_eq!(status, 200, "{listed}");
     listed
@@ -264,7 +264,7 @@ async fn every_run_listed() {
     let backends = &ids[2];
     let (status, undone) = person
         .post(
-            &format!("/v1/workspaces/{ws}/runs/{backends}/undo"),
+            &format!("/v1/workspaces/{ws}/invocations/{backends}/undo"),
             &json!({}),
         )
         .await;
@@ -303,14 +303,16 @@ async fn every_run_listed() {
     );
     assert_eq!(listed["items"][2], second["items"][0], "{listed} {second}");
     let (status, refused) = agent
-        .get(&format!("/v1/workspaces/{ws}/runs?limit=many"))
+        .get(&format!("/v1/workspaces/{ws}/invocations?limit=many"))
         .await;
     assert_eq!(status, 400, "{refused}");
 
     // A key for another workspace is refused as on the routes beside it.
-    let (status, refused) = others.get(&format!("/v1/workspaces/{ws}/runs")).await;
+    let (status, refused) = others
+        .get(&format!("/v1/workspaces/{ws}/invocations"))
+        .await;
     let (beside_status, beside_refused) = others
-        .get(&format!("/v1/workspaces/{ws}/runs/{}", ids[0]))
+        .get(&format!("/v1/workspaces/{ws}/invocations/{}", ids[0]))
         .await;
     let (members_status, members_refused) =
         others.get(&format!("/v1/workspaces/{ws}/members")).await;

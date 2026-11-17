@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Library` is the app's `snippets.library` at `snippets/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Language",
@@ -101,7 +101,7 @@ class Library(Resource):
         return self.action("new-snippet", **args)
 
     def new_snippet_many(self, items: list[NewSnippetArgs]) -> list[dict[str, Any]]:
-        """Runs `new-snippet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `new-snippet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("new-snippet", items)
 
     def duplicate(self,
@@ -117,7 +117,7 @@ class Library(Resource):
         return self.action("duplicate", **args)
 
     def duplicate_many(self, items: list[DuplicateArgs]) -> list[dict[str, Any]]:
-        """Runs `duplicate` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `duplicate` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("duplicate", items)
 
     def delete(self, *, snippet: str) -> None:
@@ -125,7 +125,7 @@ class Library(Resource):
         return self.action("delete", snippet=snippet)
 
     def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
-        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete", items)
 
     def record_use(self, *, snippet: str) -> None:
@@ -133,7 +133,7 @@ class Library(Resource):
         return self.action("record-use", snippet=snippet)
 
     def record_use_many(self, items: list[RecordUseArgs]) -> list[dict[str, Any]]:
-        """Runs `record-use` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record-use` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-use", items)
 
     def rename_folder(self,
@@ -145,7 +145,7 @@ class Library(Resource):
         return self.action("rename-folder", folder=folder, to=to)
 
     def rename_folder_many(self, items: list[RenameFolderArgs]) -> list[dict[str, Any]]:
-        """Runs `rename-folder` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `rename-folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rename-folder", items)
 
     def rename_tag(self,
@@ -157,7 +157,7 @@ class Library(Resource):
         return self.action("rename-tag", tag=tag, to=to)
 
     def rename_tag_many(self, items: list[RenameTagArgs]) -> list[dict[str, Any]]:
-        """Runs `rename-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `rename-tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rename-tag", items)
 
     def remove_tag(self, *, tag: str) -> None:
@@ -165,7 +165,7 @@ class Library(Resource):
         return self.action("remove-tag", tag=tag)
 
     def remove_tag_many(self, items: list[RemoveTagArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-tag", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

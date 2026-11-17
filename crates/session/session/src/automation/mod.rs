@@ -27,7 +27,7 @@ use tilo_action_broker::automation::chord_target;
 use tilo_action_broker::collab_broker::AppActionBroker;
 use tilo_actions::remote::Caller;
 use tilo_automation::dispatch::DocumentEvent;
-use tilo_automation::{InvocationId, ScheduleClaim, TriggerSpec};
+use tilo_automation::{AutomationInvocationId, ScheduleClaim, TriggerSpec};
 use tilo_desktop_model::WorkspaceId;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
@@ -329,9 +329,9 @@ impl Automation {
         if !events.is_empty() {
             // A run's own first change is its claim: a firing another device already started is not
             // held for this one.
-            let started: BTreeSet<InvocationId> = events
+            let started: BTreeSet<AutomationInvocationId> = events
                 .iter()
-                .filter_map(DocumentEvent::started_run)
+                .filter_map(DocumentEvent::started_invocation)
                 .collect();
             self.triggers.forget_started(&started);
             firings.extend(

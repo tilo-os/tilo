@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Catalog` is the app's `store.catalog` at `store/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Report",
@@ -53,7 +53,7 @@ class Catalog(Resource):
         return self.action("draft-report", app_id=app_id)
 
     def draft_report_many(self, items: list[DraftReportArgs]) -> list[dict[str, Any]]:
-        """Runs `draft-report` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `draft-report` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("draft-report", items)
 
     def record_moderation_case(self,
@@ -66,7 +66,7 @@ class Catalog(Resource):
         return self.action("record-moderation-case", app_id=app_id, case_id=case_id, status=status)
 
     def record_moderation_case_many(self, items: list[RecordModerationCaseArgs]) -> list[dict[str, Any]]:
-        """Runs `record-moderation-case` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record-moderation-case` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-moderation-case", items)
 
     def inspect_catalogue(self,

@@ -1,4 +1,4 @@
-/** The values the SDK answers: workspaces, keys, listings, runs, hits and events. */
+/** The values the SDK answers: workspaces, keys, listings, invocations, hits and events. */
 
 /** One of the person's workspaces, as the account lists them. */
 export interface WorkspaceInfo {
@@ -328,22 +328,23 @@ export class Listing {
 }
 
 /**
- * One run of a workspace, as its listing names it: who ran it, how it stands,
- * when, and what it changed. `id` is the run id `new Run(await ws.endpoint(), id)`
- * reads, cancels and undoes, while the host remembers the run's calls; a run known only
- * from the workspace's records (the host restarted since) has none, and is
- * told apart by `step`, the undo step its changes keep in each record's history.
+ * One invocation of a workspace, as its listing names it: who made it, how it
+ * stands, when, and what it changed. `id` is what
+ * `new Invocation(await ws.endpoint(), id)` reads, cancels and undoes, while the
+ * host remembers its calls; one known only from the workspace's records (the host
+ * restarted since) has none, and is told apart by `step`, the undo step its
+ * changes keep in each record's history.
  */
-export interface RunInfo {
+export interface InvocationInfo {
   id: string | null;
   /** Every call of it the host remembers, oldest first. */
   calls: string[];
   step: string | null;
-  /** Who ran it: the key's name, an agent's or a person's. */
+  /** Who made it: the key's name, an agent's or a person's. */
   by: string;
   /** `agent` (every key is one), `person`, `bot` or `automation`. */
   byKind: string;
-  /** What its client called it (`ws.run(title)`), when it named it. */
+  /** What its client called it (`ws.invocation(title)`), when it did. */
   title: string | null;
   /** `waiting` (for the person), `running`, `ended`, `failed`, `cancelled` or `undone`. */
   status: string;
@@ -372,7 +373,7 @@ export interface RunInfo {
   raw: Record<string, unknown>;
 }
 
-export function runInfoOf(raw: Record<string, unknown>): RunInfo {
+export function invocationInfoOf(raw: Record<string, unknown>): InvocationInfo {
   const by = raw.by !== null && typeof raw.by === "object" ? (raw.by as Record<string, unknown>) : {};
   return {
     id: textOf(raw.id),
@@ -398,25 +399,26 @@ export function runInfoOf(raw: Record<string, unknown>): RunInfo {
   };
 }
 
-/** A page of a workspace's runs, newest first, with the totals; `for await` reads on to the oldest. */
-export class RunList {
-  readonly runs: RunInfo[];
-  /** Runs the workspace holds, of which `runs` is a page. */
+/** A page of a workspace's invocations, newest first, with the totals; `for await`
+ * reads on to the oldest. */
+export class InvocationList {
+  readonly invocations: InvocationInfo[];
+  /** Invocations the workspace holds, of which `invocations` is a page. */
   readonly total: number;
-  /** Of those, the runs waiting for the person. */
+  /** Of those, the ones waiting for the person. */
   readonly waiting: number;
-  /** A record could not be read yet: runs that changed only it are missing. */
+  /** A record could not be read yet: invocations that changed only it are missing. */
   readonly pending: boolean;
   readonly nextCursor: string | null;
-  /** The page as a person reads it, one line per run. */
+  /** The page as a person reads it, one line per invocation. */
   readonly text: string;
-  #more: ((cursor: string) => Promise<RunList>) | null;
+  #more: ((cursor: string) => Promise<InvocationList>) | null;
 
   constructor(
     raw: Record<string, unknown> = {},
-    more: ((cursor: string) => Promise<RunList>) | null = null,
+    more: ((cursor: string) => Promise<InvocationList>) | null = null,
   ) {
-    this.runs = arrayOf(raw.runs).map(runInfoOf);
+    this.invocations = arrayOf(raw.invocations).map(invocationInfoOf);
     this.total = intOf(raw.total) ?? 0;
     this.waiting = intOf(raw.waiting) ?? 0;
     this.pending = raw.pending === true;
@@ -426,17 +428,17 @@ export class RunList {
   }
 
   /** The next page, older, or `null` on the last. */
-  async more(): Promise<RunList | null> {
+  async more(): Promise<InvocationList | null> {
     if (this.#more === null || this.nextCursor === null) {
       return null;
     }
     return this.#more(this.nextCursor);
   }
 
-  async *[Symbol.asyncIterator](): AsyncIterator<RunInfo> {
-    let page: RunList | null = this;
+  async *[Symbol.asyncIterator](): AsyncIterator<InvocationInfo> {
+    let page: InvocationList | null = this;
     while (page !== null) {
-      yield* page.runs;
+      yield* page.invocations;
       page = page.nextCursor === null ? null : await page.more();
     }
   }
@@ -500,12 +502,12 @@ function personOf(raw: Record<string, unknown>): Person {
 }
 
 /**
- * One thing the workspace's stream told: a change, a run starting or
+ * One thing the workspace's stream told: a change, an invocation starting or
  * finishing, or who is there. `cursor` is where the stream has read up to
  * after it: reconnecting with it resumes after this event.
  */
 export interface Event {
-  /** `change`, `run` or `presence`. */
+  /** `change`, `invocation` or `presence`. */
   kind: string;
   cursor: string | null;
   path: string | null;
@@ -519,11 +521,11 @@ export interface Event {
   /** Who made the change, structured: `kind` (`person` or `agent`) and
    * `name`, and the actor's own fields besides. */
   actor: Record<string, unknown> | null;
-  /** The run (an invocation id) the event is of. */
-  run: string | null;
-  /** The run's title, as its first call named it. */
+  /** The invocation the event is of. */
+  invocation: string | null;
+  /** The group's title, as its first call named it. */
   title: string | null;
-  /** The run a step belongs to, for a grouped run. */
+  /** The group a step belongs to, for a grouped invocation. */
   group: string | null;
   /** `started`, `succeeded`, `failed` or `cancelled`. */
   phase: string | null;
@@ -558,7 +560,7 @@ export function eventOf(kind: string | null, data: unknown, cursor: string | nul
       raw.actor !== null && typeof raw.actor === "object" && !Array.isArray(raw.actor)
         ? (raw.actor as Record<string, unknown>)
         : null,
-    run: textOf(raw.run),
+    invocation: textOf(raw.invocation),
     title: textOf(raw.title),
     group: textOf(raw.group),
     phase: textOf(raw.phase),
@@ -570,14 +572,14 @@ export function eventOf(kind: string | null, data: unknown, cursor: string | nul
 }
 
 /**
- * An action's answer, and a run's: what it did, what it changed, and the link
+ * An action's answer, and an invocation's: what it did, what it changed, and the link
  * to the one record a person opens it with.
  */
 export interface ActionAnswer {
   /** `ok`, `pending` or `cancelled`. */
   status: string;
-  /** The run: what `…/runs/{run}` follows, and what `Tilo-Run` groups. */
-  run: string | null;
+  /** The invocation: what `…/invocations/{invocation}` follows. */
+  invocation: string | null;
   /** The action at the resource it resolved to, `app/resource#action`. */
   path: string | null;
   result: unknown;
@@ -597,7 +599,7 @@ export interface ActionAnswer {
 export function actionAnswerOf(raw: Record<string, unknown>): ActionAnswer {
   return {
     status: String(raw.status ?? ""),
-    run: textOf(raw.run),
+    invocation: textOf(raw.invocation),
     path: textOf(raw.path),
     result: raw.result ?? null,
     resources: Array.isArray(raw.resources) ? raw.resources.map(String) : [],

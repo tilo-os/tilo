@@ -90,8 +90,10 @@ impl Key<'_> {
 
     /// Follow `run` in `workspace` until it is no longer pending.
     pub(super) async fn follow(&self, workspace: &str, run: &str) -> (u16, Value) {
-        self.get(&format!("/v1/workspaces/{workspace}/runs/{run}?wait=30"))
-            .await
+        self.get(&format!(
+            "/v1/workspaces/{workspace}/invocations/{run}?wait=30"
+        ))
+        .await
     }
 
     /// Whether `workspace`'s listing says it runs commands unattended.
@@ -199,7 +201,7 @@ pub(super) async fn workspace(key: &Key<'_>, name: &str) -> String {
 /// is: its run.
 pub(super) fn waiting(status: u16, answer: &Value) -> Option<String> {
     (status == 202 && answer["status"] == "pending")
-        .then(|| answer["run"].as_str().unwrap().to_owned())
+        .then(|| answer["invocation"].as_str().unwrap().to_owned())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

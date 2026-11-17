@@ -8,12 +8,12 @@
  * resource's path (`photos/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -168,63 +168,63 @@ export interface Library extends tilo.Resource {
     captured_at?: string;
     location?: PhotoLocation;
   }): Promise<void>;
-  /** Runs `import-photo` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `import-photo` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   importPhotoMany(items: ImportPhotoArgs[]): Promise<tilo.ActionAnswer[]>;
   refreshImportedMetadata(args: {
     photo: string;
     captured_at?: string;
     location?: PhotoLocation;
   }): Promise<void>;
-  /** Runs `refresh-imported-metadata` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `refresh-imported-metadata` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   refreshImportedMetadataMany(items: RefreshImportedMetadataArgs[]): Promise<tilo.ActionAnswer[]>;
   removePhoto(args: {
     photo: string;
   }): Promise<void>;
-  /** Runs `remove-photo` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-photo` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removePhotoMany(items: RemovePhotoArgs[]): Promise<tilo.ActionAnswer[]>;
   rotateRight(args: {
     photo: string;
   }): Promise<void>;
-  /** Runs `rotate-right` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `rotate-right` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rotateRightMany(items: RotateRightArgs[]): Promise<tilo.ActionAnswer[]>;
   rotateLeft(args: {
     photo: string;
   }): Promise<void>;
-  /** Runs `rotate-left` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `rotate-left` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rotateLeftMany(items: RotateLeftArgs[]): Promise<tilo.ActionAnswer[]>;
   crop(args: {
     photo: string;
     region: Rect01;
   }): Promise<void>;
-  /** Runs `crop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `crop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   cropMany(items: CropArgs[]): Promise<tilo.ActionAnswer[]>;
   mergeImageAnalysis(args: {
     photo: string;
     analysis: ImageAnalysis;
   }): Promise<void>;
-  /** Runs `merge-image-analysis` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `merge-image-analysis` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   mergeImageAnalysisMany(items: MergeImageAnalysisArgs[]): Promise<tilo.ActionAnswer[]>;
   setPersonMembership(args: {
     person: string;
     photos: string[];
   }): Promise<void>;
-  /** Runs `set-person-membership` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-person-membership` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setPersonMembershipMany(items: SetPersonMembershipArgs[]): Promise<tilo.ActionAnswer[]>;
   renamePerson(args: {
     person: string;
     to: string;
   }): Promise<void>;
-  /** Runs `rename-person` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `rename-person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   renamePersonMany(items: RenamePersonArgs[]): Promise<tilo.ActionAnswer[]>;
   removePerson(args: {
     person: string;
   }): Promise<void>;
-  /** Runs `remove-person` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removePersonMany(items: RemovePersonArgs[]): Promise<tilo.ActionAnswer[]>;
   removeAlbum(args: {
     album: string;
   }): Promise<void>;
-  /** Runs `remove-album` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-album` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeAlbumMany(items: RemoveAlbumArgs[]): Promise<tilo.ActionAnswer[]>;
   makeThumbnails(args: {
     photos: unknown[];

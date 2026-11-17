@@ -7,10 +7,11 @@
 //! no such process on any device: the host is where its sessions run. So a
 //! person's device (an agent on one of their computers among them) asking
 //! the host for a session's `run` has it run here, by the host's
-//! [`WorkspaceShell`], in that session's shell (an agent's run in a shell of its
+//! [`WorkspaceShell`], in that session's shell (an agent's invocation in a shell of
+//! its
 //! own, which keeps its directory between commands), and the host records the
 //! run on the session record through the record's own `record-command`, under
-//! the invocation's context: History keeps it as the agent's run, with its
+//! the invocation's context: History keeps it as the agent's invocation, with its
 //! command, directory, exit status and output.
 //!
 //! Whoever the workspace lets run the session's commands has them run here:
@@ -18,13 +19,13 @@
 //! the workspace's policy admits for the session's `run`, decided as every
 //! action the host runs is ([`Worker::terminal_admitted`]). A command runs in
 //! the workspace's own environment, a VM when it needs one, billed to the
-//! workspace's account; where that account cannot pay yet, the run answers
-//! with the host's refusal and what would let it through. The run is
+//! workspace's account; where that account cannot pay yet, the invocation answers
+//! with the host's refusal and what would let it through. The invocation is
 //! recorded as the caller's, for the person they act for.
 //!
 //! A command may run for minutes (a build in the workspace's VM), so it runs
 //! on a thread of its own: the invocation is answered accepted at once, and
-//! succeeds with the run once it ended and was recorded. Its answer is what
+//! succeeds with the invocation once it ended and was recorded. Its answer is what
 //! Terminal answers a `run` with, plus what an agent needs without a second
 //! call: the command line, the directory it ran in and what it printed.
 //!
@@ -32,7 +33,7 @@
 //! ([`Watching::seen`]), so an agent following a long build is not silent;
 //! and it can be stopped: a person's Ctrl+C in the session, or an agent's
 //! cancel of its invocation, ends the command in the host's shell
-//! ([`Watching::stop`]), records the run like any other, and settles the
+//! ([`Watching::stop`]), records the invocation like any other, and settles the
 //! invocation as cancelled.
 
 use std::sync::Arc;
@@ -62,16 +63,16 @@ const STOP: &str = "stop";
 const RECORD_COMMAND: &str = "record-command";
 /// The longest command line a session runs, as Terminal takes it.
 const MAX_COMMAND_BYTES: usize = 4096;
-/// What an answer carries of a run's output at most: its end, where a
-/// build's errors and a test run's summary are.
+/// What an answer carries of an invocation's output at most: its end, where a
+/// build's errors and a test invocation's summary are.
 const ANSWERED_OUTPUT: usize = 32 * 1024;
 
-/// What the caller of a run sees of it while it runs, and how it stops it.
+/// What the caller of an invocation sees of it while it runs, and how it stops it.
 #[derive(Clone, Copy, Default)]
 pub struct Watching<'a> {
-    /// What a run printed so far, each time that grew.
+    /// What an invocation printed so far, each time that grew.
     pub seen: Option<&'a (dyn Fn(&CommandOutput) + Sync)>,
-    /// Whether the caller asked the run to stop.
+    /// Whether the caller asked the invocation to stop.
     pub stop: Option<&'a (dyn Fn() -> bool + Sync)>,
 }
 
@@ -94,7 +95,7 @@ pub trait WorkspaceShell: Send + Sync {
         watching: Watching<'_>,
     ) -> Result<ShellRan, String>;
 
-    /// Keep `output`, a run's output, where the workspace's devices fetch
+    /// Keep `output`, an invocation's output, where the workspace's devices fetch
     /// its content, answering the reference that opens it, or `None` when
     /// this host keeps none.
     fn keep(&self, workspace: &str, output: &[u8]) -> Option<String> {
@@ -112,7 +113,7 @@ pub struct ShellRan {
     pub output: Vec<u8>,
     pub truncated: bool,
     /// It was stopped before it ended: a person's Ctrl+C, or an agent's
-    /// cancel of the run it asked for.
+    /// cancel of the invocation it asked for.
     pub cancelled: bool,
     pub started_ms: i64,
     pub ended_ms: i64,
@@ -120,18 +121,18 @@ pub struct ShellRan {
     pub refusal: Option<Refusal>,
 }
 
-/// A run that ended, for the worker to record.
+/// An invocation that ended, for the worker to record.
 pub(super) struct Ended {
     pub(super) workspace_id: WorkspaceId,
     pub(super) invocation: InvocationId,
     pub(super) route: DocumentRoute,
     pub(super) request: InvokeRequest,
-    /// Who asked for it: the run its record's change is part of.
+    /// Who asked for it: the invocation its record's change is part of.
     pub(super) caller: Caller,
     pub(super) ran: Result<ShellRan, String>,
 }
 
-/// One run asked of the host's shell, ready to start on a thread of its own.
+/// One invocation asked of the host's shell, ready to start on a thread of its own.
 struct Started {
     shell: Arc<dyn WorkspaceShell>,
     jobs: super::Jobs,
@@ -140,14 +141,14 @@ struct Started {
     session: String,
     command: String,
     agent: bool,
-    /// What a cancel of the run, or a Ctrl+C in its session, sets.
+    /// What a cancel of the invocation, or a Ctrl+C in its session, sets.
     stop: Arc<AtomicBool>,
     ended: Ended,
 }
 
 impl Started {
     /// Run the command, showing the invocation what it prints as it prints
-    /// it, and hand the run to the worker to record once it ended.
+    /// it, and hand the invocation to the worker to record once it ended.
     fn spawn(self) -> std::io::Result<()> {
         let Self {
             shell,
@@ -235,7 +236,7 @@ impl Worker {
             return refused("one command line, without control characters".into());
         }
         // The session is a record of this workspace: its keys are here to
-        // record the run once it ended.
+        // record the invocation once it ended.
         let state = match self.refresh(
             workspace_id,
             Needs::Act {
@@ -257,20 +258,23 @@ impl Worker {
         {
             return Some(receipt);
         }
-        let run = caller.agent_session();
-        let agent = run.is_some();
+        let session_of = caller.agent_session();
+        let agent = session_of.is_some();
         let jobs = self.shared.jobs.lock_recover().clone()?;
-        // An agent's run has a shell of its own, wherever its runs are
+        // An agent's invocation has a shell of its own, wherever its invocations are
         // recorded: two agents in one workspace never share a directory
         // or variables. A person's commands share the session's shell.
-        let session = run.map_or_else(|| route.record.clone(), |run| format!("run:{}", run.id));
+        let session = session_of.map_or_else(
+            || route.record.clone(),
+            |agent_session| format!("run:{}", agent_session.id),
+        );
         // What a cancel of this invocation, or a Ctrl+C in the session it
         // runs in, stops.
         let stop = Arc::new(AtomicBool::new(false));
         {
             let mut ledger = self.ledger();
             let Some(entry) = ledger.entries.get_mut(&invocation) else {
-                return refused("the run is not this host's".into());
+                return refused("the invocation is not this host's".into());
             };
             entry.stop = Some(Arc::clone(&stop));
             drop(ledger);
@@ -407,7 +411,7 @@ impl Worker {
         }
     }
 
-    /// A Terminal run `request` starts, or the runs it stops, answered
+    /// A Terminal `run` request starts, or the invocations it stops, answered
     /// here: `None` for any other request.
     pub(super) fn terminal(
         &mut self,
@@ -417,7 +421,7 @@ impl Worker {
     ) -> Option<InvocationReceipt> {
         let receipt = self
             .start_terminal_run(workspace_id, caller, request)
-            .or_else(|| self.stop_terminal_runs(workspace_id, caller, request))?;
+            .or_else(|| self.stop_terminal_invocations(workspace_id, caller, request))?;
         let mut ledger = self.ledger();
         ledger.running.remove(&request.invocation);
         let refused = matches!(
@@ -440,14 +444,14 @@ impl Worker {
     }
 
     /// Record `ended` on its session record and settle its invocation with
-    /// the run: cancelled, when it was stopped before it ended.
+    /// the invocation: cancelled, when it was stopped before it ended.
     pub(super) fn ran(&mut self, ended: &Ended) {
         let invocation = ended.invocation;
         let cancelled = ended.ran.as_ref().is_ok_and(|ran| ran.cancelled);
         let update = match self.record_ended(ended) {
             Ok(_) if cancelled => InvocationUpdate::Cancelled {
                 invocation,
-                message: Some("the run was cancelled".into()),
+                message: Some("the invocation was cancelled".into()),
             },
             Ok(output) => InvocationUpdate::Succeeded { invocation, output },
             Err(error) => InvocationUpdate::Failed { invocation, error },
@@ -471,11 +475,11 @@ impl Worker {
         }
     }
 
-    /// Stop the runs this host has going in the session record `request`
+    /// Stop the invocations this host has going in the session record `request`
     /// names, as a person's Ctrl+C there does: each ends in the shell that
-    /// runs it, records its run, and answers that it was cancelled; `None`
+    /// starts it, records its invocation, and answers that it was cancelled; `None`
     /// for any other request.
-    pub(super) fn stop_terminal_runs(
+    pub(super) fn stop_terminal_invocations(
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
@@ -557,7 +561,7 @@ impl Worker {
         };
         let ran = ended.ran.clone().map_err(failed)?;
         // The shell keeps the bytes where the workspace's devices fetch them;
-        // the run names the reference it answered, as the store that kept them
+        // the invocation names the reference it answered, as the store that kept them
         // sealed them, which every replica stores as it is.
         let output = (!ran.output.is_empty())
             .then(|| {
@@ -569,7 +573,7 @@ impl Worker {
             })
             .flatten()
             .map(|reference| ui::tilo_resource::Bytes::kept_as(&ran.output, &reference));
-        let run = uuid::Uuid::new_v4().simple().to_string();
+        let invocation = uuid::Uuid::new_v4().simple().to_string();
         let mut finished = Map::new();
         finished.insert("command".into(), json!(ran.command));
         finished.insert("cwd".into(), json!(ran.cwd));
@@ -584,7 +588,7 @@ impl Worker {
         finished.insert("tool".into(), json!(tool));
         finished.insert("undoable".into(), json!(false));
         finished.insert("items".into(), items);
-        finished.insert("run".into(), json!(run));
+        finished.insert("invocation".into(), json!(invocation));
         let state = self
             .refresh(
                 ended.workspace_id,
@@ -595,7 +599,7 @@ impl Worker {
             )
             .map_err(|error| failed(error.to_string()))?;
         let context = caller_context(&ended.caller, &ended.request);
-        // The run is the caller's, for the person they act for: the host
+        // The invocation is the caller's, for the person they act for: the host
         // records it on their behalf.
         let invoker = tilo_actions::ActionInvoker::admitted(ended.caller.acting())
             .named(ended.caller.agent_name().map(str::to_owned));
@@ -616,25 +620,25 @@ impl Worker {
                 &finished,
                 true,
             )
-            .map_err(|error| failed(format!("the run was not recorded: {error}")))?;
+            .map_err(|error| failed(format!("the invocation was not recorded: {error}")))?;
         let taken = take_all(&mounted.app, &holder)
-            .map_err(|error| failed(format!("the run was not recorded: {error}")))?;
+            .map_err(|error| failed(format!("the invocation was not recorded: {error}")))?;
         self.commit_taken(ended.workspace_id, &ended.route, taken)
-            .map_err(|reason| failed(format!("the run was not recorded: {reason}")))?;
+            .map_err(|reason| failed(format!("the invocation was not recorded: {reason}")))?;
         Ok(ActionOutput {
-            value: Some(answer(&run, &ran)),
+            value: Some(answer(&invocation, &ran)),
             resources: Vec::new(),
         })
     }
 }
 
-/// What `run` answers: Terminal's answer (the run, its exit status, the
+/// What `run` answers: Terminal's answer (the invocation, its exit status, the
 /// host's refusal), with the command line, where it ran and the end of what
 /// it printed.
-fn answer(run: &str, ran: &ShellRan) -> Value {
+fn answer(invocation: &str, ran: &ShellRan) -> Value {
     let (output, cut) = tail(&ran.output, ANSWERED_OUTPUT);
     let mut answer = Map::new();
-    answer.insert("run".into(), json!(run));
+    answer.insert("invocation".into(), json!(invocation));
     answer.insert("exit".into(), json!(ran.exit));
     answer.insert("command".into(), json!(ran.command));
     answer.insert("cwd".into(), json!(ran.cwd));
@@ -667,7 +671,7 @@ fn tail(output: &[u8], max: usize) -> (String, bool) {
 }
 
 /// The tool a command line runs and what Terminal's parsers read in its
-/// output (a build's errors, a test run's failures), as a device records
+/// output (a build's errors, a test invocation's failures), as a device records
 /// them.
 #[cfg(target_os = "linux")]
 fn parsed(command: &str, output: &[u8]) -> (String, Value) {
@@ -677,7 +681,7 @@ fn parsed(command: &str, output: &[u8]) -> (String, Value) {
     )
 }
 
-/// Without Terminal linked, a run is recorded without its parsed items.
+/// Without Terminal linked, an invocation is recorded without its parsed items.
 #[cfg(not(target_os = "linux"))]
 fn parsed(_command: &str, _output: &[u8]) -> (String, Value) {
     (String::new(), json!([]))

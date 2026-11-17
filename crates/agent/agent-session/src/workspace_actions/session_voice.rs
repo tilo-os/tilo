@@ -1,21 +1,21 @@
-//! The host's own word for the runs it executes: no run goes unseen.
+//! The host's own word for the invocations it executes: no invocation goes unseen.
 //!
 //! An agent or a key acting through the host need not say anything of itself
-//! (an SDK client never does), so the host says it for each run it executes
-//! ([`Caller::agent_session`]): the run is present as a member of its own, in the
+//! (an SDK client never does), so the host says it for each invocation it executes
+//! ([`Caller::agent_session`]): the invocation is present as a member of its own, in the
 //! agent's name and colour, saying the action it takes and the record it works
 //! in, and each action is narrated on the record's stream. Every frame names
-//! the run it is said for ([`Presence::on_behalf`]), so a reader takes it only
+//! the invocation it is said for ([`Presence::on_behalf`]), so a reader takes it only
 //! from the device the workspace pins as its host, and a client acting through
-//! the host says nothing of itself: a person sees one entry per run.
+//! the host says nothing of itself: a person sees one entry per invocation.
 //!
-//! The run's presence is a board's, as it is for a device speaking for the
+//! The invocation's presence is a board's, as it is for a device speaking for the
 //! agents its person admitted at its own API ([`Board::speak_for`]): one
-//! member per run, its face said when it changes and again at the keep-alive,
-//! taken down when the run's session ends. The host says it outside the live
+//! member per invocation, its face said when it changes and again at the keep-alive,
+//! taken down when the invocation's session ends. The host says it outside the live
 //! plane ([`Cmd::SayForSession`](tilo_session_client::Cmd::SayForSession)), signed with
 //! its own device key: it is no member of the plane, holds none of its keys,
-//! and needs none to speak for its runs. Only the runs' words leave.
+//! and needs none to speak for its invocations. Only the invocations' words leave.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -32,16 +32,21 @@ use tilo_session_client::{Cmd, Link, Outbox, narration};
 use super::{CatalogueQuery, InvokeRequest, Outcome, invoke_arguments, resource_of as route_of};
 use tilo_relay_protocol::WorkspaceId;
 
-/// How soon a run leaves once the session that is the run ended.
+/// How soon an invocation leaves once the session that is the invocation ended.
 const ENDED_WITHIN: Duration = Duration::from_millis(250);
 
 /// The colour `caller`'s runs are drawn in: the agent member's own, never its display name's nor
 /// its session's, so one agent is one colour in every session and on every surface that draws it
 /// ([`collab_types::presence::PresenceHue::of_member`]); a caller that names no agent (a key) is
-/// drawn as its run.
+/// drawn as its invocation.
 fn colour_of(caller: &Caller) -> [u8; 3] {
     let member = collab_types::MemberId::agent(caller.acting().agent_id().map_or_else(
-        || caller.agent_session().map(|run| run.id).unwrap_or_default(),
+        || {
+            caller
+                .agent_session()
+                .map(|session| session.id)
+                .unwrap_or_default()
+        },
         str::to_owned,
     ));
     let (r, g, b) = collab_types::presence::identity_rgb(
@@ -50,7 +55,7 @@ fn colour_of(caller: &Caller) -> [u8; 3] {
     [r, g, b]
 }
 
-/// What the host says of one run it executes.
+/// What the host says of one invocation it executes.
 struct Voice {
     /// The agent's or key's name, as the host knows it.
     label: String,
@@ -65,23 +70,23 @@ struct Voice {
     /// The sequence of its narration on the live plane.
     narrated: u64,
     /// The execution its session was minted: it closes with the session, which
-    /// is when the run leaves.
+    /// is when the invocation leaves.
     lease: ExecutionLease,
 }
 
-/// The runs the host speaks for in one workspace, and the board that holds
-/// them: one member per run, as a device's agents at its own API are.
+/// The invocations the host speaks for in one workspace, and the board that holds
+/// them: one member per invocation, as a device's agents at its own API are.
 pub(super) struct Sessions {
-    /// The workspace and the device speaking for its runs.
+    /// The workspace and the device speaking for its invocations.
     id: WorkspaceId,
     publisher: Device,
-    /// The workspace's presence, while this host has a run to speak for there.
+    /// The workspace's presence, while this host has an invocation to speak for there.
     board: Option<Board>,
     by_session: HashMap<String, Voice>,
 }
 
 impl Sessions {
-    /// The runs of the host whose device is `publisher`, in `workspace`.
+    /// The invocations of the host whose device is `publisher`, in `workspace`.
     pub(super) fn new(workspace: WorkspaceId, publisher: Device) -> Self {
         Self {
             id: workspace,
@@ -91,7 +96,7 @@ impl Sessions {
         }
     }
 
-    /// `caller`'s run takes the action `target` names (with `args`) in the
+    /// `caller`'s session takes the action `target` names (with `args`) in the
     /// workspace `cluster` (`peer` is its session), at `phase`: it is present,
     /// says the action, and the action is narrated on its record's stream. What
     /// it changed is its selection there once done.
@@ -137,16 +142,16 @@ impl Sessions {
         let Some(narrated) = self.at((peer, cluster), caller, said) else {
             return;
         };
-        let (Some(run), Some(record)) = (caller.agent_session(), record) else {
+        let (Some(session), Some(record)) = (caller.agent_session(), record) else {
             return;
         };
         let event = narration::Narrated {
-            agent: &run.label,
+            agent: &session.label,
             invocation,
             app: &record.app,
             action: &target.address,
             phase: phase.clone(),
-            on_behalf: Some(&run.id),
+            on_behalf: Some(&session.id),
         };
         if let Some(frame) = narration::frame(&event, narrated, tilo_clock::unix_now_ms()) {
             let _ = peer.send(Cmd::SayForSession(
@@ -159,7 +164,7 @@ impl Sessions {
         }
     }
 
-    /// `caller`'s run is at `line` in the workspace `cluster`, in the record
+    /// `caller`'s session is at `line` in the workspace `cluster`, in the record
     /// `provider` names when it names one: what a read, a listing or a search
     /// says beside its face.
     pub(super) fn saying(
@@ -178,7 +183,7 @@ impl Sessions {
         });
     }
 
-    /// `caller`'s run connected to the workspace `cluster` and has asked
+    /// `caller`'s session connected to the workspace `cluster` and has asked
     /// nothing yet: it is present, waiting, unless it is present already.
     pub(super) fn arrived(&mut self, (peer, cluster): (&Link, &str), caller: &Caller) {
         let _ = self.at((peer, cluster), caller, |voice| {
@@ -188,9 +193,9 @@ impl Sessions {
         });
     }
 
-    /// `caller`'s run is present in `cluster` with what `update` makes of its
+    /// `caller`'s invocation is present in `cluster` with what `update` makes of its
     /// word: a member of its own on the board from this first call, and what
-    /// the board owes for it said at once, as the run acts rather than once
+    /// the board owes for it said at once, as the invocation acts rather than once
     /// the action that says so is over. What `update` answered.
     fn at<R>(
         &mut self,
@@ -198,12 +203,12 @@ impl Sessions {
         caller: &Caller,
         update: impl FnOnce(&mut Voice) -> R,
     ) -> Option<R> {
-        let run = caller.agent_session()?;
-        // A run is its session's: every run has the execution its session was
+        let session = caller.agent_session()?;
+        // An invocation is its session's: every invocation has the execution its session was
         // minted, which closes with it.
         let lease = caller.execution_lease()?;
-        let voice = self.by_session.entry(run.id).or_insert_with(|| Voice {
-            label: run.label,
+        let voice = self.by_session.entry(session.id).or_insert_with(|| Voice {
+            label: session.label,
             colour: colour_of(caller),
             activity: None,
             focus: None,
@@ -220,18 +225,18 @@ impl Sessions {
         Some(said)
     }
 
-    /// Say what the board owes by `now_ms`, on `peer`: a run's word as it acts,
-    /// said again at the keep-alive, and the leaving of a run whose session
+    /// Say what the board owes by `now_ms`, on `peer`: an invocation's word as it acts,
+    /// said again at the keep-alive, and the leaving of an invocation whose session
     /// ended.
     pub(super) fn tick(&mut self, peer: &Link, now_ms: f64) {
-        // A run whose session ended leaves with it.
+        // An invocation whose session ended leaves with it.
         self.by_session.retain(|_, voice| voice.lease.is_live());
         let faces = self.faces();
         let Some(mut board) = self.board.take() else {
             return;
         };
         board.speak_for(&faces);
-        // The leaving of the last run here is said at once, and the board goes
+        // The leaving of the last invocation here is said at once, and the board goes
         // with it: nothing else is left to say.
         let left = faces.is_empty();
         let burst = if left {
@@ -241,7 +246,7 @@ impl Sessions {
         };
         for (_, frame) in burst {
             // A board says its device's own word too, and this host is no
-            // member here: only the runs' words leave.
+            // member here: only the invocations' words leave.
             if frame.on_behalf.is_some() {
                 let _ = peer.send(Cmd::SayForSession(self.id, HostWords::Presence(frame)));
             }
@@ -251,13 +256,13 @@ impl Sessions {
         }
     }
 
-    /// The runs here, each with its face: the agent it is, what it does and
+    /// The invocations here, each with its face: the agent it is, what it does and
     /// where, in its own colour. When a face is said, and its sequence, are the
     /// board's.
     fn faces(&self) -> Vec<(String, ShellPresence)> {
         self.by_session
             .iter()
-            .map(|(run, voice)| {
+            .map(|(session, voice)| {
                 let mut face = tilo_session_client::presence::view(
                     0,
                     tilo_clock::unix_now_ms(),
@@ -268,13 +273,13 @@ impl Sessions {
                     None,
                 );
                 face.selection.clone_from(&voice.selection);
-                (run.clone(), face)
+                (session.clone(), face)
             })
             .collect()
     }
 }
 
-/// The record `provider` names in `cluster`, as a run's presence names it.
+/// The record `provider` names in `cluster`, as an invocation's presence names it.
 fn live(provider: &str, cluster: &str) -> Option<LiveResource> {
     crate::member::actions::resource_of(provider, cluster).map(|route| LiveResource {
         app: route.app_id,
@@ -282,7 +287,7 @@ fn live(provider: &str, cluster: &str) -> Option<LiveResource> {
     })
 }
 
-/// When a run this host speaks for is next due: said again, or leaving. A run
+/// When an invocation this host speaks for is next due: said again, or leaving. An invocation
 /// present is looked at within [`ENDED_WITHIN`], so it leaves with its session
 /// rather than at the next restatement.
 pub(super) fn next_due(workspaces: &HashMap<WorkspaceId, super::Workspace>) -> Option<Instant> {
@@ -304,8 +309,8 @@ pub(super) fn next_due(workspaces: &HashMap<WorkspaceId, super::Workspace>) -> O
 }
 
 impl super::Worker {
-    /// Say `caller`'s run taking `request` at `phase`, `left_at` where a done
-    /// action left it ([`run_voice`]).
+    /// Say `caller`'s session taking `request` at `phase`, `left_at` where a done
+    /// action left it ([`session_voice`]).
     pub(super) fn voice(
         &mut self,
         workspace_id: WorkspaceId,
@@ -314,8 +319,8 @@ impl super::Worker {
         (phase, left_at): (&InteractionPhase, Option<&ActorPlace>),
     ) {
         // A link changes nothing and moves no one, and a window shown on the
-        // layout shows what the run did already: the people watching are not
-        // told the run asked for either.
+        // layout shows what the invocation did already: the people watching are not
+        // told the invocation asked for either.
         if request.target.address.action == tilo_actions::remote::SHARE_LINK_ACTION
             || tilo_actions::remote::application_provider(&request.target.provider).is_some()
         {
@@ -334,7 +339,7 @@ impl super::Worker {
         );
     }
 
-    /// Say `caller`'s run present in `workspace_id`, waiting ([`run_voice`]).
+    /// Say `caller`'s session present in `workspace_id`, waiting ([`session_voice`]).
     pub(super) fn voice_arrived(&mut self, workspace_id: WorkspaceId, caller: &Caller) {
         let Some((workspace, cluster)) = self.said_in(workspace_id) else {
             return;
@@ -344,7 +349,7 @@ impl super::Worker {
             .arrived((&workspace.peer, &cluster), caller);
     }
 
-    /// Say `caller`'s run reading the catalogue `query` asks ([`run_voice`]).
+    /// Say `caller`'s session reading the catalogue `query` asks ([`session_voice`]).
     pub(super) fn voice_catalogue(
         &mut self,
         workspace_id: WorkspaceId,
@@ -376,7 +381,7 @@ impl super::Worker {
     }
 
     /// The workspace `workspace_id` names, as its presence frames name it:
-    /// where a run of this host's is said.
+    /// where an invocation of this host's is said.
     fn said_in(&mut self, workspace_id: WorkspaceId) -> Option<(&mut super::Workspace, String)> {
         let workspace = self.workspaces.get_mut(&workspace_id)?;
         let cluster = workspace.cluster_id(workspace_id)?;
@@ -384,7 +389,7 @@ impl super::Worker {
     }
 }
 
-/// How a run's action ended, as it is narrated.
+/// How an invocation's action ended, as it is narrated.
 pub(super) fn ended_phase(
     outcome: &Result<(tilo_actions::ActionOutput, Option<ActorPlace>), Outcome>,
 ) -> InteractionPhase {
@@ -401,7 +406,7 @@ pub(super) fn ended_phase(
     }
 }
 
-/// How a run's action the host turned away is narrated.
+/// How an invocation's action the host turned away is narrated.
 pub(super) fn refused_phase() -> InteractionPhase {
     InteractionPhase::Failed {
         code: None,

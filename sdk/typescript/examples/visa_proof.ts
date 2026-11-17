@@ -411,8 +411,8 @@ async function main(): Promise<number> {
   check([...runs.values()].every((title) => title === RUN_TITLE), `History names the agent's one run ${JSON.stringify(RUN_TITLE)}`);
 
   say("4d. The reviewer undoes the agent's run");
-  const runId = [...runs.keys()][0];
-  await reviewing.do(`${FORM}#undo`, { run: runId });
+  const invocationId = [...runs.keys()][0];
+  await reviewing.do(`${FORM}#undo`, { run: invocationId });
   const back = valuesOf(await fieldsOf(reviewing));
   say("   after undo", JSON.stringify(back));
   check(

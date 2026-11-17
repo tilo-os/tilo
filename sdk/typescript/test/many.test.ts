@@ -1,4 +1,4 @@
-/** A bulk call: one all-or-nothing step per call, and every call one run. */
+/** A bulk call: one all-or-nothing step per call, and every call one invocation group. */
 
 import { describe, expect, it } from "bun:test";
 
@@ -23,7 +23,7 @@ function groupCalls(api: FakeApi) {
 }
 
 describe("a bulk call", () => {
-  it("sends a few group calls of one run", async () => {
+  it("sends a few group calls of one invocation", async () => {
     const api = new FakeApi();
     const issues = await tracker(api);
     const items = Array.from({ length: 1200 }, (_, index) => ({
@@ -35,8 +35,8 @@ describe("a bulk call", () => {
 
     const calls = groupCalls(api);
     expect(calls.length).toBe(3);
-    expect(new Set(calls.map((call) => call.headers["tilo-run"])).size).toBe(1);
-    expect(new Set(calls.map((call) => call.headers["tilo-run-title"])).size).toBe(1);
+    expect(new Set(calls.map((call) => call.headers["tilo-invocation"])).size).toBe(1);
+    expect(new Set(calls.map((call) => call.headers["tilo-invocation-title"])).size).toBe(1);
     const sent = calls.flatMap(
       (call) => (JSON.parse(call.body) as { actions: unknown[] }).actions,
     );
@@ -57,18 +57,18 @@ describe("a bulk call", () => {
     expect(api.calls.length).toBe(sent);
   });
 
-  it("is a step of the run the caller opened", async () => {
+  it("is a step of the invocation the caller opened", async () => {
     const api = new FakeApi();
     const issues = await tracker(api);
 
     await new Tilo({ url: "https://api.test", key: api.key, fetch: api.fetch })
       .workspace("jane-doe")
-      .run("Import the backlog", async () => {
+      .invocation("Import the backlog", async () => {
         await issues.many("create", [{ title: "One" }, { title: "Two" }]);
       });
 
     const calls = groupCalls(api);
     expect(calls.length).toBe(1);
-    expect(calls[0]?.headers["tilo-run-title"]).toBe("Import the backlog");
+    expect(calls[0]?.headers["tilo-invocation-title"]).toBe("Import the backlog");
   });
 });

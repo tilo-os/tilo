@@ -148,5 +148,6 @@ resource is `ws.resource(path)`.
 
 ## Where next
 
-- [Runs and history](runs-and-history.md): one call is one step, and a run of calls can be undone whole.
+- [Invocations and history](invocations-and-history.md): one call is one step, and a group of calls can be
+  undone whole.
 - [Approvals](approvals.md): what happens when an action wants a person first.

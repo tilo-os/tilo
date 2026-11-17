@@ -1,7 +1,8 @@
 //! What happens in a workspace, as it happens: its changes, the key's runs
 //! starting and ending, and who is there. One watch ([`Watch`]) reads them,
 //! with the same `tilo_watch` an agent holds, and both the event stream
-//! (`…/events`, `…/runs/{run}/output`) and webhooks ([`super::webhooks`])
+//! (`…/events`, `…/invocations/{invocation}/output`) and webhooks
+//! ([`super::webhooks`])
 //! carry what it reads.
 
 use super::answers::Event;
@@ -14,10 +15,10 @@ use std::sync::Arc;
 /// How long one look waits for something to happen; an idle stream says it
 /// is alive this often.
 const LOOK_MS: u64 = 15_000;
-/// The phases a run ends in.
+/// The phases an invocation ends in.
 const ENDED: [&str; 4] = ["succeeded", "failed", "cancelled", "refused"];
 
-/// One workspace's events, read as a session's run.
+/// One workspace's events, read in a session.
 pub struct Watch {
     session: Arc<Session>,
     workspace: String,
@@ -63,7 +64,7 @@ impl Watch {
                 workspace: Some(self.workspace.clone()),
                 tool: "tilo_watch",
                 arguments: Value::Object(arguments),
-                run: None,
+                group: None,
             })
             .await?;
         let typed = super::typed_answer(&answer)?;
@@ -96,32 +97,24 @@ impl Watch {
     }
 }
 
-/// An event's data as the API names it: a run by its invocation (`run`),
-/// with its title (`title`) and the run it is a step of (`group`). A change
-/// keeps the resource it changed (`resources`), who made it (`actor`, a
-/// person's or an agent's own fields) and the run it is a step of.
+/// An event's data as the API names it: an invocation by its id
+/// (`invocation`), with its title (`title`) and the group it is a step of
+/// (`group`). A change keeps the resource it changed (`resources`), who made
+/// it (`actor`, a person's or an agent's own fields) and the group it is a
+/// step of.
 fn data_of(event: &Value) -> Value {
     let mut data = event.as_object().cloned().unwrap_or_default();
     data.remove("kind");
-    if let Some(title) = data.remove("run") {
-        data.insert("title".into(), title);
-    }
-    let invocation = data
-        .remove("invocation_id")
-        .or_else(|| data.remove("invocation"));
-    if let Some(run) = invocation {
-        data.insert("run".into(), run);
-    }
-    if let Some(group) = data.remove("run_id") {
-        data.insert("group".into(), group);
+    if let Some(invocation) = data.remove("invocation_id") {
+        data.insert("invocation".into(), invocation);
     }
     Value::Object(data)
 }
 
-/// The workspace's events as server-sent events, or only `run`'s, ending
-/// when it ends. The stream reads on while someone reads it.
+/// The workspace's events as server-sent events, or only one invocation's,
+/// ending when it ends. The stream reads on while someone reads it.
 #[must_use]
-pub fn stream(mut watch: Watch, run: Option<String>) -> crate::Body {
+pub fn stream(mut watch: Watch, invocation: Option<String>) -> crate::Body {
     let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(16);
     tokio::spawn(async move {
         loop {
@@ -142,14 +135,15 @@ pub fn stream(mut watch: Watch, run: Option<String>) -> crate::Body {
             }
             let last = events.len().saturating_sub(1);
             for (index, event) in events.into_iter().enumerate() {
-                let theirs = run.as_deref().is_none_or(|run| {
-                    event.kind == "run"
-                        && event.data.get("run").and_then(Value::as_str) == Some(run)
+                let theirs = invocation.as_deref().is_none_or(|invocation| {
+                    event.kind == "invocation"
+                        && event.data.get("invocation").and_then(Value::as_str)
+                            == Some(invocation)
                 });
                 if !theirs {
                     continue;
                 }
-                let ended = run.is_some()
+                let ended = invocation.is_some()
                     && event
                         .data
                         .get("phase")

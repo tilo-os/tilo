@@ -94,9 +94,9 @@ pub struct ConfirmationQuestion {
     pub device_label: String,
     /// The workspace the invocation runs in.
     pub workspace: String,
-    /// The run the invocation is a step of, by the title its agent gave it;
+    /// The group the invocation is a step of, by the title its agent gave it;
     /// empty when it named none.
-    pub run: String,
+    pub title: String,
     /// The action by the title its app declares, and the record it acts on
     /// by its name, as the asking device labels them.
     pub action_label: String,

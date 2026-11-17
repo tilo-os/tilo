@@ -193,7 +193,7 @@ async fn a_backend_key_works_through_the_api_on_a_relay_host() {
     let (status, hook) = backend
         .post(
             &format!("{base}/webhooks"),
-            &json!({"url": url, "events": ["run"]}),
+            &json!({"url": url, "events": ["invocation"]}),
             &[],
         )
         .await;
@@ -226,7 +226,7 @@ async fn a_backend_key_works_through_the_api_on_a_relay_host() {
         .await;
     assert_eq!(status, 200, "{imported}");
     assert_eq!(imported["status"], "ok", "{imported}");
-    let run = imported["run"].as_str().unwrap().to_owned();
+    let run = imported["invocation"].as_str().unwrap().to_owned();
     // Retried, it answers the same run and imports nothing twice.
     let (_, retried) = backend
         .post(
@@ -239,7 +239,7 @@ async fn a_backend_key_works_through_the_api_on_a_relay_host() {
             ],
         )
         .await;
-    assert_eq!(retried["run"], json!(run), "{retried}");
+    assert_eq!(retried["invocation"], json!(run), "{retried}");
     let (status, fields) = backend
         .post(
             &format!("{base}/resources/pdf-viewer/application.pdf/actions/read-form-fields"),
@@ -251,7 +251,7 @@ async fn a_backend_key_works_through_the_api_on_a_relay_host() {
     assert!(fields["result"].to_string().contains("surname"), "{fields}");
 
     // The run, followed by its id.
-    let (status, followed) = backend.get(&format!("{base}/runs/{run}")).await;
+    let (status, followed) = backend.get(&format!("{base}/invocations/{run}")).await;
     assert_eq!(
         (status, &followed["status"]),
         (200, &json!("ok")),
@@ -508,7 +508,7 @@ async fn a_hosted_workspace_streams_changes_finds_and_undoes_runs() {
         )
         .await;
     assert_eq!(status, 200, "{written}");
-    let run = written["run"].as_str().unwrap().to_owned();
+    let run = written["invocation"].as_str().unwrap().to_owned();
 
     // Search finds what the workspace holds.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -532,7 +532,7 @@ async fn a_hosted_workspace_streams_changes_finds_and_undoes_runs() {
     // The run is taken back whole, by its id.
     let (status, undone) = backend
         .post(
-            &format!("{base}/runs/{run}/undo"),
+            &format!("{base}/invocations/{run}/undo"),
             &json!({}),
             &[("idempotency-key", "undo-letter")],
         )

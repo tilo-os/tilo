@@ -259,7 +259,7 @@ tilo_test_env::scenario! {
             let started = std::time::Instant::now();
             let watched = watching(&server, json!({"cursor": cursor, "wait_ms": HELD}));
             tokio::time::sleep(BEFORE).await;
-            server.watch_run_started(
+            server.watch_invocation_started(
                 "3fa2c1d0-1111-4222-8333-444455556666",
                 "notes/Todo/body#append-paragraph",
             );
@@ -267,15 +267,15 @@ tilo_test_env::scenario! {
             assert!(!failed, "{watched}");
             assert!(
                 started.elapsed() < PROMPTLY,
-                "the watch answered {} ms after it began, not on the run",
+                "the watch answered {} ms after it began, not on the invocation",
                 started.elapsed().as_millis()
             );
             let run = watched["events"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|event| event["kind"] == "run")
-                .unwrap_or_else(|| panic!("the run is told: {watched}"));
+                .find(|event| event["kind"] == "invocation")
+                .unwrap_or_else(|| panic!("the invocation is told: {watched}"));
             assert_eq!(run["phase"], "started");
             assert_eq!(run["path"], "notes/Todo/body#append-paragraph");
         });

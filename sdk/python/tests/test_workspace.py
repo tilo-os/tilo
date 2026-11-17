@@ -1,4 +1,4 @@
-"""Reading a workspace, acting in it, following runs and editing fields."""
+"""Reading a workspace, acting in it, following invocations and editing fields."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from tilo import (
     AsyncTilo,
     Refused,
     Resource,
-    Run,
-    RunInfo,
-    RunList,
+    Invocation,
+    InvocationInfo,
+    InvocationList,
 )
 
 from fake_api import PDF, TODO, WORKSPACE_ID, FakeApi, link_to
@@ -121,63 +121,63 @@ async def test_an_action_answers_its_result(workspace, api):
 async def test_a_pending_action_is_a_run_with_a_result(workspace, api):
     api.append_pending = True
 
-    run = await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
+    invocation = await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
 
-    assert isinstance(run, Run)
-    assert run.run_id.startswith("run-")
-    assert await run.result() == {"appended": "c01e"}
-    assert run.link == link_to(TODO)
-    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/runs/")[-1]["query"] == {"wait": "60"}
+    assert isinstance(invocation, Invocation)
+    assert invocation.invocation_id.startswith("invocation-")
+    assert await invocation.result() == {"appended": "c01e"}
+    assert invocation.link == link_to(TODO)
+    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/invocations/")[-1]["query"] == {"wait": "60"}
 
 
 async def test_a_run_is_followed_with_the_wait_it_was_given(workspace, api):
     api.append_pending = True
     api.polls_until_done = 3
-    run = await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
+    invocation = await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
 
-    answer = await run.answer(timeout=0.5)
+    answer = await invocation.answer(timeout=0.5)
 
     assert answer["status"] == "ok"
-    holds = [call["query"]["wait"] for call in api.asked("GET", "/runs/")]
+    holds = [call["query"]["wait"] for call in api.asked("GET", "/invocations/")]
     assert holds[-1] in ("0", "1")
 
 
 async def test_a_run_is_cancelled_and_undone(workspace, api):
     api.append_pending = True
-    run = await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
+    invocation = await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
 
-    stopped = await run.cancel()
+    stopped = await invocation.cancel()
     assert stopped["status"] == "cancelled"
-    assert api.cancelled == [run.run_id]
+    assert api.cancelled == [invocation.invocation_id]
 
-    undone = await run.undo()
+    undone = await invocation.undo()
     assert undone == {"status": "ok", "undone": [TODO]}
-    assert api.undone == [run.run_id]
+    assert api.undone == [invocation.invocation_id]
 
 
 async def test_the_workspaces_runs_list_newest_first_and_read_on_page_by_page(workspace, api):
     await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
     api.append_pending = True
-    run = await workspace.do(f"{TODO}#append-paragraph", text="Buy bread")
-    await run.undo()
+    invocation = await workspace.do(f"{TODO}#append-paragraph", text="Buy bread")
+    await invocation.undo()
 
-    first = await workspace.runs(limit=1)
+    first = await workspace.invocations(limit=1)
 
-    assert isinstance(first, RunList)
+    assert isinstance(first, InvocationList)
     assert (first.total, first.waiting, first.next_cursor) == (2, 0, "1")
-    newest = first.runs[0]
-    assert isinstance(newest, RunInfo)
+    newest = first.invocations[0]
+    assert isinstance(newest, InvocationInfo)
     assert (newest.id, newest.status, newest.by, newest.by_kind) == (
-        run.run_id,
+        invocation.invocation_id,
         "undone",
         "Visa backend",
         "agent",
     )
-    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/runs")[-1]["query"] == {"limit": "1"}
+    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/invocations")[-1]["query"] == {"limit": "1"}
     every = [listed async for listed in first]
     assert [listed.status for listed in every] == ["undone", "ended"]
     assert every[1].changes == 1 and every[1].undoable
-    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/runs")[-1]["query"] == {
+    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/invocations")[-1]["query"] == {
         "limit": "1",
         "cursor": "1",
     }
@@ -185,12 +185,12 @@ async def test_the_workspaces_runs_list_newest_first_and_read_on_page_by_page(wo
 
 async def test_a_run_output_follows_its_events(workspace, api):
     api.append_pending = True
-    run = await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
+    invocation = await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
 
-    phases = [event.phase async for event in run.output()]
+    phases = [event.phase async for event in invocation.output()]
 
     assert phases == ["started", "succeeded"]
-    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/runs/{run.run_id}/output")
+    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/invocations/{invocation.invocation_id}/output")
 
 
 async def test_an_ask_raises_with_its_link_and_waits_for_the_answer(workspace, api):
@@ -207,18 +207,18 @@ async def test_an_ask_raises_with_its_link_and_waits_for_the_answer(workspace, a
 
 
 async def test_calls_inside_a_run_carry_its_id_and_title(workspace, api):
-    async with workspace.run("Fill Jane's application") as group:
+    async with workspace.invocation("Fill Jane's application") as group:
         await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
         await workspace.do(f"{PDF}#read-form-fields")
 
     calls = api.asked("POST", "/v1/workspaces/")[-2:]
-    assert [call["headers"]["tilo-run"] for call in calls] == [group.id, group.id]
-    assert calls[0]["headers"]["tilo-run-title"] == "Fill Jane's application"
-    assert len(group.runs) == 2
+    assert [call["headers"]["tilo-invocation"] for call in calls] == [group.id, group.id]
+    assert calls[0]["headers"]["tilo-invocation-title"] == "Fill Jane's application"
+    assert len(group.invocations) == 2
 
 
 async def test_a_run_hands_over_the_link_to_the_record_it_changed(workspace, api):
-    async with workspace.run("Fill Jane's application") as group:
+    async with workspace.invocation("Fill Jane's application") as group:
         await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
         await workspace.do(f"{PDF}#read-form-fields")
         await workspace.do(f"{TODO}#append-paragraph", text="Buy bread")
@@ -228,7 +228,7 @@ async def test_a_run_hands_over_the_link_to_the_record_it_changed(workspace, api
 
 
 async def test_a_run_across_records_hands_over_each_link_once(workspace):
-    async with workspace.run("Fill Jane's application") as group:
+    async with workspace.invocation("Fill Jane's application") as group:
         await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
         await workspace.do(
             f"{PDF}#field-edit",
@@ -264,12 +264,12 @@ async def test_a_window_shows_what_a_resource_looks_like_and_its_picture(workspa
 
 
 async def test_a_run_group_is_undone_as_its_run(workspace, api):
-    async with workspace.run("Fill Jane's application") as group:
+    async with workspace.invocation("Fill Jane's application") as group:
         await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
         undone = await group.undo()
 
     assert undone["status"] == "ok"
-    assert api.undone == [group.runs[-1]]
+    assert api.undone == [group.invocations[-1]]
 
 
 async def test_a_program_answers_its_output_and_steps(workspace, api):

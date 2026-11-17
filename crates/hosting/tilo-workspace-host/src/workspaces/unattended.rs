@@ -244,7 +244,7 @@ fn question(caller: &Caller, certificate: &DeviceCert, workspace: &str) -> Pendi
         id,
         agent_id: caller.acting().agent_id().unwrap_or_default().to_owned(),
         agent_label: certificate.device_label.clone(),
-        run: String::new(),
+        title: String::new(),
         action_label: "let keys made for this workspace alone run commands in its Linux machine \
                        without asking you each time"
             .into(),

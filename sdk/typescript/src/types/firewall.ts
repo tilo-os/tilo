@@ -8,12 +8,12 @@
  * resource's path (`firewall/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -95,27 +95,27 @@ export interface Config extends tilo.Resource {
   default_zone: ZoneKind;
   zones: Record<string, StoredZone>;
   start(): Promise<void>;
-  /** Runs `start` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `start` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   startMany(items: StartArgs[]): Promise<tilo.ActionAnswer[]>;
   stop(): Promise<void>;
-  /** Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   stopMany(items: StopArgs[]): Promise<tilo.ActionAnswer[]>;
   enterPanicMode(): Promise<void>;
-  /** Runs `enter-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `enter-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   enterPanicModeMany(items: EnterPanicModeArgs[]): Promise<tilo.ActionAnswer[]>;
   exitPanicMode(): Promise<void>;
-  /** Runs `exit-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `exit-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   exitPanicModeMany(items: ExitPanicModeArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteRule(args: {
     zone: ZoneKind;
     rule: string;
   }): Promise<void>;
-  /** Runs `delete-rule` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-rule` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteRuleMany(items: DeleteRuleArgs[]): Promise<tilo.ActionAnswer[]>;
   import(args: {
     config: unknown;
   }): Promise<void>;
-  /** Runs `import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   importMany(items: ImportArgs[]): Promise<tilo.ActionAnswer[]>;
   readBlocked(): Promise<void>;
 }
@@ -136,7 +136,7 @@ export interface Applied extends tilo.Resource {
     device: string;
     config: string;
   }): Promise<void>;
-  /** Runs `applied` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `applied` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   appliedMany(items: AppliedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 

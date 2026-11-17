@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Book` is the app's `contacts.book` at `contacts/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Address",
@@ -213,7 +213,7 @@ class Book(Resource):
         return self.action("new-contact", name=name)
 
     def new_contact_many(self, items: list[NewContactArgs]) -> list[dict[str, Any]]:
-        """Runs `new-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `new-contact` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("new-contact", items)
 
     def add_contacts(self, *, contacts: list[Contact]) -> None:
@@ -221,7 +221,7 @@ class Book(Resource):
         return self.action("add-contacts", contacts=contacts)
 
     def add_contacts_many(self, items: list[AddContactsArgs]) -> list[dict[str, Any]]:
-        """Runs `add-contacts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-contacts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-contacts", items)
 
     def delete_contact(self, *, contact: str) -> None:
@@ -229,7 +229,7 @@ class Book(Resource):
         return self.action("delete-contact", contact=contact)
 
     def delete_contact_many(self, items: list[DeleteContactArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-contact` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-contact", items)
 
     def merge_contacts(self,
@@ -242,7 +242,7 @@ class Book(Resource):
         return self.action("merge-contacts", contact=contact, source=source, take_from_source=take_from_source)
 
     def merge_contacts_many(self, items: list[MergeContactsArgs]) -> list[dict[str, Any]]:
-        """Runs `merge-contacts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `merge-contacts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("merge-contacts", items)
 
     def export_vcard_content(self,
@@ -277,7 +277,7 @@ class Identities(Resource):
         return self.action("project-contact", person=person, label=label)
 
     def project_contact_many(self, items: list[ProjectContactArgs]) -> list[dict[str, Any]]:
-        """Runs `project-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `project-contact` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("project-contact", items)
 
     def remove_contact(self, *, person: str) -> None:
@@ -285,7 +285,7 @@ class Identities(Resource):
         return self.action("remove-contact", person=person)
 
     def remove_contact_many(self, items: list[RemoveContactArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-contact` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-contact", items)
 
     def confirm_endpoint(self,
@@ -299,7 +299,7 @@ class Identities(Resource):
         return self.action("confirm-endpoint", person=person, endpoint=endpoint, service=service, recipient=recipient)
 
     def confirm_endpoint_many(self, items: list[ConfirmEndpointArgs]) -> list[dict[str, Any]]:
-        """Runs `confirm-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `confirm-endpoint` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("confirm-endpoint", items)
 
     def confirm_account(self,
@@ -315,7 +315,7 @@ class Identities(Resource):
         return self.action("confirm-account", person=person, endpoint=endpoint, service=service, scope=scope, recipient=recipient, revision=revision)
 
     def confirm_account_many(self, items: list[ConfirmAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `confirm-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `confirm-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("confirm-account", items)
 
     def replace_endpoint(self,
@@ -330,7 +330,7 @@ class Identities(Resource):
         return self.action("replace-endpoint", person=person, previous=previous, endpoint=endpoint, service=service, recipient=recipient)
 
     def replace_endpoint_many(self, items: list[ReplaceEndpointArgs]) -> list[dict[str, Any]]:
-        """Runs `replace-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `replace-endpoint` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("replace-endpoint", items)
 
     def replace_account(self,
@@ -347,7 +347,7 @@ class Identities(Resource):
         return self.action("replace-account", person=person, previous=previous, endpoint=endpoint, service=service, scope=scope, recipient=recipient, revision=revision)
 
     def replace_account_many(self, items: list[ReplaceAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `replace-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `replace-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("replace-account", items)
 
     def project_phones(self,
@@ -359,7 +359,7 @@ class Identities(Resource):
         return self.action("project-phones", person=person, phones=phones)
 
     def project_phones_many(self, items: list[ProjectPhonesArgs]) -> list[dict[str, Any]]:
-        """Runs `project-phones` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `project-phones` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("project-phones", items)
 
     def project_emails(self,
@@ -371,7 +371,7 @@ class Identities(Resource):
         return self.action("project-emails", person=person, emails=emails)
 
     def project_emails_many(self, items: list[ProjectEmailsArgs]) -> list[dict[str, Any]]:
-        """Runs `project-emails` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `project-emails` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("project-emails", items)
 
     def project_contacts(self,
@@ -383,7 +383,7 @@ class Identities(Resource):
         return self.action("project-contacts", people=people, removed=removed)
 
     def project_contacts_many(self, items: list[ProjectContactsArgs]) -> list[dict[str, Any]]:
-        """Runs `project-contacts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `project-contacts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("project-contacts", items)
 
     def forget_endpoint(self,
@@ -395,7 +395,7 @@ class Identities(Resource):
         return self.action("forget-endpoint", person=person, endpoint=endpoint)
 
     def forget_endpoint_many(self, items: list[ForgetEndpointArgs]) -> list[dict[str, Any]]:
-        """Runs `forget-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `forget-endpoint` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("forget-endpoint", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

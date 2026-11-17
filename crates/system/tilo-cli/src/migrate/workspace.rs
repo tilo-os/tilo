@@ -98,12 +98,12 @@ pub struct Run {
 }
 
 impl Run {
-    /// The `_meta` an action of this run carries: the typed answer it asks for, and the run it is a
-    /// step of.
+    /// The `_meta` an action of this run carries: the typed answer it asks for, and the group it is
+    /// a step of.
     fn meta(&self) -> Value {
         json!({"so.tilo.mcp": {
             "structured": true,
-            "run": {"id": self.id, "title": self.title},
+            "invocation": {"id": self.id, "title": self.title},
         }})
     }
 }
@@ -570,7 +570,7 @@ mod tests {
             .pointer("/params/_meta/so.tilo.mcp/structured")
             .cloned();
         let named = calls[0]
-            .pointer("/params/_meta/so.tilo.mcp/run/id")
+            .pointer("/params/_meta/so.tilo.mcp/invocation/id")
             .cloned();
         drop(calls);
         assert_eq!(

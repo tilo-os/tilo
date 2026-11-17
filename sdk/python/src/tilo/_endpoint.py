@@ -1,8 +1,8 @@
 """One endpoint the client calls: the account, or one workspace.
 
-Every call here is a route of Tilo's `/v1`, naming the run a call is a step
+Every call here is a route of Tilo's `/v1`, naming the group a call is a step
 of when one is open, and answering what the route answers: an action's
-result, the `Run` that follows one, or the ask it waits on.
+result, the `Invocation` that follows one, or the ask it waits on.
 """
 
 from __future__ import annotations
@@ -20,9 +20,9 @@ from ._errors import AskPending, ProtocolError, Refused
 from ._models import Event, ProgramAnswer
 from ._transport import Response, Unreachable, events
 
-# The headers a call names its run in, and the surface generated types are for.
-RUN_HEADER = "tilo-run"
-RUN_TITLE_HEADER = "tilo-run-title"
+# The headers a call names its group in, and the surface generated types are for.
+INVOCATION_HEADER = "tilo-invocation"
+INVOCATION_TITLE_HEADER = "tilo-invocation-title"
 SURFACE_HEADER = "tilo-surface"
 # What an action that made a file answers instead of a result.
 CONTENT_PREFIX = "tilo.content:"
@@ -56,7 +56,7 @@ def result_of(answer: Mapping[str, Any]) -> Any:
 
 
 def links_of(answer: Mapping[str, Any]) -> list[str]:
-    """The record links an answer carries: a call's `link`, a run's `links`."""
+    """The record links an answer carries: a call's `link`, a group's `links`."""
     found = [answer.get("link")]
     batch = answer.get("links")
     if isinstance(batch, list):
@@ -64,12 +64,13 @@ def links_of(answer: Mapping[str, Any]) -> list[str]:
     return [link for link in found if isinstance(link, str) and link]
 
 
-class RunGroup:
-    """A run a group of calls is attributed to: one undo step per app.
+class InvocationGroup:
+    """An invocation group a set of calls is attributed to: one undo step per
+    app.
 
     `links` are the links to every record its calls changed, each once, in
     the order first changed; `link` is the one link when they changed one
-    record, else `None`: a run across several records hands over `links`.
+    record, else `None`: a group across several records hands over `links`.
     A link opens the record in its app for the workspace's members and
     carries no secret.
     """
@@ -78,46 +79,46 @@ class RunGroup:
         self.endpoint = endpoint
         self.title = title
         self.id = id
-        self.runs: list[str] = []
+        self.invocations: list[str] = []
         self.links: list[str] = []
 
     def note(self, answer: Mapping[str, Any]) -> None:
-        run = answer.get("run")
-        if isinstance(run, str) and run:
-            self.runs.append(run)
+        invocation = answer.get("invocation")
+        if isinstance(invocation, str) and invocation:
+            self.invocations.append(invocation)
         for link in links_of(answer):
             if link not in self.links:
                 self.links.append(link)
 
     @property
     def link(self) -> str | None:
-        """The link to the one record the run changed, or `None`."""
+        """The link to the one record it changed, or `None`."""
         return self.links[0] if len(self.links) == 1 else None
 
     def undo(self) -> Any:
-        """Take back exactly what the run's calls changed, in every record.
+        """Take back exactly what its calls changed, in every record.
 
         The host refuses, changing nothing, when someone else's change stands
-        on top of the run's in a record.
+        on top of the group's in a record.
         """
-        if not self.runs:
-            raise ProtocolError("the run made no call to take back")
-        return self.endpoint.client.handoff(self.endpoint.undo(self.runs[-1]))
+        if not self.invocations:
+            raise ProtocolError("the invocation group made no call to take back")
+        return self.endpoint.client.handoff(self.endpoint.undo(self.invocations[-1]))
 
-    async def __aenter__(self) -> RunGroup:
+    async def __aenter__(self) -> InvocationGroup:
         return self
 
     async def __aexit__(self, *_: Any) -> None:
         return None
 
 
-CURRENT: contextvars.ContextVar[RunGroup | None] = contextvars.ContextVar(
-    "tilo_run_group", default=None
+CURRENT: contextvars.ContextVar[InvocationGroup | None] = contextvars.ContextVar(
+    "tilo_invocation_group", default=None
 )
 
 
 class Endpoint:
-    """The account's routes or one workspace's, and the run a call joins."""
+    """The account's routes or one workspace's, and the group a call joins."""
 
     def __init__(self, client: Any, workspace: str | None = None) -> None:
         self.client = client
@@ -138,15 +139,15 @@ class Endpoint:
     def api(self) -> Any:
         return self.client.api
 
-    def group(self) -> RunGroup | None:
-        """The run this call is a step of, if a group is open."""
-        return self.client.run_group if self.client.sync else CURRENT.get()
+    def group(self) -> InvocationGroup | None:
+        """The invocation group this call is a step of, if one is open."""
+        return self.client.invocation_group if self.client.sync else CURRENT.get()
 
-    def run_headers(self) -> dict[str, str]:
+    def invocation_headers(self) -> dict[str, str]:
         group = self.group()
         if group is None:
             return {}
-        return {RUN_HEADER: group.id, RUN_TITLE_HEADER: group.title}
+        return {INVOCATION_HEADER: group.id, INVOCATION_TITLE_HEADER: group.title}
 
     async def call(
         self,
@@ -160,8 +161,8 @@ class Endpoint:
         stream: bool = False,
         grouped: bool = True,
     ) -> Response:
-        """One route, with the run named and the answer refused if it is one."""
-        sent = self.run_headers() if grouped else {}
+        """One route, with the group named and the answer refused if it is one."""
+        sent = self.invocation_headers() if grouped else {}
         sent.update(headers or {})
         return await self.api.call(
             method, path, query=query, json=json, data=data, headers=sent, stream=stream
@@ -197,7 +198,7 @@ class Endpoint:
             )
         return body
 
-    # -- actions and runs ------------------------------------------------
+    # -- actions and invocations ----------------------------------------
 
     async def act(
         self, path: str, args: Mapping[str, Any], *, surface: str | None = None
@@ -216,41 +217,46 @@ class Endpoint:
         return self.follow(answer, path)
 
     def follow(self, answer: Mapping[str, Any], path: str | None = None) -> Any:
-        """What an action's answer hands back: its result, its `Run`, or its ask."""
+        """What an action's answer hands back: its result, its `Invocation`, or its
+        ask."""
         group = self.group()
         if group is not None:
             group.note(answer)
-        run = answer.get("run")
+        invocation = answer.get("invocation")
         if answer.get("status") != "pending":
             return result_of(answer)
-        if not isinstance(run, str) or not run:
-            raise ProtocolError("an action is pending without naming the run that followed it")
+        if not isinstance(invocation, str) or not invocation:
+            raise ProtocolError(
+                "an action is pending without naming the invocation that followed it"
+            )
         ask = answer.get("ask")
         if isinstance(ask, Mapping):
             url = ask.get("url")
             raise AskPending(
                 url if isinstance(url, str) else None,
-                run,
+                invocation,
                 question=ask,
-                follow=lambda: self.wait(run),
+                follow=lambda: self.wait(invocation),
             )
-        from ._run import Run
+        from ._invocation import Invocation
 
-        return Run(self, run, path)
+        return Invocation(self, invocation, path)
 
-    def _run_path(self, run: str) -> str:
-        return self.path("runs", quote(run, safe=""))
+    def _invocation_path(self, invocation: str) -> str:
+        return self.path("invocations", quote(invocation, safe=""))
 
-    async def status(self, run: str, cancel: bool = False) -> Mapping[str, Any]:
-        """How a run stands now, or, with `cancel`, stop it."""
+    async def status(self, invocation: str, cancel: bool = False) -> Mapping[str, Any]:
+        """How an invocation stands now, or, with `cancel`, stop it."""
         if cancel:
             return await self.json(
-                "POST", self._run_path(run) + "/cancel", json={}, grouped=False
+                "POST", self._invocation_path(invocation) + "/cancel", json={}, grouped=False
             )
-        return await self.json("GET", self._run_path(run), query={"wait": 0}, grouped=False)
+        return await self.json(
+            "GET", self._invocation_path(invocation), query={"wait": 0}, grouped=False
+        )
 
-    async def wait(self, run: str, timeout: float | None = None) -> Mapping[str, Any]:
-        """Follow `run` until it is no longer pending."""
+    async def wait(self, invocation: str, timeout: float | None = None) -> Mapping[str, Any]:
+        """Follow `invocation` until it is no longer pending."""
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             remaining = None if deadline is None else deadline - time.monotonic()
@@ -260,17 +266,19 @@ class Endpoint:
                 else max(0, min(MAX_WAIT, math.ceil(remaining)))
             )
             answer = await self.json(
-                "GET", self._run_path(run), query={"wait": hold}, grouped=False
+                "GET", self._invocation_path(invocation), query={"wait": hold}, grouped=False
             )
             if answer.get("status") != "pending":
                 return answer
             if remaining is not None and remaining <= 0:
-                raise ProtocolError(f"run {run} is still pending after {timeout}s")
+                raise ProtocolError(
+                    f"invocation {invocation} is still pending after {timeout}s"
+                )
 
-    async def output(self, run: str) -> AsyncIterator[Event]:
-        """A run's events, from started to succeeded, failed or cancelled."""
+    async def output(self, invocation: str) -> AsyncIterator[Event]:
+        """An invocation's events, from started to succeeded, failed or cancelled."""
         response = await self.call(
-            "GET", self._run_path(run) + "/output", stream=True, grouped=False
+            "GET", self._invocation_path(invocation) + "/output", stream=True, grouped=False
         )
         async for event in events(response.chunks or _none()):
             sent = _event_of(event.event, event.data)
@@ -280,10 +288,12 @@ class Endpoint:
             if sent.phase in ("succeeded", "failed", "cancelled"):
                 return
 
-    async def undo(self, run: str) -> Any:
-        """Take back what a run changed: the invocation, or every call of the
-        run it is a step of."""
-        return await self.json("POST", self._run_path(run) + "/undo", json={}, grouped=False)
+    async def undo(self, invocation: str) -> Any:
+        """Take back what an invocation changed: the one call, or every call of
+        its group."""
+        return await self.json(
+            "POST", self._invocation_path(invocation) + "/undo", json={}, grouped=False
+        )
 
     async def program(self, source: str, confirm: bool | None = None) -> ProgramAnswer:
         """Run a tilolang program as one step."""
@@ -302,7 +312,8 @@ class Endpoint:
     # -- events ----------------------------------------------------------
 
     async def watch(self, path: str | None = None) -> AsyncIterator[Event]:
-        """Each change, run event and presence change, resuming after the last."""
+        """Each change, invocation event and presence change, resuming after the
+        last."""
         cursor: str | None = None
         pause = 0.2
         while True:
@@ -348,10 +359,10 @@ __all__ = [
     "CONTENT_PREFIX",
     "CURRENT",
     "Endpoint",
-    "RUN_HEADER",
-    "RUN_TITLE_HEADER",
+    "INVOCATION_HEADER",
+    "INVOCATION_TITLE_HEADER",
     "SURFACE_HEADER",
-    "RunGroup",
+    "InvocationGroup",
     "links_of",
     "result_of",
     "segments",

@@ -2057,7 +2057,7 @@ impl<P: Chained> Chain<P> {
             part: index,
             edit: super::history::HistoryEdit::Undo {
                 steps: None,
-                run: None,
+                invocation: None,
                 by: None,
                 to: None,
                 step: None,

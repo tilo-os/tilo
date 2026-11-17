@@ -70,13 +70,14 @@ so the host itself never runs it twice, also across API server restarts. A call 
 (waiting for a person) is not stored: retrying it with its key asks about the same invocation
 again, which is how a client awaits it. Keys are remembered for 24 hours per key holder.
 
-## Runs and attribution
+## Invocations and attribution
 
-Every call is a step of a run, which History, activity and presence name. A call names its run
-with `Tilo-Run: <id>` and its title with `Tilo-Run-Title: <words>` — on every call of the run,
-since each step's row is named by the title of the call that made it; every call carrying the
-same id is one run, one undo step per app (`POST …/runs/{run}/undo` takes it back). Without
-`Tilo-Run` each call is a run of its own, named for the key ("Visa backend #3").
+Every call is an invocation, which History, activity and presence name. A call names its group
+with `Tilo-Invocation: <id>` and its title with `Tilo-Invocation-Title: <words>` — on every call
+of the group, since each step's row is named by the title of the call that made it; every call
+carrying the same id is one invocation, one undo step per app
+(`POST …/invocations/{invocation}/undo` takes it back). Without `Tilo-Invocation` each call is
+an invocation of its own, named for the key ("Visa backend #3").
 
 ## Account
 
@@ -120,15 +121,16 @@ answers `cursor` for the next page.
 ## Actions
 
 `POST /v1/workspaces/{workspace}/resources/{path}/actions/{action}` runs `action` on the resource,
-with its arguments as the body (`{}` for none). Headers: `Idempotency-Key`, `Tilo-Run`,
+with its arguments as the body (`{}` for none). Headers: `Idempotency-Key`, `Tilo-Invocation`,
 `Prefer: wait=<seconds>` (how long to wait for the answer, default 10, at most 60), and
 `Tilo-Surface: <app>@<digest>` from generated types (see [Types](#types-and-versions)).
 
 - **`200`** it ran:
-  `{"status": "ok", "run": "…", "path": "notes/Todo#append-paragraph", "result": {...},
+  `{"status": "ok", "invocation": "…", "path": "notes/Todo#append-paragraph", "result": {...},
   "resources": [...], "link": "…", "edited_by_person": {...}}`
 - **`202`** it has not finished, or it waits for the person:
-  `{"status": "pending", "run": "…", "ask": {...}}` with `Location: /v1/workspaces/{workspace}/runs/{run}`.
+  `{"status": "pending", "invocation": "…", "ask": {...}}` with
+  `Location: /v1/workspaces/{workspace}/invocations/{invocation}`.
   Nothing ran yet when `ask` is there: the person is being asked on their device.
 - **`422`** the app refused or it failed: the error shape, with the action's row as `action`.
 
@@ -137,17 +139,17 @@ applies those actions of the record in order as one all-or-nothing step — one 
 one undo, and History records each member, attributed to the caller. If any member refuses,
 nothing applies. A group answers no `result`: its members' values are not carried back.
 
-## Runs
+## Invocations
 
-`{run}` is an invocation id from an action's answer, or a listed run's `id`.
+`{invocation}` is an id from an action's answer, or a listed invocation's `id`.
 
 | | |
 |---|---|
-| `GET /v1/workspaces/{workspace}/runs?limit=&cursor=` | the workspace's runs in records the key may read, newest first, whoever ran them (MCP: `tilo_read workspace/runs`, `tilo_ls workspace/runs {limit, cursor}`): `{"runs": [...], "total", "waiting", "pending", "next_cursor", "text"}`, 50 a page unless `limit` says (at most 200). A run is `{"id", "calls", "step", "by": {"name", "kind"}, "title", "status": "waiting"|"running"|"ended"|"failed"|"cancelled"|"undone", "failure", "started_ms", "ended_ms", "action", "summary", "changes", "undone", "records", "undoable", "undo_blocked", "recorded", "remembered"}`. A run that changed a record is listed after the host restarts, from that record's history, without an `id` (`remembered: false`); `step` names it either way. Of each run the key is told only what lies in records it may read now; a run with nothing there is not listed, and the totals count only what is listed |
-| `GET /v1/workspaces/{workspace}/runs/{run}?wait=` | the run as the action answers it; `wait` (seconds, at most 60) holds until it is no longer pending |
-| `POST /v1/workspaces/{workspace}/runs/{run}/cancel` | stops it: the run, now `cancelled` |
-| `POST /v1/workspaces/{workspace}/runs/{run}/undo` | takes back what it changed: `{"status": "ok", "undone": [...]}` |
-| `GET /v1/workspaces/{workspace}/runs/{run}/output` | its events as a stream (below), ending when it ends |
+| `GET /v1/workspaces/{workspace}/invocations?limit=&cursor=` | the workspace's invocations in records the key may read, newest first, whoever made them (MCP: `tilo_read workspace/invocations`, `tilo_ls workspace/invocations {limit, cursor}`): `{"items": [...], "total", "waiting", "pending", "next_cursor", "text"}`, 50 a page unless `limit` says (at most 200). An invocation is `{"id", "calls", "step", "by": {"name", "kind"}, "title", "status": "waiting"|"running"|"ended"|"failed"|"cancelled"|"undone", "failure", "started_ms", "ended_ms", "action", "summary", "changes", "undone", "records", "undoable", "undo_blocked", "recorded", "remembered"}`. One that changed a record is listed after the host restarts, from that record's history, without an `id` (`remembered: false`); `step` names it either way. Of each the key is told only what lies in records it may read now; one with nothing there is not listed, and the totals count only what is listed |
+| `GET /v1/workspaces/{workspace}/invocations/{invocation}?wait=` | the invocation as the action answers it; `wait` (seconds, at most 60) holds until it is no longer pending |
+| `POST /v1/workspaces/{workspace}/invocations/{invocation}/cancel` | stops it: the invocation, now `cancelled` |
+| `POST /v1/workspaces/{workspace}/invocations/{invocation}/undo` | takes back what it changed: `{"status": "ok", "undone": [...]}` |
+| `GET /v1/workspaces/{workspace}/invocations/{invocation}/output` | its events as a stream (below), ending when it ends |
 
 ## Events
 
@@ -155,12 +157,12 @@ nothing applies. A group answers no `result`: its members' values are not carrie
 Each event's `id` is a cursor: reconnecting with `Last-Event-ID` resumes after it, so each event is
 seen once. `event` is the kind, `data` its JSON:
 
-- `change` `{"path", "resources", "change", "sentence", "actor", "run", "title", "group", "time_ms", "undone"}`
+- `change` `{"path", "resources", "change", "sentence", "actor", "title", "group", "time_ms", "undone"}`
   — `resources` names every record the change wrote: each entry's `path`, and its `app`,
   `record` and `item` where the change names them. `actor` is structured (`{"kind": "person"|
   "agent", "name": …, …}`), `run` is the invocation it is a step of, `title` that run's name and
   `group` the run a client opened. A change a person made by hand has no `run`.
-- `run` `{"phase": "started"|"succeeded"|"failed"|"cancelled", "run", "path", "title", "time_ms"}`
+- `invocation` `{"phase": "started"|"succeeded"|"failed"|"cancelled", "invocation", "path", "title", "group", "time_ms"}`
 - `presence` `{"here": [{"who", "name", "kind": "person"|"agent"}]}`
 
 A comment line (`: keep-alive`) every 15 seconds keeps idle connections open.

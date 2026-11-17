@@ -8,12 +8,12 @@
  * resource's path (`clocks/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -151,12 +151,12 @@ export interface Collection extends tilo.Resource {
     city: string;
     timezone: string;
   }): Promise<void>;
-  /** Runs `add-world-clock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-world-clock` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addWorldClockMany(items: AddWorldClockArgs[]): Promise<tilo.ActionAnswer[]>;
   removeWorldClock(args: {
     world_clock: string;
   }): Promise<void>;
-  /** Runs `remove-world-clock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-world-clock` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeWorldClockMany(items: RemoveWorldClockArgs[]): Promise<tilo.ActionAnswer[]>;
   addAlarm(args: {
     label: string;
@@ -164,13 +164,13 @@ export interface Collection extends tilo.Resource {
     minute: number;
     weekdays: WeekdayKey[];
   }): Promise<void>;
-  /** Runs `add-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-alarm` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addAlarmMany(items: AddAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
   setAlarmEnabled(args: {
     alarm: string;
     enabled: boolean;
   }): Promise<void>;
-  /** Runs `set-alarm-enabled` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-alarm-enabled` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setAlarmEnabledMany(items: SetAlarmEnabledArgs[]): Promise<tilo.ActionAnswer[]>;
   editAlarm(args: {
     alarm: string;
@@ -179,50 +179,50 @@ export interface Collection extends tilo.Resource {
     minute: number;
     weekdays: WeekdayKey[];
   }): Promise<void>;
-  /** Runs `edit-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `edit-alarm` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   editAlarmMany(items: EditAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
   removeAlarm(args: {
     alarm: string;
   }): Promise<void>;
-  /** Runs `remove-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-alarm` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeAlarmMany(items: RemoveAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
   addTimer(args: {
     label: string;
     seconds: number;
   }): Promise<void>;
-  /** Runs `add-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addTimerMany(items: AddTimerArgs[]): Promise<tilo.ActionAnswer[]>;
   pauseTimer(args: {
     timer: string;
   }): Promise<void>;
-  /** Runs `pause-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `pause-timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   pauseTimerMany(items: PauseTimerArgs[]): Promise<tilo.ActionAnswer[]>;
   resumeTimer(args: {
     timer: string;
   }): Promise<void>;
-  /** Runs `resume-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `resume-timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   resumeTimerMany(items: ResumeTimerArgs[]): Promise<tilo.ActionAnswer[]>;
   addMinute(args: {
     timer: string;
   }): Promise<void>;
-  /** Runs `add-minute` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-minute` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addMinuteMany(items: AddMinuteArgs[]): Promise<tilo.ActionAnswer[]>;
   removeTimer(args: {
     timer: string;
   }): Promise<void>;
-  /** Runs `remove-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeTimerMany(items: RemoveTimerArgs[]): Promise<tilo.ActionAnswer[]>;
   startStopwatch(): Promise<void>;
-  /** Runs `start-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `start-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   startStopwatchMany(items: StartStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
   pauseStopwatch(): Promise<void>;
-  /** Runs `pause-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `pause-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   pauseStopwatchMany(items: PauseStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
   lap(): Promise<void>;
-  /** Runs `lap` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `lap` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   lapMany(items: LapArgs[]): Promise<tilo.ActionAnswer[]>;
   resetStopwatch(): Promise<void>;
-  /** Runs `reset-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `reset-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   resetStopwatchMany(items: ResetStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -242,7 +242,7 @@ export interface OnDevices extends tilo.Resource {
     device: string;
     kept: unknown;
   }): Promise<void>;
-  /** Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   keepMany(items: KeepArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 

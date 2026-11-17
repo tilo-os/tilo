@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Session` is the app's `terminal.session` at `terminal/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Command",
@@ -209,7 +209,7 @@ class Session(Resource):
         return self.action("stop")
 
     def stop_many(self, items: list[StopArgs]) -> list[dict[str, Any]]:
-        """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("stop", items)
 
     def record_command(self,
@@ -246,7 +246,7 @@ class Session(Resource):
         return self.action("record-command", **args)
 
     def record_command_many(self, items: list[RecordCommandArgs]) -> list[dict[str, Any]]:
-        """Runs `record-command` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record-command` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-command", items)
 
     def record_target(self,
@@ -262,7 +262,7 @@ class Session(Resource):
         return self.action("record-target", **args)
 
     def record_target_many(self, items: list[RecordTargetArgs]) -> list[dict[str, Any]]:
-        """Runs `record-target` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record-target` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-target", items)
 
     def record_relay_session(self,
@@ -276,7 +276,7 @@ class Session(Resource):
         return self.action("record-relay-session", **args)
 
     def record_relay_session_many(self, items: list[RecordRelaySessionArgs]) -> list[dict[str, Any]]:
-        """Runs `record-relay-session` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record-relay-session` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-relay-session", items)
 
     def claim_pane(self,
@@ -292,7 +292,7 @@ class Session(Resource):
         return self.action("claim-pane", **args)
 
     def claim_pane_many(self, items: list[ClaimPaneArgs]) -> list[dict[str, Any]]:
-        """Runs `claim-pane` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `claim-pane` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("claim-pane", items)
 
     def inspect_session(self) -> None:
@@ -370,7 +370,7 @@ class History(Resource):
         return self.action("remember", **args)
 
     def remember_many(self, items: list[RememberArgs]) -> list[dict[str, Any]]:
-        """Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remember", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -392,7 +392,7 @@ class RecentEnvironments(Resource):
         return self.action("used", device=device, target=target)
 
     def used_many(self, items: list[UsedArgs]) -> list[dict[str, Any]]:
-        """Runs `used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `used` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("used", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

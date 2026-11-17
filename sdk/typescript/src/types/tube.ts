@@ -8,12 +8,12 @@
  * resource's path (`tube/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -78,12 +78,12 @@ export interface Library extends tilo.Resource {
     comment: string;
     text: string;
   }): Promise<void>;
-  /** Runs `reply-to-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `reply-to-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   replyToCommentMany(items: ReplyToCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   retract(args: {
     reply: string;
   }): Promise<void>;
-  /** Runs `retract` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `retract` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   retractMany(items: RetractArgs[]): Promise<tilo.ActionAnswer[]>;
   openVideo(args: {
     video: string;
@@ -142,27 +142,27 @@ export interface WatchHistory extends tilo.Resource {
     video: string;
     at_ms: number;
   }): Promise<void>;
-  /** Runs `record` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `record` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   recordMany(items: RecordArgs[]): Promise<tilo.ActionAnswer[]>;
   progress(args: {
     video: string;
     position_ms: number;
     duration_ms: number;
   }): Promise<void>;
-  /** Runs `progress` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `progress` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   progressMany(items: ProgressArgs[]): Promise<tilo.ActionAnswer[]>;
   import(args: {
     watched: unknown[];
   }): Promise<void>;
-  /** Runs `import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   importMany(items: ImportArgs[]): Promise<tilo.ActionAnswer[]>;
   forget(args: {
     video: string;
   }): Promise<void>;
-  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
   clear(): Promise<void>;
-  /** Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   clearMany(items: ClearArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 

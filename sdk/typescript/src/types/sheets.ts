@@ -8,12 +8,12 @@
  * resource's path (`sheets/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -248,7 +248,7 @@ export interface Workbook extends tilo.Resource {
   setTitle(args: {
     title: string;
   }): Promise<void>;
-  /** Runs `set-title` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-title` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setTitleMany(items: SetTitleArgs[]): Promise<tilo.ActionAnswer[]>;
   setRecords(args: {
     sheet: string;
@@ -265,12 +265,12 @@ export interface Workbook extends tilo.Resource {
   duplicateSheet(args: {
     sheet: string;
   }): Promise<void>;
-  /** Runs `duplicate-sheet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `duplicate-sheet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   duplicateSheetMany(items: DuplicateSheetArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteSheet(args: {
     sheet: string;
   }): Promise<void>;
-  /** Runs `delete-sheet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-sheet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteSheetMany(items: DeleteSheetArgs[]): Promise<tilo.ActionAnswer[]>;
   setCells(args: {
     sheet: string;
@@ -298,7 +298,7 @@ export interface Workbook extends tilo.Resource {
     at: number;
     count?: number;
   }): Promise<void>;
-  /** Runs `insert-rows` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `insert-rows` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   insertRowsMany(items: InsertRowsArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteRows(args: {
     sheet: string;
@@ -309,20 +309,20 @@ export interface Workbook extends tilo.Resource {
     at: string;
     count?: number;
   }): Promise<void>;
-  /** Runs `insert-columns` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `insert-columns` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   insertColumnsMany(items: InsertColumnsArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteColumns(args: {
     sheet: string;
     columns: string[];
   }): Promise<void>;
-  /** Runs `delete-columns` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-columns` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteColumnsMany(items: DeleteColumnsArgs[]): Promise<tilo.ActionAnswer[]>;
   importSheets(args: {
     sheets: ImportedSheet[];
     source?: string;
     title?: string;
   }): Promise<void>;
-  /** Runs `import-sheets` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `import-sheets` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   importSheetsMany(items: ImportSheetsArgs[]): Promise<tilo.ActionAnswer[]>;
   addChart(args: {
     sheet: string;
@@ -330,7 +330,7 @@ export interface Workbook extends tilo.Resource {
     kind: string;
     title: string;
   }): Promise<void>;
-  /** Runs `add-chart` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-chart` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addChartMany(items: AddChartArgs[]): Promise<tilo.ActionAnswer[]>;
   editChart(args: {
     sheet: string;
@@ -339,43 +339,43 @@ export interface Workbook extends tilo.Resource {
     kind?: unknown;
     range?: unknown;
   }): Promise<void>;
-  /** Runs `edit-chart` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `edit-chart` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   editChartMany(items: EditChartArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteChart(args: {
     sheet: string;
     chart: string;
   }): Promise<void>;
-  /** Runs `delete-chart` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-chart` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteChartMany(items: DeleteChartArgs[]): Promise<tilo.ActionAnswer[]>;
   renameSheet(args: {
     sheet: string;
     name: string;
   }): Promise<void>;
-  /** Runs `rename-sheet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `rename-sheet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   renameSheetMany(items: RenameSheetArgs[]): Promise<tilo.ActionAnswer[]>;
   comment(args: {
     sheet: string;
     range: string;
     text: string;
   }): Promise<void>;
-  /** Runs `comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   commentMany(items: CommentArgs[]): Promise<tilo.ActionAnswer[]>;
   reply(args: {
     comment: string;
     text: string;
   }): Promise<void>;
-  /** Runs `reply` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `reply` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   replyMany(items: ReplyArgs[]): Promise<tilo.ActionAnswer[]>;
   editComment(args: {
     comment: string;
     body: string;
   }): Promise<void>;
-  /** Runs `edit-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `edit-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   editCommentMany(items: EditCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteComment(args: {
     comment: string;
   }): Promise<void>;
-  /** Runs `delete-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteCommentMany(items: DeleteCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   exportXlsxContent(): Promise<void>;
   readFile(args: {

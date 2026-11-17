@@ -43,13 +43,13 @@ pub struct DocumentEvent {
     /// holds.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub housekeeping: bool,
-    /// The Shortcut whose run made the change (the `shortcut` facet a run
+    /// The Shortcut whose run made the change (the `shortcut` facet an invocation
     /// writes), so that Shortcut never fires on its own output: its
     /// changes carry the person's id as actor, not the Shortcut's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shortcut: Option<String>,
     /// The Shortcut run the change belongs to (its group id), so a device
-    /// that sees a run another device started never starts it again.
+    /// that sees an invocation another device started never starts it again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation: Option<String>,
 }
@@ -57,11 +57,11 @@ pub struct DocumentEvent {
 impl DocumentEvent {
     /// The Shortcut run this change belongs to, when it is one's.
     #[must_use]
-    pub fn started_run(&self) -> Option<crate::InvocationId> {
+    pub fn started_invocation(&self) -> Option<crate::AutomationInvocationId> {
         self.invocation
             .as_deref()
             .and_then(|id| uuid::Uuid::parse_str(id).ok())
-            .map(crate::InvocationId)
+            .map(crate::AutomationInvocationId)
     }
 }
 

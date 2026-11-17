@@ -8,12 +8,12 @@
  * resource's path (`video-editor/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -382,31 +382,31 @@ export interface Project extends tilo.Resource {
     width: number;
     height: number;
   }): Promise<void>;
-  /** Runs `set-frame-size` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-frame-size` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setFrameSizeMany(items: SetFrameSizeArgs[]): Promise<tilo.ActionAnswer[]>;
   setFrameRate(args: {
     fps: number;
   }): Promise<void>;
-  /** Runs `set-frame-rate` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-frame-rate` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setFrameRateMany(items: SetFrameRateArgs[]): Promise<tilo.ActionAnswer[]>;
   setRenderRange(args: {
     start: number;
     end: number;
   }): Promise<void>;
-  /** Runs `set-render-range` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-render-range` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setRenderRangeMany(items: SetRenderRangeArgs[]): Promise<tilo.ActionAnswer[]>;
   markIn(args: {
     at: number;
   }): Promise<void>;
-  /** Runs `mark-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `mark-in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   markInMany(items: MarkInArgs[]): Promise<tilo.ActionAnswer[]>;
   markOut(args: {
     at: number;
   }): Promise<void>;
-  /** Runs `mark-out` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `mark-out` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   markOutMany(items: MarkOutArgs[]): Promise<tilo.ActionAnswer[]>;
   clearMarks(): Promise<void>;
-  /** Runs `clear-marks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `clear-marks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   clearMarksMany(items: ClearMarksArgs[]): Promise<tilo.ActionAnswer[]>;
   addTitle(args: {
     text: string;
@@ -452,105 +452,105 @@ export interface Project extends tilo.Resource {
     at: number;
     name: string;
   }): Promise<void>;
-  /** Runs `add-marker` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-marker` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addMarkerMany(items: AddMarkerArgs[]): Promise<tilo.ActionAnswer[]>;
   placeTwoAngles(args: {
     at: number;
   }): Promise<void>;
-  /** Runs `place-two-angles` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `place-two-angles` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   placeTwoAnglesMany(items: PlaceTwoAnglesArgs[]): Promise<tilo.ActionAnswer[]>;
   unplaceTwoAngles(args: {
     at: number;
   }): Promise<void>;
-  /** Runs `unplace-two-angles` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `unplace-two-angles` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   unplaceTwoAnglesMany(items: UnplaceTwoAnglesArgs[]): Promise<tilo.ActionAnswer[]>;
   removeMarker(args: {
     marker: string;
   }): Promise<void>;
-  /** Runs `remove-marker` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-marker` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeMarkerMany(items: RemoveMarkerArgs[]): Promise<tilo.ActionAnswer[]>;
   addTrack(args: {
     kind: TrackKind;
   }): Promise<void>;
-  /** Runs `add-track` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-track` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addTrackMany(items: AddTrackArgs[]): Promise<tilo.ActionAnswer[]>;
   resetMix(args: {
     track: string;
   }): Promise<void>;
-  /** Runs `reset-mix` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `reset-mix` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   resetMixMany(items: ResetMixArgs[]): Promise<tilo.ActionAnswer[]>;
   trimLanes(args: {
     tracks: string[];
     db: number;
     headroom: number;
   }): Promise<void>;
-  /** Runs `trim-lanes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `trim-lanes` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   trimLanesMany(items: TrimLanesArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteTrack(args: {
     track: string;
   }): Promise<void>;
-  /** Runs `delete-track` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-track` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteTrackMany(items: DeleteTrackArgs[]): Promise<tilo.ActionAnswer[]>;
   placeClip(args: {
     media: string;
     track: string;
     start: number;
   }): Promise<void>;
-  /** Runs `place-clip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `place-clip` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   placeClipMany(items: PlaceClipArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteMedia(args: {
     media: string;
   }): Promise<void>;
-  /** Runs `delete-media` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-media` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteMediaMany(items: DeleteMediaArgs[]): Promise<tilo.ActionAnswer[]>;
   useAsProjectFormat(args: {
     media: string;
   }): Promise<void>;
-  /** Runs `use-as-project-format` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `use-as-project-format` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   useAsProjectFormatMany(items: UseAsProjectFormatArgs[]): Promise<tilo.ActionAnswer[]>;
   delete(args: {
     clip: string;
   }): Promise<void>;
-  /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
   rippleDelete(args: {
     clip: string;
   }): Promise<void>;
-  /** Runs `ripple-delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `ripple-delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rippleDeleteMany(items: RippleDeleteArgs[]): Promise<tilo.ActionAnswer[]>;
   splitClip(args: {
     clip: string;
     at: number;
   }): Promise<void>;
-  /** Runs `split-clip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `split-clip` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   splitClipMany(items: SplitClipArgs[]): Promise<tilo.ActionAnswer[]>;
   trimInClip(args: {
     clip: string;
     at: number;
   }): Promise<void>;
-  /** Runs `trim-in-clip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `trim-in-clip` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   trimInClipMany(items: TrimInClipArgs[]): Promise<tilo.ActionAnswer[]>;
   trimOutClip(args: {
     clip: string;
     at: number;
   }): Promise<void>;
-  /** Runs `trim-out-clip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `trim-out-clip` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   trimOutClipMany(items: TrimOutClipArgs[]): Promise<tilo.ActionAnswer[]>;
   setSpeed(args: {
     clip: string;
     rate: number;
   }): Promise<void>;
-  /** Runs `set-speed` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-speed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setSpeedMany(items: SetSpeedArgs[]): Promise<tilo.ActionAnswer[]>;
   toggleReverse(args: {
     clip: string;
   }): Promise<void>;
-  /** Runs `toggle-reverse` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `toggle-reverse` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   toggleReverseMany(items: ToggleReverseArgs[]): Promise<tilo.ActionAnswer[]>;
   resetSpeed(args: {
     clip: string;
   }): Promise<void>;
-  /** Runs `reset-speed` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `reset-speed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   resetSpeedMany(items: ResetSpeedArgs[]): Promise<tilo.ActionAnswer[]>;
   setParam(args: {
     clip: string;
@@ -558,54 +558,54 @@ export interface Project extends tilo.Resource {
     at: number;
     value: number;
   }): Promise<void>;
-  /** Runs `set-param` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-param` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setParamMany(items: SetParamArgs[]): Promise<tilo.ActionAnswer[]>;
   addEffect(args: {
     clip: string;
     effect: EffectKind;
   }): Promise<void>;
-  /** Runs `add-effect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-effect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addEffectMany(items: AddEffectArgs[]): Promise<tilo.ActionAnswer[]>;
   removeEffect(args: {
     clip: string;
     effect: string;
   }): Promise<void>;
-  /** Runs `remove-effect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-effect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeEffectMany(items: RemoveEffectArgs[]): Promise<tilo.ActionAnswer[]>;
   moveEffect(args: {
     clip: string;
     effect: string;
     up: boolean;
   }): Promise<void>;
-  /** Runs `move-effect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `move-effect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   moveEffectMany(items: MoveEffectArgs[]): Promise<tilo.ActionAnswer[]>;
   setEffectAmount(args: {
     clip: string;
     effect: string;
     amount: number;
   }): Promise<void>;
-  /** Runs `set-effect-amount` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-effect-amount` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setEffectAmountMany(items: SetEffectAmountArgs[]): Promise<tilo.ActionAnswer[]>;
   clearEffects(args: {
     clip: string;
   }): Promise<void>;
-  /** Runs `clear-effects` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `clear-effects` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   clearEffectsMany(items: ClearEffectsArgs[]): Promise<tilo.ActionAnswer[]>;
   unlink(args: {
     clip: string;
   }): Promise<void>;
-  /** Runs `unlink` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `unlink` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   unlinkMany(items: UnlinkArgs[]): Promise<tilo.ActionAnswer[]>;
   linkAudio(args: {
     clip: string;
   }): Promise<void>;
-  /** Runs `link-audio` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `link-audio` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   linkAudioMany(items: LinkAudioArgs[]): Promise<tilo.ActionAnswer[]>;
   linkWith(args: {
     clip: string;
     other: string;
   }): Promise<void>;
-  /** Runs `link-with` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `link-with` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   linkWithMany(items: LinkWithArgs[]): Promise<tilo.ActionAnswer[]>;
   exportTimelineContent(): Promise<void>;
   renderTimeline(args?: {

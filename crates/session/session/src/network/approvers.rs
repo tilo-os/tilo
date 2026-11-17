@@ -140,7 +140,7 @@ impl QuestionSheet for SessionSheet {
             label: question.agent_label.clone(),
             details: serde_json::to_value(AgentQuestion {
                 agent: question.agent_label.clone(),
-                run: question.run.clone(),
+                title: question.title.clone(),
                 action: question.action_label.clone(),
                 resource: question.resource_label.clone(),
                 arguments: question.arguments.clone(),

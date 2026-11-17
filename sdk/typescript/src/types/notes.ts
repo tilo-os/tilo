@@ -8,12 +8,12 @@
  * resource's path (`notes/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -166,72 +166,72 @@ export interface Notebook extends tilo.Resource {
     page: string;
     title: string;
   }): Promise<void>;
-  /** Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   renameMany(items: RenameArgs[]): Promise<tilo.ActionAnswer[]>;
   delete(args: {
     page: string;
   }): Promise<void>;
-  /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
   moveNote(args: {
     page: string;
     parent?: string;
     before?: string;
   }): Promise<void>;
-  /** Runs `move-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `move-note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   moveNoteMany(items: MoveNoteArgs[]): Promise<tilo.ActionAnswer[]>;
   moveUp(args: {
     page: string;
   }): Promise<void>;
-  /** Runs `move-up` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `move-up` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   moveUpMany(items: MoveUpArgs[]): Promise<tilo.ActionAnswer[]>;
   moveDown(args: {
     page: string;
   }): Promise<void>;
-  /** Runs `move-down` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `move-down` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   moveDownMany(items: MoveDownArgs[]): Promise<tilo.ActionAnswer[]>;
   indent(args: {
     page: string;
   }): Promise<void>;
-  /** Runs `indent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `indent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   indentMany(items: IndentArgs[]): Promise<tilo.ActionAnswer[]>;
   outdent(args: {
     page: string;
   }): Promise<void>;
-  /** Runs `outdent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `outdent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   outdentMany(items: OutdentArgs[]): Promise<tilo.ActionAnswer[]>;
   duplicate(args: {
     page: string;
   }): Promise<void>;
-  /** Runs `duplicate` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `duplicate` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   duplicateMany(items: DuplicateArgs[]): Promise<tilo.ActionAnswer[]>;
   newTag(args: {
     name: string;
   }): Promise<void>;
-  /** Runs `new-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `new-tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   newTagMany(items: NewTagArgs[]): Promise<tilo.ActionAnswer[]>;
   tag(args: {
     page: string;
     name: string;
   }): Promise<void>;
-  /** Runs `tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   tagMany(items: TagArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteTag(args: {
     tag: string;
   }): Promise<void>;
-  /** Runs `delete-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteTagMany(items: DeleteTagArgs[]): Promise<tilo.ActionAnswer[]>;
   keepImage(args: {
     bytes: unknown;
   }): Promise<void>;
-  /** Runs `keep-image` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `keep-image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   keepImageMany(items: KeepImageArgs[]): Promise<tilo.ActionAnswer[]>;
   placeImage(args: {
     page: string;
     bytes: unknown;
     alt?: string;
   }): Promise<void>;
-  /** Runs `place-image` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `place-image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   placeImageMany(items: PlaceImageArgs[]): Promise<tilo.ActionAnswer[]>;
   createPage(args: {
     title: string;
@@ -246,12 +246,12 @@ export interface Notebook extends tilo.Resource {
     path?: string;
     origin?: Origin;
   }): Promise<void>;
-  /** Runs `import-markdown` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `import-markdown` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   importMarkdownMany(items: ImportMarkdownArgs[]): Promise<tilo.ActionAnswer[]>;
   importMarkdownFiles(args: {
     files: MarkdownFile[];
   }): Promise<void>;
-  /** Runs `import-markdown-files` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `import-markdown-files` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   importMarkdownFilesMany(items: ImportMarkdownFilesArgs[]): Promise<tilo.ActionAnswer[]>;
   appendToNote(args: {
     markdown: string;
@@ -261,7 +261,7 @@ export interface Notebook extends tilo.Resource {
     page: string;
     markdown: string;
   }): Promise<void>;
-  /** Runs `write-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `write-note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   writeNoteMany(items: WriteNoteArgs[]): Promise<tilo.ActionAnswer[]>;
   exportMarkdownContent(args?: {
     page?: string;

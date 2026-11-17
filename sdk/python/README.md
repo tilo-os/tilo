@@ -1,6 +1,6 @@
 # tilo-sdk (Python SDK)
 
-Drive Tilo workspaces from Python: the same resources, actions, runs, undo
+Drive Tilo workspaces from Python: the same resources, actions, invocations, undo
 and attribution a person clicking or an agent over MCP gets. Every call is a
 route of Tilo's API, `/v1` (`docs/developers/api.md` in the Tilo repository):
 JSON over HTTP, the same routes the API server and a Tilo host serve.
@@ -24,7 +24,7 @@ async def main():
         key = await ws.keys.mint(name="jane's agent")   # a key that reaches this one workspace
         print(key.mcp_url, key.token)                   # hand it to the applicant's agent
 
-        async with ws.run("Fill Jane's application"):
+        async with ws.invocation("Fill Jane's application"):
             document = await ws.read("pdf-viewer/visa-form.pdf")
             document.form_values["surname"] = "Doe"
             await document.flush()                      # assignments are sent at once; this waits
@@ -33,7 +33,7 @@ async def main():
             if event.kind != "change":
                 continue
             print(event.sentence, "by", event.by or event.title)
-            if event.title:                             # a change an agent's run made
+            if event.title:                        # a change an agent's group made
                 break
 
 asyncio.run(main())
@@ -56,12 +56,13 @@ The sync client has the same surface without `await`: `from tilo import Tilo`.
   apart from it. `GET /v1/account` is the person's plan and what each
   workspace keeps.
 - **Actions are invocations.** `await ws.do("notes/Todo#append-paragraph",
-  text="Buy milk")` answers the result, or a `Run` if the host has not
-  finished: `await run.result()`, `run.output()`, `await run.cancel()`,
-  `await run.undo()`.
+  text="Buy milk")` answers the result, or an `Invocation` if the host has not
+  finished: `await invocation.result()`, `invocation.output()`,
+  `await invocation.cancel()`, `await invocation.undo()`.
 - **A refusal is an exception.** `Refused(code, message, next_steps)` says
   what the API said and which calls would work; a call that waits for the
-  person raises `AskPending(url, run)` and `await ask.wait()` answers once they
+  person raises `AskPending(url, invocation)` and `await ask.wait()` answers once
+  they
   decide; a key the API turns away raises `KeyRevoked`, `KeyExpired` or
   `KeyRefused`.
 - **A busy host is waited for.** A call the host refuses because the person
@@ -70,18 +71,21 @@ The sync client has the same surface without `await`: `from tilo import Tilo`.
   the same `Idempotency-Key`, for up to `retry_deadline` seconds
   (`AsyncTilo(retry_deadline=60)`); past it, `RateLimited`, a `Refused`, says
   when to try again.
-- **Runs group calls.** `async with ws.run("Fill Jane's application") as run:`
-  puts every call inside into one run (`Tilo-Run`, `Tilo-Run-Title`): one undo
+- **Invocations group calls.** `async with ws.invocation("Fill Jane's application")
+  as invocation:` puts every call inside into one group (`Tilo-Invocation`,
+  `Tilo-Invocation-Title`): one undo
   step per app, named in history.
-- **Links for people.** A run keeps the link to each record its calls changed:
-  `run.links`, and `run.link` when it changed one record. `await ws.link(path)`
+- **Links for people.** An invocation keeps the link to each record its calls
+  changed: `invocation.links`, and `invocation.link` when it changed one record.
+  `await ws.link(path)`
   answers the link to anything a path names. It opens the record in its app
   for the workspace's members and carries no secret.
 - **Usage.** `await tilo.usage()` reads the person's account with a key
   reaching all their workspaces: per workspace, the VM time it ran and what it
   keeps (`usage.vm_seconds`, `usage.running`).
 - **Reads are snapshots, watches are live.** `await ws.read(path)` is a
-  snapshot; `async for event in ws.watch(path)` follows changes, runs and
+  snapshot; `async for event in ws.watch(path)` follows changes, invocations
+  and
   presence over the workspace's `events` stream, its cursor kept.
 
 ## Resources as objects
@@ -119,7 +123,7 @@ A path is written as its segments, and a name holding a `/` keeps its escape:
 `examples/visa_proof.py` is a visa startup's backend: one workspace per
 applicant, a key minted for each applicant's agent, the agent filling a PDF
 form and writing a cover letter, and a reviewer reading History, undoing the
-agent's run and checking no VM ran. It runs against any API server with a
+agent's group and checking no VM ran. It runs against any API server with a
 server key, or against a relay with its app workers on loopback:
 
 ```sh

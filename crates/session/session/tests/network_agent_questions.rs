@@ -113,7 +113,7 @@ fn question() -> PendingConfirmation {
         id: [0x21; 32],
         agent_id: "careful".into(),
         agent_label: "Careful".into(),
-        run: "Tidy the shell".into(),
+        title: "Tidy the shell".into(),
         action_label: "Clear the history".into(),
         arguments: vec![("Entries".into(), "All".into())],
         resource_label: "Calculator".into(),
@@ -199,7 +199,7 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
     let details: serde_json::Value = shown.details.clone();
     assert_eq!(details["agent"], "Careful");
     assert_eq!(details["action"], "Clear the history");
-    assert_eq!(details["run"], "Tidy the shell");
+    assert_eq!(details["title"], "Tidy the shell");
     assert_eq!(
         details["arguments"],
         serde_json::json!([["Entries", "All"]])

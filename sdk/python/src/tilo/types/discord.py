@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Guild` is the app's `discord.guild` at `discord/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "AnswerInteractionOp",
@@ -489,7 +489,7 @@ class Guild(Resource):
         return self.action("connect", **args)
 
     def connect_many(self, items: list[ConnectArgs]) -> list[dict[str, Any]]:
-        """Runs `connect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `connect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("connect", items)
 
     def observe_layout(self,
@@ -503,7 +503,7 @@ class Guild(Resource):
         return self.action("observe-layout", bot_user=bot_user, channels=channels, roles=roles, emojis=emojis)
 
     def observe_layout_many(self, items: list[ObserveLayoutArgs]) -> list[dict[str, Any]]:
-        """Runs `observe-layout` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `observe-layout` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("observe-layout", items)
 
     # the app's `map` action is named as a field of this kind: run it with
@@ -523,7 +523,7 @@ class Guild(Resource):
         return self.action("unmap", **args)
 
     def unmap_many(self, items: list[UnmapArgs]) -> list[dict[str, Any]]:
-        """Runs `unmap` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `unmap` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("unmap", items)
 
     def send(self, *, op: SendOp) -> Any:
@@ -600,7 +600,7 @@ class Guild(Resource):
         return self.action("begin-connect", state_sha256=state_sha256)
 
     def begin_connect_many(self, items: list[BeginConnectArgs]) -> list[dict[str, Any]]:
-        """Runs `begin-connect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `begin-connect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("begin-connect", items)
 
     def offer_link(self,
@@ -626,7 +626,7 @@ class Guild(Resource):
         return self.action("offer-link", **args)
 
     def offer_link_many(self, items: list[OfferLinkArgs]) -> list[dict[str, Any]]:
-        """Runs `offer-link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `offer-link` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("offer-link", items)
 
     def offer_sign_in(self,
@@ -651,7 +651,7 @@ class Guild(Resource):
         return self.action("offer-sign-in", **args)
 
     def offer_sign_in_many(self, items: list[OfferSignInArgs]) -> list[dict[str, Any]]:
-        """Runs `offer-sign-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `offer-sign-in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("offer-sign-in", items)
 
     def complete_link(self, *, proof: str) -> None:
@@ -659,7 +659,7 @@ class Guild(Resource):
         return self.action("complete-link", proof=proof)
 
     def complete_link_many(self, items: list[CompleteLinkArgs]) -> list[dict[str, Any]]:
-        """Runs `complete-link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `complete-link` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("complete-link", items)
 
     def set_sign_in(self, *, page: str) -> None:
@@ -667,7 +667,7 @@ class Guild(Resource):
         return self.action("set-sign-in", page=page)
 
     def set_sign_in_many(self, items: list[SetSignInArgs]) -> list[dict[str, Any]]:
-        """Runs `set-sign-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-sign-in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-sign-in", items)
 
     def answer_interaction(self, *, op: AnswerInteractionOp) -> Any:
@@ -692,7 +692,7 @@ class Guild(Resource):
         return self.action("rename-link", **args)
 
     def rename_link_many(self, items: list[RenameLinkArgs]) -> list[dict[str, Any]]:
-        """Runs `rename-link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `rename-link` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rename-link", items)
 
     def set_link_photo(self,
@@ -705,7 +705,7 @@ class Guild(Resource):
         return self.action("set-link-photo", discord_user=discord_user, avatar=avatar, photo=photo)
 
     def set_link_photo_many(self, items: list[SetLinkPhotoArgs]) -> list[dict[str, Any]]:
-        """Runs `set-link-photo` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-link-photo` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-link-photo", items)
 
     def unlink(self, *, discord_user: str) -> None:
@@ -713,7 +713,7 @@ class Guild(Resource):
         return self.action("unlink", discord_user=discord_user)
 
     def unlink_many(self, items: list[UnlinkArgs]) -> list[dict[str, Any]]:
-        """Runs `unlink` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `unlink` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("unlink", items)
 
     def block_persona(self, *, discord_user: str) -> None:
@@ -721,7 +721,7 @@ class Guild(Resource):
         return self.action("block-persona", discord_user=discord_user)
 
     def block_persona_many(self, items: list[BlockPersonaArgs]) -> list[dict[str, Any]]:
-        """Runs `block-persona` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `block-persona` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("block-persona", items)
 
     def unblock_persona(self, *, discord_user: str) -> None:
@@ -729,7 +729,7 @@ class Guild(Resource):
         return self.action("unblock-persona", discord_user=discord_user)
 
     def unblock_persona_many(self, items: list[UnblockPersonaArgs]) -> list[dict[str, Any]]:
-        """Runs `unblock-persona` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `unblock-persona` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("unblock-persona", items)
 
     def remember_avatar(self,
@@ -741,7 +741,7 @@ class Guild(Resource):
         return self.action("remember-avatar", hash=hash, blob=blob)
 
     def remember_avatar_many(self, items: list[RememberAvatarArgs]) -> list[dict[str, Any]]:
-        """Runs `remember-avatar` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remember-avatar` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remember-avatar", items)
 
     def finish_import(self, *, tilo_only: list[str]) -> None:
@@ -749,7 +749,7 @@ class Guild(Resource):
         return self.action("finish-import", tilo_only=tilo_only)
 
     def finish_import_many(self, items: list[FinishImportArgs]) -> list[dict[str, Any]]:
-        """Runs `finish-import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `finish-import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("finish-import", items)
 
     def apply_emoji(self, *, op: EmojiSpec) -> Any:
@@ -781,7 +781,7 @@ class Guild(Resource):
         return self.action("settle-emoji", **args)
 
     def settle_emoji_many(self, items: list[SettleEmojiArgs]) -> list[dict[str, Any]]:
-        """Runs `settle-emoji` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `settle-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("settle-emoji", items)
 
     def report_voice(self,
@@ -795,7 +795,7 @@ class Guild(Resource):
         return self.action("report-voice", **args)
 
     def report_voice_many(self, items: list[ReportVoiceArgs]) -> list[dict[str, Any]]:
-        """Runs `report-voice` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `report-voice` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("report-voice", items)
 
     def my_link(self) -> None:

@@ -12,7 +12,7 @@ it back.
 
     TILO_API_URL=https://api.tilo.sh TILO_API_KEY=tilo_sk_… python3 visa_proof.py
 
-The run prints the reviewer's invitation, then the links to the form and the
+The proof run prints the reviewer's invitation, then the links to the form and the
 letter the agent changed, which open them in their apps for the reviewer, and
 asks for the key the reviewer made after following the invitation; `TILO_INVITEE` instead names an endpoint that plays the
 reviewer (the `api-on-relay` harness): it is posted the link and answers
@@ -21,7 +21,7 @@ the reviewer's key.
 `VISA_APPLICANTS` sets how many workspaces it makes (200). With
 `VISA_REVOKE_SERVER_KEY=1` it ends by revoking the server key itself, which
 ends every key it minted and every session open with them: only for a key
-made for this run.
+made for this proof run.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ from tilo.types.pdf_viewer import Document, FormFieldRow
 
 APPLICANTS = int(os.environ.get("VISA_APPLICANTS", "200"))
 REVOKE_SERVER_KEY = os.environ.get("VISA_REVOKE_SERVER_KEY") == "1"
-RUN_TITLE = "Fill Jane Doe's visa application"
+INVOCATION_TITLE = "Fill Jane Doe's visa application"
 REVIEWER_EMAIL = "rosa@example.com"
 FORM = "pdf-viewer/application.pdf"
 
@@ -273,7 +273,7 @@ async def main() -> int:
     agent = AsyncTilo(key=minted.token, url=url)
     aws = agent.workspace(jane.id)
     check(await aws.files.download(passport) == passport_bytes, "the agent reads the passport the backend put there")
-    async with aws.run(RUN_TITLE) as run:
+    async with aws.invocation(INVOCATION_TITLE) as group:
         await aws.do("pdf-viewer#open")
         imported = await aws.do("pdf-viewer#import-pdf-content", content=application, name="application.pdf")
         say("   imported", str(imported)[:200])
@@ -298,10 +298,10 @@ async def main() -> int:
         exported = await aws.do("word-processor#export-content", format="docx")
         letter_ref = content_in(exported)
         check(letter_ref, f"Writer exports the letter as content ({letter_ref})")
-    check(run.runs, f"the run grouped the agent's {len(run.runs)} calls")
+    check(group.invocations, f"the group gathered the agent's {len(group.invocations)} calls")
     form_link = await aws.link(FORM)
-    say("   links", ", ".join(run.links))
-    check(form_link in run.links, f"the run hands over the link to the form it filled ({form_link})")
+    say("   links", ", ".join(group.links))
+    check(form_link in group.links, f"the group hands over the link to the form it filled ({form_link})")
     letter = await ws.files.download(letter_ref)
     check(letter.startswith(b"PK"), f"the backend downloads a Word file ({len(letter)} bytes)")
     with zipfile.ZipFile(io.BytesIO(letter)) as docx:
@@ -363,7 +363,14 @@ async def main() -> int:
     history = await rws.do(f"{FORM}#history", last=50)
     versions = [version for version in history.get("versions", []) if isinstance(version, Mapping)]
     for version in versions:
-        say("   history", str({key: version.get(key) for key in ("sentence", "by", "run", "run_id", "actor", "undone") if key in version}))
+        say(
+            "   history",
+            str({
+                key: version.get(key)
+                for key in ("sentence", "by", "title", "group", "actor", "undone")
+                if key in version
+            }),
+        )
     by_agent = [version for version in versions if acting_agent(version)]
     check(by_agent, f"{len(by_agent)} of {len(versions)} changes are the agent's")
     names = {(version.get("actor") or {}).get("name") for version in by_agent}
@@ -373,15 +380,22 @@ async def main() -> int:
     people = {frozenset(acted_for(version.get("actor") or {})) for version in by_agent}
     acted_for_people = set().union(*people) if people else set()
     check(len(people) == 1 and acted_for_people, f"each on behalf of the one person ({people})")
-    runs = {version["run_id"]: version.get("run") for version in by_agent if version.get("run_id")}
-    say("   runs", str(runs))
-    check(list(runs.values()) == [RUN_TITLE], f"History names the agent's one run {RUN_TITLE!r}")
+    groups = {
+        version["group"]: version.get("title")
+        for version in by_agent
+        if version.get("group")
+    }
+    say("   groups", str(groups))
+    check(
+        list(groups.values()) == [INVOCATION_TITLE],
+        f"History names the agent's one group {INVOCATION_TITLE!r}",
+    )
     check(reviewer_person is None or all(reviewer_person not in tree for tree in people),
           "the reviewer is not the person the agent acted for")
 
-    say("4d. The reviewer undoes the agent's run")
-    run_id = next(iter(runs))
-    await rws.do(f"{FORM}#undo", run=run_id)
+    say("4d. The reviewer undoes the agent's invocation")
+    group_id = next(iter(groups))
+    await rws.do(f"{FORM}#undo", invocation=group_id)
     back = values_of((await seen.read_form_fields())["fields"])
     say("   after undo", str(back))
     check(back["surname"] == {"kind": "text", "value": ""}, "the surname is empty again")

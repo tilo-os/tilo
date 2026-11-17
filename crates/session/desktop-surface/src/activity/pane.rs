@@ -40,7 +40,7 @@ use ui::widget::{
     ArtifactKind, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
 };
 use ui::{
-    ActivityDigest, ActivityTimeline, AgentSession, AuthorDirectory, BandUndoRequest, ChangeRun,
+    ActivityDigest, ActivityTimeline, AgentSession, AuthorDirectory, BandUndoRequest, ChangeRange,
     DocumentId, GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySelectionDetail,
     HistorySource, NamedRange, NarrativeRequest, format_relative_time, member_display_label,
 };
@@ -935,7 +935,7 @@ impl WorkspaceActivityPane {
     fn agent_step_contains(
         &self,
         indexed: &IndexedAgentSession,
-        step: &ui::RunStep,
+        step: &ui::InvocationStep,
         selected: &HistoryEntryId,
     ) -> bool {
         let projected = self.projected_origins.get(selected);
@@ -954,7 +954,7 @@ impl WorkspaceActivityPane {
         if !origin_matches {
             return false;
         }
-        if selected_change == step.run.start || selected_change == step.run.end {
+        if selected_change == step.range.start || selected_change == step.range.end {
             return true;
         }
 
@@ -972,8 +972,8 @@ impl WorkspaceActivityPane {
             return false;
         };
         let (Some(start), Some(end)) = (
-            ids.iter().position(|id| *id == step.run.start),
-            ids.iter().position(|id| *id == step.run.end),
+            ids.iter().position(|id| *id == step.range.start),
+            ids.iter().position(|id| *id == step.range.end),
         ) else {
             return false;
         };
@@ -1178,7 +1178,7 @@ impl WorkspaceActivityPane {
     }
 
     /// Whether the document behind a run's step is open here, which undoing just that step needs.
-    fn record_is_open(&self, step: &ui::RunStep) -> bool {
+    fn record_is_open(&self, step: &ui::InvocationStep) -> bool {
         self.record_id_is_open(&step.record)
     }
 
@@ -1196,7 +1196,7 @@ impl WorkspaceActivityPane {
     }
 
     /// Whether one record of the selected run can be undone on its own from the task view.
-    fn can_undo_agent_record(&self, step: &ui::RunStep) -> bool {
+    fn can_undo_agent_record(&self, step: &ui::InvocationStep) -> bool {
         self.host.mutations_available() && self.undo_pending.is_none() && self.record_is_open(step)
     }
 
@@ -1931,7 +1931,7 @@ impl WorkspaceActivityPane {
             .filter(|record| record.document.is_some())
             .map(|record| record.checkout.id.clone())
             .collect();
-        let mut indexed = ui::read_runs(tree.document())
+        let mut indexed = ui::read_invocations(tree.document())
             .into_iter()
             .map(|run| IndexedAgentSession {
                 source_record: None,
@@ -1943,14 +1943,12 @@ impl WorkspaceActivityPane {
             let Some(document) = &record.document else {
                 continue;
             };
-            indexed.extend(
-                ui::read_runs(document)
-                    .into_iter()
-                    .map(|run| IndexedAgentSession {
-                        source_record: Some(id.clone()),
-                        session: run,
-                    }),
-            );
+            indexed.extend(ui::read_invocations(document).into_iter().map(|run| {
+                IndexedAgentSession {
+                    source_record: Some(id.clone()),
+                    session: run,
+                }
+            }));
         }
         indexed.compact_sort_by(|a, b| {
             b.session
@@ -2336,12 +2334,15 @@ impl WorkspaceActivityPane {
         let end = self.projected_origins.get(&request.end).cloned();
         match (start, end) {
             (Some(first), Some(last)) if first.origin == last.origin => {
-                let run = ChangeRun::new(first.change, last.change);
+                let run = ChangeRange::new(first.change, last.change);
                 match first.origin {
                     super::index::HistoryOrigin::Layout => {
-                        let Ok(outcome) =
-                            ui::revert_run(tree.document_mut(), &run, None, self.source.authors())
-                        else {
+                        let Ok(outcome) = ui::revert_invocation(
+                            tree.document_mut(),
+                            &run,
+                            None,
+                            self.source.authors(),
+                        ) else {
                             return UndoApply::default();
                         };
                         if !outcome.wrote {
@@ -2362,9 +2363,9 @@ impl WorkspaceActivityPane {
             }
             // Tree-only callers and pre-index tests retain native addressing.
             (None, None) => {
-                let run = ChangeRun::new(request.start, request.end);
+                let run = ChangeRange::new(request.start, request.end);
                 let Ok(outcome) =
-                    ui::revert_run(tree.document_mut(), &run, None, self.source.authors())
+                    ui::revert_invocation(tree.document_mut(), &run, None, self.source.authors())
                 else {
                     return UndoApply::default();
                 };

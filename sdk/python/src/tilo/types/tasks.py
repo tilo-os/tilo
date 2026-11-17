@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Tracker` is the app's `tasks.tracker` at `tasks/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Kind",
@@ -326,7 +326,7 @@ class Tracker(Resource):
         return self.action("create-area", **args)
 
     def create_area_many(self, items: list[CreateAreaArgs]) -> list[dict[str, Any]]:
-        """Runs `create-area` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `create-area` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("create-area", items)
 
     def rename_area(self,
@@ -338,7 +338,7 @@ class Tracker(Resource):
         return self.action("rename-area", area=area, name=name)
 
     def rename_area_many(self, items: list[RenameAreaArgs]) -> list[dict[str, Any]]:
-        """Runs `rename-area` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `rename-area` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rename-area", items)
 
     def set_kind(self,
@@ -350,7 +350,7 @@ class Tracker(Resource):
         return self.action("set-kind", area=area, kind=kind)
 
     def set_kind_many(self, items: list[SetKindArgs]) -> list[dict[str, Any]]:
-        """Runs `set-kind` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-kind` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-kind", items)
 
     def involve(self,
@@ -368,7 +368,7 @@ class Tracker(Resource):
         return self.action("involve", **args)
 
     def involve_many(self, items: list[InvolveArgs]) -> list[dict[str, Any]]:
-        """Runs `involve` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `involve` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("involve", items)
 
     def remove_person(self,
@@ -380,7 +380,7 @@ class Tracker(Resource):
         return self.action("remove-person", area=area, person=person)
 
     def remove_person_many(self, items: list[RemovePersonArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-person` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-person", items)
 
     def delete_area(self, *, area: str) -> None:
@@ -388,7 +388,7 @@ class Tracker(Resource):
         return self.action("delete-area", area=area)
 
     def delete_area_many(self, items: list[DeleteAreaArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-area` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-area` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-area", items)
 
     def new_project(self) -> None:
@@ -462,7 +462,7 @@ class Issues(Resource):
         return self.action("create", **args)
 
     def create_many(self, items: list[CreateArgs]) -> list[dict[str, Any]]:
-        """Runs `create` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `create` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("create", items)
 
     def start(self, *, before: int) -> None:
@@ -470,7 +470,7 @@ class Issues(Resource):
         return self.action("start", before=before)
 
     def start_many(self, items: list[StartArgs]) -> list[dict[str, Any]]:
-        """Runs `start` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `start` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("start", items)
 
     def rename(self,
@@ -482,7 +482,7 @@ class Issues(Resource):
         return self.action("rename", issue=issue, title=title)
 
     def rename_many(self, items: list[RenameArgs]) -> list[dict[str, Any]]:
-        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rename", items)
 
     def move_under(self,
@@ -498,7 +498,7 @@ class Issues(Resource):
         return self.action("move-under", **args)
 
     def move_under_many(self, items: list[MoveUnderArgs]) -> list[dict[str, Any]]:
-        """Runs `move-under` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `move-under` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("move-under", items)
 
     def assign(self,
@@ -514,7 +514,7 @@ class Issues(Resource):
         return self.action("assign", **args)
 
     def assign_many(self, items: list[AssignArgs]) -> list[dict[str, Any]]:
-        """Runs `assign` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `assign` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("assign", items)
 
     def set_project(self,
@@ -533,7 +533,7 @@ class Issues(Resource):
         return self.action("set-project", **args)
 
     def set_project_many(self, items: list[SetProjectArgs]) -> list[dict[str, Any]]:
-        """Runs `set-project` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-project` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-project", items)
 
     def attach(self,
@@ -553,7 +553,7 @@ class Issues(Resource):
         return self.action("attach", **args)
 
     def attach_many(self, items: list[AttachArgs]) -> list[dict[str, Any]]:
-        """Runs `attach` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `attach` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("attach", items)
 
     def detach(self,
@@ -565,7 +565,7 @@ class Issues(Resource):
         return self.action("detach", issue=issue, attachment=attachment)
 
     def detach_many(self, items: list[DetachArgs]) -> list[dict[str, Any]]:
-        """Runs `detach` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `detach` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("detach", items)
 
     def add_label(self,
@@ -577,7 +577,7 @@ class Issues(Resource):
         return self.action("add-label", issue=issue, label=label)
 
     def add_label_many(self, items: list[AddLabelArgs]) -> list[dict[str, Any]]:
-        """Runs `add-label` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-label` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-label", items)
 
     def place(self,
@@ -598,7 +598,7 @@ class Issues(Resource):
         return self.action("place", **args)
 
     def place_many(self, items: list[PlaceArgs]) -> list[dict[str, Any]]:
-        """Runs `place` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("place", items)
 
     def comment(self,
@@ -616,7 +616,7 @@ class Issues(Resource):
         return self.action("comment", **args)
 
     def comment_many(self, items: list[CommentArgs]) -> list[dict[str, Any]]:
-        """Runs `comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("comment", items)
 
     def link(self,
@@ -640,7 +640,7 @@ class Issues(Resource):
         return self.action("link", **args)
 
     def link_many(self, items: list[LinkArgs]) -> list[dict[str, Any]]:
-        """Runs `link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `link` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("link", items)
 
     def link_note(self,
@@ -652,7 +652,7 @@ class Issues(Resource):
         return self.action("link-note", issue=issue, note=note)
 
     def link_note_many(self, items: list[LinkNoteArgs]) -> list[dict[str, Any]]:
-        """Runs `link-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `link-note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("link-note", items)
 
     def delete(self, *, issue: str) -> None:
@@ -660,7 +660,7 @@ class Issues(Resource):
         return self.action("delete", issue=issue)
 
     def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
-        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete", items)
 
     def plan(self,
@@ -685,7 +685,7 @@ class Issues(Resource):
         return self.action("plan", **args)
 
     def plan_many(self, items: list[PlanArgs]) -> list[dict[str, Any]]:
-        """Runs `plan` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `plan` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("plan", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

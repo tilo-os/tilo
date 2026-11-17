@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Artwork` is the app's `canvas.artwork` at `canvas/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "AddLayer",
@@ -788,7 +788,7 @@ class Artwork(Resource):
         return self.action("edit-marks", **args)
 
     def edit_marks_many(self, items: list[EditMarksArgs]) -> list[dict[str, Any]]:
-        """Runs `edit-marks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `edit-marks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("edit-marks", items)
 
     def remove_marks(self,
@@ -808,7 +808,7 @@ class Artwork(Resource):
         return self.action("remove-marks", **args)
 
     def remove_marks_many(self, items: list[RemoveMarksArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-marks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-marks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-marks", items)
 
     def arrange(self,
@@ -826,7 +826,7 @@ class Artwork(Resource):
         return self.action("arrange", **args)
 
     def arrange_many(self, items: list[ArrangeArgs]) -> list[dict[str, Any]]:
-        """Runs `arrange` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `arrange` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("arrange", items)
 
     def add_layer(self,
@@ -854,7 +854,7 @@ class Artwork(Resource):
         return self.action("add-layer", **args)
 
     def add_layer_many(self, items: list[AddLayerArgs]) -> list[dict[str, Any]]:
-        """Runs `add-layer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-layer", items)
 
     def edit_layer(self,
@@ -903,7 +903,7 @@ class Artwork(Resource):
         return self.action("edit-layer", **args)
 
     def edit_layer_many(self, items: list[EditLayerArgs]) -> list[dict[str, Any]]:
-        """Runs `edit-layer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `edit-layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("edit-layer", items)
 
     def remove_layer(self, *, id: str) -> None:
@@ -911,7 +911,7 @@ class Artwork(Resource):
         return self.action("remove-layer", id=id)
 
     def remove_layer_many(self, items: list[RemoveLayerArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-layer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-layer", items)
 
     def set_artwork(self,
@@ -943,7 +943,7 @@ class Artwork(Resource):
         return self.action("set-artwork", **args)
 
     def set_artwork_many(self, items: list[SetArtworkArgs]) -> list[dict[str, Any]]:
-        """Runs `set-artwork` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-artwork` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-artwork", items)
 
     def save_medium(self, *, medium: MediumSpec) -> None:
@@ -951,7 +951,7 @@ class Artwork(Resource):
         return self.action("save-medium", medium=medium)
 
     def save_medium_many(self, items: list[SaveMediumArgs]) -> list[dict[str, Any]]:
-        """Runs `save-medium` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `save-medium` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("save-medium", items)
 
     def remove_medium(self, *, id: str) -> None:
@@ -959,7 +959,7 @@ class Artwork(Resource):
         return self.action("remove-medium", id=id)
 
     def remove_medium_many(self, items: list[RemoveMediumArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-medium` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-medium` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-medium", items)
 
     def align(self,
@@ -981,7 +981,7 @@ class Artwork(Resource):
         return self.action("align", **args)
 
     def align_many(self, items: list[AlignArgs]) -> list[dict[str, Any]]:
-        """Runs `align` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `align` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("align", items)
 
     def set_reference(self,
@@ -1007,7 +1007,7 @@ class Artwork(Resource):
         return self.action("set-reference", **args)
 
     def set_reference_many(self, items: list[SetReferenceArgs]) -> list[dict[str, Any]]:
-        """Runs `set-reference` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-reference` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-reference", items)
 
     def import_svg(self,
@@ -1041,7 +1041,7 @@ class Artwork(Resource):
         return self.action("open-picture", **args)
 
     def open_picture_many(self, items: list[OpenPictureArgs]) -> list[dict[str, Any]]:
-        """Runs `open-picture` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `open-picture` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("open-picture", items)
 
     def new_artwork(self,
@@ -1079,7 +1079,7 @@ class Artwork(Resource):
         return self.action("new-artwork", **args)
 
     def new_artwork_many(self, items: list[NewArtworkArgs]) -> list[dict[str, Any]]:
-        """Runs `new-artwork` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `new-artwork` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("new-artwork", items)
 
     def open_artwork(self, *, file: str) -> None:
@@ -1087,7 +1087,7 @@ class Artwork(Resource):
         return self.action("open-artwork", file=file)
 
     def open_artwork_many(self, items: list[OpenArtworkArgs]) -> list[dict[str, Any]]:
-        """Runs `open-artwork` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `open-artwork` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("open-artwork", items)
 
     def select(self,
@@ -1163,7 +1163,7 @@ class Artwork(Resource):
         return self.action("combine", ids=ids, op=op)
 
     def combine_many(self, items: list[CombineArgs]) -> list[dict[str, Any]]:
-        """Runs `combine` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `combine` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("combine", items)
 
     def look(self,
@@ -1304,7 +1304,7 @@ class RecentArtworks(Resource):
         return self.action("remember", device=device, recent=recent)
 
     def remember_many(self, items: list[RememberArgs]) -> list[dict[str, Any]]:
-        """Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remember", items)
 
     def forget(self,
@@ -1316,7 +1316,7 @@ class RecentArtworks(Resource):
         return self.action("forget", device=device, path=path)
 
     def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
-        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("forget", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

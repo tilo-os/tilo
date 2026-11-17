@@ -372,7 +372,7 @@ impl Activity {
     /// # Errors
     /// The session serves no action API to ask, so nothing was undone.
     #[cfg(target_os = "linux")]
-    pub(crate) fn undo_run(
+    pub(crate) fn undo_invocation(
         &self,
         workspace: &str,
         run: &str,

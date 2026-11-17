@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Workbench` is the app's `shortcuts.workbench` at `shortcuts/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Draft",
@@ -200,7 +200,7 @@ class Workbench(Resource):
         return self.action("draft-proposal", shortcut=shortcut)
 
     def draft_proposal_many(self, items: list[DraftProposalArgs]) -> list[dict[str, Any]]:
-        """Runs `draft-proposal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `draft-proposal` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("draft-proposal", items)
 
     def ignore_proposal(self, *, key: str) -> None:
@@ -208,7 +208,7 @@ class Workbench(Resource):
         return self.action("ignore-proposal", key=key)
 
     def ignore_proposal_many(self, items: list[IgnoreProposalArgs]) -> list[dict[str, Any]]:
-        """Runs `ignore-proposal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `ignore-proposal` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("ignore-proposal", items)
 
     def allow_proposal(self, *, key: str) -> None:
@@ -216,7 +216,7 @@ class Workbench(Resource):
         return self.action("allow-proposal", key=key)
 
     def allow_proposal_many(self, items: list[AllowProposalArgs]) -> list[dict[str, Any]]:
-        """Runs `allow-proposal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `allow-proposal` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("allow-proposal", items)
 
     def new_draft(self, *, name: str) -> None:
@@ -224,7 +224,7 @@ class Workbench(Resource):
         return self.action("new-draft", name=name)
 
     def new_draft_many(self, items: list[NewDraftArgs]) -> list[dict[str, Any]]:
-        """Runs `new-draft` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `new-draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("new-draft", items)
 
     def duplicate_draft(self, *, draft: str) -> None:
@@ -232,7 +232,7 @@ class Workbench(Resource):
         return self.action("duplicate-draft", draft=draft)
 
     def duplicate_draft_many(self, items: list[DuplicateDraftArgs]) -> list[dict[str, Any]]:
-        """Runs `duplicate-draft` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `duplicate-draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("duplicate-draft", items)
 
     def draft_shortcut(self, *, shortcut: Any) -> None:
@@ -240,7 +240,7 @@ class Workbench(Resource):
         return self.action("draft-shortcut", shortcut=shortcut)
 
     def draft_shortcut_many(self, items: list[DraftShortcutArgs]) -> list[dict[str, Any]]:
-        """Runs `draft-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `draft-shortcut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("draft-shortcut", items)
 
     def open_shortcut(self, *, shortcut: Any) -> None:
@@ -248,7 +248,7 @@ class Workbench(Resource):
         return self.action("open-shortcut", shortcut=shortcut)
 
     def open_shortcut_many(self, items: list[OpenShortcutArgs]) -> list[dict[str, Any]]:
-        """Runs `open-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `open-shortcut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("open-shortcut", items)
 
     def duplicate_shortcut(self, *, shortcut: Any) -> None:
@@ -256,7 +256,7 @@ class Workbench(Resource):
         return self.action("duplicate-shortcut", shortcut=shortcut)
 
     def duplicate_shortcut_many(self, items: list[DuplicateShortcutArgs]) -> list[dict[str, Any]]:
-        """Runs `duplicate-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `duplicate-shortcut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("duplicate-shortcut", items)
 
     def set_schedule(self,
@@ -270,7 +270,7 @@ class Workbench(Resource):
         return self.action("set-schedule", draft=draft, enabled=enabled, hour=hour, minute=minute)
 
     def set_schedule_many(self, items: list[SetScheduleArgs]) -> list[dict[str, Any]]:
-        """Runs `set-schedule` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-schedule` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-schedule", items)
 
     def discard(self, *, draft: str) -> None:
@@ -278,7 +278,7 @@ class Workbench(Resource):
         return self.action("discard", draft=draft)
 
     def discard_many(self, items: list[DiscardArgs]) -> list[dict[str, Any]]:
-        """Runs `discard` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `discard` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("discard", items)
 
     def add_step(self,
@@ -291,7 +291,7 @@ class Workbench(Resource):
         return self.action("add-step", draft=draft, block=block, step=step)
 
     def add_step_many(self, items: list[AddStepArgs]) -> list[dict[str, Any]]:
-        """Runs `add-step` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-step` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-step", items)
 
     def replace_step(self,
@@ -304,7 +304,7 @@ class Workbench(Resource):
         return self.action("replace-step", draft=draft, path=path, step=step)
 
     def replace_step_many(self, items: list[ReplaceStepArgs]) -> list[dict[str, Any]]:
-        """Runs `replace-step` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `replace-step` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("replace-step", items)
 
     def bind_argument(self,
@@ -318,7 +318,7 @@ class Workbench(Resource):
         return self.action("bind-argument", draft=draft, path=path, param=param, binding=binding)
 
     def bind_argument_many(self, items: list[BindArgumentArgs]) -> list[dict[str, Any]]:
-        """Runs `bind-argument` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `bind-argument` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("bind-argument", items)
 
     def remove_step(self,
@@ -330,7 +330,7 @@ class Workbench(Resource):
         return self.action("remove-step", draft=draft, path=path)
 
     def remove_step_many(self, items: list[RemoveStepArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-step` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-step` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-step", items)
 
     def move_step(self,
@@ -343,7 +343,7 @@ class Workbench(Resource):
         return self.action("move-step", draft=draft, path=path, earlier=earlier)
 
     def move_step_many(self, items: list[MoveStepArgs]) -> list[dict[str, Any]]:
-        """Runs `move-step` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `move-step` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("move-step", items)
 
     def set_step_policy(self,
@@ -356,7 +356,7 @@ class Workbench(Resource):
         return self.action("set-step-policy", draft=draft, path=path, policy=policy)
 
     def set_step_policy_many(self, items: list[SetStepPolicyArgs]) -> list[dict[str, Any]]:
-        """Runs `set-step-policy` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-step-policy` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-step-policy", items)
 
     def set_nested(self,
@@ -370,7 +370,7 @@ class Workbench(Resource):
         return self.action("set-nested", draft=draft, path=path, block=block, index=index)
 
     def set_nested_many(self, items: list[SetNestedArgs]) -> list[dict[str, Any]]:
-        """Runs `set-nested` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-nested` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-nested", items)
 
     def set_output(self,
@@ -382,7 +382,7 @@ class Workbench(Resource):
         return self.action("set-output", draft=draft, binding=binding)
 
     def set_output_many(self, items: list[SetOutputArgs]) -> list[dict[str, Any]]:
-        """Runs `set-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-output` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-output", items)
 
     def add_input(self,
@@ -395,7 +395,7 @@ class Workbench(Resource):
         return self.action("add-input", draft=draft, name=name, kind=kind)
 
     def add_input_many(self, items: list[AddInputArgs]) -> list[dict[str, Any]]:
-        """Runs `add-input` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-input` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-input", items)
 
     def remove_input(self,
@@ -407,7 +407,7 @@ class Workbench(Resource):
         return self.action("remove-input", draft=draft, name=name)
 
     def remove_input_many(self, items: list[RemoveInputArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-input` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-input` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-input", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

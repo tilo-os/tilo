@@ -586,7 +586,7 @@ relative-compact-months = { $count }mo
 relative-compact-years = { $count }y
 
 # A software member in history, presence and activity rows.
-history-run-step-separator = {", "}
+history-invocation-step-separator = {", "}
 member-agent = { $name } · Agent
 member-shortcut = { $name } · Shortcut
 member-bot = { $name } · Bot

@@ -8,12 +8,12 @@
  * resource's path (`word-processor/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -192,39 +192,39 @@ export interface Document extends tilo.Resource {
     table: string;
     row: number;
   }): Promise<void>;
-  /** Runs `delete-row` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-row` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteRowMany(items: DeleteRowArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteColumn(args: {
     table: string;
     column: number;
   }): Promise<void>;
-  /** Runs `delete-column` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-column` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteColumnMany(items: DeleteColumnArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteTable(args: {
     table: string;
   }): Promise<void>;
-  /** Runs `delete-table` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-table` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteTableMany(items: DeleteTableArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteImage(args: {
     image: string;
   }): Promise<void>;
-  /** Runs `delete-image` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteImageMany(items: DeleteImageArgs[]): Promise<tilo.ActionAnswer[]>;
   acceptChange(args: {
     change: string;
   }): Promise<void>;
-  /** Runs `accept-change` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `accept-change` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   acceptChangeMany(items: AcceptChangeArgs[]): Promise<tilo.ActionAnswer[]>;
   rejectChange(args: {
     change: string;
   }): Promise<void>;
-  /** Runs `reject-change` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `reject-change` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rejectChangeMany(items: RejectChangeArgs[]): Promise<tilo.ActionAnswer[]>;
   acceptAllChanges(): Promise<void>;
-  /** Runs `accept-all-changes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `accept-all-changes` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   acceptAllChangesMany(items: AcceptAllChangesArgs[]): Promise<tilo.ActionAnswer[]>;
   rejectAllChanges(): Promise<void>;
-  /** Runs `reject-all-changes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `reject-all-changes` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rejectAllChangesMany(items: RejectAllChangesArgs[]): Promise<tilo.ActionAnswer[]>;
   addComment(args: {
     block: string;
@@ -232,22 +232,22 @@ export interface Document extends tilo.Resource {
     end: number;
     text: string;
   }): Promise<void>;
-  /** Runs `add-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addCommentMany(items: AddCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   replyToComment(args: {
     comment: string;
     text: string;
     body?: ClipBlock[];
   }): Promise<void>;
-  /** Runs `reply-to-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `reply-to-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   replyToCommentMany(items: ReplyToCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   resolveComment(args: {
     comment: string;
   }): Promise<void>;
-  /** Runs `resolve-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `resolve-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   resolveCommentMany(items: ResolveCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   adoptComments(): Promise<void>;
-  /** Runs `adopt-comments` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `adopt-comments` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   adoptCommentsMany(items: AdoptCommentsArgs[]): Promise<tilo.ActionAnswer[]>;
   setPageMargins(args: {
     top: number;
@@ -255,15 +255,15 @@ export interface Document extends tilo.Resource {
     bottom: number;
     left: number;
   }): Promise<void>;
-  /** Runs `set-page-margins` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-page-margins` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setPageMarginsMany(items: SetPageMarginsArgs[]): Promise<tilo.ActionAnswer[]>;
   generateToc(): Promise<void>;
-  /** Runs `generate-toc` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `generate-toc` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   generateTocMany(items: GenerateTocArgs[]): Promise<tilo.ActionAnswer[]>;
   noteFileWritten(args: {
     digest: string;
   }): Promise<void>;
-  /** Runs `note-file-written` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `note-file-written` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   noteFileWrittenMany(items: NoteFileWrittenArgs[]): Promise<tilo.ActionAnswer[]>;
   shareImage(): Promise<void>;
   readFile(args: {

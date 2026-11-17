@@ -39,7 +39,7 @@ use tilo_agent_session::bot::host_steps::{HostSteps, Keeps};
 use tilo_agent_session::{AppCatalogue, ReplicaActor};
 use tilo_automation::dispatch::queue::{DeadLetter, Finished, FiringQueue};
 use tilo_automation::dispatch::{Armed, ConnectorEvent, Event, Firer, Firing, ScheduleEvent};
-use tilo_automation::run::{AskRequest, ConfirmationRequest, InvocationHooks};
+use tilo_automation::invocation::{AskRequest, ConfirmationRequest, InvocationHooks};
 use tilo_automation::schedule::Timed;
 use tilo_automation::{
     InvocationMode, InvocationRequest, InvocationTrigger, Shortcut, TriggerSpec,
@@ -771,7 +771,7 @@ impl BotRunner {
         // Replicas and connector performs block; the run is driven on its
         // own blocking thread so they never hold a runtime worker.
         let report = tokio::task::spawn_blocking(move || {
-            handle.block_on(tilo_automation::run::run(
+            handle.block_on(tilo_automation::invocation::run(
                 &*api,
                 &Unattended,
                 InvocationRequest {

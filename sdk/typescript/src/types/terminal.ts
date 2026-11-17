@@ -8,12 +8,12 @@
  * resource's path (`terminal/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -171,7 +171,7 @@ export interface Session extends tilo.Resource {
     test: string;
   }): Promise<unknown>;
   stop(): Promise<void>;
-  /** Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   stopMany(items: StopArgs[]): Promise<tilo.ActionAnswer[]>;
   recordCommand(args: {
     command: string;
@@ -187,24 +187,24 @@ export interface Session extends tilo.Resource {
     output?: unknown;
     request?: string;
   }): Promise<void>;
-  /** Runs `record-command` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `record-command` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   recordCommandMany(items: RecordCommandArgs[]): Promise<tilo.ActionAnswer[]>;
   recordTarget(args: {
     target: string;
     device?: string;
   }): Promise<void>;
-  /** Runs `record-target` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `record-target` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   recordTargetMany(items: RecordTargetArgs[]): Promise<tilo.ActionAnswer[]>;
   recordRelaySession(args?: {
     session?: string;
   }): Promise<void>;
-  /** Runs `record-relay-session` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `record-relay-session` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   recordRelaySessionMany(items: RecordRelaySessionArgs[]): Promise<tilo.ActionAnswer[]>;
   claimPane(args: {
     pane: string;
     device?: string;
   }): Promise<void>;
-  /** Runs `claim-pane` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `claim-pane` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   claimPaneMany(items: ClaimPaneArgs[]): Promise<tilo.ActionAnswer[]>;
   inspectSession(): Promise<void>;
   readScreen(): Promise<void>;
@@ -241,7 +241,7 @@ export interface History extends tilo.Resource {
     environment?: string;
     actor?: unknown;
   }): Promise<void>;
-  /** Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rememberMany(items: RememberArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -261,7 +261,7 @@ export interface RecentEnvironments extends tilo.Resource {
     device: string;
     target: string;
   }): Promise<void>;
-  /** Runs `used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `used` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   usedMany(items: UsedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 

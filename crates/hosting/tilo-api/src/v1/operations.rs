@@ -227,45 +227,45 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .body(Body::Arguments)
         .answers(Answer::Action),
         op(
-            "listRuns",
+            "listInvocations",
             Method::GET,
-            "/v1/workspaces/{workspace}/runs",
-            "The workspace's runs in records the key may read, newest first",
+            "/v1/workspaces/{workspace}/invocations",
+            "The workspace's invocations in records the key may read, newest first",
         )
         .query(&[
-            ("limit", "How many runs at most: 50 unless said, at most 200"),
+            ("limit", "How many invocations at most: 50 unless said, at most 200"),
             ("cursor", "Where the previous page ended"),
         ])
-        .json(200, "RunList"),
+        .json(200, "InvocationList"),
         op(
-            "getRun",
+            "getInvocation",
             Method::GET,
-            "/v1/workspaces/{workspace}/runs/{run}",
-            "A run, held until it is no longer pending for `wait` seconds",
+            "/v1/workspaces/{workspace}/invocations/{invocation}",
+            "An invocation, held until it is no longer pending for `wait` seconds",
         )
         .query(&[("wait", "Seconds to hold while it is pending, at most 60")])
         .answers(Answer::Action),
         op(
-            "cancelRun",
+            "cancelInvocation",
             Method::POST,
-            "/v1/workspaces/{workspace}/runs/{run}/cancel",
-            "Stop a run",
+            "/v1/workspaces/{workspace}/invocations/{invocation}/cancel",
+            "Stop an invocation",
         )
         .mutating()
         .answers(Answer::Action),
         op(
-            "undoRun",
+            "undoInvocation",
             Method::POST,
-            "/v1/workspaces/{workspace}/runs/{run}/undo",
-            "Take back what a run changed",
+            "/v1/workspaces/{workspace}/invocations/{invocation}/undo",
+            "Take back what an invocation changed",
         )
         .mutating()
         .json(200, "ActionAnswer"),
         op(
-            "runOutput",
+            "invocationOutput",
             Method::GET,
-            "/v1/workspaces/{workspace}/runs/{run}/output",
-            "A run's events, ending when it ends",
+            "/v1/workspaces/{workspace}/invocations/{invocation}/output",
+            "An invocation's events, ending when it ends",
         )
         .answers(Answer::Events),
         op(

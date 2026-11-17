@@ -8,12 +8,12 @@
  * resource's path (`settings/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -605,12 +605,12 @@ export interface Appearance extends tilo.Resource {
   chooseTheme(args: {
     theme: string;
   }): Promise<void>;
-  /** Runs `choose-theme` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `choose-theme` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   chooseThemeMany(items: ChooseThemeArgs[]): Promise<tilo.ActionAnswer[]>;
   setDarkMode(args: {
     on: boolean;
   }): Promise<void>;
-  /** Runs `set-dark-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-dark-mode` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setDarkModeMany(items: SetDarkModeArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -667,12 +667,12 @@ export interface Accessibility extends tilo.Resource {
   stepMagnifier(args: {
     step: string;
   }): Promise<void>;
-  /** Runs `step-magnifier` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `step-magnifier` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   stepMagnifierMany(items: StepMagnifierArgs[]): Promise<tilo.ActionAnswer[]>;
   setScreenReader(args: {
     on: boolean;
   }): Promise<void>;
-  /** Runs `set-screen-reader` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-screen-reader` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setScreenReaderMany(items: SetScreenReaderArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -728,24 +728,24 @@ export interface Input extends tilo.Resource {
   setKeyRepeat(args: {
     rate: number;
   }): Promise<void>;
-  /** Runs `set-key-repeat` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-key-repeat` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setKeyRepeatMany(items: SetKeyRepeatArgs[]): Promise<tilo.ActionAnswer[]>;
   chooseLayout(args: {
     layout: string;
   }): Promise<void>;
-  /** Runs `choose-layout` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `choose-layout` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   chooseLayoutMany(items: ChooseLayoutArgs[]): Promise<tilo.ActionAnswer[]>;
   setLayouts(args: {
     layouts: string[];
     active: string;
   }): Promise<void>;
-  /** Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setLayoutsMany(items: SetLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
   setPasteShortcut(args: {
     app: string;
     shortcut: string;
   }): Promise<void>;
-  /** Runs `set-paste-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-paste-shortcut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setPasteShortcutMany(items: SetPasteShortcutArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -773,73 +773,73 @@ export interface InputDevice extends tilo.Resource {
     keyboard: string;
     profile: KeyboardProfile;
   }): Promise<void>;
-  /** Runs `set-keyboard-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-keyboard-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setKeyboardLayoutsMany(items: SetKeyboardLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
   useSharedLayouts(args: {
     keyboard: string;
   }): Promise<void>;
-  /** Runs `use-shared-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `use-shared-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   useSharedLayoutsMany(items: UseSharedLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
   setKeyboardModel(args: {
     model: string;
   }): Promise<void>;
-  /** Runs `set-keyboard-model` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-keyboard-model` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setKeyboardModelMany(items: SetKeyboardModelArgs[]): Promise<tilo.ActionAnswer[]>;
   showKeyboardLayout(args?: {
     layout?: string;
   }): Promise<void>;
-  /** Runs `show-keyboard-layout` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `show-keyboard-layout` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   showKeyboardLayoutMany(items: ShowKeyboardLayoutArgs[]): Promise<tilo.ActionAnswer[]>;
   inspectKeyboard(args: {
     level: number;
     extra_levels: boolean;
     key: string;
   }): Promise<void>;
-  /** Runs `inspect-keyboard` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `inspect-keyboard` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   inspectKeyboardMany(items: InspectKeyboardArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletOutput(args: {
     device: string;
     output: string;
   }): Promise<void>;
-  /** Runs `set-tablet-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-tablet-output` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setTabletOutputMany(items: SetTabletOutputArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletKeepAspect(args: {
     device: string;
     on: boolean;
   }): Promise<void>;
-  /** Runs `set-tablet-keep-aspect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-tablet-keep-aspect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setTabletKeepAspectMany(items: SetTabletKeepAspectArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletLeftHanded(args: {
     device: string;
     on: boolean;
   }): Promise<void>;
-  /** Runs `set-tablet-left-handed` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-tablet-left-handed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setTabletLeftHandedMany(items: SetTabletLeftHandedArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletTipFeel(args: {
     device: string;
     feel: number;
   }): Promise<void>;
-  /** Runs `set-tablet-tip-feel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-tablet-tip-feel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setTabletTipFeelMany(items: SetTabletTipFeelArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletButton(args: {
     device: string;
     button: string;
     action: string;
   }): Promise<void>;
-  /** Runs `set-tablet-button` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-tablet-button` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setTabletButtonMany(items: SetTabletButtonArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletEraser(args: {
     device: string;
     action: string;
   }): Promise<void>;
-  /** Runs `set-tablet-eraser` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-tablet-eraser` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setTabletEraserMany(items: SetTabletEraserArgs[]): Promise<tilo.ActionAnswer[]>;
   setPadButton(args: {
     device: string;
     button: number;
     action: string;
   }): Promise<void>;
-  /** Runs `set-pad-button` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-pad-button` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setPadButtonMany(items: SetPadButtonArgs[]): Promise<tilo.ActionAnswer[]>;
   setPadDial(args: {
     device: string;
@@ -848,7 +848,7 @@ export interface InputDevice extends tilo.Resource {
     mode: number;
     action: string;
   }): Promise<void>;
-  /** Runs `set-pad-dial` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-pad-dial` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setPadDialMany(items: SetPadDialArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -896,12 +896,12 @@ export interface Power extends tilo.Resource {
   setSuspendPluggedIn(args: {
     minutes: number;
   }): Promise<void>;
-  /** Runs `set-suspend-plugged-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-suspend-plugged-in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setSuspendPluggedInMany(items: SetSuspendPluggedInArgs[]): Promise<tilo.ActionAnswer[]>;
   setSuspendOnBattery(args: {
     minutes: number;
   }): Promise<void>;
-  /** Runs `set-suspend-on-battery` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-suspend-on-battery` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setSuspendOnBatteryMany(items: SetSuspendOnBatteryArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -954,12 +954,12 @@ export interface Updates extends tilo.Resource {
   recordAutomaticUpdates(args: {
     on: boolean;
   }): Promise<void>;
-  /** Runs `record-automatic-updates` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `record-automatic-updates` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   recordAutomaticUpdatesMany(items: RecordAutomaticUpdatesArgs[]): Promise<tilo.ActionAnswer[]>;
   recordUpdateCheck(args: {
     at: string;
   }): Promise<void>;
-  /** Runs `record-update-check` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `record-update-check` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   recordUpdateCheckMany(items: RecordUpdateCheckArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -985,13 +985,13 @@ export interface Notifications extends tilo.Resource {
   setDoNotDisturb(args: {
     on: boolean;
   }): Promise<void>;
-  /** Runs `set-do-not-disturb` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-do-not-disturb` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setDoNotDisturbMany(items: SetDoNotDisturbArgs[]): Promise<tilo.ActionAnswer[]>;
   muteApp(args: {
     app: string;
     duration: string;
   }): Promise<void>;
-  /** Runs `mute-app` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `mute-app` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   muteAppMany(items: MuteAppArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1013,12 +1013,12 @@ export interface Audio extends tilo.Resource {
   setMonoOutput(args: {
     on: boolean;
   }): Promise<void>;
-  /** Runs `set-mono-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-mono-output` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setMonoOutputMany(items: SetMonoOutputArgs[]): Promise<tilo.ActionAnswer[]>;
   setEchoCancellation(args: {
     on: boolean;
   }): Promise<void>;
-  /** Runs `set-echo-cancellation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-echo-cancellation` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setEchoCancellationMany(items: SetEchoCancellationArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1038,12 +1038,12 @@ export interface AudioDevice extends tilo.Resource {
   rememberOutputDevice(args: {
     device: string;
   }): Promise<void>;
-  /** Runs `remember-output-device` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remember-output-device` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rememberOutputDeviceMany(items: RememberOutputDeviceArgs[]): Promise<tilo.ActionAnswer[]>;
   rememberInputDevice(args: {
     device: string;
   }): Promise<void>;
-  /** Runs `remember-input-device` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remember-input-device` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rememberInputDeviceMany(items: RememberInputDeviceArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1064,12 +1064,12 @@ export interface Display extends tilo.Resource {
   setAutomaticBrightness(args: {
     on: boolean;
   }): Promise<void>;
-  /** Runs `set-automatic-brightness` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-automatic-brightness` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setAutomaticBrightnessMany(items: SetAutomaticBrightnessArgs[]): Promise<tilo.ActionAnswer[]>;
   setRotationLock(args: {
     locked: boolean;
   }): Promise<void>;
-  /** Runs `set-rotation-lock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-rotation-lock` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setRotationLockMany(items: SetRotationLockArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1133,13 +1133,13 @@ export interface Continuity extends tilo.Resource {
   allowContinuity(args: {
     on: boolean;
   }): Promise<void>;
-  /** Runs `allow-continuity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `allow-continuity` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   allowContinuityMany(items: AllowContinuityArgs[]): Promise<tilo.ActionAnswer[]>;
   allowCapability(args: {
     capability: string;
     on: boolean;
   }): Promise<void>;
-  /** Runs `allow-capability` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `allow-capability` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   allowCapabilityMany(items: AllowCapabilityArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1160,20 +1160,20 @@ export interface Shortcuts extends tilo.Resource {
     shortcut: string;
     chord: string;
   }): Promise<void>;
-  /** Runs `rebind` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `rebind` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rebindMany(items: RebindArgs[]): Promise<tilo.ActionAnswer[]>;
   reset(args: {
     shortcuts: string[];
   }): Promise<void>;
-  /** Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   resetMany(items: ResetArgs[]): Promise<tilo.ActionAnswer[]>;
   resetAll(): Promise<void>;
-  /** Runs `reset-all` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `reset-all` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   resetAllMany(items: ResetAllArgs[]): Promise<tilo.ActionAnswer[]>;
   setActionChords(args: {
     chords: unknown;
   }): Promise<void>;
-  /** Runs `set-action-chords` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-action-chords` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setActionChordsMany(items: SetActionChordsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1196,13 +1196,13 @@ export interface ShellViews extends tilo.Resource {
     view: string;
     on?: string;
   }): Promise<void>;
-  /** Runs `bind` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `bind` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   bindMany(items: BindArgs[]): Promise<tilo.ActionAnswer[]>;
   reset(args: {
     part: string;
     on?: string;
   }): Promise<void>;
-  /** Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   resetMany(items: ShellViewsResetArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1249,12 +1249,12 @@ export interface AgentProviders extends tilo.Resource {
   setProviders(args: {
     config: unknown;
   }): Promise<void>;
-  /** Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setProvidersMany(items: SetProvidersArgs[]): Promise<tilo.ActionAnswer[]>;
   followLocalModels(args: {
     profile: unknown;
   }): Promise<void>;
-  /** Runs `follow-local-models` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `follow-local-models` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   followLocalModelsMany(items: FollowLocalModelsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1273,7 +1273,7 @@ export interface HostedAgentProviders extends tilo.Resource {
   setProviders(args: {
     hosted: unknown;
   }): Promise<void>;
-  /** Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setProvidersMany(items: HostedAgentProvidersSetProvidersArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1293,7 +1293,7 @@ export interface DefaultApps extends tilo.Resource {
     kind: string;
     app: string;
   }): Promise<void>;
-  /** Runs `set-default-app-handler` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-default-app-handler` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setDefaultAppHandlerMany(items: SetDefaultAppHandlerArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1326,7 +1326,7 @@ export interface DisplayPlacement extends tilo.Resource {
   arrangeDisplays(args: {
     placement: unknown;
   }): Promise<void>;
-  /** Runs `arrange-displays` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `arrange-displays` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   arrangeDisplaysMany(items: ArrangeDisplaysArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1345,7 +1345,7 @@ export interface AutomaticDisplay extends tilo.Resource {
   setAutomaticDisplayInput(args: {
     on: boolean;
   }): Promise<void>;
-  /** Runs `set-automatic-display-input` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-automatic-display-input` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setAutomaticDisplayInputMany(items: SetAutomaticDisplayInputArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1386,7 +1386,7 @@ export interface OskSources extends tilo.Resource {
     layouts: string[];
     active: string;
   }): Promise<void>;
-  /** Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setLayoutsMany(items: OskSourcesSetLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1410,12 +1410,12 @@ export interface DeviceVpn extends tilo.Resource {
     device: string;
     on: boolean;
   }): Promise<void>;
-  /** Runs `route-through` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `route-through` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   routeThroughMany(items: RouteThroughArgs[]): Promise<tilo.ActionAnswer[]>;
   setKillSwitch(args: {
     on: boolean;
   }): Promise<void>;
-  /** Runs `set-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setKillSwitchMany(items: SetKillSwitchArgs[]): Promise<tilo.ActionAnswer[]>;
   // the app's `stop` action is named as a field of this kind: run it with
   // `action("stop")`.
@@ -1424,12 +1424,12 @@ export interface DeviceVpn extends tilo.Resource {
     on: boolean;
     allow_local?: boolean;
   }): Promise<void>;
-  /** Runs `set-profile-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-profile-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setProfileKillSwitchMany(items: SetProfileKillSwitchArgs[]): Promise<tilo.ActionAnswer[]>;
   releaseProfile(args: {
     profile: string;
   }): Promise<void>;
-  /** Runs `release-profile` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `release-profile` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   releaseProfileMany(items: ReleaseProfileArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1469,17 +1469,17 @@ export interface NetworkUsage extends tilo.Resource {
     offset: number;
     boot?: string;
   }): Promise<void>;
-  /** Runs `count-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `count-data-used` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   countDataUsedMany(items: CountDataUsedArgs[]): Promise<tilo.ActionAnswer[]>;
   resetDataUsed(args?: {
     connection?: string;
   }): Promise<void>;
-  /** Runs `reset-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `reset-data-used` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   resetDataUsedMany(items: ResetDataUsedArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetDataUsed(args?: {
     connection?: string;
   }): Promise<void>;
-  /** Runs `forget-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `forget-data-used` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forgetDataUsedMany(items: ForgetDataUsedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1499,12 +1499,12 @@ export interface McpServer extends tilo.Resource {
   setAcceptOwnDevices(args: {
     on: boolean;
   }): Promise<void>;
-  /** Runs `set-accept-own-devices` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-accept-own-devices` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setAcceptOwnDevicesMany(items: SetAcceptOwnDevicesArgs[]): Promise<tilo.ActionAnswer[]>;
   setActWithoutAsking(args: {
     on: boolean;
   }): Promise<void>;
-  /** Runs `set-act-without-asking` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-act-without-asking` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setActWithoutAskingMany(items: SetActWithoutAskingArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1526,7 +1526,7 @@ export interface Accounts extends tilo.Resource {
     origin: string;
     display_name: string;
   }): Promise<void>;
-  /** Runs `publish-browser-identity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `publish-browser-identity` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   publishBrowserIdentityMany(items: PublishBrowserIdentityArgs[]): Promise<tilo.ActionAnswer[]>;
   saveAccount(args: {
     id: string;
@@ -1536,17 +1536,17 @@ export interface Accounts extends tilo.Resource {
     enabled: boolean;
     tint: number;
   }): Promise<void>;
-  /** Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   saveAccountMany(items: SaveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   removeAccount(args: {
     account: string;
   }): Promise<void>;
-  /** Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeAccountMany(items: RemoveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   setActiveAccount(args: {
     account: string;
   }): Promise<void>;
-  /** Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setActiveAccountMany(items: SetActiveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 

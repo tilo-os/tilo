@@ -24,7 +24,7 @@ use tilo_actions::remote::CatalogueRow;
 use tilo_actions::{ActionContext, ActionInvoker, ActionOutput, Actor, MemberId};
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::api::{ApiMember, RunStep};
+use super::api::{ApiMember, AutomationStep};
 use super::item_json::{OutboxRow, outbox_entries};
 use crate::apps::{AppCatalogue, ReplicaActor, Seed};
 use crate::worker::ConfinedReplica;
@@ -322,14 +322,14 @@ impl ApiMember for HeldDocuments {
 
     fn find_in_history(
         &self,
-        step: &RunStep,
+        step: &AutomationStep,
         actor: &Actor,
     ) -> Option<(DocumentRoute, ActionContext)> {
         let recorded = |doc: &automerge::Automerge| {
             doc.get_changes(&[]).into_iter().rev().find_map(|change| {
                 let context = ActionContext::from_change_message(change.message()?)?;
                 let by = context.invoker.as_ref().map(|invoker| &invoker.acting.by);
-                (RunStep::of(&context).as_ref() == Some(step) && by == Some(actor))
+                (AutomationStep::of(&context).as_ref() == Some(step) && by == Some(actor))
                     .then_some(context)
             })
         };
@@ -356,7 +356,7 @@ impl ApiMember for HeldDocuments {
     fn queued_in_history(
         &self,
         route: &DocumentRoute,
-        step: &RunStep,
+        step: &AutomationStep,
         actor: &Actor,
         field: &str,
     ) -> Vec<String> {

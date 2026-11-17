@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Mapping
 from typing import Any
 from urllib.parse import quote
 
-from ._endpoint import CURRENT, Endpoint, RunGroup, result_of, segments
+from ._endpoint import CURRENT, Endpoint, InvocationGroup, result_of, segments
 from ._errors import AskPending, ProtocolError
 from ._models import (
     Event,
@@ -19,13 +19,13 @@ from ._models import (
     MintedKey,
     ProgramAnswer,
     Row,
-    RunList,
+    InvocationList,
     WorkspaceExport,
     WorkspaceInfo,
 )
 from ._resource import Resource
 
-RUN_PREFIX = "sdk:"
+INVOCATION_PREFIX = "sdk:"
 
 
 def _bytes_of(data: Any) -> bytes:
@@ -108,25 +108,25 @@ class Members:
         return [Member.of(row) for row in rows or [] if isinstance(row, Mapping)]
 
 
-class RunOpening:
-    """`ws.run(title)`: `async with` groups, `with` does too for the sync client."""
+class InvocationOpening:
+    """`ws.invocation(title)`: `async with` groups, `with` does too for the sync client."""
 
     def __init__(self, workspace: Workspace, title: str) -> None:
         self.workspace = workspace
         self.title = title
-        self.group: RunGroup | None = None
+        self.group: InvocationGroup | None = None
         self._token: Any = None
         self._previous: Any = None
 
-    def _begin(self) -> RunGroup:
+    def _begin(self) -> InvocationGroup:
         if self.group is None:
-            self.group = RunGroup(
-                self.workspace._endpoint_now(), self.title, _run_id(self.title)
+            self.group = InvocationGroup(
+                self.workspace._endpoint_now(), self.title, _invocation_id(self.title)
             )
         client = self.workspace.client
         if client.sync:
-            self._previous = client.run_group
-            client.run_group = self.group
+            self._previous = client.invocation_group
+            client.invocation_group = self.group
         else:
             self._token = CURRENT.set(self.group)
         return self.group
@@ -134,19 +134,19 @@ class RunOpening:
     def _close(self) -> None:
         client = self.workspace.client
         if client.sync:
-            client.run_group = self._previous
+            client.invocation_group = self._previous
         elif self._token is not None:
             CURRENT.reset(self._token)
             self._token = None
 
-    async def __aenter__(self) -> RunGroup:
+    async def __aenter__(self) -> InvocationGroup:
         await self.workspace._resolve()
         return self._begin()
 
     async def __aexit__(self, *_: Any) -> None:
         self._close()
 
-    def __enter__(self) -> RunGroup:
+    def __enter__(self) -> InvocationGroup:
         self.workspace.client.handoff(self.workspace._resolve())
         return self._begin()
 
@@ -154,11 +154,11 @@ class RunOpening:
         self._close()
 
 
-def _run_id(title: str) -> str:
+def _invocation_id(title: str) -> str:
     slug = "-".join(part for part in "".join(
         character.lower() if character.isalnum() else " " for character in title
     ).split() if part)[:40]
-    return f"{RUN_PREFIX}{slug or 'run'}:{uuid.uuid4().hex[:8]}"
+    return f"{INVOCATION_PREFIX}{slug or 'invocation'}:{uuid.uuid4().hex[:8]}"
 
 
 class Workspace:
@@ -264,7 +264,7 @@ class Workspace:
     # -- acting ----------------------------------------------------------
 
     def do(self, path: str, **args: Any) -> Any:
-        """Run one action: its result, or the `Run` that follows it."""
+        """Run one action: its result, or the `Invocation` that follows it."""
         return self.client.handoff(self._outcome(path, args))
 
     async def _outcome(
@@ -273,46 +273,48 @@ class Workspace:
         endpoint = await self._endpoint()
         return await endpoint.act(path, args, surface=surface)
 
-    def status(self, run: str, cancel: bool = False) -> Any:
-        """How a pending run went, or stop it."""
-        return self.client.handoff(self._status(run, cancel))
+    def status(self, invocation: str, cancel: bool = False) -> Any:
+        """How a pending invocation went, or stop it."""
+        return self.client.handoff(self._status(invocation, cancel))
 
-    async def _status(self, run: str, cancel: bool) -> Mapping[str, Any]:
-        return await (await self._endpoint()).status(run, cancel)
+    async def _status(self, invocation: str, cancel: bool) -> Mapping[str, Any]:
+        return await (await self._endpoint()).status(invocation, cancel)
 
-    def runs(self, limit: int | None = None) -> Any:
-        """The workspace's runs in records this key may read, newest first,
-        whoever ran them: a `RunList` of `RunInfo`s, `limit` to a page (50
-        unless said, at most 200); iterating it reads on to the oldest. Of
-        each run it says only what lies in those records, and its totals
-        count only those runs.
+    def invocations(self, limit: int | None = None) -> Any:
+        """The workspace's invocations in records this key may read, newest
+        first, whoever made them: an `InvocationList` of `InvocationInfo`s,
+        `limit` to a page (50 unless said, at most 200); iterating it reads on
+        to the oldest. Of each it says only what lies in those records, and its
+        totals count only those.
 
-        Each says who ran it, how it stands (`waiting` for the person,
+        Each says who made it, how it stands (`waiting` for the person,
         `running`, `ended`, `failed`, `cancelled`, `undone`), when, what it
         changed and whether it can still be taken back. Its `id` is what
-        `status` reads and stops; a run the host no longer remembers, after
-        it restarted, is listed from the workspace's records without one.
+        `status` reads and stops; one the host no longer remembers, after it
+        restarted, is listed from the workspace's records without one.
         """
-        return self.client.handoff(self._runs(limit))
+        return self.client.handoff(self._invocations(limit))
 
-    async def _runs(self, limit: int | None, cursor: str | None = None) -> RunList:
+    async def _invocations(
+        self, limit: int | None, cursor: str | None = None
+    ) -> InvocationList:
         endpoint = await self._endpoint()
         answer = await endpoint.json(
-            "GET", endpoint.path("runs"), query={"limit": limit, "cursor": cursor}
+            "GET", endpoint.path("invocations"), query={"limit": limit, "cursor": cursor}
         )
-        return RunList.of(
-            answer, self.client, lambda next_cursor: self._runs(limit, next_cursor)
+        return InvocationList.of(
+            answer, self.client, lambda next_cursor: self._invocations(limit, next_cursor)
         )
 
     def program(self, source: str, confirm: bool | None = None) -> Any:
-        """Run a tilolang program as this run's task."""
+        """Run a tilolang program as this group's task."""
         return self.client.handoff(self._program(source, confirm))
 
     async def _program(self, source: str, confirm: bool | None) -> ProgramAnswer:
         return await (await self._endpoint()).program(source, confirm)
 
     def watch(self, path: str | None = None) -> Any:
-        """Each change, run event and presence change, from now on."""
+        """Each change, invocation event and presence change, from now on."""
         return self.client.handoff(self._watch(path))
 
     async def _watch(self, path: str | None) -> AsyncIterator[Event]:
@@ -423,9 +425,9 @@ class Workspace:
         except AskPending as ask:
             raise ask._then(result_of) from None
 
-    def run(self, title: str) -> RunOpening:
-        """Group the calls inside into one run: one undo step per app."""
-        return RunOpening(self, title)
+    def invocation(self, title: str) -> InvocationOpening:
+        """Group the calls inside into one invocation: one undo step per app."""
+        return InvocationOpening(self, title)
 
     # -- files and keys ---------------------------------------------------
 
@@ -463,7 +465,7 @@ __all__ = [
     "Members",
     "ProgramAnswer",
     "Row",
-    "RunOpening",
+    "InvocationOpening",
     "Workspace",
     "WorkspaceKeys",
 ]
