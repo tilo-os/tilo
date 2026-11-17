@@ -776,18 +776,9 @@ impl HostAgents {
         &self,
         workspace: &str,
         app: &str,
-        record: &str,
+        document: &str,
     ) -> Result<Option<R::State>, String> {
-        let Some(bytes) = self
-            .workspaces
-            .resource_document(workspace, app, record)
-            .await
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(None);
-        };
-        let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-        crate::workspace_bots::opened::<R>(&mut doc).map(Some)
+        read_document::<R>(&self.workspaces, workspace, (app, document)).await
     }
 
     /// Answer `turn` in `workspace`: tell the person it is taken, work through the agent's tools
@@ -1325,6 +1316,145 @@ impl Reply {
             tracing::warn!(workspace = %self.workspace, %message, %error, "a host agent's reply did not take its work");
         }
     }
+}
+
+/// What the agent `caller` is held to in `workspace`, as the workspace's list of its agents
+/// keeps it: the bound kept for it there, and nothing at all for one that was retired.
+/// Answered for an agent a person's own device handed its session to: one this server works for
+/// its keeper on a turn, or one a person's own computer works with under its name (`tilo
+/// login`, then `tilo mcp`, whose id is [`tilo_actions::remote::device_agent_id`]).
+///
+/// A computer's agent the list does not name yet is added as it first arrives or acts: kept by
+/// its person and marked as the client it connects as, so the workspace's Agents tab shows it
+/// and a bound set there narrows what it does. It is added once, under the name it came with; a
+/// name its keeper gives it later stays. The server writes it as the workspace's governor, for
+/// the person, as it counts what its own agents spend.
+///
+/// A list this server cannot read holds the agent to nothing: what it may do is never more than
+/// the list says.
+pub async fn workspace_agent(
+    workspaces: &Workspaces,
+    workspace: WorkspaceId,
+    caller: &Caller,
+) -> Vec<tilo_action_policy::Rule> {
+    let (Some(agent), Some(person)) = (
+        caller.acting().agent_id(),
+        caller.acting().acted_for_person(),
+    ) else {
+        return Vec::new();
+    };
+    if !caller.is_session_delegated() {
+        return Vec::new();
+    }
+    let workspace = workspace.to_string();
+    let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    let kept = match read_document::<WorkspaceAgents>(workspaces, &workspace, (CHAT, &document))
+        .await
+    {
+        Ok(agents) => agents.and_then(|agents| {
+            agents
+                .agents
+                .find(&tilo_resource::Id::from_raw(agent.to_owned()))
+                .cloned()
+        }),
+        Err(error) => {
+            tracing::warn!(%workspace, %agent, %error, "the workspace's agents could not be read: the agent may do nothing");
+            return nothing(&workspace);
+        }
+    };
+    if let Some(kept) = kept {
+        return if kept.is_active() {
+            kept.turn_rules(&workspace)
+        } else {
+            nothing(&workspace)
+        };
+    }
+    let (Some(user), Some(name)) = (caller.user_public_key(), caller.agent_name()) else {
+        return Vec::new();
+    };
+    if tilo_actions::remote::device_agent_id(user, name) == agent
+        && let Err(error) = list_agent(workspaces, &workspace, (agent, name), person).await
+    {
+        tracing::warn!(%workspace, %agent, %error, "a computer's agent is not listed in the workspace's agents");
+    }
+    Vec::new()
+}
+
+/// The document `document` of `app` in `workspace` as the governor holds it, read as `R`; `None`
+/// where the workspace has none.
+async fn read_document<R: tilo_resource::Resource>(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (app, document): (&str, &str),
+) -> Result<Option<R::State>, String> {
+    let Some(bytes) = workspaces
+        .resource_document(workspace, app, document)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+    crate::workspace_bots::opened::<R>(&mut doc).map(Some)
+}
+
+/// Every action anywhere in `workspace` refused: what a retired agent may do.
+fn nothing(workspace: &str) -> Vec<tilo_action_policy::Rule> {
+    vec![tilo_action_policy::Rule::new(
+        tilo_action_policy::TreePath::workspace(workspace).rest(),
+        tilo_action_policy::KindSet::ALL,
+        tilo_action_policy::Answer::Deny,
+    )]
+}
+
+/// Add the computer's agent `agent` named `name` to `workspace`'s list of its agents, kept by
+/// `person`: the list starts with it where the workspace has none yet. Nothing when another
+/// arrival added it first.
+async fn list_agent(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (agent, name): (&str, &str),
+    person: &str,
+) -> Result<(), String> {
+    let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    let name = tilo_resource::NonBlank::parse(name.trim()).ok_or("the agent has no name")?;
+    let (agent, person) = (agent.to_owned(), person.to_owned());
+    workspaces
+        .author_workspace_document(workspace, workspaces.governor(), (CHAT, &document), |doc| {
+            // A workspace whose people made no agent yet has no list of them: it starts here.
+            let agents = if doc.get_heads().is_empty() {
+                tilo_resource::Replica::<WorkspaceAgents>::new()
+            } else {
+                tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+            };
+            let mut listing = agents.as_author(&person);
+            let listed = listing.state().map_err(|error| error.to_string())?;
+            let applied = if listed
+                .agents
+                .find(&tilo_resource::Id::from_raw(agent.clone()))
+                .is_some()
+            {
+                Ok(())
+            } else {
+                listing
+                    .apply(WorkspaceAgents::CREATE_AGENT.with(
+                        tilo_workspace_agent::workspace_agents::CreateAgent {
+                            mcp_client: Some(name.as_str().to_owned()),
+                            name,
+                            keeper: None,
+                            id: Some(agent),
+                            model: None,
+                            colour: None,
+                        },
+                    ))
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            };
+            std::mem::swap(doc, listing.doc_mut());
+            applied
+        })
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// What an agent is told of the issue `ask` gives it.

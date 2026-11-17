@@ -440,9 +440,14 @@ impl Caller {
     }
 
     /// The grants made for this caller's software: the delegation a person's
-    /// own device gives the agent it handed its session to.
+    /// own device gives the agent it handed its session to, held to `kept`, the bound the
+    /// workspace's list of its agents keeps for it, when no turn carries one.
     #[must_use]
-    pub fn granted(&self, workspace: &str) -> Vec<tilo_action_policy::Grant> {
+    pub fn granted(
+        &self,
+        workspace: &str,
+        kept: &[tilo_action_policy::Rule],
+    ) -> Vec<tilo_action_policy::Grant> {
         let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
         else {
             return Vec::new();
@@ -450,7 +455,14 @@ impl Caller {
         if !self.session_delegated {
             return Vec::new();
         }
-        tilo_action_policy::roles::agent_grants(workspace, agent, person, &self.bound)
+        // A turn's agent carries the bound its server read for the turn; an agent outside a turn
+        // (one a person's computer works with) is held to what the workspace's list keeps for it.
+        let bound = if self.turn.is_some() {
+            &self.bound[..]
+        } else {
+            kept
+        };
+        tilo_action_policy::roles::agent_grants(workspace, agent, person, bound)
     }
 
     /// The run this caller's actions are part of, as the host that admitted it

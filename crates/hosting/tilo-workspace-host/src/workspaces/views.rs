@@ -49,6 +49,7 @@ impl GovernedWorkspace {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .ok()?
                 .as_secs(),
+            agent_bound: Vec::new(),
         })
     }
 

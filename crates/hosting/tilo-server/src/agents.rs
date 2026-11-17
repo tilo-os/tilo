@@ -907,6 +907,21 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         Some(answer)
     }
 
+    fn workspace_agent(
+        &self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+    ) -> Vec<tilo_action_policy::Rule> {
+        let Some(workspaces) = self.workspaces.as_ref() else {
+            return Vec::new();
+        };
+        self.host_device
+            .runtime
+            .block_on(crate::workspace_agents::workspace_agent(
+                workspaces, workspace, caller,
+            ))
+    }
+
     fn runs_unattended(&self, workspace: WorkspaceId, caller: &Caller) -> bool {
         self.workspaces.as_ref().is_some_and(|workspaces| {
             self.host_device
@@ -1036,7 +1051,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         })
     }
 
-    /// What the workspace's host keeps ([`crate::workspaces::Workspaces::kept_content`]):
+    /// What the workspace's server keeps ([`crate::workspaces::Workspaces::kept_content`]):
     /// a bridged person's avatar its bots fetched, a file or a feedback
     /// report's picture a member posted. A server keeping no content for the
     /// workspace answers none, which refuses an appearance naming an avatar.

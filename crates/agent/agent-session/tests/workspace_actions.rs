@@ -69,6 +69,9 @@ mod branch_files;
 #[cfg(test)]
 #[path = "workspace_actions/branch_workspace.rs"]
 mod branch_workspace;
+#[cfg(test)]
+#[path = "workspace_actions/computer_agent.rs"]
+mod computer_agent;
 
 #[cfg(test)]
 #[path = "workspace_actions/chat_post.rs"]
@@ -573,6 +576,7 @@ impl tilo_agent_session::workspace_actions::WorkspaceDocumentsLink for DeliveryR
             ),
             sandbox: Vec::new(),
             unix_time: 1,
+            agent_bound: Vec::new(),
         })
     }
     fn view_document(

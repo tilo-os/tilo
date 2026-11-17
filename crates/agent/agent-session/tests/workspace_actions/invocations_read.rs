@@ -77,6 +77,7 @@ impl Reading {
             access: access.granted(denied),
             sandbox: Vec::new(),
             unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
+            agent_bound: Vec::new(),
         })
     }
 }

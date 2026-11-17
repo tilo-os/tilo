@@ -339,6 +339,18 @@ impl super::Worker {
         );
     }
 
+    /// `caller`'s session arrived in `workspace_id`: an agent a person's device handed its session
+    /// to is added to the workspace's list of its agents before its first request, and the
+    /// session is said present there.
+    pub(super) fn arrived(&mut self, workspace_id: WorkspaceId, caller: &Caller) {
+        if caller.is_session_delegated()
+            && let Some(link) = self.shared.link.get()
+        {
+            link.workspace_agent(workspace_id, caller);
+        }
+        self.voice_arrived(workspace_id, caller);
+    }
+
     /// Say `caller`'s session present in `workspace_id`, waiting ([`session_voice`]).
     pub(super) fn voice_arrived(&mut self, workspace_id: WorkspaceId, caller: &Caller) {
         let Some((workspace, cluster)) = self.said_in(workspace_id) else {

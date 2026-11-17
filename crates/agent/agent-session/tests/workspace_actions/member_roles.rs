@@ -74,6 +74,7 @@ impl WorkspaceDocumentsLink for Membership {
             access: self.access(caller)?,
             sandbox: Vec::new(),
             unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
+            agent_bound: Vec::new(),
         })
     }
     fn workspace_policy(&self, workspace: WorkspaceId, caller: &Caller) -> Option<ViewReadPolicy> {

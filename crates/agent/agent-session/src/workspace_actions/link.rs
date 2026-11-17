@@ -44,6 +44,10 @@ pub struct ViewReadPolicy {
     pub sandbox: Vec<collab_types::caps::CapOverride>,
     /// Host time used to evaluate capability expiry.
     pub unix_time: u64,
+    /// What the workspace's list of its agents bounds the agent asking to, when an agent asks
+    /// for the person ([`WorkspaceDocumentsLink::workspace_agent`]): empty follows the default.
+    #[serde(default)]
+    pub agent_bound: Vec<ui::permissions::policy::Rule>,
 }
 
 impl ViewReadPolicy {
@@ -98,6 +102,17 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
         _caller: &Caller,
     ) -> Option<ViewReadPolicy> {
         None
+    }
+    /// The agent `caller` is, which a person's own device handed its session to, works in
+    /// `workspace`: the server adds it to the workspace's list of its agents where that list
+    /// does not name it yet, and answers the bound the list keeps for it, which narrows
+    /// everything it does there. Empty follows the default.
+    fn workspace_agent(
+        &self,
+        _workspace: WorkspaceId,
+        _caller: &Caller,
+    ) -> Vec<ui::permissions::policy::Rule> {
+        Vec::new()
     }
     /// Read an exact existing source using already-owned host keys. The host
     /// must check current certified Read under its workspace lock before key access

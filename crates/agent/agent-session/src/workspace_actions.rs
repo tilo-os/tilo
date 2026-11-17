@@ -1772,7 +1772,7 @@ impl Worker {
                 Job::Arrived {
                     workspace_id,
                     caller,
-                } => self.voice_arrived(workspace_id, &caller),
+                } => self.arrived(workspace_id, &caller),
                 Job::Search {
                     workspace_id,
                     caller,

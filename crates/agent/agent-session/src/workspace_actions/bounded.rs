@@ -369,13 +369,14 @@ pub(super) fn question(
 /// `who`'s access as the host decides for them: the person's access as
 /// `policy` gives it now, held to the bounds the one reading of a caller
 /// gives ([`Caller::acting`]): for an agent, the grants the caller carries
-/// ([`Caller::granted`]) as the broker gives them. Refused when the policy is
+/// ([`Caller::granted`]) as the broker gives them, narrowed by the bound the
+/// workspace's list of its agents keeps for it. Refused when the policy is
 /// someone else's.
 pub(super) fn bounded_access(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
 ) -> Result<policy::MemberAccess, ActionHostError> {
-    let granted = who.caller.granted(&policy.workspace);
+    let granted = who.caller.granted(&policy.workspace, &policy.agent_bound);
     policy
         .access
         .clone()
@@ -477,10 +478,18 @@ impl Worker {
             None => link.workspace_policy(workspace_id, &who.person_caller),
         });
         match governed {
-            Some(policy)
+            Some(mut policy)
                 if policy.workspace == cluster
                     && policy.access.person_id().unwrap_or_default() == who.person.as_str() =>
             {
+                // An agent a person's device handed its session to is held to the bound the
+                // workspace's list of its agents keeps for it.
+                if who.agent.is_some()
+                    && who.caller.is_session_delegated()
+                    && let Some(link) = self.shared.link.get()
+                {
+                    policy.agent_bound = link.workspace_agent(workspace_id, &who.caller);
+                }
                 Ok(policy)
             }
             None if who.person == self.member && !self.governed(workspace_id) => {
@@ -494,6 +503,7 @@ impl Worker {
                     access: owner.access().clone(),
                     sandbox: Vec::new(),
                     unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
+                    agent_bound: Vec::new(),
                 })
             }
             Some(_) | None => Err(ActionHostError::NotPermitted),
@@ -608,7 +618,7 @@ impl Worker {
         }
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
-        let granted = who.caller.granted(&policy.workspace);
+        let granted = who.caller.granted(&policy.workspace, &policy.agent_bound);
         let same = self.bounded.get(&key).is_some_and(|held| {
             held.access == policy.access
                 && held.sandbox == policy.sandbox
