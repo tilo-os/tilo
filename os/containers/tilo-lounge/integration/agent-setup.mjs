@@ -466,12 +466,13 @@ otherAgent.stdin.write(`${JSON.stringify({jsonrpc: '2.0', method: 'notifications
 const noteTitle = 'Hello from the second agent';
 await call('tilo_do', {path: 'notes#open'});
 await call('tilo_do', {path: 'notes#new-note', args: {title: noteTitle}});
-// The first agent still acts after the second did.
+// The first agent still acts after the second did: it lists the notes, the
+// second agent's among them.
 const firstAnswer = new Promise(resolve => {
   let seen = '';
   server.stdout.on('data', chunk => { seen += chunk; if (seen.includes('"id":3')) resolve(seen); });
 });
-server.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 3, method: 'tools/call', params: {name: 'tilo_ls', arguments: {path: 'notes'}}})}\n`);
+server.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 3, method: 'tools/call', params: {name: 'tilo_ls', arguments: {path: 'notes/notes.pages'}}})}\n`);
 const firstSaid = await Promise.race([firstAnswer, sleep(stepLimit(4)).then(() => 'no answer')]);
 report.firstAfterSecond = firstSaid.slice(-600);
 if (!firstSaid.includes(noteTitle)) await fail(`the first agent no longer reads the workspace after the second acted: ${firstSaid.slice(-600)}`);
