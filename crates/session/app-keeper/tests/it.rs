@@ -16,5 +16,14 @@
 #[path = "support.rs"]
 mod support;
 
+#[path = "clipboard.rs"]
+mod clipboard;
+
+#[path = "input.rs"]
+mod input;
+
 #[path = "keeper.rs"]
 mod keeper;
+
+#[path = "text_input.rs"]
+mod text_input;

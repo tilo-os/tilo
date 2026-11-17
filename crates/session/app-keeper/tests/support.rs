@@ -11,13 +11,33 @@ use tilo_app_keeper::wire::{self, FromKeeper, ToKeeper};
 use tilo_app_keeper::{Keeper, Options};
 use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
 use wayland_client::protocol::{
-    wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
-    wl_keyboard::WlKeyboard, wl_output, wl_output::WlOutput, wl_pointer, wl_pointer::WlPointer,
-    wl_registry, wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
-    wl_shm_pool::WlShmPool, wl_subcompositor::WlSubcompositor, wl_subsurface::WlSubsurface,
+    wl_buffer::WlBuffer,
+    wl_callback::WlCallback,
+    wl_compositor::WlCompositor,
+    wl_data_device::{self, WlDataDevice},
+    wl_data_device_manager::{self, DndAction, WlDataDeviceManager},
+    wl_data_offer::{self, WlDataOffer},
+    wl_data_source::{self, WlDataSource},
+    wl_keyboard,
+    wl_keyboard::WlKeyboard,
+    wl_output,
+    wl_output::WlOutput,
+    wl_pointer,
+    wl_pointer::WlPointer,
+    wl_registry,
+    wl_registry::WlRegistry,
+    wl_seat,
+    wl_seat::WlSeat,
+    wl_shm,
+    wl_shm::WlShm,
+    wl_shm_pool::WlShmPool,
+    wl_subcompositor::WlSubcompositor,
+    wl_subsurface::WlSubsurface,
     wl_surface::WlSurface,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
+use wayland_client::{
+    Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop, event_created_child,
+};
 use wayland_protocols::wp::content_type::v1::client::{
     wp_content_type_manager_v1::WpContentTypeManagerV1,
     wp_content_type_v1::{self, WpContentTypeV1},
@@ -29,6 +49,31 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_dmabuf_feedback_v1, zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
     zwp_linux_dmabuf_v1, zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
+};
+use wayland_protocols::wp::pointer_constraints::zv1::client::{
+    zwp_locked_pointer_v1::{self as locked_pointer, ZwpLockedPointerV1},
+    zwp_pointer_constraints_v1::{self as constraints_manager, Lifetime, ZwpPointerConstraintsV1},
+};
+use wayland_protocols::wp::pointer_gestures::zv1::client::{
+    zwp_pointer_gesture_pinch_v1::{self as pinch_gesture, ZwpPointerGesturePinchV1},
+    zwp_pointer_gesture_swipe_v1::{self as swipe_gesture, ZwpPointerGestureSwipeV1},
+    zwp_pointer_gestures_v1::ZwpPointerGesturesV1,
+};
+use wayland_protocols::wp::primary_selection::zv1::client::{
+    zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
+    zwp_primary_selection_device_v1::{self, ZwpPrimarySelectionDeviceV1},
+    zwp_primary_selection_offer_v1::{self, ZwpPrimarySelectionOfferV1},
+    zwp_primary_selection_source_v1::{self, ZwpPrimarySelectionSourceV1},
+};
+use wayland_protocols::wp::relative_pointer::zv1::client::{
+    zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
+    zwp_relative_pointer_v1::{self as relative_pointer, ZwpRelativePointerV1},
+};
+use wayland_protocols::wp::text_input::zv3::client::{
+    zwp_text_input_manager_v3::{self as text_manager, ZwpTextInputManagerV3},
+    zwp_text_input_v3::{
+        self as text_input, ChangeCause, ContentHint, ContentPurpose, ZwpTextInputV3,
+    },
 };
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
@@ -290,6 +335,56 @@ pub struct Heard {
     pub closed: bool,
     pub keys: Vec<(u32, u32, bool)>,
     pub buttons: Vec<(u32, u32, bool)>,
+    pub data_device_manager: Option<WlDataDeviceManager>,
+    pub data_device: Option<WlDataDevice>,
+    pub primary_manager: Option<ZwpPrimarySelectionDeviceManagerV1>,
+    pub primary_device: Option<ZwpPrimarySelectionDeviceV1>,
+    /// The clipboard offer the app holds now, and the formats it offered.
+    pub selection: Option<WlDataOffer>,
+    pub offer_mimes: Vec<(WlDataOffer, Vec<String>)>,
+    pub primary_selection: Option<ZwpPrimarySelectionOfferV1>,
+    pub primary_mimes: Vec<(ZwpPrimarySelectionOfferV1, Vec<String>)>,
+    /// The drag offer the app holds, and where the drag is.
+    pub drag_offer: Option<WlDataOffer>,
+    pub drag_entered: bool,
+    pub drag_left: bool,
+    pub drag_motion: usize,
+    pub drops: usize,
+    /// What the app's own sources hold, and what became of them.
+    pub sources: Vec<(WlDataSource, Vec<u8>)>,
+    pub sent: Vec<String>,
+    pub source_cancelled: bool,
+    pub source_action: Option<DndAction>,
+    pub dnd_finished: bool,
+    pub primary_sources: Vec<(ZwpPrimarySelectionSourceV1, Vec<u8>)>,
+    pub primary_sent: Vec<String>,
+    pub primary_cancelled: bool,
+    pub text_input_manager: Option<ZwpTextInputManagerV3>,
+    pub text_input: Option<ZwpTextInputV3>,
+    pub text_entered: bool,
+    pub text_left: bool,
+    pub commits: Vec<String>,
+    pub preedits: Vec<String>,
+    pub deletes: Vec<(u32, u32)>,
+    pub text_dones: Vec<u32>,
+    pub constraints: Option<ZwpPointerConstraintsV1>,
+    pub locked_pointer: Option<ZwpLockedPointerV1>,
+    pub locked: bool,
+    pub unlocked: bool,
+    pub gestures: Option<ZwpPointerGesturesV1>,
+    pub swipe_gesture: Option<ZwpPointerGestureSwipeV1>,
+    pub pinch_gesture: Option<ZwpPointerGesturePinchV1>,
+    pub swipes: Vec<(u32, u32)>,
+    pub swipe_updates: Vec<(f64, f64)>,
+    pub swipe_ends: Vec<i32>,
+    pub pinches: Vec<(u32, u32)>,
+    pub pinch_ends: Vec<i32>,
+    pub pinch_updates: Vec<(f64, f64, f64, f64)>,
+    pub relative: Option<ZwpRelativePointerManagerV1>,
+    pub relative_pointer: Option<ZwpRelativePointerV1>,
+    pub relative_motion: Vec<(f64, f64)>,
+    pub last_serial: u32,
+    pub enter_serial: u32,
     pub keyboard_entered: bool,
     pub pointer_entered: bool,
     pub buffers_released: usize,
@@ -563,7 +658,53 @@ impl Dispatch<WlRegistry, ()> for Heard {
                 "wl_subcompositor" => heard.subcompositor = Some(registry.bind(name, 1, qh, ())),
                 "wl_shm" => heard.shm = Some(registry.bind(name, 1, qh, ())),
                 "xdg_wm_base" => heard.wm_base = Some(registry.bind(name, version.min(6), qh, ())),
-                "wl_seat" => heard.seat = Some(registry.bind(name, version.min(9), qh, ())),
+                "wl_seat" => {
+                    let seat: WlSeat = registry.bind(name, version.min(9), qh, ());
+                    heard.seat = Some(seat);
+                    if let Some(manager) = &heard.data_device_manager {
+                        heard.data_device =
+                            Some(manager.get_data_device(&heard.seat.clone().unwrap(), qh, ()));
+                    }
+                    if let Some(manager) = &heard.primary_manager {
+                        heard.primary_device =
+                            Some(manager.get_device(&heard.seat.clone().unwrap(), qh, ()));
+                    }
+                    if let Some(manager) = &heard.text_input_manager {
+                        heard.text_input =
+                            Some(manager.get_text_input(&heard.seat.clone().unwrap(), qh, ()));
+                    }
+                }
+                "wl_data_device_manager" => {
+                    let manager: WlDataDeviceManager = registry.bind(name, version.min(3), qh, ());
+                    if let Some(seat) = &heard.seat {
+                        heard.data_device = Some(manager.get_data_device(seat, qh, ()));
+                    }
+                    heard.data_device_manager = Some(manager);
+                }
+                "zwp_pointer_constraints_v1" => {
+                    heard.constraints = Some(registry.bind(name, version.min(1), qh, ()));
+                }
+                "zwp_pointer_gestures_v1" => {
+                    heard.gestures = Some(registry.bind(name, version.min(3), qh, ()));
+                }
+                "zwp_relative_pointer_manager_v1" => {
+                    heard.relative = Some(registry.bind(name, 1, qh, ()));
+                }
+                "zwp_text_input_manager_v3" => {
+                    let manager: ZwpTextInputManagerV3 = registry.bind(name, 1, qh, ());
+                    if let Some(seat) = &heard.seat {
+                        heard.text_input = Some(manager.get_text_input(seat, qh, ()));
+                    }
+                    heard.text_input_manager = Some(manager);
+                }
+                "zwp_primary_selection_device_manager_v1" => {
+                    let manager: ZwpPrimarySelectionDeviceManagerV1 =
+                        registry.bind(name, 1, qh, ());
+                    if let Some(seat) = &heard.seat {
+                        heard.primary_device = Some(manager.get_device(seat, qh, ()));
+                    }
+                    heard.primary_manager = Some(manager);
+                }
                 "wl_output" => heard
                     .outputs
                     .push(registry.bind(name, version.min(4), qh, name)),
@@ -608,6 +749,21 @@ impl Dispatch<WlSeat, ()> for Heard {
             if capabilities.contains(wl_seat::Capability::Pointer) && heard.pointer.is_none() {
                 heard.pointer = Some(seat.get_pointer(qh, ()));
             }
+            if heard.data_device.is_none()
+                && let Some(manager) = &heard.data_device_manager
+            {
+                heard.data_device = Some(manager.get_data_device(seat, qh, ()));
+            }
+            if heard.primary_device.is_none()
+                && let Some(manager) = &heard.primary_manager
+            {
+                heard.primary_device = Some(manager.get_device(seat, qh, ()));
+            }
+            if heard.text_input.is_none()
+                && let Some(manager) = &heard.text_input_manager
+            {
+                heard.text_input = Some(manager.get_text_input(seat, qh, ()));
+            }
         }
     }
 }
@@ -622,7 +778,11 @@ impl Dispatch<WlKeyboard, ()> for Heard {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_keyboard::Event::Enter { .. } => heard.keyboard_entered = true,
+            wl_keyboard::Event::Enter { serial, .. } => {
+                heard.keyboard_entered = true;
+                heard.last_serial = serial;
+                heard.enter_serial = serial;
+            }
             wl_keyboard::Event::Leave { .. } => heard.keyboard_entered = false,
             wl_keyboard::Event::Key {
                 serial,
@@ -654,9 +814,14 @@ impl Dispatch<WlPointer, ()> for Heard {
                 button,
                 state: WEnum::Value(state),
                 ..
-            } => heard
-                .buttons
-                .push((serial, button, state == wl_pointer::ButtonState::Pressed)),
+            } => {
+                if state == wl_pointer::ButtonState::Pressed {
+                    heard.last_serial = serial;
+                }
+                heard
+                    .buttons
+                    .push((serial, button, state == wl_pointer::ButtonState::Pressed));
+            }
             _ => {}
         }
     }
@@ -859,3 +1024,549 @@ delegate_noop!(Heard: ignore XdgPositioner);
 
 /// The state number of `suspended` in `xdg_toplevel.configure`.
 pub const SUSPENDED: u32 = 9;
+
+impl Dispatch<WlDataDeviceManager, ()> for Heard {
+    fn event(
+        _: &mut Self,
+        _: &WlDataDeviceManager,
+        _: wl_data_device_manager::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<WlDataDevice, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &WlDataDevice,
+        event: wl_data_device::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_data_device::Event::DataOffer { id } => {
+                heard.offer_mimes.push((id, Vec::new()));
+            }
+            wl_data_device::Event::Selection { id } => {
+                if let Some(old) = heard.selection.take() {
+                    old.destroy();
+                }
+                heard.selection = id;
+            }
+            wl_data_device::Event::Enter {
+                serial, id: offer, ..
+            } => {
+                heard.drag_entered = true;
+                heard.enter_serial = serial;
+                heard.drag_offer = offer;
+            }
+            wl_data_device::Event::Leave => {
+                heard.drag_left = true;
+                if let Some(offer) = heard.drag_offer.take() {
+                    offer.destroy();
+                }
+            }
+            wl_data_device::Event::Motion { .. } => heard.drag_motion += 1,
+            wl_data_device::Event::Drop => heard.drops += 1,
+            _ => {}
+        }
+    }
+
+    event_created_child!(Heard, WlDataDevice, [
+        wl_data_device::EVT_DATA_OFFER_OPCODE => (WlDataOffer, ()),
+        wl_data_device::EVT_ENTER_OPCODE => (WlDataOffer, ()),
+    ]);
+}
+
+impl Dispatch<WlDataOffer, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        offer: &WlDataOffer,
+        event: wl_data_offer::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_data_offer::Event::Offer { mime_type } = event
+            && let Some((_, mimes)) = heard.offer_mimes.iter_mut().find(|(held, _)| held == offer)
+        {
+            mimes.push(mime_type);
+        }
+    }
+}
+
+impl Dispatch<WlDataSource, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        source: &WlDataSource,
+        event: wl_data_source::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_data_source::Event::Send { mime_type, fd } => {
+                let bytes = heard
+                    .sources
+                    .iter()
+                    .find(|(held, _)| held == source)
+                    .map(|(_, bytes)| bytes.clone())
+                    .unwrap_or_default();
+                heard.sent.push(mime_type);
+                let _ = std::fs::File::from(fd).write_all(&bytes);
+            }
+            wl_data_source::Event::Cancelled => heard.source_cancelled = true,
+            wl_data_source::Event::Action {
+                dnd_action: WEnum::Value(action),
+            } => heard.source_action = Some(action),
+            wl_data_source::Event::DndFinished => heard.dnd_finished = true,
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpPrimarySelectionDeviceManagerV1, ()> for Heard {
+    fn event(
+        _: &mut Self,
+        _: &ZwpPrimarySelectionDeviceManagerV1,
+        _: <ZwpPrimarySelectionDeviceManagerV1 as wayland_client::Proxy>::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpPrimarySelectionDeviceV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZwpPrimarySelectionDeviceV1,
+        event: zwp_primary_selection_device_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_primary_selection_device_v1::Event::DataOffer { offer } => {
+                heard.primary_mimes.push((offer, Vec::new()));
+            }
+            zwp_primary_selection_device_v1::Event::Selection { id } => {
+                if let Some(old) = heard.primary_selection.take() {
+                    old.destroy();
+                }
+                heard.primary_selection = id;
+            }
+            _ => {}
+        }
+    }
+
+    event_created_child!(Heard, ZwpPrimarySelectionDeviceV1, [
+        zwp_primary_selection_device_v1::EVT_DATA_OFFER_OPCODE => (ZwpPrimarySelectionOfferV1, ()),
+    ]);
+}
+
+impl Dispatch<ZwpPrimarySelectionOfferV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        offer: &ZwpPrimarySelectionOfferV1,
+        event: zwp_primary_selection_offer_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwp_primary_selection_offer_v1::Event::Offer { mime_type } = event
+            && let Some((_, mimes)) = heard
+                .primary_mimes
+                .iter_mut()
+                .find(|(held, _)| held == offer)
+        {
+            mimes.push(mime_type);
+        }
+    }
+}
+
+impl Dispatch<ZwpPrimarySelectionSourceV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        source: &ZwpPrimarySelectionSourceV1,
+        event: zwp_primary_selection_source_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_primary_selection_source_v1::Event::Send { mime_type, fd } => {
+                let bytes = heard
+                    .primary_sources
+                    .iter()
+                    .find(|(held, _)| held == source)
+                    .map(|(_, bytes)| bytes.clone())
+                    .unwrap_or_default();
+                heard.primary_sent.push(mime_type);
+                let _ = std::fs::File::from(fd).write_all(&bytes);
+            }
+            zwp_primary_selection_source_v1::Event::Cancelled => heard.primary_cancelled = true,
+            _ => {}
+        }
+    }
+}
+
+impl App {
+    /// Become the clipboard's (or the primary selection's) owner, offering `mime`.
+    pub fn own_selection(&mut self, mime: &str, bytes: &[u8], primary: bool) {
+        let qh = self.qh();
+        let serial = self.heard.last_serial;
+        if primary {
+            let manager = self
+                .heard
+                .primary_manager
+                .clone()
+                .expect("a primary selection manager");
+            let source = manager.create_source(&qh, ());
+            source.offer(mime.to_owned());
+            self.heard
+                .primary_sources
+                .push((source.clone(), bytes.to_vec()));
+            self.heard
+                .primary_device
+                .as_ref()
+                .expect("a primary selection device")
+                .set_selection(Some(&source), serial);
+        } else {
+            let manager = self
+                .heard
+                .data_device_manager
+                .clone()
+                .expect("a data device manager");
+            let source = manager.create_data_source(&qh, ());
+            source.offer(mime.to_owned());
+            source.set_actions(DndAction::Copy);
+            self.heard.sources.push((source.clone(), bytes.to_vec()));
+            self.heard
+                .data_device
+                .as_ref()
+                .expect("a data device")
+                .set_selection(Some(&source), serial);
+        }
+    }
+
+    /// The formats offered to the app by the clipboard (or the primary selection).
+    pub fn selection_mimes(&self, primary: bool) -> Vec<String> {
+        if primary {
+            self.heard
+                .primary_mimes
+                .iter()
+                .filter(|(offer, _)| self.heard.primary_selection.as_ref() == Some(offer))
+                .flat_map(|(_, mimes)| mimes.clone())
+                .collect()
+        } else {
+            self.heard
+                .offer_mimes
+                .iter()
+                .filter(|(offer, _)| self.heard.selection.as_ref() == Some(offer))
+                .flat_map(|(_, mimes)| mimes.clone())
+                .collect()
+        }
+    }
+
+    /// Read the clipboard (or the primary selection) as `mime`, pumping until the owner wrote.
+    pub fn receive(&mut self, rig: &mut Rig, mime: &str, primary: bool) -> Option<Vec<u8>> {
+        let (reader, writer) = std::io::pipe().expect("transfer pipe");
+        if primary {
+            let offer = self.heard.primary_selection.clone()?;
+            offer.receive(mime.to_owned(), writer.as_fd());
+        } else {
+            let offer = self.heard.selection.clone()?;
+            offer.receive(mime.to_owned(), writer.as_fd());
+        }
+        drop(writer);
+        let bytes = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let written = std::sync::Arc::clone(&bytes);
+        std::thread::spawn(move || {
+            let mut read = Vec::new();
+            let mut reader = reader;
+            let _ = reader.read_to_end(&mut read);
+            *written.lock().unwrap() = Some(read);
+        });
+        rig.pump(&mut [self], |_, _| bytes.lock().unwrap().is_some());
+        bytes.lock().unwrap().take()
+    }
+
+    /// Read the drag the desktop offers the app as `mime`.
+    pub fn receive_drag(&mut self, rig: &mut Rig, mime: &str) -> Option<Vec<u8>> {
+        let (reader, writer) = std::io::pipe().expect("transfer pipe");
+        let offer = self.heard.drag_offer.clone()?;
+        offer.set_actions(DndAction::Copy | DndAction::Move, DndAction::Copy);
+        offer.accept(self.heard.enter_serial, Some(mime.to_owned()));
+        offer.receive(mime.to_owned(), writer.as_fd());
+        drop(writer);
+        let bytes = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let written = std::sync::Arc::clone(&bytes);
+        std::thread::spawn(move || {
+            let mut read = Vec::new();
+            let mut reader = reader;
+            let _ = reader.read_to_end(&mut read);
+            *written.lock().unwrap() = Some(read);
+        });
+        rig.pump(&mut [self], |_, _| bytes.lock().unwrap().is_some());
+        bytes.lock().unwrap().take()
+    }
+
+    /// Start a drag of the app's own bytes, with an icon, as a button press allows.
+    pub fn start_drag(&mut self, mime: &str, bytes: &[u8]) {
+        let qh = self.qh();
+        let serial = self.heard.last_serial;
+        let manager = self
+            .heard
+            .data_device_manager
+            .clone()
+            .expect("a data device manager");
+        let source = manager.create_data_source(&qh, ());
+        source.offer(mime.to_owned());
+        source.set_actions(DndAction::Copy);
+        self.heard.sources.push((source.clone(), bytes.to_vec()));
+        let icon = self
+            .heard
+            .compositor
+            .as_ref()
+            .expect("a compositor")
+            .create_surface(&qh, ());
+        let buffer = self.buffer((8, 8), [0, 0, 255, 255]);
+        icon.attach(Some(&buffer), 0, 0);
+        icon.commit();
+        let origin = self.surface.clone().expect("a window");
+        self.heard
+            .data_device
+            .as_ref()
+            .expect("a data device")
+            .start_drag(Some(&source), &origin, Some(&icon), serial);
+    }
+}
+
+impl Dispatch<ZwpTextInputManagerV3, ()> for Heard {
+    fn event(
+        _: &mut Self,
+        _: &ZwpTextInputManagerV3,
+        _: text_manager::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpTextInputV3, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZwpTextInputV3,
+        event: text_input::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            text_input::Event::Enter { .. } => heard.text_entered = true,
+            text_input::Event::Leave { .. } => heard.text_left = true,
+            text_input::Event::PreeditString { text, .. } => {
+                heard.preedits.push(text.unwrap_or_default());
+            }
+            text_input::Event::CommitString { text } => {
+                heard.commits.push(text.unwrap_or_default());
+            }
+            text_input::Event::DeleteSurroundingText {
+                before_length,
+                after_length,
+            } => heard.deletes.push((before_length, after_length)),
+            text_input::Event::Done { serial } => heard.text_dones.push(serial),
+            _ => {}
+        }
+    }
+}
+
+impl App {
+    /// Enable a text field and commit what it declares.
+    pub fn enable_text_input(&self) {
+        let input = self.heard.text_input.clone().expect("a text input");
+        input.enable();
+        input.set_content_type(ContentHint::empty(), ContentPurpose::Normal);
+        input.set_cursor_rectangle(10, 12, 2, 20);
+        input.set_text_change_cause(ChangeCause::Other);
+        input.commit();
+    }
+
+    /// Stop typing into the field.
+    pub fn disable_text_input(&self) {
+        let input = self.heard.text_input.clone().expect("a text input");
+        input.disable();
+        input.commit();
+    }
+}
+
+impl Dispatch<ZwpPointerConstraintsV1, ()> for Heard {
+    fn event(
+        _: &mut Self,
+        _: &ZwpPointerConstraintsV1,
+        _: constraints_manager::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpLockedPointerV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZwpLockedPointerV1,
+        event: locked_pointer::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            locked_pointer::Event::Locked => heard.locked = true,
+            locked_pointer::Event::Unlocked => heard.unlocked = true,
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpPointerGesturesV1, ()> for Heard {
+    fn event(
+        _: &mut Self,
+        _: &ZwpPointerGesturesV1,
+        _: wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gestures_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpPointerGestureSwipeV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZwpPointerGestureSwipeV1,
+        event: swipe_gesture::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            swipe_gesture::Event::Begin {
+                serial, fingers, ..
+            } => {
+                heard.swipes.push((serial, fingers));
+            }
+            swipe_gesture::Event::Update { dx, dy, .. } => {
+                heard.swipe_updates.push((dx, dy));
+            }
+            swipe_gesture::Event::End { cancelled, .. } => {
+                heard.swipe_ends.push(cancelled);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpPointerGesturePinchV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZwpPointerGesturePinchV1,
+        event: pinch_gesture::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            pinch_gesture::Event::Begin {
+                serial, fingers, ..
+            } => heard.pinches.push((serial, fingers)),
+            pinch_gesture::Event::Update {
+                dx,
+                dy,
+                scale,
+                rotation,
+                ..
+            } => heard.pinch_updates.push((dx, dy, scale, rotation)),
+            pinch_gesture::Event::End { cancelled, .. } => heard.pinch_ends.push(cancelled),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpRelativePointerManagerV1, ()> for Heard {
+    fn event(
+        _: &mut Self,
+        _: &ZwpRelativePointerManagerV1,
+        _: wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_manager_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpRelativePointerV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZwpRelativePointerV1,
+        event: relative_pointer::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let relative_pointer::Event::RelativeMotion { dx, dy, .. } = event {
+            heard.relative_motion.push((dx, dy));
+        }
+    }
+}
+
+impl App {
+    /// Lock the pointer on the app's window, persistently.
+    pub fn lock_pointer(&mut self) {
+        let qh = self.qh();
+        let manager = self
+            .heard
+            .constraints
+            .clone()
+            .expect("a pointer constraints manager");
+        let pointer = self.heard.pointer.clone().expect("a pointer");
+        let surface = self.surface.clone().expect("a window");
+        let locked = manager.lock_pointer(&surface, &pointer, None, Lifetime::Persistent, &qh, ());
+        self.heard.locked_pointer = Some(locked);
+    }
+
+    /// Follow the pointer relatively.
+    pub fn make_relative_pointer(&mut self) {
+        let qh = self.qh();
+        let manager = self
+            .heard
+            .relative
+            .clone()
+            .expect("a relative pointer manager");
+        let pointer = self.heard.pointer.clone().expect("a pointer");
+        let relative = manager.get_relative_pointer(&pointer, &qh, ());
+        self.heard.relative_pointer = Some(relative);
+    }
+
+    /// Take two-finger gestures.
+    pub fn make_gestures(&mut self) {
+        let qh = self.qh();
+        let manager = self
+            .heard
+            .gestures
+            .clone()
+            .expect("a pointer gestures manager");
+        let pointer = self.heard.pointer.clone().expect("a pointer");
+        if self.heard.swipe_gesture.is_none() {
+            self.heard.swipe_gesture = Some(manager.get_swipe_gesture(&pointer, &qh, ()));
+        }
+        if self.heard.pinch_gesture.is_none() {
+            self.heard.pinch_gesture = Some(manager.get_pinch_gesture(&pointer, &qh, ()));
+        }
+    }
+}

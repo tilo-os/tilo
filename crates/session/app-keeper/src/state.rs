@@ -27,9 +27,15 @@ use smithay::{
     delegate_compositor, delegate_dmabuf, delegate_output, delegate_shm, delegate_xdg_shell,
 };
 
+use crate::data_device::DataDevice;
 use crate::outputs::KeptOutput;
+use crate::pointer_constraints::PointerConstraints;
+use crate::pointer_gestures::PointerGestures;
+use crate::primary_selection::PrimarySelection;
+use crate::relative_pointer::RelativePointers;
 use crate::seat::SeatMirror;
 use crate::surfaces::{Buffers, Kept, Pop, Role, Top};
+use crate::text_input::TextInput;
 use crate::upstream::Upstream;
 use crate::wire::{FromKeeper, Window};
 
@@ -72,6 +78,12 @@ pub struct State {
     pub(crate) next_seq: u64,
     pub(crate) buffers: Buffers,
     pub(crate) seat: SeatMirror,
+    pub(crate) data_device: DataDevice,
+    pub(crate) primary: PrimarySelection,
+    pub(crate) text_input: TextInput,
+    pub(crate) pointer_constraints: PointerConstraints,
+    pub(crate) gestures: PointerGestures,
+    pub(crate) relative: RelativePointers,
     pub(crate) outputs: Vec<KeptOutput>,
     /// The desktop, while one is attached.
     pub(crate) up: Option<Upstream>,
@@ -116,6 +128,12 @@ impl State {
             next_seq: 0,
             buffers: Buffers::default(),
             seat,
+            data_device: DataDevice::new(dh),
+            primary: PrimarySelection::new(dh),
+            text_input: TextInput::new(dh),
+            pointer_constraints: PointerConstraints::new(dh),
+            gestures: PointerGestures::new(dh),
+            relative: RelativePointers::new(dh),
             outputs: Vec::new(),
             up: None,
             generation: 0,

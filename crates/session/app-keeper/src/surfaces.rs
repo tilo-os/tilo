@@ -89,6 +89,8 @@ pub(crate) enum Role {
     None,
     /// A pointer's image.
     Cursor,
+    /// A drag's image, following the pointer while the drag runs.
+    DragIcon,
     Sub(Sub),
     Toplevel(Box<Top>),
     Popup(Box<Pop>),
@@ -674,7 +676,7 @@ impl State {
                     .geometry
                     .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h));
             }
-            Role::None | Role::Cursor => {}
+            Role::None | Role::Cursor | Role::DragIcon => {}
         }
         if let Some((old, new)) = replaced {
             self.buffers.replace_current(old, new);
@@ -723,7 +725,7 @@ impl State {
         // The parent first: a subsurface and a popup are made against it.
         let parent = match &kept.role {
             Role::None => return false,
-            Role::Cursor | Role::Toplevel(_) => None,
+            Role::Cursor | Role::DragIcon | Role::Toplevel(_) => None,
             Role::Sub(_) => get_parent(&surface),
             Role::Popup(pop) => {
                 if pop.dismissed {
@@ -1548,7 +1550,7 @@ fn make_role(
 ) -> Option<UpRole> {
     let data = || SurfaceRef(id.clone());
     Some(match role {
-        Role::None | Role::Cursor => UpRole::Plain,
+        Role::None | Role::Cursor | Role::DragIcon => UpRole::Plain,
         Role::Sub(_) => {
             let sub = up
                 .subcompositor

@@ -62,6 +62,26 @@ pub(crate) struct Upstream {
     pub feedback: FeedbackParts,
     pub xdg_outputs: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     pub seat: Option<c::wl_seat::WlSeat>,
+    pub data_device_manager: Option<c::wl_data_device_manager::WlDataDeviceManager>,
+    pub data_device: Option<c::wl_data_device::WlDataDevice>,
+    pub primary_selection: Option<
+        wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
+    >,
+    pub primary_selection_device: Option<
+        wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1,
+    >,
+    pub text_input: Option<
+        wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+    >,
+    pub pointer_constraints: Option<
+        wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::ZwpPointerConstraintsV1,
+    >,
+    pub relative_pointer: Option<
+        wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
+    >,
+    pub gestures: Option<
+        wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gestures_v1::ZwpPointerGesturesV1,
+    >,
     pub keyboard: Option<c::wl_keyboard::WlKeyboard>,
     pub pointer: Option<c::wl_pointer::WlPointer>,
     pub touch: Option<c::wl_touch::WlTouch>,
@@ -107,6 +127,14 @@ impl Upstream {
                 feedback: FeedbackParts::default(),
                 xdg_outputs: None,
                 seat: None,
+                data_device_manager: None,
+                data_device: None,
+                primary_selection: None,
+                primary_selection_device: None,
+                text_input: None,
+                pointer_constraints: None,
+                relative_pointer: None,
+                gestures: None,
                 keyboard: None,
                 pointer: None,
                 touch: None,
@@ -231,6 +259,24 @@ impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
             }
             "wp_content_type_manager_v1" => {
                 up.content_type = Some(registry.bind(name, 1, qh, ()));
+            }
+            "wl_data_device_manager" => {
+                up.data_device_manager = Some(registry.bind(name, version.min(3), qh, ()));
+            }
+            "zwp_primary_selection_device_manager_v1" => {
+                up.primary_selection = Some(registry.bind(name, 1, qh, ()));
+            }
+            "zwp_text_input_manager_v3" => {
+                up.text_input = Some(registry.bind(name, 1, qh, ()));
+            }
+            "zwp_pointer_constraints_v1" => {
+                up.pointer_constraints = Some(registry.bind(name, 1, qh, ()));
+            }
+            "zwp_relative_pointer_manager_v1" => {
+                up.relative_pointer = Some(registry.bind(name, 1, qh, ()));
+            }
+            "zwp_pointer_gestures_v1" => {
+                up.gestures = Some(registry.bind(name, version.min(3), qh, ()));
             }
             "wl_output" => {
                 let wl: c::wl_output::WlOutput = registry.bind(name, version.min(4), qh, name);
@@ -604,6 +650,12 @@ impl State {
             .collect();
         self.shm_state_mut().update_formats(formats);
         self.drop_unseen_outputs();
+        self.desktop_data_device();
+        self.desktop_primary_selection();
+        self.desktop_text_input();
+        self.desktop_pointer_constraints();
+        self.desktop_relative_pointers();
+        self.desktop_pointer_gestures();
         self.ready_once = true;
         self.windows_changed = true;
     }

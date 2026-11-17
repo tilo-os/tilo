@@ -129,6 +129,19 @@ impl SeatMirror {
         self.pressed.clear();
     }
 
+    /// The app connection holding the keyboard, if one does.
+    pub(crate) fn focused_client(&self) -> Option<ClientId> {
+        self.keyboard_focus
+            .as_ref()
+            .and_then(Resource::client)
+            .map(|client| client.id())
+    }
+
+    /// The last serial the desktop gave, which its requests accept.
+    pub(crate) fn last_serial(&self) -> u32 {
+        self.last_serial
+    }
+
     pub(crate) fn surface_gone(&mut self, id: &ObjectId) {
         if self
             .keyboard_focus
@@ -343,7 +356,14 @@ impl wayland_client::Dispatch<c::wl_seat::WlSeat, ()> for State {
             c::wl_seat::Event::Capabilities {
                 capabilities: WEnum::Value(capabilities),
             } => state.desktop_capabilities(capabilities, qh),
-            c::wl_seat::Event::Name { name } => state.seat.name = name,
+            c::wl_seat::Event::Name { name } if state.seat.name != name => {
+                state.seat.name.clone_from(&name);
+                for seat in &state.seat.seats {
+                    if seat.version() >= 2 {
+                        seat.name(name.clone());
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -383,6 +403,8 @@ impl wayland_client::Dispatch<c::wl_keyboard::WlKeyboard, ()> for State {
                 }
                 state.seat.pressed = keys;
                 state.seat.keyboard_focus = Some(surface);
+                state.selection_focus_changed();
+                state.primary_focus_changed();
             }
             c::wl_keyboard::Event::Leave { serial, surface } => {
                 state.seat.last_serial = serial;
@@ -394,6 +416,8 @@ impl wayland_client::Dispatch<c::wl_keyboard::WlKeyboard, ()> for State {
                 }
                 state.seat.keyboard_focus = None;
                 state.seat.pressed.clear();
+                state.selection_focus_changed();
+                state.primary_focus_changed();
             }
             c::wl_keyboard::Event::Key {
                 serial,

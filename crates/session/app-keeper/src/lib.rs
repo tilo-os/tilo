@@ -45,13 +45,19 @@
 
 mod child;
 mod control;
+mod data_device;
 mod dmabuf;
 mod fractional;
 mod outputs;
 mod pings;
+mod pointer_constraints;
+mod pointer_gestures;
+mod primary_selection;
+mod relative_pointer;
 mod seat;
 mod state;
 mod surfaces;
+mod text_input;
 mod upstream;
 mod viewporter;
 pub mod wire;
@@ -569,6 +575,12 @@ impl Data {
         self.up_queue = None;
         if self.state.up.take().is_some() {
             self.state.hold_all();
+            self.state.hold_data_device();
+            self.state.hold_primary_selection();
+            self.state.hold_pointer_constraints();
+            self.state.hold_pointer_gestures();
+            self.state.hold_relative_pointers();
+            self.state.hold_text_input();
             self.state.seat.hold();
             self.state.pings.clear();
             self.state.windows_changed = true;
