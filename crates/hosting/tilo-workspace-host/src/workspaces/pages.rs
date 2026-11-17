@@ -715,9 +715,7 @@ impl Workspaces {
         Ok(WorkspacesReply::Workspaces(listed))
     }
 
-    /// Issue the invitation `request` asks; for the wait-list entry
-    /// `wait_list_entry`, noted on it, so it shows as invited and leaves the
-    /// list once someone joins with it.
+    /// Issue the invitation `request` asks, as a page asks it.
     async fn page_invitation(
         &self,
         workspace: &str,
@@ -726,14 +724,30 @@ impl Workspaces {
         administrator: bool,
         wait_list_entry: Option<[u8; 32]>,
     ) -> Result<WorkspacesReply, CollaborationError> {
+        let issued = self
+            .issue_for(workspace, device, request, administrator, wait_list_entry)
+            .await?;
+        Ok(WorkspacesReply::Invitation {
+            invite_id: issued.invite_id,
+            signed_invitation: issued.signed_invitation,
+        })
+    }
+
+    /// Issue the invitation `request` asks; for the wait-list entry
+    /// `wait_list_entry`, noted on it, so it shows as invited and leaves the
+    /// list once someone joins with it.
+    pub(super) async fn issue_for(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        request: IssueInvitationRequest,
+        administrator: bool,
+        wait_list_entry: Option<[u8; 32]>,
+    ) -> Result<IssuedInvitation, CollaborationError> {
         let Some(entry) = wait_list_entry else {
-            let issued = self
+            return self
                 .issue_as(workspace, device, request, administrator)
-                .await?;
-            return Ok(WorkspacesReply::Invitation {
-                invite_id: issued.invite_id,
-                signed_invitation: issued.signed_invitation,
-            });
+                .await;
         };
         let now = tilo_clock::unix_now_ns();
         let issued = {
@@ -758,10 +772,7 @@ impl Workspaces {
             issued
         };
         self.written(workspace, false).await?;
-        Ok(WorkspacesReply::Invitation {
-            invite_id: issued.invite_id,
-            signed_invitation: issued.signed_invitation,
-        })
+        Ok(issued)
     }
 
     async fn page_workspace(&self, workspace: &str) -> Result<WorkspacesReply, CollaborationError> {
@@ -799,7 +810,7 @@ impl Workspaces {
 
     /// The addresses left at `workspace`'s entry, oldest first, for someone the
     /// workspace lets invite.
-    async fn wait_list(
+    pub(super) async fn wait_list(
         &self,
         workspace: &str,
         device: &DeviceCert,
@@ -820,7 +831,7 @@ impl Workspaces {
 
     /// Take the address `request_id` off `workspace`'s wait list, for someone the
     /// workspace lets invite.
-    async fn unlist(
+    pub(super) async fn unlist(
         &self,
         workspace: &str,
         device: &DeviceCert,
@@ -850,7 +861,7 @@ impl Workspaces {
     /// Mail the invitation `link` to the confirmed wait-list entry
     /// `request_id` of `workspace`, for someone the workspace lets invite, once the
     /// relay sends mail ([`Workspaces::mail_wait_list`]).
-    async fn mail_invite(
+    pub(super) async fn mail_invite(
         &self,
         workspace: &str,
         device: &DeviceCert,

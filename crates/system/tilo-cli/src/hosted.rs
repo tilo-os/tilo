@@ -98,12 +98,50 @@ pub enum MembersCmd {
                       the link over yourself."
     )]
     Invite {
-        /// viewer, commenter, editor or administrator.
+        /// viewer, commenter, editor, administrator or owner.
         #[arg(long, default_value = "viewer")]
         role: String,
         /// Their address, which the invitation names.
         #[arg(long)]
         email: Option<String>,
+        /// The address on the wait list it is for (its entry, as `tilo
+        /// members wait-list` names it): mailed to it where the workspace
+        /// mails invitations, and it leaves the list once they join.
+        #[arg(long, value_name = "ENTRY", conflicts_with = "email")]
+        waiting: Option<String>,
+    },
+    /// Let the person whose key you know into the workspace (-w) at once, as
+    /// --role: no invitation to hand over.
+    #[command(
+        after_help = "Example:\n  tilo members add 3f9c…e1 --role owner --name \"Ada Lovelace\" -w Lounge\n\n\
+                      KEY is their user public key (`tilo login --new-identity --json` names it). \
+                      The workspace lets them in from then on, and a key they create reaches it \
+                      before any device of theirs has joined. Someone in already is moved to \
+                      --role. You give at most what the workspace lets you: an administrator \
+                      makes administrators, an owner makes owners."
+    )]
+    Add {
+        /// Their user public key, 64 hex characters.
+        key: String,
+        /// viewer, commenter, editor, moderator, administrator or owner.
+        #[arg(long)]
+        role: String,
+        /// How the workspace names them until they name themselves.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// The addresses people left at the workspace's (-w) entry while it
+    /// takes people by invitation, to invite.
+    #[command(
+        name = "wait-list",
+        after_help = "Example:\n  tilo members wait-list -w Lounge\n  \
+                      tilo members invite --waiting 5d1e…0a --role editor -w Lounge"
+    )]
+    WaitList,
+    /// Take an address off the workspace's (-w) wait list.
+    Unlist {
+        /// The address's entry, as `tilo members wait-list` names it.
+        entry: String,
     },
     /// The people in the workspace (-w), with their roles, and the
     /// invitations still open.
@@ -1129,10 +1167,19 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
                     .await?;
                 Ok(show(reach.json, &listed, &members_text(&listed)))
             }
-            MembersCmd::Invite { role, email } => {
+            MembersCmd::Invite {
+                role,
+                email,
+                waiting,
+            } => {
                 let mut body = serde_json::json!({"role": role});
-                if let (Some(fields), Some(email)) = (body.as_object_mut(), email) {
-                    fields.insert("email".into(), Value::String(email));
+                if let Some(fields) = body.as_object_mut() {
+                    if let Some(email) = email {
+                        fields.insert("email".into(), Value::String(email));
+                    }
+                    if let Some(waiting) = waiting {
+                        fields.insert("waiting".into(), Value::String(waiting));
+                    }
                 }
                 let invited = client
                     .post(
@@ -1146,6 +1193,30 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
                 }
                 Ok(show(reach.json, &invited, &said))
             }
+            MembersCmd::Add { key, role, name } => {
+                let mut body = serde_json::json!({"person": key, "role": role});
+                if let (Some(fields), Some(name)) = (body.as_object_mut(), name) {
+                    fields.insert("name".into(), Value::String(name));
+                }
+                let added = client
+                    .post(&format!("/v1/workspaces/{workspace}/members"), &body)
+                    .await?;
+                Ok(show(reach.json, &added, &members_text(&added)))
+            }
+            MembersCmd::WaitList => {
+                let listed = client
+                    .get(&format!("/v1/workspaces/{workspace}/members/wait-list"))
+                    .await?;
+                Ok(show(reach.json, &listed, &wait_list_text(&listed)))
+            }
+            MembersCmd::Unlist { entry } => {
+                let listed = client
+                    .delete(&format!(
+                        "/v1/workspaces/{workspace}/members/wait-list/{entry}"
+                    ))
+                    .await?;
+                Ok(show(reach.json, &listed, &wait_list_text(&listed)))
+            }
             MembersCmd::Name { name } => {
                 let named = client
                     .post(
@@ -1157,6 +1228,34 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
             }
         }
     })
+}
+
+/// A workspace's wait list, as lines: each address with its entry, and
+/// whether it was invited.
+fn wait_list_text(listed: &Value) -> String {
+    let entries = listed
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if entries.is_empty() {
+        return "the wait list is empty".to_owned();
+    }
+    let mut said = String::from("wait list:");
+    for entry in &entries {
+        let invited = if entry.get("invited_at_ns").is_some_and(|at| !at.is_null()) {
+            ", invited"
+        } else {
+            ""
+        };
+        let _ = write!(
+            said,
+            "\n  {}{invited} — {}",
+            text(entry, "contact"),
+            text(entry, "entry")
+        );
+    }
+    said
 }
 
 /// A workspace's people and its open invitations, as lines.
@@ -1770,6 +1869,7 @@ mod tests {
                 MembersCmd::Invite {
                     role: "administrator".into(),
                     email: Some("ops@example.com".into()),
+                    waiting: None,
                 },
             );
             let invited = api_server.drain_requests();

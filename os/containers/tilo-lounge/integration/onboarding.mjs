@@ -5,8 +5,8 @@
 //
 // The story this drives, one step per mark below:
 //
-//   0. the person who runs the host arrives, and the operator declares them an
-//      owner through the workspace's operator socket — how a fresh
+//   0. the person who runs the host arrives, and the stack's own owner adds
+//      them as an owner with `tilo members add` — how a fresh
 //      invitation-only Lounge gets its first member; the entry lets them in,
 //      and the workspace makes them an owner once they are;
 //   1. a stranger arrives: the entry's wait list, not the setup screen, and an
@@ -27,26 +27,25 @@
 // the run reads each one's link out of the file it landed in, so what the flow
 // proves is the mail a person would get.
 //
-// usage: node onboarding.mjs SITE RELAY WORK TILO_BIN OWNER_SOCKET
+// usage: node onboarding.mjs SITE RELAY WORK TILO_BIN STACK
 //
 // SITE is the web entry's origin (the site people visit), RELAY the workspace
 // host's, WORK the run's directory (the stack's state, the mail sink's files
 // and every page's screenshots and console live there), TILO_BIN the `tilo`
-// command an agent runs, and OWNER_SOCKET the running Lounge's operator socket:
-// the driver declares the operator an owner through it, as the deployment
-// does. The stack is plain http on this machine, so no certificate stands
-// between the browsers, the agent's command and it.
+// command an agent runs, and STACK os/containers/tilo-sh/stack.sh of the stack
+// the Lounge runs on: its own owner adds the operator as an owner with
+// `stack.sh owner KEY`. The stack is plain http on this machine, so no
+// certificate stands between the browsers, the agent's command and it.
 import {execFile, execFileSync, spawn} from 'node:child_process';
 import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {fileURLToPath} from 'node:url';
 import {FIRST_RUN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory} from './waits.mjs';
 
-const [site, relay, work, tiloBin, ownerSocket] = process.argv.slice(2);
-if (!site || !relay || !work || !tiloBin || !ownerSocket) {
-  console.error('usage: node onboarding.mjs SITE RELAY WORK TILO_BIN OWNER_SOCKET');
+const [site, relay, work, tiloBin, stack] = process.argv.slice(2);
+if (!site || !relay || !work || !tiloBin || !stack) {
+  console.error('usage: node onboarding.mjs SITE RELAY WORK TILO_BIN STACK');
   process.exit(2);
 }
 // The mail sink the stack points the entry at (`stack.sh mail` reads the same).
@@ -343,10 +342,9 @@ const firstScreenShown = `(document.documentElement.dataset.firstRun !== undefin
 
 // -- tilo.sh as a person meets it --------------------------------------------
 /** A person arriving at the site, in a tab that has not been here before.
- * `expected: 'let in'` tries again while the entry refuses: the entry that let
- * the declaration in holds it, so a person declared an owner just now may meet
- * the closed entry once more before it opens for them, and comes back — as the
- * operator does — instead of landing on the wait list. */
+ * `expected: 'let in'` tries again while the entry refuses: a person made an
+ * owner just now may meet the closed entry once more before it opens for them,
+ * and comes back — as the operator does — instead of landing on the wait list. */
 const arrive = async (page, {expected}) => {
   const deadline = Date.now() + stepLimit(6);
   for (;;) {
@@ -360,17 +358,12 @@ const arrive = async (page, {expected}) => {
   }
 };
 
-// -- the deployment's declaration of its people -------------------------------
-/** Declare `user` (hex) an owner of the Lounge, as the deployment does: the
- * operator asks the running workspace over its operator socket, and the
- * workspace's entry lets them in and its governance makes them an owner the
- * moment they are a member. */
-const declareOwner = async user => {
-  execFileSync(
-    'python3',
-    ['-I', fileURLToPath(new URL('../declare-owner', import.meta.url)), ownerSocket, user],
-    {stdio: ['ignore', 'inherit', 'inherit']},
-  );
+// -- the deployment's owners admit people ------------------------------------
+/** Make `user` (hex) an owner of the Lounge, as the stack's own owner does:
+ * `stack.sh owner KEY` runs `tilo members add KEY --role owner`, the action
+ * any owner takes, and the workspace's entry lets them in. */
+const addOwner = async user => {
+  execFileSync('bash', [stack, 'owner', user], {stdio: ['ignore', 'inherit', 'inherit']});
 };
 
 // The agent's computer: its own home, a `claude` that records what the command
@@ -431,24 +424,24 @@ const commandOf = prompt => {
 };
 
 try {
-  // -- 0. the operator, declared by the deployment, is let in --------------
-  // A fresh invitation-only Lounge has nobody in it: the people the operator
-  // declares are the ones its entry lets in, so the person who runs it arrives
-  // first, and this run declares their key through the operator socket the way
-  // `stack.sh owner` does.
+  // -- 0. the operator, made an owner by the stack, is let in --------------
+  // A fresh invitation-only Lounge has nobody in it: the people the
+  // deployment's owners add are the ones its entry lets in, so the person who
+  // runs it arrives first, and this run adds their key as an owner with
+  // `stack.sh owner`, which runs `tilo members add`.
   const operator = await visit('operator', {setupDone: true});
   await arrive(operator, {expected: 'refused'});
   const operatorPerson = await operator.tab.evaluate(`(async () => {
     const id = ${identityModule};
     return (await id.browserIdentity()).userPublicKey;
   })()`).catch(() => null);
-  if (!operatorPerson) await fail('the operator\'s tab made no person to declare');
-  await declareOwner(operatorPerson);
+  if (!operatorPerson) await fail('the operator\'s tab made no person to add');
+  await addOwner(operatorPerson);
   report.operator = {user: operatorPerson};
   await arrive(operator, {expected: 'let in'});
   await until(operator.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.workspace`,
-    'the entry letting in the person the deployment declared', stepLimit(8));
-  mark('the operator the deployment declares is let in by the closed entry');
+    'the entry letting in the person the deployment made an owner', stepLimit(8));
+  mark('the operator the deployment made an owner is let in by the closed entry');
 
   // -- 1. a stranger at the wait list ----------------------------------------
   const stranger = await visit('stranger', {passkey: true});

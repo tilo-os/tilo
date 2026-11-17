@@ -287,6 +287,28 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         )
         .json(200, "Members"),
         op(
+            "addMember",
+            Method::POST,
+            "/v1/workspaces/{workspace}/members",
+            "Hold a person in the workspace by their key, at a role, as an administrator or as an owner",
+        )
+        .body(Body::Json("NewMember"))
+        .json(200, "Members"),
+        op(
+            "listWaitList",
+            Method::GET,
+            "/v1/workspaces/{workspace}/members/wait-list",
+            "The addresses people left at the workspace's entry, to invite",
+        )
+        .json(200, "WaitList"),
+        op(
+            "unlistWaiting",
+            Method::DELETE,
+            "/v1/workspaces/{workspace}/members/wait-list/{entry}",
+            "Take an address off the wait list",
+        )
+        .json(200, "WaitList"),
+        op(
             "invitePerson",
             Method::POST,
             "/v1/workspaces/{workspace}/members/invitations",

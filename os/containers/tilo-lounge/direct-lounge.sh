@@ -5,8 +5,9 @@
 # in minutes; the image's own test (test-image.sh) boots the built image.
 #
 # Sourced, not run: `start_lounge BUNDLE WORK` leaves the Lounge Ready and the
-# site served, and sets `relay_origin`, `site_origin`, `workspace`, `log` and
-# `owner_socket` (the socket the operator declares owners through).
+# site served, and sets `relay_origin`, `site_origin`, `workspace` and `log`.
+# It names no owner: a deployment's owners come from TILO_WORKSPACES_OWNERS, and
+# a test that needs one starts a stack.sh stack instead.
 # `restart_lounge` stops the Lounge alone and starts it again on the volume it
 # kept, the site left serving, as a deployment's restart does. It needs node,
 # chromium, curl, and TILO_RELAY_BIN and TILO_CRYPTO_BIN naming built programs,
@@ -117,7 +118,6 @@ start_lounge() {
   mkdir -p "$volume/secrets" "$work/bin"
   printf 'a%.0s' $(seq 64) > "$volume/secrets/workspace-root"
   chmod 600 "$volume/secrets/workspace-root"
-  owner_socket=$volume/lounge/operator.sock
   # The relay as the image carries it: the product's font catalog beside the
   # program, which is where a Tilo binary finds it outside the image (its apps
   # lay text out, and a host that seeds them has no system fonts).

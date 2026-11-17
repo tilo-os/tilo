@@ -7,7 +7,7 @@
 //! [`OperatorCommand::ImportPeople`]: tilo_relay_protocol::operator::OperatorCommand::ImportPeople
 
 use tilo_relay::workspaces::{WaitListSecrets, WaitListed, Workspaces};
-use tilo_relay_protocol::operator::{InviteRole, OperatorEvent};
+use tilo_relay_protocol::operator::InviteRole;
 use tilo_relay_protocol::release_people::{Imported, Invitation, Member, Owner, People, Waiting};
 use tilo_relay_protocol::workspaces::{
     WaitListEntry, WorkspacesReply, WorkspacesRequest, contact_key,
@@ -236,27 +236,18 @@ async fn invite(
         entry = wait_list_entry(workspaces, workspace, host, email).await?;
     }
     let request = hex::encode(rand::random::<[u8; 16]>());
-    let answered = host_invite::invite(
+    let link = host_invite::invite(
         workspaces,
         links,
         Asked {
-            request: request.clone(),
+            request,
             workspace: workspace.to_owned(),
             role,
             invitee_name: member.email.clone().or_else(|| Some(member.name.clone())),
-            unless_owned: false,
             wait_list_entry: entry,
         },
     )
-    .await;
-    let event = OperatorEvent::from_line(&answered)
-        .map_err(|error| format!("the invitation's answer does not read: {error}"))?;
-    let OperatorEvent::Invited { link, .. } = event else {
-        return Err(match event {
-            OperatorEvent::InviteRefused { reason, .. } => reason,
-            other => format!("the host answered no invitation: {other:?}"),
-        });
-    };
+    .await?;
     let mut mailed = false;
     if let Some(entry) = entry {
         let mailed_reply = workspaces

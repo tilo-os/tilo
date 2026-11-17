@@ -15,15 +15,14 @@ use serde::{Deserialize, Serialize};
 
 /// Version of this protocol, announced in [`OperatorEvent::Started`].
 ///
-/// 14 takes in the people an earlier release kept
-/// ([`OperatorCommand::ImportPeople`]); 13 has the operator ask the host for an
-/// invitation of its own ([`OperatorCommand::Invite`]); 12 has the operator
-/// have another host hold a workspace governed here
-/// ([`OperatorCommand::Hold`]); 10 is the operator's declaration of a
-/// workspace's owner carrying the name that person goes by
-/// ([`OperatorCommand::DeclareOwner`]). A reader of another version decodes no
-/// line of this.
-pub const VERSION: u16 = 14;
+/// 15 leaves bringing people in to the workspace's own actions (`tilo members
+/// add` and `tilo members invite`, which its owners and administrators ask
+/// with their keys): the operator names its first owner at start; 14 takes in
+/// the people an earlier release kept ([`OperatorCommand::ImportPeople`]); 12
+/// has the operator have another host hold a workspace governed here
+/// ([`OperatorCommand::Hold`]). A reader of another version decodes no line
+/// of this.
+pub const VERSION: u16 = 15;
 
 /// The child reports [`OperatorEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy workspace does not flood the service.
@@ -120,44 +119,6 @@ pub enum OperatorCommand {
     },
     /// Acknowledge durable enqueue of an invitation, not provider delivery.
     InviteMailQueued { request: String, queued: bool },
-    /// Declare the person with user root `user_public_key` an owner of the
-    /// workspace: its entry lets them in, and its governance makes them an
-    /// administrator, now if they are a member and as soon as they join if they
-    /// are not. `name`, when the operator knows it, is how the workspace names
-    /// them from then on: its member list and the invitations they make say it
-    /// before any device of theirs has said one. The child answers
-    /// [`OperatorEvent::OwnerDeclared`] or [`OperatorEvent::OwnerRefused`] for
-    /// the same key.
-    DeclareOwner {
-        /// The person's user root key (hex), not a device.
-        user_public_key: String,
-        /// The name the person goes by, when the operator's declaration
-        /// carries one ([`tilo_user_identity::display_name`]).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-    },
-    /// Have the host invite someone into `workspace` (this workspace when
-    /// none), as itself: an invitation from the workspace rather than from a
-    /// person, for whoever the operator hands its link to. The child answers
-    /// [`OperatorEvent::Invited`], [`OperatorEvent::Owned`] or
-    /// [`OperatorEvent::InviteRefused`] for the same `request`.
-    Invite {
-        /// The operator's name for this request, echoed in the answer.
-        request: String,
-        /// The workspace, as listing workspaces names it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        workspace: Option<String>,
-        /// What whoever accepts it becomes.
-        role: InviteRole,
-        /// Who it is for, as the operator names them (an address, a name).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        invitee_name: Option<String>,
-        /// For an owner's invitation: make none when the workspace has an
-        /// owner already ([`OperatorEvent::Owned`]), and hand back the one
-        /// made before while nobody has accepted it.
-        #[serde(default, skip_serializing_if = "is_false")]
-        unless_owned: bool,
-    },
     /// Take the people an earlier release kept into `workspace`
     /// ([`crate::release_people::People`], as `tilo-relay release-people
     /// export` read them from that release's state): their addresses go on the
@@ -201,8 +162,7 @@ pub enum InviteRole {
     Editor,
     /// An editor who administers the workspace.
     Administrator,
-    /// An administrator whom the workspace is kept for, as
-    /// [`OperatorCommand::DeclareOwner`] makes them.
+    /// An administrator whom the workspace is kept for.
     Owner,
 }
 
@@ -250,16 +210,10 @@ pub enum OperatorEvent {
         label: String,
         pairing_code: String,
     },
-    /// The person `user_public_key` is an owner from here on.
-    OwnerDeclared {
-        /// The person's user root key (hex).
-        user_public_key: String,
-    },
-    /// Nobody became an owner.
-    OwnerRefused {
-        /// The key the operator named, as given.
-        user_public_key: String,
-        /// Why it declared nobody.
+    /// The command on the operator socket was not one it answers, or did
+    /// not read.
+    Unanswered {
+        /// Why.
         reason: String,
     },
     /// An [`OperatorCommand::ImportPeople`] was done: the addresses now on
@@ -267,30 +221,6 @@ pub enum OperatorEvent {
     /// other person.
     PeopleImported {
         imported: crate::release_people::Imported,
-    },
-    /// The invitation an [`OperatorCommand::Invite`] asked for.
-    Invited {
-        /// The command's `request`.
-        request: String,
-        /// The link that brings whoever opens it in.
-        link: String,
-        /// The invitation's id (hex).
-        invite: String,
-        /// When it lapses, in Unix nanoseconds.
-        expires_at_ns: u64,
-    },
-    /// The workspace has an owner already: an [`OperatorCommand::Invite`]
-    /// for an owner, `unless_owned`, made no invitation.
-    Owned {
-        /// The command's `request`.
-        request: String,
-    },
-    /// The host made no invitation.
-    InviteRefused {
-        /// The command's `request`.
-        request: String,
-        /// Why not.
-        reason: String,
     },
     /// The host the operator named holds the workspace as well.
     Held {
@@ -682,25 +612,8 @@ mod tests {
                 workspace: "w".into(),
                 reason: "it takes no workspace of another person".into(),
             },
-            OperatorEvent::OwnerDeclared {
-                user_public_key: "ef".repeat(32),
-            },
-            OperatorEvent::Invited {
-                request: "owner".into(),
-                link: "https://tilo.example/i/abc#def".into(),
-                invite: "ab".repeat(32),
-                expires_at_ns: 7,
-            },
-            OperatorEvent::Owned {
-                request: "owner".into(),
-            },
-            OperatorEvent::InviteRefused {
-                request: "owner".into(),
-                reason: "no workspace w here".into(),
-            },
-            OperatorEvent::OwnerRefused {
-                user_public_key: "Ada".into(),
-                reason: "a user root key is 64 lowercase hex characters".into(),
+            OperatorEvent::Unanswered {
+                reason: "the operator socket takes import_people, standing, hold and unhold".into(),
             },
         ]
     }
@@ -708,37 +621,18 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_operator_protocol_round_trips_pins_and_refuses_its_lines;
 
-        phase protocol_fourteen_round_trips_and_pins_its_wire_form;
+        phase protocol_fifteen_round_trips_and_pins_its_wire_form;
         {
-            assert_eq!(VERSION, 14);
-            let invite = OperatorCommand::Invite {
-                request: "owner".into(),
-                workspace: None,
-                role: InviteRole::Owner,
-                invitee_name: None,
-                unless_owned: true,
-            };
-            assert_eq!(
-                invite.to_line(),
-                "{\"op\":\"invite\",\"request\":\"owner\",\"role\":\"owner\",\"unless_owned\":true}\n"
-            );
-            assert_eq!(OperatorCommand::from_line(&invite.to_line()).unwrap(), invite);
-            let editor = OperatorCommand::from_line(
-                "{\"op\":\"invite\",\"request\":\"r\",\"workspace\":\"w\",\"role\":\"editor\"}",
-            )
-            .unwrap();
-            assert_eq!(
-                editor,
-                OperatorCommand::Invite {
-                    request: "r".into(),
-                    workspace: Some("w".into()),
-                    role: InviteRole::Editor,
-                    invitee_name: None,
-                    unless_owned: false,
-                }
-            );
+            assert_eq!(VERSION, 15);
             assert_eq!(InviteRole::parse("administrator"), Some(InviteRole::Administrator));
             assert_eq!(InviteRole::parse("Owner"), None);
+            assert!(
+                OperatorCommand::from_line(
+                    "{\"op\":\"declare_owner\",\"user_public_key\":\"ab\"}"
+                )
+                .is_err(),
+                "owners are declared at start, and brought in by the workspace's own actions"
+            );
             let wait = OperatorCommand::WaitList {
                 request: "12".repeat(32),
                 contact: "Ada@example.org".into(),
@@ -831,33 +725,6 @@ mod tests {
                 .to_line(),
                 "tilo-workspace-operator {\"event\":\"online\",\"people\":7}"
             );
-            let declare = OperatorCommand::DeclareOwner {
-                user_public_key: "ef".repeat(32),
-                name: None,
-            };
-            assert_eq!(
-                declare.to_line(),
-                format!(
-                    "{{\"op\":\"declare_owner\",\"user_public_key\":\"{}\"}}\n",
-                    "ef".repeat(32)
-                )
-            );
-            assert_eq!(
-                OperatorCommand::from_line(&declare.to_line()).unwrap(),
-                declare
-            );
-            let named = OperatorCommand::DeclareOwner {
-                user_public_key: "ef".repeat(32),
-                name: Some("Ada".into()),
-            };
-            assert_eq!(
-                named.to_line(),
-                format!(
-                    "{{\"op\":\"declare_owner\",\"user_public_key\":\"{}\",\"name\":\"Ada\"}}\n",
-                    "ef".repeat(32)
-                )
-            );
-            assert_eq!(OperatorCommand::from_line(&named.to_line()).unwrap(), named);
             let hold = OperatorCommand::Hold {
                 workspace: "w".into(),
                 host: "https://eu1.tilo.sh".into(),

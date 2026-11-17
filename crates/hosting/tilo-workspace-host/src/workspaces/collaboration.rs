@@ -9,7 +9,7 @@
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use tilo_peer_state::WorkspaceGrant;
-use tilo_peer_state::join::JoinBootstrap;
+use tilo_peer_state::join::{JoinBootstrap, Role};
 use tilo_peer_state::join_answer::{JoinWorkspaces, WorkspaceTxn};
 use tilo_peer_state::join_ledger::{Administered, Governed, Signer};
 pub use tilo_peer_state::join_ledger::{JoinError as CollaborationError, Redeeming};
@@ -25,6 +25,44 @@ use super::authority::WorkspaceOp;
 use super::{GovernedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
 use crate::host_authority::HostOperation;
 use tilo_lock::MutexRecover as _;
+
+/// Where [`Workspaces::add_member`] puts a person.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemberPlace {
+    /// A member at this role, governing nothing.
+    Role(Role),
+    /// An editor holding every governance action.
+    Administrator,
+    /// An administrator the workspace is kept for: they make and unmake its
+    /// administrators and owners.
+    Owner,
+}
+
+impl MemberPlace {
+    /// The place `text` names: a role, `administrator` or `owner`.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "administrator" => Some(Self::Administrator),
+            "owner" => Some(Self::Owner),
+            role => Role::parse(role)
+                .filter(|role| role.assignable())
+                .map(Self::Role),
+        }
+    }
+}
+
+/// Hold a person in a workspace by their key ([`Workspaces::add_member`]).
+#[derive(Clone, Debug)]
+pub struct AddMemberRequest {
+    /// Caller-chosen idempotency key.
+    pub request_id: [u8; 32],
+    /// The person's user root.
+    pub user_public_key: [u8; 32],
+    pub place: MemberPlace,
+    /// How the workspace names them until they name themselves.
+    pub name: Option<String>,
+}
 
 pub(super) use tilo_peer_state::join_ledger::JoinLedger as CollaborationState;
 
@@ -411,6 +449,82 @@ impl Workspaces {
                     &key,
                     system_time(now),
                 )
+            },
+            now,
+        )
+        .await
+    }
+
+    /// Hold the person `request.user_public_key` in `workspace` at
+    /// `request.place`, whether or not a device of theirs has joined: what an
+    /// administrator does when they know the person's key rather than handing
+    /// them an invitation. A member already is moved to the place; their
+    /// entry lets them in from then on, and a key of theirs reaches the
+    /// workspace before any device of theirs has joined.
+    ///
+    /// # Errors
+    ///
+    /// Why `administrator`'s person may not give that place, a name that is not
+    /// a display name, the workspace's own owner, or governance that cannot be
+    /// updated.
+    pub async fn add_member(
+        &self,
+        workspace: &str,
+        administrator: &DeviceCert,
+        request: AddMemberRequest,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        let workspace = self.workspace(workspace).await?;
+        let mut workspace = workspace.lock().await;
+        self.ensure_keeper(&mut workspace, administrator.user_public_key, now)
+            .await?;
+        let person = request.user_public_key;
+        let (role, makes_administrator, makes_owner) = match request.place {
+            MemberPlace::Role(role) => (role, false, false),
+            MemberPlace::Administrator => (Role::Editor, true, false),
+            MemberPlace::Owner => (Role::Editor, true, true),
+        };
+        let op_change;
+        let op = if makes_owner {
+            WorkspaceOp::MakeOwner
+        } else if makes_administrator {
+            WorkspaceOp::MakeAdministrator
+        } else {
+            let person = hex::encode(person);
+            let member = workspace
+                .peer()
+                .governance()
+                .governed_policy()
+                .map_err(CollaborationError::new)?
+                .is_member(&person);
+            op_change = if member {
+                tilo_action_policy::Change::SetRole { person, role }
+            } else {
+                tilo_action_policy::Change::AddMember { person, role }
+            };
+            WorkspaceOp::Change(&op_change)
+        };
+        self.authorize(administrator, Some(&workspace), op, now)?;
+        let key = self.inner.host.key.clone();
+        let name = request.name.as_deref();
+        self.administer(
+            &mut workspace,
+            request.request_id,
+            request_digest(&("member", person, &request.place, name))?,
+            |peer| {
+                let placed = peer.governance_mut().declare_member(
+                    person,
+                    role,
+                    makes_administrator,
+                    name,
+                    &key,
+                    system_time(now),
+                )?;
+                let kept = makes_owner
+                    && peer
+                        .governance_mut()
+                        .set_keeper(person, &key, system_time(now))?;
+                Ok(placed || kept)
             },
             now,
         )

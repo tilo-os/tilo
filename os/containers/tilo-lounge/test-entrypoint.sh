@@ -102,6 +102,7 @@ grep -Fqx -- "$work/state/lounge/avatars" "$work/args" || fail "the avatars are 
 # The packet relay binds where the ingress forwards; without a named origin the
 # host advertises the address it bound.
 grep -Fqx -- --packet-relay-url "$work/args" && fail "a published relay URL was announced without one set"
+grep -Fqx -- --owner "$work/args" && fail "an owner was named without one in the environment"
 
 # Every setting of a populated deployment reaches the host, and replaces the
 # default it shares a flag with.
@@ -114,6 +115,7 @@ lounge \
   TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop, so.tilo.chat:' \
   TILO_WORKSPACES_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
   TILO_WORKSPACES_PERSON_STORAGE_GB=10 \
+  TILO_WORKSPACES_OWNERS='0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0, 8a7b6c5d4e3f2a1908172635445362718a7b6c5d4e3f2a190817263544536271' \
   TILO_WORKSPACES_IROH_LISTEN=0.0.0.0:7704 \
   TILO_WORKSPACES_FETCH_PROXY=0 \
   TILO_WORKSPACES_WEB=127.0.0.1:0 \
@@ -164,6 +166,10 @@ pair --discord-authorize-url https://discord.com/oauth2/authorize || fail "the D
 pair --discord-api-base http://127.0.0.1:9090 || fail "the Discord API base did not reach the host"
 pair --operator-socket "$work/state/lounge/operator.sock" || fail "the operator socket did not reach the host"
 pair --person-storage-gb 10 || fail "the per-person storage did not reach the host"
+pair --owner 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0 \
+  || fail "the first owner did not reach the host"
+pair --owner 8a7b6c5d4e3f2a1908172635445362718a7b6c5d4e3f2a190817263544536271 \
+  || fail "the second owner did not reach the host"
 pair --iroh-listen 0.0.0.0:7704 || fail "the host's endpoint address did not reach the host"
 grep -Fqx -- --fetch-proxy "$work/args" && fail "fetch proxy 0 still asked for the proxy"
 # Every workspace's layout is its shared desktop record: the host has no

@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::Role;
 use tilo_relay_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
+use tilo_user_identity::DeviceCert;
 
 use super::{CollaborationError, Workspaces};
 
@@ -101,16 +102,6 @@ impl OwnerInvitations {
             .is_some_and(|into| into == workspace)
     }
 
-    /// The owner invitations into `workspace`, by id.
-    fn opened_into(&self, workspace: &str) -> Vec<[u8; 32]> {
-        self.open
-            .lock_recover()
-            .iter()
-            .filter(|(_, into)| *into == workspace)
-            .filter_map(|(id, _)| hex::decode(id).ok()?.try_into().ok())
-            .collect()
-    }
-
     fn remove(&self, invite_id: [u8; 32]) {
         let mut open = self.open.lock_recover();
         if open.remove(&hex::encode(invite_id)).is_some()
@@ -164,24 +155,38 @@ impl Workspaces {
         Ok(issued)
     }
 
-    /// An owner invitation into `workspace` the host handed out before, nobody
-    /// accepted yet and that stands until at least `until_ns`, with when it
-    /// lapses: what a host asked for its owner link again hands back, so the
-    /// link it gave before keeps working.
-    pub async fn open_owner_invitation(
+    /// Issue an owner invitation into `workspace` as `device`'s person, who
+    /// must be able to make owners themselves: whoever accepts it is an owner
+    /// from then on, as the host's own owner invitation makes them. For the
+    /// wait-list entry `wait_list_entry` when it names one.
+    ///
+    /// # Errors
+    ///
+    /// The person may not make owners, or the invitation was not issued.
+    pub(super) async fn issue_owner_invitation(
         &self,
         workspace: &str,
-        until_ns: u64,
-    ) -> Option<(IssuedInvitation, u64)> {
-        let ids = self.inner.owner_invitations.opened_into(workspace);
-        if ids.is_empty() {
-            return None;
+        device: &DeviceCert,
+        request: IssueInvitationRequest,
+        wait_list_entry: Option<[u8; 32]>,
+    ) -> Result<IssuedInvitation, CollaborationError> {
+        {
+            let governed = self.workspace(workspace).await?;
+            let governed = governed.lock().await;
+            self.authorize(
+                device,
+                Some(&governed),
+                super::authority::WorkspaceOp::MakeOwner,
+                tilo_clock::unix_now_ns(),
+            )?;
         }
-        let governed = self.workspace(workspace).await.ok()?;
-        let ledger = governed.lock().await.collaboration().clone();
-        ids.into_iter()
-            .filter_map(|id| ledger.open_invitation(id, until_ns))
-            .max_by_key(|(_, expires_at_ns)| *expires_at_ns)
+        let issued = self
+            .issue_for(workspace, device, request, true, wait_list_entry)
+            .await?;
+        self.inner
+            .owner_invitations
+            .add(issued.invite_id, workspace)?;
+        Ok(issued)
     }
 
     /// Whether anyone holds `workspace` as its owner: someone the workspace is
@@ -190,6 +195,13 @@ impl Workspaces {
         self.policy_of(workspace)
             .await
             .is_some_and(|policy| policy.keepers().next().is_some())
+    }
+
+    /// Whether the person `user` owns `workspace`: someone it is kept for.
+    pub async fn is_owner(&self, workspace: &str, user: [u8; 32]) -> bool {
+        self.policy_of(workspace)
+            .await
+            .is_some_and(|policy| policy.is_keeper(&hex::encode(user)))
     }
 
     /// Declare the person `user` an owner of `workspace`: its governance
@@ -374,9 +386,8 @@ mod tests {
 
     /// The owner link: an owner invitation, opened by someone whose key the
     /// host never knew, makes them an administrator the workspace is kept for
-    /// as they come in. Asked again while nobody accepted it, the host hands
-    /// back the same invitation, also after a restart; once someone did, the
-    /// workspace has its owner.
+    /// as they come in, also after a restart; once someone did, the workspace
+    /// has its owner, and the link is spent.
     #[tokio::test]
     async fn an_owner_invitation_makes_whoever_accepts_it_the_owner() {
         let dir = tempfile::tempdir().unwrap();
@@ -384,36 +395,16 @@ mod tests {
         let relay = site(dir.path(), &host).await;
         let workspaces = relay.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-        let until = tilo_clock::unix_now_ns();
         assert!(!workspaces.has_owner(&workspace).await);
-        assert!(
-            workspaces
-                .open_owner_invitation(&workspace, until)
-                .await
-                .is_none()
-        );
 
         let issued = workspaces
             .invite_as_host(&workspace, asked(Role::Viewer, false, true))
             .await
             .unwrap();
-        let (open, _) = workspaces
-            .open_owner_invitation(&workspace, until)
-            .await
-            .unwrap();
-        assert_eq!(
-            open, issued,
-            "asked again, the host hands back the link it gave"
-        );
         relay.shutdown().await;
 
         let relay = site(dir.path(), &host).await;
         let workspaces = relay.workspaces();
-        let (open, _) = workspaces
-            .open_owner_invitation(&workspace, until)
-            .await
-            .unwrap();
-        assert_eq!(open, issued, "the owner link outlives a restart");
         let JoinReply::Invitation { inviter, role, .. } = workspaces
             .inspect_invitation(&issued.signed_invitation)
             .await
@@ -447,13 +438,6 @@ mod tests {
             .unwrap_or_else(|| panic!("the owner has a row in {members:?}"));
         assert_eq!(row["owner"], true, "{members:?}");
         assert_eq!(row["administrator"], true, "{members:?}");
-        assert!(
-            workspaces
-                .open_owner_invitation(&workspace, until)
-                .await
-                .is_none(),
-            "an accepted owner link is spent"
-        );
         let (_, again) = accept(workspaces, issued.signed_invitation).await;
         assert!(
             matches!(again, JoinReply::Refused(_)),

@@ -1,20 +1,15 @@
-//! The invitations whoever runs the workspace asks its host for on the
-//! operator socket ([`OperatorCommand::Invite`]): made by the host itself,
-//! so the person who opens one reads the workspace's name rather than a
-//! person's, and answered with the link to hand over.
+//! The invitations the host makes itself when it takes in the people an
+//! earlier release kept ([`super::import_people`]): the person who opens one
+//! reads the workspace's name rather than a person's, as the release that
+//! kept them invited them.
 
 use base64::Engine as _;
 use tilo_relay::workspaces::{HostInvitation, Workspaces};
-use tilo_relay_protocol::operator::{InviteRole, OperatorEvent};
+use tilo_relay_protocol::operator::InviteRole;
 use tilo_relay_protocol::workspaces::Role;
 
 /// How long a host-made invitation stands: a week, as a member's does.
 const INVITATION_NS: u64 = 7 * 24 * 3600 * 1_000_000_000;
-/// How long an owner's invitation stands: as long as any invitation may, since
-/// it waits for whoever runs the host to open it.
-const OWNER_INVITATION_NS: u64 = 30 * 24 * 3600 * 1_000_000_000;
-/// An owner's invitation handed out again keeps at least this long.
-const OWNER_INVITATION_LEFT_NS: u64 = 24 * 3600 * 1_000_000_000;
 /// How long the site gets to keep an invitation before the link carries it whole.
 const SHELF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -26,104 +21,61 @@ pub(super) struct Links {
     pub relay_origin: Option<String>,
 }
 
-/// What the invitation a [`OperatorCommand::Invite`] asks for is.
-///
-/// [`OperatorCommand::Invite`]: tilo_relay_protocol::operator::OperatorCommand::Invite
+/// The invitation the host makes.
 pub(super) struct Asked {
     pub request: String,
     pub workspace: String,
     pub role: InviteRole,
     pub invitee_name: Option<String>,
-    pub unless_owned: bool,
     /// The wait-list entry the invitation is issued for, where the person is
     /// an address the entry kept.
     pub wait_list_entry: Option<[u8; 32]>,
 }
 
-/// Answer `asked`: the invitation's link, that the workspace is owned
-/// already, or why the host made none.
-pub(super) async fn invite(workspaces: &Workspaces, links: &Links, asked: Asked) -> String {
-    let request = asked.request.clone();
-    match made(workspaces, links, asked).await {
-        Ok(Some(event)) => event,
-        Ok(None) => OperatorEvent::Owned { request },
-        Err(reason) => OperatorEvent::InviteRefused { request, reason },
-    }
-    .to_line()
-}
-
-async fn made(
+/// The invitation `asked` for: its link to hand over.
+pub(super) async fn invite(
     workspaces: &Workspaces,
     links: &Links,
     asked: Asked,
-) -> Result<Option<OperatorEvent>, String> {
+) -> Result<String, String> {
     let Asked {
         request,
         workspace,
         role,
         invitee_name,
-        unless_owned,
         wait_list_entry,
     } = asked;
     let owner = role == InviteRole::Owner;
-    if request.is_empty() || request.len() > 128 {
-        return Err("a request is named by 1 to 128 bytes".into());
-    }
     let workspace = governed(workspaces, &workspace).await?;
     let now = tilo_clock::unix_now_ns();
-    let held_before = if owner && unless_owned {
-        if workspaces.has_owner(&workspace).await {
-            return Ok(None);
-        }
-        workspaces
-            .open_owner_invitation(&workspace, now.saturating_add(OWNER_INVITATION_LEFT_NS))
-            .await
-    } else {
-        None
-    };
-    let (issued, expires_at_ns) = if let Some(held) = held_before {
-        held
-    } else {
-        let expires_at_ns = now.saturating_add(if owner {
-            OWNER_INVITATION_NS
-        } else {
-            INVITATION_NS
-        });
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"tilo host invitation");
-        hasher.update(workspace.as_bytes());
-        hasher.update(request.as_bytes());
-        hasher.update(&now.to_le_bytes());
-        let issued = workspaces
-            .invite_as_host(
-                &workspace,
-                HostInvitation {
-                    request_id: *hasher.finalize().as_bytes(),
-                    role: match role {
-                        InviteRole::Viewer => Role::Viewer,
-                        InviteRole::Commenter => Role::Commenter,
-                        InviteRole::Editor | InviteRole::Administrator | InviteRole::Owner => {
-                            Role::Editor
-                        }
-                    },
-                    administrator: role == InviteRole::Administrator,
-                    owner,
-                    invitee_name,
-                    expires_at_ns,
-                    wait_list_entry,
+    let expires_at_ns = now.saturating_add(INVITATION_NS);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"tilo host invitation");
+    hasher.update(workspace.as_bytes());
+    hasher.update(request.as_bytes());
+    hasher.update(&now.to_le_bytes());
+    let issued = workspaces
+        .invite_as_host(
+            &workspace,
+            HostInvitation {
+                request_id: *hasher.finalize().as_bytes(),
+                role: match role {
+                    InviteRole::Viewer => Role::Viewer,
+                    InviteRole::Commenter => Role::Commenter,
+                    InviteRole::Editor | InviteRole::Administrator | InviteRole::Owner => {
+                        Role::Editor
+                    }
                 },
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        (issued, expires_at_ns)
-    };
-    let link = link(links, &workspace, &issued.signed_invitation, expires_at_ns).await?;
-    Ok(Some(OperatorEvent::Invited {
-        request,
-        link,
-        invite: hex::encode(issued.invite_id),
-        expires_at_ns,
-    }))
+                administrator: role == InviteRole::Administrator,
+                owner,
+                invitee_name,
+                expires_at_ns,
+                wait_list_entry,
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    link(links, &workspace, &issued.signed_invitation, expires_at_ns).await
 }
 
 /// The workspace governed here that `named` names: by its id, or by the name

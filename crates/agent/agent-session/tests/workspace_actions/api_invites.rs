@@ -203,3 +203,121 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
         "it does not rename her after its key: {after:?}"
     );
 }
+
+/// An owner's key lets a person in by their key, as an owner, through the
+/// action API: no invitation to hand over. That person's own key then reaches
+/// the workspace and brings someone in themself, and neither a key minted for
+/// the workspace nor anyone below an owner makes an owner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
+    let on_relay = api_on_relay(ISSUER).await;
+    let api = Arc::clone(&on_relay.api);
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let key = approved_key(&on_relay, &ada, &page, "Ada's laptop").await;
+    let mut ada_mcp = Mcp {
+        api: &api,
+        path: "/mcp".into(),
+        token: key,
+        session: None,
+    };
+    let (status, init) = ada_mcp.initialize().await;
+    assert_eq!(status, 200, "{init}");
+    let made = ada_mcp
+        .did("account/workspaces#create", json!({"name": "Lounge"}))
+        .await;
+    let workspace = made["workspace"]["id"].as_str().unwrap().to_owned();
+    let here = Some(workspace.as_str());
+
+    let (grace, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
+    let grace_hex = hex::encode(grace.verifying_key().to_bytes());
+    let bad = members(
+        &mut ada_mcp,
+        here,
+        "workspace/members#add",
+        json!({"person": "Grace", "role": "owner"}),
+    )
+    .await;
+    assert_eq!(bad["status"], "failed", "{bad}");
+    let added = members(
+        &mut ada_mcp,
+        here,
+        "workspace/members#add",
+        json!({"person": grace_hex, "role": "owner", "name": "Grace Hopper"}),
+    )
+    .await;
+    assert_eq!(added["status"], "ok", "{added}");
+    let rows = added["result"]["members"].as_array().unwrap().clone();
+    let grace_row = rows
+        .iter()
+        .find(|row| row["member"]["person"] == grace_hex)
+        .cloned()
+        .unwrap_or_else(|| panic!("Grace has a row in {added}"));
+    assert_eq!(grace_row["owner"], true, "{added}");
+    assert_eq!(grace_row["name"], "Grace Hopper", "{added}");
+
+    // Grace approves a key of her own, which reaches the workspace as her
+    // owner, and lets Hal in as an editor.
+    let grace_page = enrol(&grace, "Grace's browser", DeviceCapabilities::member());
+    let grace_key = approved_key(&on_relay, &grace, &grace_page, "Grace's laptop").await;
+    let mut grace_mcp = Mcp {
+        api: &api,
+        path: "/mcp".into(),
+        token: grace_key,
+        session: None,
+    };
+    let (status, init) = grace_mcp.initialize().await;
+    assert_eq!(status, 200, "{init}");
+    let (hal, _) = tilo_user_identity::UserIdentity::generate("Hal", 1);
+    let hal_hex = hex::encode(hal.verifying_key().to_bytes());
+    let by_grace = members(
+        &mut grace_mcp,
+        here,
+        "workspace/members#add",
+        json!({"person": hal_hex, "role": "editor"}),
+    )
+    .await;
+    assert_eq!(by_grace["status"], "ok", "{by_grace}");
+    let hal_row = by_grace["result"]["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["member"]["person"] == hal_hex)
+        .cloned()
+        .unwrap_or_else(|| panic!("Hal has a row in {by_grace}"));
+    assert_eq!(hal_row["role"], "editor", "{by_grace}");
+    assert_eq!(hal_row["owner"], false, "{by_grace}");
+
+    // The wait list reads, empty: this workspace's entry keeps none.
+    let waiting = members(
+        &mut grace_mcp,
+        here,
+        "workspace/members#wait-list",
+        json!({}),
+    )
+    .await;
+    assert_eq!(waiting["status"], "ok", "{waiting}");
+    assert_eq!(waiting["result"]["entries"], json!([]), "{waiting}");
+
+    // A key minted for the workspace makes no owner.
+    let minted = ada_mcp
+        .did("account/keys#mint", json!({"workspace": workspace}))
+        .await;
+    let mut agent = Mcp {
+        api: &api,
+        path: format!("/w/{workspace}/mcp"),
+        token: minted["token"].as_str().unwrap().to_owned(),
+        session: None,
+    };
+    let (status, init) = agent.initialize().await;
+    assert_eq!(status, 200, "{init}");
+    let (ivy, _) = tilo_user_identity::UserIdentity::generate("Ivy", 1);
+    let by_agent = members(
+        &mut agent,
+        None,
+        "workspace/members#add",
+        json!({"person": hex::encode(ivy.verifying_key().to_bytes()), "role": "owner"}),
+    )
+    .await;
+    assert_eq!(by_agent["status"], "failed", "{by_agent}");
+}

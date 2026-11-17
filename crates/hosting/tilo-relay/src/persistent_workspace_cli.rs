@@ -184,6 +184,14 @@ pub struct PersistentArgs {
         requires = "wait_list_max"
     )]
     pub wait_list_mail: Option<String>,
+    /// A person who owns the workspace from its start, by their user public
+    /// key (64 hex characters); repeatable. Declared at every start where
+    /// they are not an owner yet: how a host gets its first owner, who then
+    /// lets everyone else in with `tilo members add` and `tilo members
+    /// invite`. An owner taken out later is declared again at the next start
+    /// while the deployment still names them.
+    #[arg(long = "owner", value_name = "USER_PUBLIC_KEY")]
+    pub owners: Vec<String>,
     /// A UNIX socket the operator asks the running workspace through, one
     /// [`OperatorCommand`] line per connection: a deployment's workspace runs
     /// in a container, which has no stdin to write to. The answer is one
@@ -915,37 +923,30 @@ async fn host_at(origin: &str) -> Result<([u8; 32], iroh_base::EndpointAddr), St
     Ok((info.host_cert.device_public_key, address.endpoint_addr))
 }
 
-/// Declare the person `key` (their user root, hex) an owner of the workspace:
-/// its governance holds them by their root as a member with every governance
-/// action, so the entry lets them in even when it takes people by invitation,
-/// and a key of theirs lists the workspace, enters it and invites before any
-/// device of theirs has joined. `name`, when the operator's declaration
-/// carries one, is how the workspace names them until they rename themselves.
-/// Answers what the operator hears.
-async fn declare_owner(
+/// Declare each of `owners` (their user roots, hex) an owner of the workspace
+/// who is not one yet: its governance holds them by their root as a member
+/// with every governance action whom the workspace is kept for, so the entry
+/// lets them in even when it takes people by invitation, and a key of theirs
+/// lists the workspace, enters it and brings others in before any device of
+/// theirs has joined.
+async fn settle_owners(
     workspaces: &Workspaces,
     workspace: &str,
-    key: &str,
-    name: Option<&str>,
-) -> String {
-    let Some(user) = hex32(key) else {
-        return OperatorEvent::OwnerRefused {
-            user_public_key: key.to_owned(),
-            reason: "a user root key is 64 lowercase hex characters".into(),
+    owners: &[String],
+) -> anyhow::Result<()> {
+    for key in owners {
+        let user = hex32(key.trim())
+            .with_context(|| format!("--owner {key:?}: a user public key is 64 hex characters"))?;
+        if workspaces.is_owner(workspace, user).await {
+            continue;
         }
-        .to_line();
-    };
-    match workspaces.declare_owner(workspace, user, name).await {
-        Ok(()) => OperatorEvent::OwnerDeclared {
-            user_public_key: key.to_owned(),
-        }
-        .to_line(),
-        Err(error) => OperatorEvent::OwnerRefused {
-            user_public_key: key.to_owned(),
-            reason: error.to_string(),
-        }
-        .to_line(),
+        workspaces
+            .declare_owner(workspace, user, None)
+            .await
+            .map_err(|error| anyhow::anyhow!("declare {key} an owner: {error}"))?;
+        tracing::info!(%workspace, person = %key, "the deployment's owner owns the workspace");
     }
+    Ok(())
 }
 
 /// Seed the workspace with `apps`: each one's record written from its own
@@ -1459,6 +1460,7 @@ pub(crate) async fn run(
             &workspace,
             settle_member_invites(&workspaces, &workspace, &host_cert, persistent.members_only).await,
         );
+        settle_owners(&workspaces, &workspace, &persistent.owners).await?;
         // A record the operator named whose retained history lost the base its
         // deltas were written over: founded again from what the workspace still
         // reads, its old history archived beside the replay. Runs once per start
@@ -1817,35 +1819,6 @@ impl OperatorContext {
         }
     }
 
-    /// Answer an [`OperatorCommand::Invite`].
-    async fn invite(&self, command: OperatorCommand) -> String {
-        let OperatorCommand::Invite {
-            request,
-            workspace,
-            role,
-            invitee_name,
-            unless_owned,
-        } = command
-        else {
-            return String::new();
-        };
-        host_invite::invite(
-            &self.workspaces,
-            &self.links,
-            host_invite::Asked {
-                request,
-                workspace: workspace.unwrap_or_else(|| self.workspace.clone()),
-                role,
-                invitee_name,
-                // The operator hands out a link; an address it is for is the
-                // workspace's open invitation, not a mailed one.
-                wait_list_entry: None,
-                unless_owned,
-            },
-        )
-        .await
-    }
-
     /// Answer an [`OperatorCommand::ImportPeople`].
     async fn import_people(&self, command: OperatorCommand) -> String {
         let OperatorCommand::ImportPeople { people } = command else {
@@ -1874,51 +1847,38 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
     let answer = match reading.read_line(&mut line).await {
         Ok(0) => return,
         Ok(_) => match OperatorCommand::from_line(&line) {
-            Ok(OperatorCommand::DeclareOwner {
-                user_public_key,
-                name,
-            }) => {
-                declare_owner(
-                    &context.workspaces,
-                    &context.workspace,
-                    &user_public_key,
-                    name.as_deref(),
-                )
-                .await
+            Ok(command @ OperatorCommand::ImportPeople { .. }) => {
+                context.import_people(command).await
             }
-            Ok(command @ OperatorCommand::Invite { .. }) => context.invite(command).await,
-            Ok(command @ OperatorCommand::ImportPeople { .. }) => context.import_people(command).await,
             // A question about an address, and nothing about the address in
             // its answer: the operator may ask it of a running workspace.
             Ok(OperatorCommand::Standing {
                 request,
                 removal_sha256,
-            }) => {
-                answer_standing(
-                    &context.workspaces,
-                    &context.workspace,
-                    request,
-                    &removal_sha256,
-                )
-                .await
-                .to_line()
-            }
+            }) => answer_standing(
+                &context.workspaces,
+                &context.workspace,
+                request,
+                &removal_sha256,
+            )
+            .await
+            .to_line(),
             Ok(OperatorCommand::Hold { workspace, host }) => {
                 hold(&context.workspaces, &context.host_cert, &workspace, &host).await
             }
             Ok(OperatorCommand::Unhold { workspace, host }) => {
                 unhold(&context.workspaces, &context.host_cert, &workspace, &host).await
             }
-            Ok(other) => OperatorEvent::OwnerRefused {
-                user_public_key: String::new(),
+            Ok(other) => OperatorEvent::Unanswered {
                 reason: format!(
-                    "the operator socket takes declare_owner, invite, import_people, standing and hold, not {}",
+                    "the operator socket takes import_people, standing, hold and unhold, not {}; \
+                     owners and administrators let people in with `tilo members add` and \
+                     `tilo members invite`",
                     other.to_line().trim()
                 ),
             }
             .to_line(),
-            Err(error) => OperatorEvent::OwnerRefused {
-                user_public_key: String::new(),
+            Err(error) => OperatorEvent::Unanswered {
                 reason: error.to_string(),
             }
             .to_line(),
@@ -1996,24 +1956,6 @@ async fn serve_operator(
                 // An invitation the entry mailed itself is acknowledged here:
                 // nothing else in the workspace hears of it.
                 Some(Ok(OperatorCommand::InviteMailQueued { .. })) => {}
-                Some(Ok(OperatorCommand::DeclareOwner {
-                    user_public_key,
-                    name,
-                })) => {
-                    println!(
-                        "{}",
-                        declare_owner(
-                            &context.workspaces,
-                            &context.workspace,
-                            &user_public_key,
-                            name.as_deref(),
-                        )
-                        .await
-                    );
-                }
-                Some(Ok(command @ OperatorCommand::Invite { .. })) => {
-                    println!("{}", OperatorContext::of(context).invite(command).await);
-                }
                 Some(Ok(command @ OperatorCommand::ImportPeople { .. })) => {
                     // The import asks the entry to mail its invitations, which
                     // this loop does: it runs on a task of its own so it does
@@ -2512,14 +2454,19 @@ mod tests {
         // gets in: the entry takes people by invitation, and the operator
         // declares them.
         let owner = guest(31);
-        let answered = declare_owner(
-            &workspaces,
-            &workspace,
-            &hex::encode(owner.1.user_public_key),
-            None,
-        )
-        .await;
-        assert!(answered.contains("owner_declared"), "{answered}");
+        let owners = [hex::encode(owner.1.user_public_key)];
+        settle_owners(&workspaces, &workspace, &owners)
+            .await
+            .unwrap();
+        // Named again at the next start, they are an owner already.
+        settle_owners(&workspaces, &workspace, &owners)
+            .await
+            .unwrap();
+        assert!(
+            workspaces
+                .is_owner(&workspace, owner.1.user_public_key)
+                .await
+        );
         // A stranger is turned away: the entry takes people by invitation, and
         // the declaration is what the workspace holds of the person it named.
         let (_, stranger) = guest(32);
@@ -2560,9 +2507,9 @@ mod tests {
                     && !member.removed),
             "the declared owner governs the workspace once their device is in"
         );
-        // What the operator cannot declare is nothing at all.
-        let refused = declare_owner(&workspaces, &workspace, "Ada", None).await;
-        assert!(refused.contains("owner_refused"), "{refused}");
+        // What is no key stops the start.
+        let refused = settle_owners(&workspaces, &workspace, &["Ada".to_owned()]).await;
+        assert!(refused.is_err(), "{refused:?}");
         relay.shutdown().await;
     }
 

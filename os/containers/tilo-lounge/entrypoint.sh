@@ -15,12 +15,15 @@
 #                             TILO_WORKSPACES_DEFAULT_ROLE
 #   TILO_WORKSPACES_WEB_ENTRY      the Tilo app's web entry the links it mints open
 #
-# The operator declares a person an owner of the running workspace through its
-# operator socket (os/containers/tilo-lounge/declare-owner), which the host
-# answers by letting them in at its entry and making them an administrator once
-# they are a member, and has the host invite someone as itself
-# (os/containers/tilo-lounge/invite: a link that names the workspace, an owner's
-# link for a host nobody owns yet):
+# The workspace's first owners, by their user public keys (64 hex
+# characters each, comma-separated): declared at every start where they are no
+# owner yet. Everyone else comes in through the workspace's own actions, which
+# its owners and administrators ask with a key of theirs (`tilo members add`,
+# `tilo members invite`, the API's /v1/workspaces/{w}/members):
+#   TILO_WORKSPACES_OWNERS     the owners' keys
+#
+# The operator socket takes what only the host's operator does: having
+# another host hold a workspace, taking in the people an earlier release kept:
 #   TILO_WORKSPACES_OPERATOR_SOCKET  that socket (default: the workspace's state
 #                               directory, operator.sock)
 #
@@ -72,7 +75,7 @@ TILO_WORKSPACES_PUBLIC_API TILO_WORKSPACES_LIVE_ORIGIN
 TILO_WORKSPACES_DEFAULT_ROLE TILO_WORKSPACES_CHAT_CHANNELS TILO_WORKSPACES_FEEDBACK_CHANNEL
 TILO_WORKSPACES_SEED_APPS TILO_WORKSPACES_REFOUND TILO_WORKSPACES_BOTS TILO_WORKSPACES_LAYOUT
 TILO_WORKSPACES_ROOT_FILE TILO_WORKSPACES_OPERATOR_SOCKET
-TILO_WORKSPACES_PERSON_STORAGE_GB TILO_WORKSPACES_IROH_LISTEN TILO_WORKSPACES_HOLD_FOR
+TILO_WORKSPACES_PERSON_STORAGE_GB TILO_WORKSPACES_IROH_LISTEN TILO_WORKSPACES_HOLD_FOR TILO_WORKSPACES_OWNERS
 TILO_WORKSPACES_STATE
 TILO_WORKSPACES_WEB_ENTRY TILO_WORKSPACES_SITE_ORIGINS TILO_WORKSPACES_RELAY_ORIGIN
 TILO_WORKSPACES_RELAY_PLAIN TILO_WORKSPACES_LIVE TILO_WORKSPACES_LIVE_ORIGIN TILO_WORKSPACES_WEB
@@ -216,8 +219,12 @@ fi
 if [ "${TILO_WORKSPACES_FETCH_PROXY:-1}" != 0 ]; then
   set -- "$@" --fetch-proxy
 fi
-# Where the operator declares owners of the running workspace: a UNIX socket in
-# its state directory, which a container has instead of a stdin to write to.
+# The workspace's first owners, declared at every start where they are not
+# yet: how a fresh host gets the person who lets everyone else in.
+set -- "$@" $(comma_flags "${TILO_WORKSPACES_OWNERS-}" --owner)
+# Where the operator asks the running workspace what only the host's operator
+# does: a UNIX socket in its state directory, which a container has instead of
+# a stdin to write to.
 set -- "$@" --operator-socket "${TILO_WORKSPACES_OPERATOR_SOCKET:-$dir/operator.sock}"
 
 # A chat with no channel has nowhere for a visitor's first message to go, and

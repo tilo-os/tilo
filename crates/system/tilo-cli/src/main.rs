@@ -243,6 +243,9 @@ enum Cmd {
     #[command(
         after_help = "Examples:\n  tilo members invite --role editor -w jane-doe   A link that brings a reviewer in\n  \
                             tilo members invite --role administrator -w jane-doe   A link that makes a fellow administrator\n  \
+                            tilo members add 3f9c…e1 --role owner -w Lounge   Let someone in by their key, as an owner\n  \
+                            tilo members wait-list -w Lounge   The addresses waiting for an invitation\n  \
+                            tilo members invite --waiting 5d1e…0a --role editor -w Lounge   Invite one of them\n  \
                             tilo members ls -w jane-doe\n  \
                             tilo members name \"Quinten Wolff\" -w jane-doe   What its people and your invitations call you"
     )]

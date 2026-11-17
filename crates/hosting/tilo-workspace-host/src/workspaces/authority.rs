@@ -21,8 +21,11 @@
 //!    an Editor by role alone governs nothing.
 //!
 //! An agent's grant governs nothing, with one narrow exception: a person's
-//! server key invites for them, as an Editor at most, into the workspaces
-//! they administer (`server_key_invites`).
+//! server key brings people in for them into the workspaces they administer
+//! (`server_key_brings_people_in`): it invites, as an Editor at most unless
+//! its person may make administrators, and adds a person by their key at any
+//! role its person may give, an owner's included where its person owns the
+//! workspace.
 
 use tilo_action_policy::{Change, Context, Role, roles};
 use tilo_user_identity::DeviceCert;
@@ -48,6 +51,9 @@ pub(super) enum WorkspaceOp<'a> {
     /// Make a member an administrator: for the owner, whom the workspace is
     /// kept for, and its administrators.
     MakeAdministrator,
+    /// Make a member an owner, whom the workspace is kept for: for the
+    /// host's person and the workspace's owners.
+    MakeOwner,
     /// A change to who is in the workspace or what they hold.
     Change(&'a Change),
 }
@@ -69,6 +75,7 @@ impl WorkspaceOp<'_> {
             Self::Govern(action) => action,
             Self::Invite(_) | Self::InviteAdministrator => roles::governance::INVITE,
             Self::MakeAdministrator => "make-administrator",
+            Self::MakeOwner => "make-owner",
             Self::Change(change) => change.action(),
         }
     }
@@ -149,11 +156,11 @@ impl Workspaces {
         }
         // An agent's grant acts in workspaces through the person's runtime,
         // never on their governance: it may do only what the host's own
-        // operations allow it. A person's server key alone also invites for
-        // them ([`server_key_invites`]).
+        // operations allow it. A person's server key alone also brings people
+        // in for them ([`server_key_brings_people_in`]).
         if device.capabilities.agent.is_some()
             && !matches!(op, WorkspaceOp::Host(_))
-            && !server_key_invites(device, op)
+            && !server_key_brings_people_in(device, op)
         {
             return Err(CollaborationError::new(
                 "workspace administration requires a person's device, not an agent's grant",
@@ -201,7 +208,7 @@ impl Workspaces {
             && !is_administrator(workspace, device.user_public_key, now)?
         {
             return Err(CollaborationError::new(
-                "a server key invites only into a workspace its person administers",
+                "a server key brings people only into a workspace its person administers",
             ));
         }
         decide_by_governance(workspace, device, op, now)
@@ -214,20 +221,29 @@ pub(super) const SERVER_KEY_INVITES_AT_MOST: Role = Role::Editor;
 /// Whether `device`, an agent's grant, may still do `op`: a person's server
 /// key (an all-workspaces key they made for their own backend, never the
 /// grant an agent gets through their consent nor a key minted for one
-/// workspace) invites for its person into a workspace that person
-/// administers, never as more than [`SERVER_KEY_INVITES_AT_MOST`] nor above
-/// the person's own role, and lists and cancels those invitations. Every
-/// other governance action stays the person's devices' own.
-fn server_key_invites(device: &DeviceCert, op: WorkspaceOp<'_>) -> bool {
+/// workspace) brings people in for its person, into a workspace that person
+/// administers: it invites, never as more than [`SERVER_KEY_INVITES_AT_MOST`]
+/// nor above the person's own role, lists and cancels those invitations, and
+/// adds someone by their key at a role the person may give. Every other
+/// governance action stays the person's devices' own.
+fn server_key_brings_people_in(device: &DeviceCert, op: WorkspaceOp<'_>) -> bool {
     device.capabilities.server_key
         && match op {
             WorkspaceOp::Invite(role) => role <= SERVER_KEY_INVITES_AT_MOST,
-            // An administrator's invitation is the person's own decision as
-            // much as one at a role is: their key makes one where they may
-            // make administrators themselves, which the workspace decides.
-            WorkspaceOp::InviteAdministrator => true,
-            WorkspaceOp::Govern(action) => action == roles::governance::INVITE,
-            WorkspaceOp::Host(_) | WorkspaceOp::Change(_) | WorkspaceOp::MakeAdministrator => false,
+            // An administrator's or owner's place is the person's own
+            // decision as much as a role is: their key makes one where they
+            // may make administrators or owners themselves, which the
+            // workspace decides.
+            WorkspaceOp::InviteAdministrator
+            | WorkspaceOp::MakeAdministrator
+            | WorkspaceOp::MakeOwner => true,
+            WorkspaceOp::Govern(action) => {
+                action == roles::governance::INVITE || action == roles::governance::ADD_MEMBER
+            }
+            WorkspaceOp::Change(change) => {
+                matches!(change, Change::AddMember { .. } | Change::SetRole { .. })
+            }
+            WorkspaceOp::Host(_) => false,
         }
 }
 
@@ -289,6 +305,21 @@ fn decide_by_governance(
             .check_administrator_invite(person, &authority, &cx, false),
         WorkspaceOp::MakeAdministrator => {
             if member.policy.may_make_administrators(&authority, &cx) {
+                Ok(())
+            } else {
+                Err(tilo_action_policy::Refusal::Administrators {
+                    actor: person.to_owned(),
+                    unmaking: false,
+                })
+            }
+        }
+        // Whom the workspace is kept for is decided by whom it is kept for
+        // already: an owner makes another, as the host's person does.
+        WorkspaceOp::MakeOwner => {
+            if member
+                .policy
+                .may_unmake_administrators(person, &authority, &cx)
+            {
                 Ok(())
             } else {
                 Err(tilo_action_policy::Refusal::Administrators {

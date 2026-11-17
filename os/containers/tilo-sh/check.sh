@@ -126,11 +126,11 @@ step() {
 # 1: a person who has never been here, on the site, approves the server key
 # `tilo keys create` asks for, and one that may not operate web pages. The
 # site lets people in by invitation, as production's does: they arrive through
-# one the Lounge's host made for them, as a newcomer does.
+# one the Lounge's owner made for them (`stack.sh invite`), as a newcomer does.
 startup_identity() {
   step '1. a fresh startup identity approves a server key on the local site'
   local invitation
-  invitation=$(host_invite --for 'Startup') || fail 'the Lounge made no invitation for the startup'
+  invitation=$(invite_link) || fail 'the Lounge made no invitation for the startup'
   local args=(--invite "$invitation" --key 'Visa backend' --tilo "$tilo" --api "$api" --no-pages
     --root "$work/startup/person.json")
   if [[ ${TILO_SH_VM_HOST:-0} == 1 ]] && runs_step 12; then
@@ -208,7 +208,7 @@ entry_visits() {
   entries=()
   for visit in $(seq "$visits"); do
     local invitation
-    invitation=$(host_invite --for "Visitor $visit") || fail "the Lounge made no invitation for visitor $visit"
+    invitation=$(invite_link) || fail "the Lounge made no invitation for visitor $visit"
     node "$here/integration/person.mjs" "$site" "$relay" "$work/visitor-$visit" --invite "$invitation" \
       > "$work/visitor-$visit.json" \
       || fail "visitor $visit did not get in (see $work/visitor-$visit)"
@@ -225,7 +225,7 @@ entry_visits() {
 passkey_round() {
   step '7b. a visitor keeps themselves with a passkey and signs in with it again'
   local invitation
-  invitation=$(host_invite --for 'Passkey visitor') || fail 'the Lounge made no invitation for the passkey visitor'
+  invitation=$(invite_link) || fail 'the Lounge made no invitation for the passkey visitor'
   node "$here/integration/person.mjs" "$site" "$relay" "$work/passkey" --invite "$invitation" --passkey \
     > "$work/passkey.json" \
     || fail "the passkey did not register or sign in (see $work/passkey)"

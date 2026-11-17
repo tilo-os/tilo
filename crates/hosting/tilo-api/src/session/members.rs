@@ -4,18 +4,29 @@
 //!
 //! - `workspace/members#list` (or `tilo_read workspace/members`) answers the
 //!   members, each with their role, and the invitations still open;
-//! - `workspace/members#invite {role, email?}` answers a link that brings one
-//!   person in as `role`, an administrator included;
+//! - `workspace/members#invite {role, email?, waiting?}` answers a link that
+//!   brings one person in as `role`, an administrator or an owner included;
+//!   with `waiting`, for that address on the workspace's wait list, mailed
+//!   to it where the workspace's entry sends mail;
+//! - `workspace/members#add {person, role, name?}` holds the person whose
+//!   user public key is `person` in the workspace at `role` (`administrator`
+//!   and `owner` included) at once: their entry lets them in, and a key of
+//!   theirs reaches the workspace before any device of theirs has joined;
+//! - `workspace/members#wait-list` (or `tilo_read workspace/members/wait-list`)
+//!   answers the addresses left at the workspace's entry while it takes
+//!   people by invitation, and `workspace/members#unlist {entry}` takes one
+//!   off;
 //! - `workspace/members#name {name}` names the key's own person in the
 //!   workspace: what its member list and the invitations they make say for
 //!   them.
 //!
 //! All are the workspace's own governance actions (`tilo.workspace`'s
-//! `invite`, `member.list`, `invitation.list` and `member.name`), asked of its
-//! host over the key's session, and the host decides who may: a person's
-//! server key invites into the workspaces its person administers, as an
-//! Editor at most, and as an administrator only where its person may make
-//! administrators; an agent's grant and a key for one workspace do not. A
+//! `invite`, `member.add`, `member.list`, `invitation.list`, `member.name`
+//! and `wait-list.*`), asked of its host over the key's session, and the host
+//! decides who may, and keeps who asked: a person's server key brings people
+//! into the workspaces its person administers, inviting as an Editor at most
+//! and adding or inviting an administrator or an owner only where its person
+//! may make one; an agent's grant and a key for one workspace do not. A
 //! person names themself, from any key of theirs, in a workspace they are a
 //! member of. The link is the one a person's shell hands over: the invitation
 //! sealed onto the site's shelf (`https://<site>/i/<handle>#<key>`), or, where
@@ -35,11 +46,26 @@ use tilo_session_client::device::HostRefusal;
 
 /// The path of a workspace's people.
 pub const ROOT: &str = "workspace/members";
+/// The path of the addresses left at a workspace's entry.
+const WAIT_LIST_ROOT: &str = "workspace/members/wait-list";
 /// The roles a key invites anyone as: never above an Editor, and
-/// `administrator` only where its person may make administrators.
-const ROLES: [&str; 4] = ["viewer", "commenter", "editor", "administrator"];
+/// `administrator` or `owner` only where its person may make one.
+const ROLES: [&str; 5] = ["viewer", "commenter", "editor", "administrator", "owner"];
+/// The places a key adds a person at: what it invites as, and a Moderator.
+const PLACES: [&str; 6] = [
+    "viewer",
+    "commenter",
+    "editor",
+    "moderator",
+    "administrator",
+    "owner",
+];
 /// The workspace's governance actions this path asks.
 const INVITE: &str = "invite";
+const ADD: &str = "member.add";
+const WAIT_LIST: &str = "wait-list.list";
+const UNLIST: &str = "wait-list.remove";
+const MAIL: &str = "wait-list.mail";
 const MEMBERS: &str = "member.list";
 const INVITATIONS: &str = "invitation.list";
 const NAME: &str = "member.name";
@@ -50,7 +76,7 @@ pub(crate) fn addresses(tool: &str, arguments: &Value) -> bool {
         && arguments
             .get("path")
             .and_then(Value::as_str)
-            .is_some_and(|path| path.split('#').next() == Some(ROOT))
+            .is_some_and(|path| matches!(path.split('#').next(), Some(ROOT | WAIT_LIST_ROOT)))
 }
 
 impl Session {
@@ -70,15 +96,28 @@ impl Session {
         let args = arguments.get("args").cloned().unwrap_or_else(|| json!({}));
         let outcome = match (tool, path) {
             ("tilo_do", "workspace/members#invite") => self.invite(workspace, &args).await,
+            ("tilo_do", "workspace/members#add") => self.add(workspace, &args).await,
             ("tilo_do", "workspace/members#name") => self.name(workspace, &args).await,
+            ("tilo_do", "workspace/members#wait-list") | ("tilo_read", WAIT_LIST_ROOT) => {
+                self.wait_list(workspace, WAIT_LIST, Map::new()).await
+            }
+            ("tilo_do", "workspace/members#unlist") => match entry(&args) {
+                Ok(entry) => {
+                    let mut asked = Map::new();
+                    asked.insert("entry".into(), json!(entry));
+                    self.wait_list(workspace, UNLIST, asked).await
+                }
+                Err(outcome) => outcome,
+            },
             ("tilo_do", "workspace/members#list") | ("tilo_read", ROOT) => {
                 self.list(workspace).await
             }
             (_, other) => failed(
                 "not_found",
                 format!("the workspace has no action {other}"),
-                "workspace/members#list, workspace/members#invite {role, email?} and \
-                 workspace/members#name {name} are its actions",
+                "workspace/members#list, workspace/members#invite {role, email?, waiting?}, \
+                 workspace/members#add {person, role, name?}, workspace/members#name {name}, \
+                 workspace/members#wait-list and workspace/members#unlist {entry} are its actions",
             ),
         };
         answer(structured, path, outcome)
@@ -112,9 +151,9 @@ impl Session {
                     failed(
                         "not_permitted",
                         format!("the workspace refused: {}", error.message),
-                        "a key you created, reaching all your workspaces, invites into the ones \
-                         you administer, as an editor at most, or as an administrator where you \
-                         may make administrators",
+                        "a key you created, reaching all your workspaces, brings people into the \
+                         ones you administer: it invites as an editor at most, and adds or \
+                         invites an administrator or an owner where you may make one",
                     )
                 }
             })
@@ -140,9 +179,16 @@ impl Session {
         let Some(role) = text("role").filter(|role| ROLES.contains(role)) else {
             return failed(
                 "invalid_arguments",
-                "`role` is viewer, commenter, editor or administrator",
+                "`role` is viewer, commenter, editor, administrator or owner",
                 "pass args {role: \"editor\", email?: \"ops@example.com\"}",
             );
+        };
+        let waiting = match args.get("waiting") {
+            None | Some(Value::Null) => None,
+            Some(_) => match entry(&json!({"entry": args.get("waiting")})) {
+                Ok(entry) => Some(entry),
+                Err(outcome) => return outcome,
+            },
         };
         let email = match text("email").filter(|email| !email.is_empty()) {
             Some(email) => match tilo_relay_protocol::workspaces::contact_address(email) {
@@ -155,6 +201,9 @@ impl Session {
         asked.insert("role".into(), json!(role));
         if let Some(email) = &email {
             asked.insert("invitee_name".into(), json!(email));
+        }
+        if let Some(waiting) = &waiting {
+            asked.insert("wait_list_entry".into(), json!(waiting));
         }
         let issued = match self.govern(workspace, INVITE, asked).await {
             Ok(issued) => issued,
@@ -191,6 +240,9 @@ impl Session {
             "link": link,
             "expires_at_ns": expires_at_ns,
         });
+        if let Some(waiting) = waiting {
+            return self.mail_waiting(workspace, &waiting, answered).await;
+        }
         if let (Some(email), Some(fields)) = (email, answered.as_object_mut()) {
             fields.insert(
                 "next".into(),
@@ -202,6 +254,87 @@ impl Session {
             fields.insert("sent".into(), json!(false));
         }
         Outcome::Ok(answered)
+    }
+
+    /// Mail the invitation `answered` holds to the address `waiting` on
+    /// `workspace`'s wait list, where its entry sends mail; where it sends
+    /// none, the answer says so, with the link to hand over.
+    async fn mail_waiting(&self, workspace: &str, waiting: &str, mut answered: Value) -> Outcome {
+        let link = answered
+            .get("link")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let mut asked = Map::new();
+        asked.insert("entry".into(), json!(waiting));
+        asked.insert("link".into(), json!(link));
+        let (sent, next) = match self.govern(workspace, MAIL, asked).await {
+            Ok(_) => (true, "the invitation is mailed to the address".to_owned()),
+            Err(Outcome::Failed { message, .. }) => (
+                false,
+                format!("the invitation was not mailed ({message}): hand the link over yourself"),
+            ),
+            Err(outcome) => return outcome,
+        };
+        if let Some(fields) = answered.as_object_mut() {
+            fields.insert("waiting".into(), json!(waiting));
+            fields.insert("sent".into(), json!(sent));
+            fields.insert("next".into(), json!(next));
+        }
+        Outcome::Ok(answered)
+    }
+
+    /// Hold the person `args.person` names in `workspace` at `args.role`:
+    /// answers the people as the workspace holds them then.
+    async fn add(&self, workspace: &str, args: &Value) -> Outcome {
+        let text = |name: &str| args.get(name).and_then(Value::as_str).map(str::trim);
+        let Some(person) = text("person").filter(|person| {
+            person.len() == 64 && person.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) else {
+            return failed(
+                "invalid_arguments",
+                "`person` is the person's user public key: 64 hex characters",
+                "they read it with `tilo login --new-identity --json` (user_public_key)",
+            );
+        };
+        let Some(role) = text("role").filter(|role| PLACES.contains(role)) else {
+            return failed(
+                "invalid_arguments",
+                "`role` is viewer, commenter, editor, moderator, administrator or owner",
+                "pass args {person: \"<64 hex>\", role: \"owner\", name?: \"Ada\"}",
+            );
+        };
+        let mut asked = Map::new();
+        asked.insert("person".into(), json!(person.to_ascii_lowercase()));
+        asked.insert("role".into(), json!(role));
+        if let Some(name) = text("name").filter(|name| !name.is_empty()) {
+            if tilo_user_identity::display_name(name).is_err() {
+                return failed(
+                    "invalid_arguments",
+                    "`name` is at most 128 bytes, no control characters",
+                    "pass args {person, role, name: \"Ada Lovelace\"}",
+                );
+            }
+            asked.insert("name".into(), json!(name));
+        }
+        match self.govern(workspace, ADD, asked).await {
+            Ok(_) => self.list(workspace).await,
+            Err(outcome) => outcome,
+        }
+    }
+
+    /// The workspace's wait list, after `verb` with `asked`.
+    async fn wait_list(&self, workspace: &str, verb: &str, asked: Map<String, Value>) -> Outcome {
+        match self.govern(workspace, verb, asked).await {
+            Ok(listed) => {
+                let mut listed = listed;
+                if let Some(fields) = listed.as_object_mut() {
+                    fields.insert("workspace".into(), json!(workspace));
+                }
+                Outcome::Ok(listed)
+            }
+            Err(outcome) => outcome,
+        }
     }
 
     /// How the key's person is named in `workspace` from now on, whatever
@@ -229,6 +362,22 @@ impl Session {
             Err(outcome) => outcome,
         }
     }
+}
+
+/// The wait-list entry `args.entry` names, lowercase hex.
+fn entry(args: &Value) -> Result<String, Outcome> {
+    args.get("entry")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|entry| entry.len() == 64 && entry.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| {
+            failed(
+                "invalid_arguments",
+                "an address on the wait list is named by its entry: 64 hex characters",
+                "workspace/members#wait-list names each address's entry",
+            )
+        })
 }
 
 impl crate::Server {

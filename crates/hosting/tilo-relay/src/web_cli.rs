@@ -1225,8 +1225,6 @@ async fn approve_admitted(
                     | OperatorCommand::Confirm { .. }
                     | OperatorCommand::Standing { .. }
                     | OperatorCommand::InviteMailQueued { .. }
-                    | OperatorCommand::DeclareOwner { .. }
-                    | OperatorCommand::Invite { .. }
                     | OperatorCommand::ImportPeople { .. }
                     | OperatorCommand::Hold { .. }
                     | OperatorCommand::Unhold { .. },

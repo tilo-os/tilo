@@ -266,14 +266,6 @@ inputs = ["os/containers/tilo-lounge/integration/"]
 suites = ["os/containers/tilo-lounge/integration/waits.test.mjs"]
 
 [[group]]
-name = "tilo-lounge-invite"
-# The Lounge's invite helper, which stack.sh owner and stack.sh invite run: the
-# line it writes to the operator socket and how it reads each answer. Driven
-# against a stand-in socket, so it needs no stack, no image and no browser.
-inputs = ["os/containers/tilo-lounge/invite"]
-suites = ["os/containers/tilo-lounge/test_invite.py"]
-
-[[group]]
 name = "native-store-autoclear"
 inputs = ["tools/ci/native-store-autoclear.py"]
 suites = ["tools/ci/test_native_store_autoclear.py"]

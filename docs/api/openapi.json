@@ -1372,6 +1372,170 @@
             }
           }
         }
+      },
+      "post": {
+        "operationId": "addMember",
+        "summary": "Hold a person in the workspace by their key, at a role, as an administrator or as an owner",
+        "tags": [
+          "Members"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Run"
+          },
+          {
+            "$ref": "#/components/parameters/RunTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Hold a person in the workspace by their key, at a role, as an administrator or as an owner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Members"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewMember"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/members/wait-list": {
+      "get": {
+        "operationId": "listWaitList",
+        "summary": "The addresses people left at the workspace's entry, to invite",
+        "tags": [
+          "Members"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Run"
+          },
+          {
+            "$ref": "#/components/parameters/RunTitle"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The addresses people left at the workspace's entry, to invite",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitList"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/members/wait-list/{entry}": {
+      "delete": {
+        "operationId": "unlistWaiting",
+        "summary": "Take an address off the wait list",
+        "tags": [
+          "Members"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "entry",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "$ref": "#/components/parameters/Run"
+          },
+          {
+            "$ref": "#/components/parameters/RunTitle"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Take an address off the wait list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitList"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/workspaces/{workspace}/members/invitations": {
@@ -3211,7 +3375,7 @@
         "properties": {
           "role": {
             "type": "string",
-            "description": "`viewer`, `commenter` or `editor`."
+            "description": "`viewer`, `commenter`, `editor`, `administrator` or `owner`."
           },
           "email": {
             "type": [
@@ -3219,11 +3383,48 @@
               "null"
             ],
             "description": "The address the invitation names; no mail is sent."
+          },
+          "waiting": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The address on the wait list it is for (its `entry`): mailed to it\nwhere the workspace's entry sends mail, and it leaves the list once\nsomeone joins with it."
           }
         },
         "required": [
           "role"
         ]
+      },
+      "NewMember": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "type": "string",
+            "description": "Their user public key, 64 hex characters."
+          },
+          "role": {
+            "type": "string",
+            "description": "`viewer`, `commenter`, `editor`, `moderator`, `administrator` or\n`owner`; never more than yours to give. A member already is moved\nthere."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How the workspace names them until they name themselves."
+          }
+        },
+        "required": [
+          "person",
+          "role"
+        ],
+        "description": "A person the workspace holds by their key from now on."
+      },
+      "WaitList": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "The addresses left at the workspace's entry while it takes people by\ninvitation, oldest first, and whether the entry mails invitations."
       },
       "Invitation": {
         "type": "object",

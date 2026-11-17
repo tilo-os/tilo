@@ -94,6 +94,18 @@ pub(crate) const MEMBERS: &str = "member.list";
 /// keys. Every member names themself, so it is no governance action and no
 /// grant gates it.
 pub(crate) const NAME: &str = "member.name";
+/// Holding a person in the workspace by their key, at a role, as an
+/// administrator or as an owner: what an administrator does when they know
+/// the person's key rather than handing them an invitation.
+pub(crate) const ADD_MEMBER: &str = "member.add";
+/// The addresses people left at the entry while it takes people by
+/// invitation: part of inviting.
+pub(crate) const WAIT_LIST: &str = "wait-list.list";
+/// Taking an address off the wait list: part of inviting.
+pub(crate) const UNLIST: &str = "wait-list.remove";
+/// Mailing the invitation issued for an address on the wait list to it,
+/// where the entry sends mail: part of inviting.
+pub(crate) const MAIL_INVITATION: &str = "wait-list.mail";
 /// Listing the workspace as a public workspace, with its description and the
 /// role everyone who joins gets.
 pub(crate) const PUBLISH: &str = "publish";
@@ -132,16 +144,20 @@ const SECOND_NS: u64 = 1_000_000_000;
 /// is the same request to the workspace's request records.
 const REQUEST_ID_CONTEXT: &str = "tilo-relay workspace governance action request v1";
 
-const ROLES: [&str; 5] = [
+const ROLES: [&str; 6] = [
     "viewer",
     "commenter",
     "editor",
     "moderator",
     ADMINISTRATOR_ROLE,
+    OWNER_ROLE,
 ];
 /// The invitation choice that makes its holder an administrator: an Editor
 /// with the administrator grants, which no role of its own names.
 const ADMINISTRATOR_ROLE: &str = "administrator";
+/// The place that makes its holder an owner: an administrator the workspace
+/// is kept for, who makes and unmakes its administrators and owners.
+const OWNER_ROLE: &str = "owner";
 const CALL_OPERATIONS: [&str; 4] = ["start", "restart", "set-directions", "set-denial"];
 /// The call operation that is destructive, and so not served yet.
 const END_CALL: &str = "end";
@@ -158,7 +174,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 16] = [
+const VERBS: [Verb; 20] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -186,6 +202,34 @@ const VERBS: [Verb; 16] = [
         gate: governance::INVITE,
         kind: ActionKind::Read,
         params: Vec::new,
+    },
+    Verb {
+        id: ADD_MEMBER,
+        label: "Add a person",
+        gate: governance::ADD_MEMBER,
+        kind: roles::GOVERNANCE_KIND,
+        params: add_member_params,
+    },
+    Verb {
+        id: WAIT_LIST,
+        label: "List the wait list",
+        gate: governance::INVITE,
+        kind: ActionKind::Read,
+        params: Vec::new,
+    },
+    Verb {
+        id: UNLIST,
+        label: "Take an address off the wait list",
+        gate: governance::INVITE,
+        kind: roles::GOVERNANCE_KIND,
+        params: wait_list_entry_params,
+    },
+    Verb {
+        id: MAIL_INVITATION,
+        label: "Mail an invitation to an address on the wait list",
+        gate: governance::INVITE,
+        kind: roles::GOVERNANCE_KIND,
+        params: mail_invitation_params,
     },
     Verb {
         id: NAME,
@@ -309,9 +353,16 @@ fn invite_params() -> Vec<ActionParam> {
             "role",
             ParamType::Text,
             "The role the invited person gets; `administrator` gives them an editor's part \
-             and the administrator grants; never above the inviter's own.",
+             and the administrator grants, `owner` makes them an owner as well; never above \
+             the inviter's own.",
         )
         .with_choices(ROLES),
+        ActionParam::optional(
+            "wait_list_entry",
+            ParamType::Text,
+            "The address on the wait list it is for (its id, 64 hex characters): it shows as \
+             invited, and leaves the list once someone joins with it.",
+        ),
         ActionParam::optional(
             "recipient",
             ParamType::Text,
@@ -336,6 +387,48 @@ fn invite_params() -> Vec<ActionParam> {
             "expires_in_seconds",
             ParamType::Integer,
             "How long it stays redeemable, in seconds, when finer than hours; takes precedence over expires_in_hours. At most 30 days.",
+        ),
+    ]
+}
+
+fn add_member_params() -> Vec<ActionParam> {
+    vec![
+        person_param(),
+        ActionParam::required(
+            "role",
+            ParamType::Text,
+            "Where they are held: a role, `administrator` (an editor holding every governance \
+             action) or `owner` (an administrator the workspace is kept for); never more than \
+             yours to give. A member already is moved there.",
+        )
+        .with_choices(ROLES),
+        ActionParam::optional(
+            "name",
+            ParamType::Text,
+            "How the workspace names them until they name themselves.",
+        ),
+    ]
+}
+
+fn wait_list_entry_param() -> ActionParam {
+    ActionParam::required(
+        "entry",
+        ParamType::Text,
+        "The address's id on the wait list, 64 hex characters, as listing the wait list reports it.",
+    )
+}
+
+fn wait_list_entry_params() -> Vec<ActionParam> {
+    vec![wait_list_entry_param()]
+}
+
+fn mail_invitation_params() -> Vec<ActionParam> {
+    vec![
+        wait_list_entry_param(),
+        ActionParam::required(
+            "link",
+            ParamType::Text,
+            "The invitation's link on this workspace's entry, issued for the address.",
         ),
     ]
 }
@@ -748,6 +841,13 @@ impl Args {
             Some(Value::Bool(flag)) => Ok(*flag),
             Some(_) => Err(invalid(format!("`{name}` must be true or false"))),
         }
+    }
+
+    /// Where the argument `name` puts a person: a role, an administrator's
+    /// place or an owner's.
+    fn place_at(&self, name: &str) -> Result<super::MemberPlace, ActionHostError> {
+        let text = self.required_text(name)?;
+        super::MemberPlace::parse(text).ok_or_else(|| invalid(format!("no role `{text}`")))
     }
 
     /// The part an invitation the argument `name` names hands out, and
@@ -1204,6 +1304,8 @@ impl Workspaces {
             governance::INVITE | INVITATIONS | CANCEL_INVITATION | MEMBERS | NAME => {
                 self.governance_invitations(action, call).await
             }
+            ADD_MEMBER => self.governance_add_member(call).await,
+            WAIT_LIST | UNLIST | MAIL_INVITATION => self.governance_wait_list(action, call).await,
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
             REQUEST_BOT | WITHDRAW_BOT_REQUEST => self.governance_bots(action, call).await,
             governance::INSTALL_APP | UNINSTALL_APP => self.governance_apps(action, call).await,
@@ -1431,27 +1533,44 @@ impl Workspaces {
         match action {
             governance::INVITE => {
                 let expires_at_ns = now.saturating_add(invitation_lifetime(args)?);
-                let (role, makes_administrator) = args.invitation_role_at("role")?;
-                let issued = self
-                    .issue_as(
+                let place = args.place_at("role")?;
+                let wait_list_entry = args.key("wait_list_entry")?;
+                let (role, makes_administrator) = match place {
+                    super::MemberPlace::Role(role) => (role, false),
+                    // An administrator joins as an Editor and is made one by
+                    // the invitation's own grant, never by a role above the
+                    // inviter's; an owner is an administrator as well.
+                    super::MemberPlace::Administrator | super::MemberPlace::Owner => {
+                        (Role::Editor, true)
+                    }
+                };
+                let request = IssueInvitationRequest {
+                    request_id,
+                    role,
+                    recipient_user_public_key: args.key("recipient")?,
+                    invitee_name: args.text("invitee_name")?.map(str::to_owned),
+                    expires_at_ns,
+                    inviter_name: args.text("inviter_name")?.map(str::to_owned),
+                };
+                let issued = if place == super::MemberPlace::Owner {
+                    self.issue_owner_invitation(workspace, device, request, wait_list_entry)
+                        .await
+                } else {
+                    self.issue_for(
                         workspace,
                         device,
-                        IssueInvitationRequest {
-                            request_id,
-                            role,
-                            recipient_user_public_key: args.key("recipient")?,
-                            invitee_name: args.text("invitee_name")?.map(str::to_owned),
-                            expires_at_ns,
-                            inviter_name: args.text("inviter_name")?.map(str::to_owned),
-                        },
+                        request,
                         makes_administrator,
+                        wait_list_entry,
                     )
                     .await
-                    .map_err(|error| refused(&error))?;
+                }
+                .map_err(|error| refused(&error))?;
                 Ok(json!({
                     "invite": hex::encode(issued.invite_id),
                     "invitation": hex::encode(issued.signed_invitation),
                     "administrator": makes_administrator,
+                    "owner": place == super::MemberPlace::Owner,
                     "expires_at_ns": expires_at_ns,
                 }))
             }
@@ -1493,6 +1612,87 @@ impl Workspaces {
             }
             _ => Err(ActionHostError::UnknownAction),
         }
+    }
+
+    /// Holding a person in the workspace by their key: answers the people as
+    /// the workspace holds them now.
+    async fn governance_add_member(
+        &self,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionHostError> {
+        let GovernanceCall {
+            workspace,
+            device,
+            request_id,
+            args,
+        } = call;
+        let request = super::AddMemberRequest {
+            request_id,
+            user_public_key: args.required_key("person")?,
+            place: args.place_at("role")?,
+            name: args
+                .text("name")?
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
+        };
+        self.add_member(workspace, device, request)
+            .await
+            .map_err(|error| refused(&error))?;
+        Ok(self
+            .members(workspace)
+            .await
+            .map_err(|error| refused(&error))?
+            .into())
+    }
+
+    /// The workspace's wait list, taking an address off it, and mailing an
+    /// address the invitation issued for it.
+    async fn governance_wait_list(
+        &self,
+        action: &str,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionHostError> {
+        let GovernanceCall {
+            workspace,
+            device,
+            args,
+            ..
+        } = call;
+        let now = tilo_clock::unix_now_ns();
+        match action {
+            UNLIST => self
+                .unlist(workspace, device, args.required_key("entry")?, now)
+                .await
+                .map_err(|error| refused(&error))?,
+            MAIL_INVITATION => self
+                .mail_invite(
+                    workspace,
+                    device,
+                    args.required_key("entry")?,
+                    args.required_text("link")?.to_owned(),
+                    now,
+                )
+                .await
+                .map_err(|error| refused(&error))?,
+            _ => {}
+        }
+        let entries = self
+            .wait_list(workspace, device, now)
+            .await
+            .map_err(|error| refused(&error))?;
+        Ok(json!({
+            "mails": self.mail_entry().is_some(),
+            "entries": entries
+                .iter()
+                .map(|entry| json!({
+                    "entry": hex::encode(entry.request_id),
+                    "contact": entry.contact,
+                    "added_at_ns": entry.added_at_ns,
+                    "invited_at_ns": entry.invited_at_ns,
+                }))
+                .collect::<Vec<_>>(),
+        }))
     }
 
     /// Removing, banning and unbanning members, and the workspace's calls.

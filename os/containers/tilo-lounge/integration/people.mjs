@@ -5,9 +5,9 @@
 // other — the live plane's presence, the shared shell, and the chat all at
 // once.
 //
-// Then one of them is made someone the workspace lets invite, while their page
-// is open (the operator declares them through the workspace's own socket), and
-// invites a third person from the page's own sheet. That person
+// Then one of them is made an owner while their page is open (the stack's own
+// owner adds them with `tilo members add`, the normal action), and invites a
+// third person from the page's own sheet. That person
 // opens the link the sheet handed over — `http://<site>/i/<handle>#<key>` — in
 // a browser of their own, is told who invited them, to what and as what, and
 // joins with no one in the workspace answering for them: an invitation is its
@@ -18,10 +18,9 @@
 // through glyphs: what is drawn is a picture, and what a person can reach is
 // the snapshot.
 //
-// usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR
-// OWNER_SOCKET
-// OWNER_SOCKET is the operator socket of the running Lounge, through which
-// this run declares the inviter an owner (os/containers/tilo-lounge/declare-owner).
+// usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR STACK
+// STACK is os/containers/tilo-sh/stack.sh of the stack the Lounge runs on,
+// whose own owner makes the inviter an owner (`stack.sh owner KEY`).
 // With EARLIER as the seventh argument the run is the other way round: one
 // person, who was not here when the workspace last started, joins and reads the
 // chat message EARLIER — written before it by pages that are gone — and writes
@@ -31,7 +30,6 @@
 // the two people did not meet, when the invitation took more than an
 // invitation, or when a person joining later finds no chat history.
 import {execFileSync} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {request as httpRequest} from 'node:http';
 import {request as httpsRequest} from 'node:https';
@@ -40,18 +38,18 @@ import {clock} from './timing.mjs';
 import * as waits from './waits.mjs';
 import {stepLimit, shellMetrics, SHELL} from './waits.mjs';
 
-const [site, relay, origin, out, ownerSocket, earlier] = process.argv.slice(2);
-if (!site || !relay || !origin || !out || !ownerSocket) {
-  console.error('usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR OWNER_SOCKET [EARLIER]');
+const [site, relay, origin, out, stack, earlier] = process.argv.slice(2);
+if (!site || !relay || !origin || !out || !stack) {
+  console.error('usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR STACK [EARLIER]');
   process.exit(2);
 }
 
-/** Declare `user` (hex) an owner of the running Lounge: the operator asks the
- * workspace itself, over its operator socket, and the workspace's entry then
- * lets them in and its governance makes them an administrator. */
-const declareOwner = user => execFileSync(
-  'python3',
-  ['-I', fileURLToPath(new URL('../declare-owner', import.meta.url)), ownerSocket, user],
+/** Make `user` (hex) an owner of the Lounge, as the stack's own owner does it:
+ * `stack.sh owner KEY` runs `tilo members add KEY --role owner`, the action any
+ * owner takes, and the workspace's entry then lets them in. */
+const addOwner = user => execFileSync(
+  'bash',
+  [stack, 'owner', user],
   {stdio: ['ignore', 'inherit', 'inherit']},
 );
 mkdirSync(out, {recursive: true});
@@ -60,7 +58,7 @@ mkdirSync(out, {recursive: true});
 // (the window menu, a few apps from the search, the strip panned over Notes
 // and Sheets swiped), `menus` (a pinch, the text menu, the profile card's
 // Report a problem, the search chord, and nothing of it reaching the browser)
-// or `invite` (a person made an inviter while their page is open invites a
+// or `invite` (a person made an owner while their page is open invites a
 // third). The cases share nothing but the Lounge, so a run starts them side by
 // side; none named runs them all in one pair, one after another.
 const only = process.env.TILO_PEOPLE_CASE ?? '';
@@ -1623,14 +1621,14 @@ try {
   }
 
   if (runs('invite')) {
-    // A person the workspace lets invite, from the page itself: the operator
-    // declares them one while their page stands open (through the workspace's
-    // operator socket), and the bar offers inviting without a reload, as a
+    // A person the workspace lets invite, from the page itself: made an owner
+    // while their page stands open (the stack's own owner adds them with `tilo
+    // members add`), and the bar offers inviting without a reload, as a
     // promotion reaches the native shell.
     const offeredBefore = (await snapshot(a.tab)).names.filter(name => name === 'Invite');
     report.inviteBefore = offeredBefore.length;
     if (offeredBefore.length) await failed('the bar offered inviting before the workspace allowed it', a.tab);
-    declareOwner(keptA.userPublicKey);
+    addOwner(keptA.userPublicKey);
     const allowedAt = Date.now();
     await waitFor(a.tab, 'Invite', "the bar's invite button");
     report.inviteAfterMs = Date.now() - allowedAt;

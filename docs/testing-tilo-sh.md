@@ -31,9 +31,10 @@ an empty build directory, so they take minutes where the default takes
 seconds; use them to rehearse exactly what the checks build. A clean checkout
 is built as its commit, one with changes as t finds it when the run starts.
 
-A fresh Lounge takes people by invitation, as production's does, and nobody
-owns it yet: `up` prints an owner link, and whoever opens it, in any browser,
-is in as the Lounge's owner (`stack.sh owner` prints it again).
+A fresh Lounge takes people by invitation, as production's does. The stack
+makes a person of its own and starts the relay with them as the Lounge's owner,
+and `up` prints an owner link they made: whoever opens it, in any browser, is in
+as an owner too (`stack.sh owner` prints it again).
 
 `stack.sh up --images` runs the release images instead: `image-lounge`,
 `image-api` and `image-web-entry`, built by `t` for this commit, under rootless
@@ -116,12 +117,15 @@ stack:
 
 - **You, the owner:** open the owner link `up` printed (`stack.sh owner` prints
   it again) in your browser. It makes your identity on the spot and you are in
-  the Lounge as its owner and an administrator.
+  the Lounge as its owner and an administrator. The stack's own person, the
+  owner it started the Lounge with, needs no browser:
+  `eval "$(stack.sh owner --here)"` gives you a key for them, and
+  `stack.sh tilo members … -w Lounge` runs `tilo` as them.
 - **Someone you invite:** `stack.sh invite [WORKSPACE] -- --role editor` prints
-  an invite link from the stack's host (the card names the workspace). Opened
-  in a browser with no Tilo identity yet, the page makes one and joins; being
-  in any workspace here also lets them past the invite-only sign-up and into
-  the Lounge.
+  an invite link the stack's owner makes with `tilo members invite` (the card
+  names the workspace). Opened in a browser with no Tilo identity yet, the page
+  makes one and joins; being in any workspace here also lets them past the
+  invite-only sign-up and into the Lounge.
 - **A fresh visitor:** `stack.sh browser` opens Chromium on a throwaway profile
   at the local site. `integration/person.mjs SITE RELAY OUT` does the same
   headless and prints the time until they are in the Lounge.

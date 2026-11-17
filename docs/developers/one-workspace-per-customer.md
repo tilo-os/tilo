@@ -263,15 +263,17 @@ third of the keys, exports and deletes everything, and prints the timings, every
 host's memory and CPU. Against a local tilo.sh:
 
 ```sh
-eval "$(os/containers/tilo-sh/stack.sh env)"            # TILO_API_URL, TILO_SITE: the local stack
-eval "$(tilo keys create "Customer backend" | head -1)"  # TILO_API_KEY: approve it where you opened the owner link
+eval "$(os/containers/tilo-sh/stack.sh env)"             # TILO_API_URL, TILO_SITE: the local stack
+eval "$(os/containers/tilo-sh/stack.sh owner --here)"    # TILO_API_KEY: the stack's own person, an owner
 CUSTOMERS=300 SAMPLE_PIDS=relay:$(cat ~/.local/state/tilo-sh-local/run/relay.pid) \
   bun sdk/typescript/examples/workspace_per_customer.ts
 ```
 
-The key is your own: open the owner link `stack.sh up` printed (or `stack.sh owner` prints) in a
-browser first, which makes you the local Lounge's owner, and approve the key there. (`TILO_SH_STATE`
-moves the stack's state from `~/.local/state/tilo-sh-local`.)
+The key is the stack's own person's, and that person is the Lounge's owner from the start, so no
+browser is needed (`stack.sh owner --here` approves the key on the spot; `stack.sh env` exports it from
+then on). To act as a person of your own instead, open the owner link `stack.sh up` printed (`stack.sh
+owner` prints it again), which makes you an owner too, and approve a key of yours there.
+(`TILO_SH_STATE` moves the stack's state from `~/.local/state/tilo-sh-local`.)
 
 ## What the agent's key reaches
 

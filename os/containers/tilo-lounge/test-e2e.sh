@@ -32,7 +32,7 @@
 #   people-menus   two people; a pinch, the text menu, the profile card's
 #                  Report a problem, the search chord, and none of it reaching
 #                  the browser (case menus)
-#   people-invite  a person made an inviter while their page is open invites
+#   people-invite  a person made an owner while their page is open invites
 #                  a third, who arrives from the link (case invite)
 #   share-link     a document's link opens that document live for another
 #                  person on a phone-sized page; a run's link opens Console
@@ -96,7 +96,7 @@ tilo_sh=$repo/os/containers/tilo-sh
 # hangs is stopped with everything it started.
 if [[ ${1:-} == --flow ]]; then
   flow=$2 out=$E2E_WORK/$2
-  site_origin=$E2E_SITE relay_origin=$E2E_RELAY workspace=$E2E_WORKSPACE owner_socket=$E2E_OWNER_SOCKET
+  site_origin=$E2E_SITE relay_origin=$E2E_RELAY workspace=$E2E_WORKSPACE stack=$E2E_STACK
   case $flow in
     directory)
       page=$(curl -fsS --max-time 5 -X POST "$relay_origin/peer/v1/directory") \
@@ -126,7 +126,7 @@ print("ok: the directory lists the Lounge, joined at its entry as an editor")
     boot) exec node "$integration/page-boot.mjs" "$site_origin" "$relay_origin" "$out" ;;
     people-call|people-shell|people-menus|people-invite)
       TILO_PEOPLE_CASE=${flow#people-} exec node "$integration/people.mjs" "$site_origin" "$relay_origin" \
-        "$relay_origin" "$out" "$owner_socket" ;;
+        "$relay_origin" "$out" "$stack" ;;
     share-link) exec node "$integration/share-link.mjs" "$site_origin" "$relay_origin" "$workspace" "$out" ;;
     reloads) exec node "$integration/reloads.mjs" "$site_origin" "$out" ;;
     agent-setup|setup-resume)
@@ -151,7 +151,7 @@ print("ok: the directory lists the Lounge, joined at its entry as an editor")
       [[ $(cat "$TILO_SH_STATE/relay/lounge/workspace-id") == "$workspace" ]] \
         || { echo 'FAIL: a restart on the same volume served a different workspace'; exit 1; }
       echo "ok: the Lounge started again on its own volume ($workspace)"
-      exec node "$integration/people.mjs" "$site_origin" "$relay_origin" "$relay_origin" "$out" "$owner_socket" "$earlier" ;;
+      exec node "$integration/people.mjs" "$site_origin" "$relay_origin" "$relay_origin" "$out" "$stack" "$earlier" ;;
   esac
   exit 2
 fi
@@ -223,13 +223,12 @@ bash "$tilo_sh/stack.sh" up --fresh
 # shellcheck source=../tilo-sh/stack.sh
 . "$tilo_sh/stack.sh"
 workspace=$(cat "$state/relay/lounge/workspace-id")
-owner_socket=$state/relay/lounge/operator.sock
 log=$state/logs/relay.log
 bash "$tilo_sh/stack.sh" status || true
 timing 'phase=the stack up'
 
 export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_origin E2E_WORKSPACE=$workspace \
-  E2E_OWNER_SOCKET=$owner_socket E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin
+  E2E_STACK=$tilo_sh/stack.sh E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin
 
 # What each of the stack's services complained about while it ran: each error
 # and warning it logged, without its time, with how often. A failing check

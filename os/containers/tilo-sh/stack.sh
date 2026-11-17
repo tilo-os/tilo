@@ -52,32 +52,31 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
   stack.sh mail          the mail the entry sent (wait-list confirmations,
                          invitations), with the links in each
   stack.sh owner --here [--name NAME]
-                         an owner of the Lounge and a key for them, no browser:
-                         a person whose root the stack keeps in its own state
-                         (made once, the same person after), declared an owner
-                         as production's operator does, approves an API key on
-                         the spot. Prints export TILO_API_KEY=…, so
+                         the Lounge's first owner and a key for them, no
+                         browser: a person whose root the stack keeps in its
+                         own state (made once, the same person after), whom
+                         the relay starts with as its owner, as production's
+                         TILO_WORKSPACES_OWNERS names its own, approves an API
+                         key on the spot. Prints export TILO_API_KEY=…, so
                          eval "$(stack.sh owner --here)" holds it; stack.sh env
                          exports it from then on
-  stack.sh tilo ARGS...  tilo as that owner: stack.sh tilo keys create "My backend"
+  stack.sh tilo ARGS...  tilo as that owner, with their key:
+                         stack.sh tilo members wait-list -w <lounge id>
   stack.sh owner [KEY] [--name NAME]
-                         the owner link: opening it in any browser (one with
+                         an owner link: opening it in any browser (one with
                          no Tilo identity yet too) makes that person an owner
                          of the Lounge, an administrator it is kept for, and
-                         lets them in to invite the others. While nobody has
-                         opened it, asking again links to the same invitation,
-                         and once someone has, it is spent; up prints it while
-                         the Lounge has no owner. With KEY, declare the
-                         person with that user public key an owner at once
-                         (NAME is how the Lounge names them), as production's
-                         operator does
-  stack.sh invite [WORKSPACE] [-- --role ROLE] [--for NAME]
-                         an invite link to WORKSPACE (its name or id; the
-                         Lounge when none), made by the stack's host itself, so
-                         the card names the workspace: ROLE is viewer,
-                         commenter, editor (the default), administrator or
-                         owner. Opened in any browser, it makes the person's
-                         identity on the spot and lets them in
+                         lets them in to invite the others; up prints one.
+                         With KEY, the person with that user public key is an
+                         owner at once (NAME is how the Lounge names them):
+                         the stack's owner runs tilo members add KEY --role owner
+  stack.sh invite [WORKSPACE] [-- --role ROLE] [--email ADDRESS]
+                         an invite link to WORKSPACE (its id; the Lounge when
+                         none), made by the stack's owner with tilo members
+                         invite: ROLE is viewer, commenter, editor (the
+                         default), administrator or owner. Opened in any
+                         browser, it makes the person's identity on the spot
+                         and lets them in
   stack.sh hold WORKSPACE ORIGIN
                          have the stack at ORIGIN (its site's origin, e.g.
                          http://127.0.0.1:34000) hold WORKSPACE, a workspace
@@ -437,13 +436,16 @@ relay_env() {
     "TILO_WORKSPACES_LINK=127.0.0.1:$link_port"
     "TILO_WORKSPACES_LINK_ORIGIN=https://127.0.0.1:$link_port"
   )
-  # Production's entry: only people invited, or declared by the operator
-  # (stack.sh owner), join, and a stranger leaves an address on its wait
+  # Production's entry: only people invited, or added by an owner
+  # (stack.sh owner KEY), join, and a stranger leaves an address on its wait
   # list. TILO_SH_ADMISSION=open lets anyone in as a guest instead, for the
   # checks whose visitors arrive as strangers. A service started again later
   # (`restart relay`) serves the entry the stack was brought up with, which its
   # state keeps: the restart carries no environment of the up that made it.
   local admission=${TILO_SH_ADMISSION:-$(cat "$state/admission" 2>/dev/null || echo invite)}
+  # The Lounge's first owner: the stack's own person, as production's
+  # deployment names its own. Everyone else comes in through them.
+  env+=("TILO_WORKSPACES_OWNERS=$(stack_person)")
   case $admission in
     invite) env+=(TILO_WORKSPACES_ADMISSION=invite TILO_WORKSPACES_WAIT_LIST_MAX=500) ;;
     open) env+=(TILO_WORKSPACES_ADMISSION=open) ;;
@@ -568,45 +570,50 @@ start_mail() {
   done
 }
 
-# invite [WORKSPACE] [-- --role ROLE] [--for NAME]: an invite link to
-# WORKSPACE (the Lounge when none), made by the stack's host itself through
-# the Lounge's operator socket, as production's operator asks it: the card
-# names the workspace, not a person, and nobody joins the workspace to sign
-# it. Opened in any browser, one with no Tilo identity yet included, the page
-# makes the person's identity and joins.
+# invite [WORKSPACE] [-- --role ROLE] [--email ADDRESS]: an invite link to
+# WORKSPACE (the Lounge when none), made by the stack's own person, its owner,
+# with `tilo members invite`, as any owner makes one. Opened in any browser,
+# one with no Tilo identity yet included, the page makes the person's identity
+# and joins.
 invite_link() {
+  local workspace=''
+  local role=editor
   local -a asked=()
-  if [[ $# -gt 0 && $1 != -- ]]; then asked=(--workspace "$1"); shift; fi
+  if [[ $# -gt 0 && $1 != -- ]]; then workspace=$1; shift; fi
   [[ ${1:-} != -- ]] || shift
   while [[ $# -gt 0 ]]; do
     case $1 in
-      --role | --for)
-        [[ $# -ge 2 ]] || die "invite $1: what it is"
-        asked+=("$1" "$2")
+      --role)
+        [[ $# -ge 2 ]] || die 'invite --role: which'
+        role=$2
         shift 2
         ;;
-      *) die "invite [WORKSPACE] [-- --role viewer|commenter|editor|administrator|owner] [--for NAME], not $1" ;;
+      --email)
+        [[ $# -ge 2 ]] || die 'invite --email: the address'
+        asked+=(--email "$2")
+        shift 2
+        ;;
+      *) die "invite [WORKSPACE] [-- --role viewer|commenter|editor|administrator|owner] [--email ADDRESS], not $1" ;;
     esac
   done
-  host_invite "${asked[@]}"
+  [[ -n $workspace ]] || workspace=$(lounge_id)
+  owner_tilo members invite --role "$role" "${asked[@]}" -w "$workspace" | head -1
 }
 
-# The Lounge's host invites as itself (os/containers/tilo-lounge/invite):
-# prints the link, or answers 3 when --unless-owned found an owner.
-host_invite() {
-  local socket=$state/relay/lounge/operator.sock
-  [[ -S $socket ]] || die "the Lounge is not running ($socket); stack.sh up first"
-  python3 -I "$repo/os/containers/tilo-lounge/invite" "$socket" "$@"
+# The Lounge's workspace id, once it runs.
+lounge_id() {
+  local id_file=$state/relay/lounge/workspace-id
+  [[ -s $id_file ]] || die "the Lounge is not running ($id_file); stack.sh up first"
+  cat "$id_file"
 }
 
-# owner [KEY] [--name NAME]: without KEY, the owner link: opening it in any
+# owner [KEY] [--name NAME]: without KEY, an owner link: opening it in any
 # browser, one with no Tilo identity yet included, makes that person an owner
-# of the Lounge (an administrator it is kept for) and lets them in. While
-# nobody has opened it, asking again links to the same invitation, and once
-# someone has, it is spent. With KEY, declare the
-# person whose user public key (hex) is KEY an owner at once, as production's
-# operator does: the Lounge lets them in, and a key of theirs reaches it
-# before any device of theirs joined. NAME is how the Lounge names them then.
+# of the Lounge (an administrator it is kept for) and lets them in. With KEY,
+# the person whose user public key (hex) is KEY is an owner at once: the
+# stack's own person adds them (`tilo members add KEY --role owner`), and a key
+# of theirs reaches the Lounge before any device of theirs joins. NAME is how
+# the Lounge names them then.
 declare_owner() {
   local key=''
   local name=''
@@ -624,7 +631,7 @@ declare_owner() {
     shift
   done
   if [[ $here == 1 ]]; then
-    [[ -z $key ]] || die 'owner --here makes its own person; KEY names someone else'
+    [[ -z $key ]] || die 'owner --here is the stack'"'"'s own person; KEY names someone else'
     owner_here "$name"
     return
   fi
@@ -634,7 +641,11 @@ declare_owner() {
     return
   fi
   [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (tilo login --json names it as user_public_key)'
-  declare_owner_at_lounge "$key" "$name"
+  local -a named=()
+  [[ -z $name ]] || named=(--name "$name")
+  owner_tilo members add "$key" --role owner "${named[@]}" -w "$(lounge_id)" >/dev/null \
+    || die "the Lounge did not make $key an owner"
+  say "$key is an owner of the Lounge: let in at once${name:+ as $name}"
 }
 
 # The stack's own person: tilo run with a home of its own under the stack's
@@ -648,58 +659,69 @@ as_owner() {
     TILO_API_URL=$api_origin TILO_SITE=$site_origin "$(find_tilo)" "$@"
 }
 
-# owner --here [NAME]: the stack's own person (made the first time, the same
-# one after) is declared an owner of the Lounge and approves an API key for
-# themself there and then, as the person's own Tilo approves one: no browser.
+# The user public key of the stack's own person, made the first time: the
+# Lounge's first owner, which the relay is started with (TILO_WORKSPACES_OWNERS),
+# as production's deployment names its own.
+stack_person() {
+  local made
+  if [[ ! -s $state/owner/key ]]; then
+    mkdir -p "$state/owner"
+    made=$(as_owner login --new-identity --json) \
+      || die 'tilo made no person for the stack (tilo login --new-identity)'
+    python3 -c 'import json,sys; print(json.loads(sys.argv[1])["user_public_key"])' "$made" \
+      > "$state/owner/key" || die "tilo named no person: $made"
+  fi
+  cat "$state/owner/key"
+}
+
+# The API key the stack's own person approved for themself, approved the
+# first time it is asked for.
+owner_api_key() {
+  local answer api_key
+  if [[ ! -s $state/owner/api-key ]]; then
+    answer=$(as_owner keys create 'Local stack' --json) || die "the owner's key was not approved: $answer"
+    api_key=$(python3 -c 'import json,sys
+answer = json.loads(sys.argv[1])
+print(next(answer[field] for field in ("key", "token", "api_key") if answer.get(field)))' "$answer") \
+      || die "tilo answered no key: $answer"
+    printf '%s\n' "$api_key" > "$state/owner/api-key"
+    chmod 600 "$state/owner/api-key"
+  fi
+  cat "$state/owner/api-key"
+}
+
+# tilo as the stack's own person, with their API key.
+owner_tilo() {
+  local api_key
+  api_key=$(owner_api_key) || exit 1
+  TILO_API_KEY=$api_key as_owner "$@"
+}
+
+# owner --here [NAME]: the stack's own person, the Lounge's first owner,
+# approves an API key for themself there and then, as the person's own Tilo
+# approves one: no browser. NAME is how the Lounge names them from then on.
 # Prints the key as an export line and keeps it for stack.sh env.
 owner_here() {
   local name=${1:-}
-  local made key answer api_key
-  local -a named=()
-  [[ -z $name ]] || named=(--name "$name")
-  made=$(as_owner login --new-identity --json "${named[@]}") \
-    || die 'tilo made no person for the stack (tilo login --new-identity)'
-  key=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["user_public_key"])' "$made") \
-    || die "tilo named no person: $made"
-  [[ -n $name ]] || name=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("name") or "")' "$made")
-  declare_owner_at_lounge "$key" "$name"
-  answer=$(as_owner keys create 'Local stack' --json) || die "the owner's key was not approved: $answer"
-  api_key=$(python3 -c 'import json,sys
-answer = json.loads(sys.argv[1])
-print(next(answer[field] for field in ("key", "token", "api_key") if answer.get(field)))' "$answer") \
-    || die "tilo answered no key: $answer"
-  printf '%s\n' "$api_key" > "$state/owner/api-key"
-  chmod 600 "$state/owner/api-key"
+  local api_key
+  stack_person >/dev/null
+  api_key=$(owner_api_key) || exit 1
+  if [[ -n $name ]]; then
+    owner_tilo members name "$name" -w "$(lounge_id)" >/dev/null \
+      || die "the Lounge did not name its owner $name"
+  fi
   say "the owner's key is kept for stack.sh env; stack.sh tilo … acts as them"
   printf 'export TILO_API_KEY=%s\n' "$api_key"
 }
 
-# The owner link: to the owner invitation nobody has opened yet, else to a new
-# one (a Lounge with an owner gets another). Whoever opens it is an owner from
-# then on.
+# An owner link: whoever opens it is an owner from then on, as the stack's
+# own person invites them (`tilo members invite --role owner`).
 owner_link() {
   local link
-  link=$(host_invite --role owner --unless-owned) || {
-    [[ $? -eq 3 ]] || die 'the Lounge made no owner link'
-    link=$(host_invite --role owner) || die 'the Lounge made no owner link'
-  }
+  link=$(owner_tilo members invite --role owner -w "$(lounge_id)" | head -1) \
+    || die 'the Lounge made no owner link'
   say 'opening this link in any browser makes that person an owner of the Lounge:'
   printf '%s\n' "$link"
-}
-
-# The running Lounge declares KEY an owner, as production's operator does: its
-# governance holds them as an administrator, and its entry lets them in. NAME,
-# when the stack knows it, is how the Lounge names them from then on.
-declare_owner_at_lounge() {
-  local key=$1
-  local name=${2:-}
-  local socket=$state/relay/lounge/operator.sock
-  local -a named=()
-  [[ -z $name ]] || named=(--name "$name")
-  [[ -S $socket ]] || die "the Lounge is not running ($socket); stack.sh up first"
-  python3 -I "$repo/os/containers/tilo-lounge/declare-owner" "$socket" "$key" "${named[@]}" \
-    || die "the Lounge did not make $key an owner"
-  say "$key is an owner of the Lounge: an administrator from now on, let in at once${name:+ as $name}"
 }
 
 # hold|unhold WORKSPACE ORIGIN: the running relay has the stack at ORIGIN hold
@@ -1692,13 +1714,14 @@ up() {
   fi
   say "up in $((SECONDS - began))s ($mode)"
   status
-  # A Lounge nobody owns yet gets its owner from a link: whoever opens it, in
-  # any browser, is in as its owner and invites the others.
+  # The Lounge's owner is the stack's own person (stack.sh tilo acts as
+  # them); a link from them makes whoever opens it, in any browser, an owner
+  # too, who invites the others.
   local link
-  if link=$(host_invite --role owner --unless-owned); then
-    say 'the Lounge has no owner yet: opening this link in any browser makes that person its owner'
+  if link=$(owner_tilo members invite --role owner -w "$(lounge_id)" | head -1) && [[ -n $link ]]; then
+    say 'opening this link in any browser makes that person an owner of the Lounge'
     printf '%s\n' "$link"
-  elif [[ $? -ne 3 ]]; then
+  else
     say 'the Lounge made no owner link: stack.sh owner asks again'
   fi
 }
@@ -1955,7 +1978,7 @@ case $cmd in
   mail) list_mail ;;
   owner) declare_owner "$@" ;;
   invite) invite_link "$@" ;;
-  tilo) as_owner "$@" ;;
+  tilo) owner_tilo "$@" ;;
   hold | unhold) hold_workspace "$cmd" "$@" ;;
   browser) browser "$@" ;;
   check)

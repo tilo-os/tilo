@@ -191,6 +191,34 @@ shows the invitations nobody has accepted yet. Once the person is in, your agent
 straight in the record's app for them, because a link opens for the workspace's members and carries no
 secret.
 
+## Owners and administrators admit people
+
+A workspace is kept for its **owners**. They, and the administrators they make, are the people who let
+everyone else in, always through an action of the workspace: an administrator makes administrators, an
+owner makes owners.
+
+```sh
+tilo members add KEY --role editor --name "Ada Lovelace" -w Lounge   # in at once, no link to hand over
+tilo members invite --role editor -w Lounge                          # a link; whoever opens it joins
+tilo members wait-list -w Lounge                                     # who left an address at an entry
+tilo members invite --waiting ENTRY --role editor -w Lounge          # invite one of them
+tilo members unlist ENTRY -w Lounge                                  # take the address off again
+```
+
+`tilo members add` takes a person's user public key (`tilo login --new-identity --json` names it), so it
+lets someone in before any device of theirs joins. `--role owner` makes another owner, and `--role
+administrator` another administrator. `tilo members invite` answers a link instead: `--email` names the
+address it is for, and `--waiting` invites an address already on the wait list.
+
+The same actions reach an agent over MCP (`tilo_do {"path": "workspace/members#add", "args": {"person":
+KEY, "role": "editor"}}`, and `#invite`, `#wait-list`, `#unlist`) and over REST (`POST
+/v1/workspaces/{workspace}/members`, `POST /v1/workspaces/{workspace}/members/invitations`, `GET
+/v1/workspaces/{workspace}/members/wait-list`, `DELETE /v1/workspaces/{workspace}/members/wait-list/{entry}`).
+
+A deployment names its first owners when it starts the host: `TILO_WORKSPACES_OWNERS` takes their user
+public keys, comma-separated, and each is an owner of the workspace from the start. Everyone after them
+comes in through the actions above.
+
 ## Where next
 
 - [Resources and actions](resources-and-actions.md): what is inside, and how to reach it.

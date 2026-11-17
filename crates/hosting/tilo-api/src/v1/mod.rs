@@ -672,6 +672,28 @@ impl<'a> Caller<'a> {
                 shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }
+            "addMember" => {
+                let new: answers::NewMember = self.json_body()?;
+                let added = json!({"path": "workspace/members#add", "args": new});
+                let listed = self.call("tilo_do", added).await?;
+                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "listWaitList" => {
+                let listed = self
+                    .call("tilo_do", json!({"path": "workspace/members#wait-list"}))
+                    .await?;
+                shaped::<answers::WaitList>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "unlistWaiting" => {
+                let entry = self.params.get("entry").to_owned();
+                let unlisted =
+                    json!({"path": "workspace/members#unlist", "args": {"entry": entry}});
+                let listed = self.call("tilo_do", unlisted).await?;
+                shaped::<answers::WaitList>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
             "invitePerson" => {
                 let new: answers::NewInvitation = self.json_body()?;
                 let invite = json!({"path": "workspace/members#invite", "args": new});
