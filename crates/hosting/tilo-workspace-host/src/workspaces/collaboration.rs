@@ -507,28 +507,31 @@ impl Workspaces {
         self.authorize(administrator, Some(&workspace), op, now)?;
         let key = self.inner.host.key.clone();
         let name = request.name.as_deref();
-        self.administer(
-            &mut workspace,
-            request.request_id,
-            request_digest(&("member", person, &request.place, name))?,
-            |peer| {
-                let placed = peer.governance_mut().declare_member(
-                    person,
-                    role,
-                    makes_administrator,
-                    name,
-                    &key,
-                    system_time(now),
-                )?;
-                let kept = makes_owner
-                    && peer
-                        .governance_mut()
-                        .set_keeper(person, &key, system_time(now))?;
-                Ok(placed || kept)
-            },
-            now,
-        )
-        .await
+        let done = self
+            .administer(
+                &mut workspace,
+                request.request_id,
+                request_digest(&("member", person, &request.place, name))?,
+                |peer| {
+                    let placed = peer.governance_mut().declare_member(
+                        person,
+                        role,
+                        makes_administrator,
+                        name,
+                        &key,
+                        system_time(now),
+                    )?;
+                    let kept = makes_owner
+                        && peer
+                            .governance_mut()
+                            .set_keeper(person, &key, system_time(now))?;
+                    Ok(placed || kept)
+                },
+                now,
+            )
+            .await;
+        drop(workspace);
+        done
     }
 
     /// Write workspace grants the governor decided (workspace settings such as a

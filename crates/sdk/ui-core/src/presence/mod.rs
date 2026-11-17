@@ -11,7 +11,7 @@ mod faces;
 pub mod frame;
 mod geom;
 mod interaction;
-pub(crate) use interaction::written_in;
+pub(crate) use interaction::{written_by, written_in};
 mod key;
 mod labels;
 mod layer;

@@ -417,28 +417,9 @@ impl Waiting {
                     give.push(giving(asked, result));
                 }
             }
-            RemoteActionMessage::Receipt(receipt) => {
-                for asked in self
-                    .receipts
-                    .remove(&receipt.invocation)
-                    .unwrap_or_default()
-                {
-                    let answer = match &receipt.status {
-                        ReceiptStatus::Rejected { error } => Err(error.clone()),
-                        _ => Ok(receipt.clone()),
-                    };
-                    give.push(giving(asked, answer));
-                }
-            }
-            // An update the device pushes unasked answers whoever waits for
-            // one; with nobody waiting, the next observe asks again.
+            RemoteActionMessage::Receipt(receipt) => self.receipt(&receipt, give),
             RemoteActionMessage::Update { invocation, state } => {
-                if let (Some(followed), Some(state)) = (self.follows.get_mut(&invocation), &state) {
-                    followed.state = state.clone();
-                }
-                for asked in self.updates.remove(&invocation).unwrap_or_default() {
-                    give.push(giving(asked, state.clone()));
-                }
+                self.update(invocation, state.as_ref(), give);
             }
             RemoteActionMessage::CancelResponse { invocation, result } => {
                 for asked in self.cancels.remove(&invocation).unwrap_or_default() {
@@ -510,6 +491,37 @@ impl Waiting {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Whoever waits for `receipt`'s invocation.
+    fn receipt(&mut self, receipt: &tilo_actions::remote::InvocationReceipt, give: &mut Vec<Give>) {
+        for asked in self
+            .receipts
+            .remove(&receipt.invocation)
+            .unwrap_or_default()
+        {
+            let answer = match &receipt.status {
+                ReceiptStatus::Rejected { error } => Err(error.clone()),
+                _ => Ok(receipt.clone()),
+            };
+            give.push(giving(asked, answer));
+        }
+    }
+
+    /// An update the device pushes unasked answers whoever waits for one; with nobody waiting,
+    /// the next observe asks again.
+    fn update(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        state: Option<&tilo_actions::remote::InvocationState>,
+        give: &mut Vec<Give>,
+    ) {
+        if let (Some(followed), Some(state)) = (self.follows.get_mut(&invocation), state) {
+            followed.state = state.clone();
+        }
+        for asked in self.updates.remove(&invocation).unwrap_or_default() {
+            give.push(giving(asked, state.cloned()));
         }
     }
 }

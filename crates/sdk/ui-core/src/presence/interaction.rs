@@ -206,6 +206,13 @@ impl PresenceCtx {
         }
         let (first_received_at, superseded, pulsed) =
             match self.interactions.get(&interaction.invocation) {
+                // What a write put in a text is named once it applied: it shows then, as a write
+                // named from its start does.
+                Some(entry) if writes_text(&interaction) && !writes_text(&entry.interaction) => (
+                    entry.first_received_at.min(now),
+                    entry.superseded,
+                    entry.pulsed_at,
+                ),
                 Some(entry) => (entry.first_received_at, entry.superseded, entry.pulsed_at),
                 None if !interaction.actor.is_person() => {
                     let (starts_at, pulsed) = self.pace_agent(&interaction, now);
@@ -2016,6 +2023,20 @@ mod tests {
                     .iter()
                     .any(|shown| shown.invocation == card.invocation)
             );
+
+            // A write that names its text only once it applied (an append to a note) shows then.
+            let mut landed = card.clone();
+            landed.sequence = 2;
+            landed.phase = InteractionPhase::Committed;
+            landed.anchor = write.anchor.clone();
+            presence.apply_interaction_at(landed, at).unwrap();
+            assert!(
+                presence
+                    .visible_interactions(at)
+                    .iter()
+                    .any(|shown| shown.invocation == card.invocation),
+                "the text it wrote is there once it landed"
+            );
         }
     }
 
@@ -2436,4 +2457,56 @@ pub(crate) fn written_in(
             .map_or(text.len(), |(byte, _)| byte)
     };
     Some((byte(start), byte(end)))
+}
+
+/// The characters `changes`, one action's patches, wrote into a rich text, as the anchor an
+/// invocation names text by: each block it wrote into, the field holding the text being the
+/// region. Each block's range spans what it inserted there, counted in characters. `None` when it
+/// wrote into no block. A plain text field is left out: where its item sits is the record's own
+/// layout, and a write to one names its field and item in its arguments.
+pub(crate) fn written_by(changes: &[automerge::Patch]) -> Option<tilo_actions::InteractionAnchor> {
+    use automerge::Prop;
+    let mut region: Option<&str> = None;
+    let mut ranges: Vec<tilo_actions::InteractionTextRange> = Vec::new();
+    for patch in changes {
+        let automerge::PatchAction::SpliceText { index, value, .. } = &patch.action else {
+            continue;
+        };
+        let keys: Vec<&str> = patch
+            .path
+            .iter()
+            .map(|(_, prop)| match prop {
+                Prop::Map(key) => key.as_str(),
+                Prop::Seq(_) => "",
+            })
+            .collect();
+        // A block's text is `…/<field>/blocks/<block>/text`.
+        let (Some(blocks), [.., block, tilo_doc::schema::BLOCK_TEXT]) = (
+            keys.iter()
+                .position(|key| *key == tilo_doc::schema::KEY_BLOCKS),
+            keys.as_slice(),
+        ) else {
+            continue;
+        };
+        let (field, block) = (blocks.checked_sub(1).map_or("body", |at| keys[at]), *block);
+        // One region: the first the action wrote in.
+        if block.is_empty() || field.is_empty() || *region.get_or_insert(field) != field {
+            continue;
+        }
+        let (start, end) = (
+            *index as u64,
+            (*index + value.make_string().chars().count()) as u64,
+        );
+        if let Some(range) = ranges.iter_mut().find(|range| range.block == block) {
+            range.start = range.start.min(start);
+            range.end = range.end.max(end);
+        } else if ranges.len() < tilo_actions::MAX_ANCHOR_ITEMS {
+            let block = block.to_owned();
+            ranges.push(tilo_actions::InteractionTextRange { block, start, end });
+        }
+    }
+    Some(tilo_actions::InteractionAnchor::Text {
+        region: region?.to_owned(),
+        ranges,
+    })
 }

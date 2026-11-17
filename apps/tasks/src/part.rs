@@ -28,6 +28,7 @@ use std::rc::Rc;
 
 use tilo_document::RichText;
 use tilo_reference::ResourceAt;
+use ui::tilo_resource::items::Ref;
 use ui::tilo_resource::{
     self, ActionCx, Bytes, Collection, Counter, Id, Model, NonBlank, Origin, Refusal, resource,
 };
@@ -238,7 +239,7 @@ impl IssuePart {
                 .map(|url| url.trim().to_owned())
                 .filter(|url| !url.is_empty())
                 .or_else(|| origin.as_ref().and_then(|origin| origin.url.clone())),
-            parent,
+            parent: parent.map(|parent| Id::from_raw(parent.as_str().to_owned())),
             author,
             author_name,
             created_ms: cx.now_ms(),
@@ -277,13 +278,17 @@ impl IssuePart {
 
     /// Move an issue under another one, or to the top level.
     #[action(item = issues, step = "move", writes = issues)]
-    pub fn move_under(&mut self, issue: &Id, parent: Option<Id>) -> Result<(), Refusal> {
-        if parent.as_ref() == Some(issue) {
+    pub fn move_under(&mut self, issue: &Id, parent: Option<Ref>) -> Result<(), Refusal> {
+        if parent
+            .as_ref()
+            .is_some_and(|parent| parent.as_str() == issue.as_str())
+        {
             return Err(Refusal::new(
                 "An issue cannot sit under itself or its own sub-issues",
             ));
         }
-        self.issue_mut(issue)?.parent = parent;
+        self.issue_mut(issue)?.parent =
+            parent.map(|parent| Id::from_raw(parent.as_str().to_owned()));
         Ok(())
     }
 
@@ -322,9 +327,8 @@ impl IssuePart {
     pub fn set_project(
         &mut self,
         issue: &Id,
-        #[param("The project or area it works towards, by its id; none without")] project: Option<
-            Id,
-        >,
+        #[param("The project or area it works towards, by its name or id; none without")]
+        project: Option<Ref>,
         #[param("The project as the issue keeps it: filled in where it is invoked")] goal: Option<
             Area,
         >,
@@ -404,7 +408,8 @@ impl IssuePart {
         &mut self,
         issue: &Id,
         status: Status,
-        #[param("The issue it goes before; the end of the column without")] before: Option<Id>,
+        #[param("The issue it goes before, by its name or id; the end of the column without")]
+        before: Option<Ref>,
         #[param("Its place in the tracker's order: filled in where it is invoked")] rank: Option<
             String,
         >,
@@ -824,35 +829,40 @@ pub fn prepare(
 ) -> Result<(), String> {
     use issue_part::{Create, MoveUnder, Place, SetProject};
     let held = Held(parts);
-    let check_parent = |parent: Option<&Id>| match parent {
-        Some(parent) if held.get(parent).is_none() => {
-            Err("The parent issue no longer exists".to_owned())
-        }
-        _ => Ok(()),
+    let check_parent = |parent: Option<&Ref>| -> Result<Option<Id>, String> {
+        parent.map(|parent| held.named(parent.as_str())).transpose()
     };
-    let goal = |project: Option<&Id>| -> Result<Option<Area>, String> {
+    let goal = |project: Option<&Ref>| -> Result<Option<Area>, String> {
         project
             .map(|project| {
-                tracker
-                    .area(project)
-                    .map(|named| crate::model::area_goal(project, &named.name))
-                    .ok_or_else(|| Tracker::no_area().to_string())
+                let area = tracker
+                    .area_named(project.as_str())
+                    .map_err(|refusal| refusal.to_string())?;
+                let named = tracker
+                    .area(&area)
+                    .ok_or_else(|| Tracker::no_area().to_string())?;
+                Ok(crate::model::area_goal(&area, &named.name))
             })
             .transpose()
     };
     match &mut action.operation {
         IssuePartAction::Create(Create { issue }) => {
-            check_parent(issue.parent.as_ref())?;
+            if let Some(parent) = issue.parent.as_mut()
+                && let Some(id) = check_parent(Some(parent))?
+            {
+                *parent = Ref::from(id);
+            }
             issue.goal = goal(issue.project.as_ref())?;
             issue.rank = Some(held.last_rank());
         }
         IssuePartAction::MoveUnder(MoveUnder { issue, parent }) => {
-            check_parent(parent.as_ref())?;
-            if let Some(parent) = parent
+            let resolved = check_parent(parent.as_ref())?;
+            if let Some(parent) = &resolved
                 && held.is_under(parent, issue)
             {
                 return Err("An issue cannot sit under itself or its own sub-issues".into());
             }
+            *parent = resolved.map(Ref::from);
         }
         IssuePartAction::SetProject(SetProject {
             project, goal: to, ..
@@ -865,14 +875,104 @@ pub fn prepare(
             rank,
             ..
         }) => {
-            *rank = Some(match before.as_ref().filter(|before| *before != issue) {
-                Some(before) => held.rank_before(before, issue),
-                None => held.last_rank(),
-            });
+            let named_before = check_parent(before.as_ref())?;
+            *rank = Some(
+                match named_before.as_ref().filter(|before| *before != issue) {
+                    Some(before) => held.rank_before(before, issue),
+                    None => held.last_rank(),
+                },
+            );
+            *before = named_before.map(Ref::from);
         }
         _ => {}
     }
     Ok(())
+}
+
+impl Held<'_> {
+    /// The issue `reference` names among the parts: its id, the number it
+    /// reads as (`#12`), an address it is published under, or its title.
+    /// A reference naming none is refused with the issues there are, so a
+    /// mistyped or renamed issue is never reported as one that went away.
+    fn named(&self, reference: &str) -> Result<Id, String> {
+        let asked = reference.trim();
+        if asked.is_empty() {
+            return Err("name the issue, by its id or its name".to_owned());
+        }
+        if let Some(number) = crate::model::search::number(asked)
+            && let Some((id, _)) = self.issue_number(number)
+        {
+            return Ok(id.clone());
+        }
+        let by_id = |candidate: &str| {
+            let id = Id::from_raw(candidate);
+            self.get(&id).map(|_| id)
+        };
+        if let Some(id) = by_id(asked) {
+            return Ok(id);
+        }
+        for candidate in reference_parts(asked) {
+            if let Some(id) = by_id(&candidate) {
+                return Ok(id);
+            }
+        }
+        let named: Vec<&Id> = self
+            .ranks()
+            .filter(|(_, issue)| issue.title.eq_ignore_ascii_case(asked))
+            .map(|(id, _)| id)
+            .collect();
+        match named.as_slice() {
+            [id] => return Ok((*id).clone()),
+            [_, ..] => {
+                let ids: Vec<&str> = named.iter().map(|id| id.as_str()).collect();
+                return Err(format!(
+                    "more than one issue is named {asked}; name it by its id: {}",
+                    ids.join(", ")
+                ));
+            }
+            [] => {}
+        }
+        let titles: Vec<&str> = self
+            .ranks()
+            .map(|(_, issue)| issue.title.as_str())
+            .take(12)
+            .collect();
+        let more = self.ranks().count().saturating_sub(titles.len());
+        let holds = if titles.is_empty() {
+            "none yet".to_owned()
+        } else if more > 0 {
+            format!("{} and {more} more", titles.join(", "))
+        } else {
+            titles.join(", ")
+        };
+        Err(format!("no issue named {asked}; issues: {holds}"))
+    }
+
+    /// The issue numbered `number`, if one is.
+    fn issue_number(&self, number: u64) -> Option<(&Id, &Issue)> {
+        self.0
+            .iter()
+            .rev()
+            .find_map(|(_, part)| part.issues.iter().find(|(_, issue)| issue.number == number))
+    }
+}
+
+/// The item an address names, as written: the last segment of an item
+/// resource id (`<kind>/<field>/<id>`) or of an item's stable address
+/// (`<kind>.<field>:<id>`).
+fn reference_parts(reference: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    if let Some(last) = reference.rsplit('/').next()
+        && last != reference
+    {
+        parts.push(last.to_owned());
+    }
+    if let Some(form) = tilo_resource::items::item_form_of(reference)
+        && let Some(last) = form.rsplit('/').next()
+    {
+        parts.push(last.to_owned());
+    }
+    parts
 }
 
 /// The part `action` changes, given the parts held, oldest first: the one

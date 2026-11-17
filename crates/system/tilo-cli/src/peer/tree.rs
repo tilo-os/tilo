@@ -199,6 +199,7 @@ impl TreeReplica {
             unread: BTreeSet::new(),
             unreadable: BTreeSet::new(),
             waiting: BTreeSet::new(),
+            held_until: None,
             dirty_since: None,
             kept,
             kept_heads: BTreeMap::new(),
@@ -246,6 +247,63 @@ struct Held {
     /// How many frames the host said it holds of the record when this session opened it;
     /// `None` until it answered. None at all: the workspace has no such record yet.
     answered: Option<DocumentAnswer>,
+    /// The host refused a write of this record: none goes out before then, and the next one
+    /// carries every change since what the host holds.
+    refused: Refusals,
+}
+
+/// How long writes of a record the host refused wait before the next goes out. A refusal says
+/// the host takes changes slower than this device made them, or not at all as they were:
+/// waiting coalesces what is made meanwhile into one write, and each refusal in a row doubles
+/// the wait, up to [`MOST_REFUSED_WAIT`]; a write that lands ends the run.
+#[derive(Debug, Default)]
+struct Refusals {
+    /// The wait the last refusal set; zero when the last write landed.
+    wait: Duration,
+    /// When the next write may go out.
+    until: Option<Instant>,
+}
+
+/// How long the host said to wait before it takes the next write, when it said.
+fn host_wait(refusal: &tilo_relay_protocol::refusal::Refusal) -> Option<Duration> {
+    use tilo_relay_protocol::refusal::Refusal;
+    match refusal {
+        Refusal::TooFast { wait_ms } | Refusal::TooMuchContent { wait_ms } => {
+            Some(Duration::from_millis(*wait_ms))
+        }
+        _ => None,
+    }
+}
+
+/// The first wait after a refusal.
+const FIRST_REFUSED_WAIT: Duration = Duration::from_secs(1);
+/// The longest wait after refusals in a row.
+const MOST_REFUSED_WAIT: Duration = Duration::from_secs(30);
+
+impl Refusals {
+    /// A write was refused at `now`: the next waits as long as the host said, or else twice
+    /// as long as the last. Whether it is the first of a run.
+    fn refused(&mut self, now: Instant, said: Option<Duration>) -> bool {
+        let first = self.wait.is_zero();
+        let doubled = if first {
+            FIRST_REFUSED_WAIT
+        } else {
+            self.wait.saturating_mul(2).min(MOST_REFUSED_WAIT)
+        };
+        self.wait = said.unwrap_or(doubled).max(FIRST_REFUSED_WAIT);
+        self.until = now.checked_add(self.wait);
+        first
+    }
+
+    /// A write of the record landed: the run of refusals is over.
+    const fn landed(&mut self) {
+        self.wait = Duration::ZERO;
+    }
+
+    /// When a write may go out, while that is after `now`.
+    fn held_until(&self, now: Instant) -> Option<Instant> {
+        self.until.filter(|until| *until > now)
+    }
 }
 
 /// The task that keeps one namespace and its records converged.
@@ -264,6 +322,8 @@ struct Sync {
     unreadable: BTreeSet<TreeChunk>,
     /// The records whose changes waited to go out, said once each.
     waiting: BTreeSet<TreeChunk>,
+    /// When the first record the host refused may write again, while one waits.
+    held_until: Option<Instant>,
     /// When the oldest change not yet handed to the session was made: what
     /// the next write waits [`BATCH`] after.
     dirty_since: Option<Instant>,
@@ -324,9 +384,14 @@ impl Sync {
             self.say_where_it_stands();
             // A change of this namespace's own goes out once its batch is due; the session's
             // news, and a look now and then, read what the records hold.
+            // A record the host refused waits its turn without the task looking every moment.
             let wait = self.dirty_since.map_or(LOOK_AGAIN, |since| {
+                let held = self.held_until.map_or(Duration::ZERO, |until| {
+                    until.saturating_duration_since(Instant::now())
+                });
                 BATCH
                     .saturating_sub(since.elapsed())
+                    .max(held)
                     .max(Duration::from_millis(5))
             });
             session_moved = false;
@@ -368,18 +433,31 @@ impl Sync {
                     self.open(chunk);
                 }
             }
+            // The host did not take a write: its changes are still this namespace's, and go out
+            // again, with all made since, once the record's wait is over. What the host holds
+            // is what was last merged from it.
             Event::Refused { route, refusal, .. }
-                if route.cluster_id == self.workspace.to_string()
-                    && route.app_id == FILES_APP
-                    && fs_protocol::tree::chunk_of_record(&route.record).is_some() =>
+                if route.cluster_id == self.workspace.to_string() && route.app_id == FILES_APP =>
             {
-                tracing::warn!(%refusal, workspace = %self.workspace, record = %route.record, "the workspace refused a change to its files");
+                if let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.record) {
+                    let held = self.records.entry(chunk).or_default();
+                    held.sent = held
+                        .merged
+                        .iter()
+                        .flatten()
+                        .map(|hash| automerge::ChangeHash(*hash))
+                        .collect();
+                    if held.refused.refused(Instant::now(), host_wait(&refusal)) {
+                        tracing::warn!(%refusal, workspace = %self.workspace, record = %route.record, "the workspace refused a change to its files; it goes again after a wait");
+                    }
+                }
             }
             Event::Landed { route, .. }
                 if route.cluster_id == self.workspace.to_string() && route.app_id == FILES_APP =>
             {
                 if let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.record) {
                     self.unread.insert(chunk);
+                    self.records.entry(chunk).or_default().refused.landed();
                 }
             }
             Event::DocumentContent { ws, frame, .. } if ws == self.workspace => {
@@ -553,9 +631,20 @@ impl Sync {
         let engine = link.engine();
         let workspace = self.workspace.to_string();
         let mut waiting = false;
+        let now = Instant::now();
+        self.held_until = None;
         for chunk in dirty {
             if !self.records.contains_key(&chunk) {
                 self.open(chunk);
+            }
+            if let Some(until) = self
+                .records
+                .get(&chunk)
+                .and_then(|held| held.refused.held_until(now))
+            {
+                self.held_until = Some(self.held_until.map_or(until, |held| held.min(until)));
+                waiting = true;
+                continue;
             }
             let route = route(self.workspace, chunk);
             let founded = self.records.get(&chunk).is_some_and(|held| held.founded);
@@ -741,6 +830,57 @@ fn holds_none(answer: Option<DocumentAnswer>) -> bool {
 #[cfg(test)]
 mod tests {
     use tilo_relay_protocol::DocumentAnswer;
+
+    #[test]
+    fn a_refused_record_waits_longer_each_time_until_a_write_lands() {
+        use super::{FIRST_REFUSED_WAIT, MOST_REFUSED_WAIT, Refusals};
+        let start = std::time::Instant::now();
+        let mut refusals = Refusals::default();
+        assert_eq!(
+            refusals.held_until(start),
+            None,
+            "nothing refused: writes go out"
+        );
+        assert!(
+            refusals.refused(start, None),
+            "the first refusal of a run is said"
+        );
+        assert_eq!(refusals.held_until(start), Some(start + FIRST_REFUSED_WAIT));
+        assert!(
+            !refusals.refused(start, None),
+            "the rest of the run is not said again"
+        );
+        assert_eq!(
+            refusals.held_until(start),
+            Some(start + FIRST_REFUSED_WAIT * 2)
+        );
+        for _ in 0..10 {
+            refusals.refused(start, None);
+        }
+        assert_eq!(refusals.held_until(start), Some(start + MOST_REFUSED_WAIT));
+        assert_eq!(
+            refusals.held_until(start + MOST_REFUSED_WAIT),
+            None,
+            "the wait ends"
+        );
+        refusals.landed();
+        assert!(
+            refusals.refused(start, None),
+            "a write that landed ends the run"
+        );
+        assert_eq!(refusals.held_until(start), Some(start + FIRST_REFUSED_WAIT));
+        let said = std::time::Duration::from_secs(7);
+        refusals.refused(start, Some(said));
+        assert_eq!(
+            refusals.held_until(start),
+            Some(start + said),
+            "a wait the host said is the wait"
+        );
+        assert_eq!(
+            super::host_wait(&tilo_relay_protocol::refusal::Refusal::TooFast { wait_ms: 7000 }),
+            Some(said)
+        );
+    }
 
     #[test]
     fn a_tree_the_host_sent_but_that_does_not_read_here_is_not_founded_again() {

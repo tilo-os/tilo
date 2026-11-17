@@ -313,6 +313,39 @@ fn an_agents_append_is_marked_as_the_agents() {
     );
 }
 
+/// What an agent appends is named as the text it wrote, so the person's view draws exactly
+/// those characters in the agent's colour with its caret at their end.
+#[test]
+fn an_agents_append_answers_the_characters_it_wrote() {
+    let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
+    let page = made_by(&mut app, "helper", "Plan");
+    let output = app
+        .call_by(
+            agent("helper"),
+            "notes.notebook",
+            "append-to-note",
+            serde_json::json!({ "title": "Plan", "markdown": "The agent added this line." }),
+        )
+        .unwrap();
+    app.settle();
+    let added = app.read_document(|doc| crate::read::page_block_snapshots(doc, page));
+    let (block, text) = added.last().expect("the appended block");
+    assert_eq!(text, "The agent added this line.");
+    assert_eq!(
+        output.wrote(),
+        Some(ui::tilo_actions::InteractionAnchor::Text {
+            region: "body".into(),
+            ranges: vec![ui::tilo_actions::InteractionTextRange {
+                block: block.clone(),
+                start: 0,
+                end: text.chars().count() as u64,
+            }],
+        }),
+        "the answer names the line it added: {:?}",
+        output.value
+    );
+}
+
 #[test]
 fn write_note_makes_the_note_read_as_the_markdown_keeping_what_reads_the_same() {
     let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();

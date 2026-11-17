@@ -195,7 +195,7 @@ fn list(rows: Vec<Row>, ids: Rc<Vec<Id>>, tasks: &Tasks, nav: &Nav, window: &Win
                 };
                 moving.submit(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
                     issue: source,
-                    parent,
+                    parent: parent.map(ui::tilo_resource::items::Ref::from),
                 }));
                 // The tracker answers with the moved issue; the list is
                 // built again from it.
@@ -306,7 +306,7 @@ fn change_status(tasks: &Tasks, window: &Window, issue: Id, status: Status) {
     window.submit(IssuePart::PLACE.with(issue_part::Place {
         issue,
         status,
-        before,
+        before: before.map(ui::tilo_resource::items::Ref::from),
         rank: None,
     }));
 }

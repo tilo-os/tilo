@@ -2778,7 +2778,18 @@ pub(crate) fn execute_resource_operation(
                     before.as_ref().and_then(|before| {
                         let after = doc.get_heads();
                         let changes = doc.diff(before, &after);
-                        crate::resources::document_action_result(&*widget, doc, address, &changes)
+                        let value = crate::resources::document_action_result(
+                            &*widget, doc, address, &changes,
+                        );
+                        // An answer names the text it wrote too: whoever's view shows that text
+                        // draws those characters as the writer's, with the writer's caret at
+                        // their end.
+                        match crate::presence::written_by(&changes) {
+                            Some(wrote) if declared => {
+                                tilo_actions::ActionOutput::noting_wrote(value, &wrote)
+                            }
+                            _ => value,
+                        }
                     })
                 })
                 .and_then(|value| match value {

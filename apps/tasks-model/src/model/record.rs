@@ -20,6 +20,24 @@ pub struct Tracker {
     pub areas: Collection<TrackerArea>,
 }
 
+/// The item an address names, as written: the last segment of an item
+/// resource id (`<kind>/<field>/<id>`) or of an item's stable address
+/// (`<kind>.<field>:<id>`).
+fn area_parts(reference: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    if let Some(last) = reference.rsplit('/').next()
+        && last != reference
+    {
+        parts.push(last.to_owned());
+    }
+    if let Some(form) = tilo_resource::items::item_form_of(reference)
+        && let Some(last) = form.rsplit('/').next()
+    {
+        parts.push(last.to_owned());
+    }
+    parts
+}
+
 impl Tracker {
     /// The refusal of a project the tracker does not have.
     #[must_use]
@@ -35,6 +53,67 @@ impl Tracker {
     #[must_use]
     pub fn area(&self, area: &Id) -> Option<&TrackerArea> {
         self.areas.get(area)
+    }
+
+    /// The project or area `reference` names: its id, an address it is
+    /// published under, or the name it is read by.
+    ///
+    /// # Errors
+    /// Refuses a reference naming none of them, saying which there are, so a
+    /// name typed wrong is never reported as a project that went away.
+    pub fn area_named(&self, reference: &str) -> Result<Id, Refusal> {
+        let asked = reference.trim();
+        if asked.is_empty() {
+            return Err(Refusal::new(
+                "name the project or area, by its id or its name",
+            ));
+        }
+        let by_id = |candidate: &str| {
+            let id = Id::from_raw(candidate);
+            self.areas.get(&id).map(|_| id)
+        };
+        if let Some(id) = by_id(asked) {
+            return Ok(id);
+        }
+        for candidate in area_parts(asked) {
+            if let Some(id) = by_id(&candidate) {
+                return Ok(id);
+            }
+        }
+        let named: Vec<&Id> = self
+            .areas
+            .iter()
+            .filter(|(_, area)| area.name.eq_ignore_ascii_case(asked))
+            .map(|(id, _)| id)
+            .collect();
+        match named.as_slice() {
+            [id] => return Ok((*id).clone()),
+            [_, ..] => {
+                let ids: Vec<&str> = named.iter().map(|id| id.as_str()).collect();
+                return Err(Refusal::new(format!(
+                    "more than one project or area is named {asked}; name it by its id: {}",
+                    ids.join(", ")
+                )));
+            }
+            [] => {}
+        }
+        let shown: Vec<&str> = self
+            .areas
+            .iter()
+            .map(|(_, area)| area.name.as_str())
+            .take(12)
+            .collect();
+        let more = self.areas.len().saturating_sub(shown.len());
+        let holds = if shown.is_empty() {
+            "none yet".to_owned()
+        } else if more > 0 {
+            format!("{} and {more} more", shown.join(", "))
+        } else {
+            shown.join(", ")
+        };
+        Err(Refusal::new(format!(
+            "no project or area named {asked}; projects and areas: {holds}"
+        )))
     }
 
     /// What the record holds: the projects and areas.

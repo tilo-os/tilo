@@ -79,9 +79,9 @@ impl Priority {
 pub struct NewIssue {
     /// What the issue is about, in a line
     pub title: NonBlank,
-    /// The issue it is a sub-issue of
+    /// The issue it is a sub-issue of, by its name or id
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<Id>,
+    pub parent: Option<tilo_resource::items::Ref>,
     /// Its description, in markdown
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
@@ -95,9 +95,9 @@ pub struct NewIssue {
     /// The page it is read at elsewhere, when it was written from one
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// The project or area it works towards, by its id
+    /// The project or area it works towards, by its name or id
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project: Option<Id>,
+    pub project: Option<tilo_resource::items::Ref>,
     /// How urgent it is: none, urgent, high, medium or low
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<Priority>,

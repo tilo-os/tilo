@@ -223,6 +223,114 @@ pub fn item_form_of(address: &str) -> Option<String> {
     tilo_actions::item_form_of(address)
 }
 
+/// A reference to one item of a collection, as an action that names an item
+/// of its own record takes it.
+///
+/// It is written as the item's id, an address the item is published under
+/// (`<kind>/<field>/<id>`, `<kind>.<field>:<id>`), or the label its
+/// collection publishes it under — what a person or an agent knows the item
+/// by. A resource reference object another surface hands out reads as the
+/// item it names (its `id`, or its `label` when it carries no id), so a
+/// caller may hand back what a listing or a search hit gave it.
+///
+/// What the text names is resolved where the action runs, which refuses a
+/// reference to no item of the collection with the items there are, so a
+/// mistyped or renamed item is never reported as one that went away.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Ref(String);
+
+impl Ref {
+    /// A reference written `text`.
+    #[must_use]
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    /// The text as it was written.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<Id> for Ref {
+    fn from(id: Id) -> Self {
+        Self(id.as_str().to_owned())
+    }
+}
+
+impl From<&Id> for Ref {
+    fn from(id: &Id) -> Self {
+        Self(id.as_str().to_owned())
+    }
+}
+
+impl From<String> for Ref {
+    fn from(text: String) -> Self {
+        Self(text)
+    }
+}
+
+impl From<&str> for Ref {
+    fn from(text: &str) -> Self {
+        Self(text.to_owned())
+    }
+}
+
+impl serde::Serialize for Ref {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+/// The fields of a reference object that name the item, in the order they
+/// are read: the address's own id, then the label it reads by.
+const REFERENCE_FIELDS: [&str; 2] = ["id", "label"];
+
+impl<'de> serde::Deserialize<'de> for Ref {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        struct Reading;
+        impl<'de> serde::de::Visitor<'de> for Reading {
+            type Value = Ref;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an item's id or name, or a reference to it")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<Ref, E> {
+                Ok(Ref(text.to_owned()))
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<Ref, M::Error> {
+                let mut named: Option<String> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    let value = map.next_value::<Option<String>>()?;
+                    if named.is_none()
+                        && REFERENCE_FIELDS.contains(&key.as_str())
+                        && let Some(value) = value.filter(|value| !value.trim().is_empty())
+                    {
+                        named = Some(value);
+                    }
+                }
+                named.map(Ref).ok_or_else(|| {
+                    M::Error::custom("a reference names its item by `id` or by `label`")
+                })
+            }
+        }
+        deserializer.deserialize_any(Reading)
+    }
+}
+
+impl crate::JsonSchema for Ref {
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({"type": "string", "minLength": 1})
+    }
+    fn field_type(_: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Text
+    }
+}
+
 /// The item an item resource id names, if it is one of `R`'s.
 pub fn item_of_resource<R: Resource>(resource_id: &str) -> Option<(&str, Id)> {
     item_of_resource_in(R::KIND, resource_id)
@@ -595,6 +703,26 @@ pub const fn item_target(collections: &[&str], param: &str, named: &str) -> bool
         return contains(collections, named);
     }
     contains(collections, param) || collections.len() == 1
+}
+
+/// The collection field an item parameter named `param` acts on, among
+/// `collections` (a record's [`ITEM_FIELDS`](crate::Fields::ITEM_FIELDS)):
+/// the field `#[action(item = field)]` names, else the one the parameter is
+/// named after, else the record's only collection — what
+/// [`item_target`] decides holds, named.
+#[doc(hidden)]
+#[must_use]
+pub fn target_field<'a>(collections: &[&'a str], param: &str, named: &str) -> Option<&'a str> {
+    if !named.is_empty() {
+        return collections.iter().copied().find(|field| *field == named);
+    }
+    if let Some(field) = collections.iter().copied().find(|field| *field == param) {
+        return Some(field);
+    }
+    match collections {
+        [only] => Some(only),
+        _ => None,
+    }
 }
 
 /// Whether `#[action(item = field)]` names one of `outboxes`: the verb acts
