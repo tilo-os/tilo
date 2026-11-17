@@ -12,6 +12,7 @@ use automerge::transaction::Transactable;
 use tilo_doc::model::Region;
 use ui::gesture::Granularity;
 use ui::widget::Widget;
+use ui::widget::context_menu::EditingCommand;
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -998,17 +999,12 @@ impl Editor {
             "u" => self.dispatch_toggle_mark(state, "underline"),
             "." | ">" => self.dispatch_exclusive_mark(state, "super", "sub"),
             "," | "<" => self.dispatch_exclusive_mark(state, "sub", "super"),
-            "c" => {
-                self.clipboard_copy(state);
-            }
-            "x" => {
-                if self.clipboard_copy(state) {
-                    self.insert_text_via_action(state, "");
-                }
-            }
-            "v" if shift => self.clipboard_paste_plain(state),
-            "v" => self.clipboard_paste(state),
-            "a" => self.select_all_via_primitive(state),
+            // The clipboard and select all: what the context menu's rows run.
+            "c" => self.run_editing_command(EditingCommand::Copy, state),
+            "x" => self.run_editing_command(EditingCommand::Cut, state),
+            "v" if shift => self.run_editing_command(EditingCommand::PastePlain, state),
+            "v" => self.run_editing_command(EditingCommand::Paste, state),
+            "a" => self.run_editing_command(EditingCommand::SelectAll, state),
             "1" => self.dispatch_paragraph_style(state, "heading", Some(1), None),
             "2" => self.dispatch_paragraph_style(state, "heading", Some(2), None),
             "3" => self.dispatch_paragraph_style(state, "heading", Some(3), None),
@@ -1114,6 +1110,14 @@ impl Editor {
             return;
         }
         if self.route_styles_page_key(event, ctx) {
+            return;
+        }
+        // The Menu key and Shift+F10 open the menu a secondary click opens, at the caret.
+        if self.lifecycle.focused
+            && ui::widget::context_menu::opens_from_keyboard(event, ctx.modifiers.state())
+        {
+            self.open_context_menu_at_caret(&ctx.state);
+            *ctx.handled = true;
             return;
         }
 

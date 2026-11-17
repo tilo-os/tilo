@@ -4001,8 +4001,14 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
         assert_eq!(wp.inner.selection_text(&state.doc), selected);
         assert_eq!(wp.inner.caret, caret);
         assert_eq!(wp.inner.selection_anchor, anchor);
-        assert!(wp.context_actions.contains(&Some(CtxAction::Copy)));
-        assert!(wp.context_actions.contains(&Some(CtxAction::Cut)));
+        assert!(
+            wp.context_actions
+                .contains(&Some(CtxAction::Edit(EditingCommand::Copy)))
+        );
+        assert!(
+            wp.context_actions
+                .contains(&Some(CtxAction::Edit(EditingCommand::Cut)))
+        );
     }
 
     {
@@ -4283,7 +4289,127 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
             .iter()
             .position(|i| i.label() == Some("Copy"))
             .unwrap();
-        assert_eq!(wp.context_actions[copy_idx], Some(CtxAction::Copy));
+        assert_eq!(
+            wp.context_actions[copy_idx],
+            Some(CtxAction::Edit(EditingCommand::Copy))
+        );
+    }
+}
+
+/// The frame as a person sees it once it has settled.
+fn settled_picture(framed: &mut Framed<WordProcessorWidget>) -> Vec<u8> {
+    let harness = Framed::harness_mut(framed);
+    assert!(
+        harness.settle_for_capture(tilo_test_env::hang_bound()),
+        "the frame settles"
+    );
+    harness.render_rgba()
+}
+
+/// A secondary click at `at`, as the window's host sends one: the pointer there, the right
+/// button down and up.
+fn secondary_click(framed: &mut Framed<WordProcessorWidget>, at: Point) {
+    let harness = Framed::harness_mut(framed);
+    harness.send_host_event(&ui::synthetic_input::cursor_moved(at.x, at.y));
+    for pressed in [ElementState::Pressed, ElementState::Released] {
+        harness.send_host_event(&ui::synthetic_input::mouse_input(
+            pressed,
+            winit::event::MouseButton::Right,
+        ));
+    }
+}
+
+/// A secondary click on the words, sent as the window's host sends one, opens the text's menu
+/// and paints it: the rows every text's menu has, each running what its shortcut runs. The Menu
+/// key and Shift+F10 open the same menu at the caret, about the selection as it stands.
+#[test]
+fn a_secondary_click_and_the_menu_keys_open_the_editing_menu_and_paint_it() {
+    const W: u32 = 1000;
+    const H: u32 = 700;
+    let rows = || EditingCommand::ALL.map(|command| Some(CtxAction::Edit(command)));
+
+    crate::i18n::set_locale("en-US");
+    let (mut state, mut wp) = bound();
+    wp.model_mut()
+        .insert_str(&mut edits(&mut state.doc), "Hello world");
+    let mut framed = mount(state, wp, W, H);
+    let (wp, _) = pipeline_draw(&mut framed, W, H);
+    let at = wp.content_transform(Affine::IDENTITY) * first_block_start_point(wp);
+    let still = settled_picture(&mut framed);
+    assert_eq!(
+        still,
+        settled_picture(&mut framed),
+        "a window nobody touches draws the same frame twice"
+    );
+
+    secondary_click(&mut framed, at);
+    let open = settled_picture(&mut framed);
+    let (wp, state) = split(&mut framed);
+    assert!(wp.context_menu.is_open(), "the press opened the menu");
+    assert_eq!(
+        wp.inner.selection_text(&state.doc),
+        "Hello",
+        "the menu is about the word under the pointer"
+    );
+    let labels = [
+        "Cut",
+        "Copy",
+        "Paste",
+        "Paste without formatting",
+        "Select all",
+    ];
+    assert_eq!(wp.context_menu_labels(), labels);
+    assert_eq!(wp.context_actions, rows());
+
+    // Escape puts the menu away and leaves the selection: the two frames differ by the menu.
+    Framed::harness_mut(&mut framed).key("Escape");
+    assert!(!editor(&mut framed).context_menu.is_open());
+    let closed = settled_picture(&mut framed);
+    assert_ne!(
+        open, closed,
+        "the open menu is painted over the page, not only open"
+    );
+    assert_ne!(closed, still, "the word the press chose stays selected");
+
+    // A row is chosen with the pointer where it stands once the menu has arrived, and runs
+    // what its shortcut runs.
+    secondary_click(&mut framed, at);
+    settled_picture(&mut framed);
+    let select_all = editor(&mut framed)
+        .context_menu
+        .item_rect(4)
+        .expect("the rows are laid out where they are painted")
+        .center();
+    Framed::harness_mut(&mut framed).click_at(select_all.x, select_all.y);
+    let (wp, state) = pipeline_draw(&mut framed, W, H);
+    assert!(!wp.context_menu.is_open(), "choosing a row closes the menu");
+    assert_eq!(
+        wp.inner.selection_text(&state.doc),
+        "Hello world",
+        "Select all selects what Ctrl+A selects"
+    );
+
+    // The keyboard opens the same menu, and changes nothing of what is selected.
+    for keys in ["the Menu key", "Shift+F10"] {
+        let harness = Framed::harness_mut(&mut framed);
+        if keys == "Shift+F10" {
+            harness.key(keys);
+        } else {
+            harness.send_host_event(&ui::synthetic_input::named_key(NamedKey::ContextMenu));
+        }
+        let (wp, state) = pipeline_draw(&mut framed, W, H);
+        assert!(wp.context_menu.is_open(), "{keys} opens the menu");
+        assert_eq!(wp.context_actions, rows(), "{keys}");
+        assert_eq!(
+            wp.inner.selection_text(&state.doc),
+            "Hello world",
+            "{keys} keeps the selection"
+        );
+        Framed::harness_mut(&mut framed).key("Escape");
+        assert!(
+            !editor(&mut framed).context_menu.is_open(),
+            "Escape closes the menu {keys} opened"
+        );
     }
 }
 

@@ -24,6 +24,9 @@ use super::{
     block_presence_key,
 };
 
+/// The prefix of the open context menu's rows among the editor's action targets.
+const CONTEXT_MENU_TARGET: &str = "word-processor.context-menu:";
+
 impl Editor {
     pub(crate) fn primary_vertical_scroll(&self) -> ui::widget::PrimaryScrollRegion {
         if self.styles_panel_full_window() {
@@ -147,7 +150,10 @@ impl Editor {
     }
 
     pub(crate) fn needs_animation_frame(&self) -> bool {
-        self.outline_drawer.is_animating() || self.inspector_drawer.is_animating()
+        self.outline_drawer.is_animating()
+            || self.inspector_drawer.is_animating()
+            || Widget::needs_animation_frame(&self.context_menu)
+            || self.style_menu.needs_animation_frame()
     }
 
     pub(crate) fn modal_capture(&self) -> Option<Rect> {
@@ -296,8 +302,9 @@ impl Editor {
                 menu.set_viewport(Some(viewport));
             }
         }
+        // A menu paints in the overlay pass and nowhere else: its in-flow draw paints nothing.
         if self.context_menu.is_open() {
-            ui::widget::DrawChild::draw_child(
+            Widget::draw_overlay(
                 &mut self.context_menu,
                 scene,
                 transform,
@@ -353,7 +360,32 @@ impl Editor {
         if !self.styles_panel_full_window() {
             tree.node = tree.node.with_name(t("a11y-document-editor"));
         }
-        tree.into_access_node()
+        let mut node = tree.into_access_node();
+        // The open menu's rows are the window's while it is open, for assistive technology and
+        // agents as for the pointer.
+        node.children.extend(self.context_menu_access_node());
+        node
+    }
+
+    /// The open context menu's node of the accessibility tree: its rows, each an action an
+    /// assistive technology or an agent runs as a click does.
+    fn context_menu_access_node(&self) -> Option<ui::a11y::AccessNode> {
+        fn namespace(node: &mut ui::a11y::AccessNode) {
+            if let Some(target) = node.action_target.take() {
+                node.action_target = Some(format!("{CONTEXT_MENU_TARGET}{target}"));
+            }
+            for child in &mut node.children {
+                namespace(child);
+            }
+        }
+        if !self.context_menu.is_open() {
+            return None;
+        }
+        let mut menu = Widget::accessibility(&self.context_menu)?;
+        namespace(&mut menu);
+        menu.semantic_key = Some("word-processor.context-menu".into());
+        menu.bounds = Widget::modal_capture(&self.context_menu).map(Into::into);
+        Some(menu)
     }
 
     pub(crate) fn perform_semantic_action(
@@ -366,6 +398,19 @@ impl Editor {
         fn published(node: &ui::a11y::AccessNode, target: &str) -> bool {
             node.action_target.as_deref() == Some(target)
                 || node.children.iter().any(|child| published(child, target))
+        }
+        // A row of the open menu is chosen as a click chooses it: the menu reports the choice
+        // and the row's command runs here.
+        if let Some(row) = target.strip_prefix(CONTEXT_MENU_TARGET) {
+            let handled =
+                Widget::perform_semantic_action(&mut self.context_menu, row, action, state, path);
+            if let Some(index) = self.context_menu.take_selection() {
+                self.dispatch_context_action(index, state);
+            }
+            if handled {
+                self.lifecycle.dirty = true;
+            }
+            return handled;
         }
         if !published(&self.accessibility(), target) {
             return false;
