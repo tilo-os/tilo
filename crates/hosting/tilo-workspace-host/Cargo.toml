@@ -16,7 +16,7 @@ path = "src/lib.rs"
 test-support = ["tilo-relay-store/test-support"]
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages.
-agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:ui", "dep:chat"]
+agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:ui", "dep:chat", "dep:tilo-model-gateway"]
 # Pages reach the host: it follows the records its members write sealed and
 # opens them with the channels' keys it holds as a key holder.
 web = []
@@ -67,6 +67,9 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-relay-store = { path = "../tilo-relay-store" }
 sha2.workspace = true
 tilo-agent-session = { path = "../../agent/agent-session", optional = true }
+# A person's own provider, asked through the gateway's transport with the key
+# their vault keeps: the wires, the stream reading and the price table are its.
+tilo-model-gateway = { path = "../../agent/model-gateway", default-features = false, features = ["host-backend"], optional = true }
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 chat = { path = "../../../apps/chat", optional = true, default-features = false }
 tilo-automation = { path = "../../collab/automation" }
@@ -103,7 +106,8 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-sup
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
-# The model provider a person's key is shown to, on loopback.
+# The provider servers a person's key is shown to and their model is asked at
+# in tests, on loopback, each speaking its provider's wire.
 test-http = { path = "../../dev/test-http" }
 # `iroh-relay`: the loopback relay a fixture host's endpoint takes as its home, so a
 # host opens without waiting out the probe of an endpoint that reaches none.

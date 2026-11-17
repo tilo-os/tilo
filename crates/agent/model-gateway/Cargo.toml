@@ -52,7 +52,7 @@ server = [
     "dep:rustix",
 ]
 # Trusted host CLIs share the server's provider transport and credential policy.
-host-backend = ["server"]
+host-backend = ["server", "tilo-net/proxy-host"]
 # Desktop gateway only: load installed segmentation models in this process.
 local-models = ["server", "dep:tilo-segment", "dep:local-model-service", "dep:image"]
 

@@ -204,6 +204,217 @@ async fn tracker(
     tasks::part::IssuePart::read(&automerge::AutoCommit::load(&bytes).unwrap()).unwrap()
 }
 
+/// A host's own model that must never be asked: a turn that reaches it failed the test.
+fn never_asked(asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {
+    looks_then_answers(1, asked)
+}
+
+/// The keeper linked a model of their own: the agent the host runs for them works with it, asked
+/// with their own key, and the host's model is never asked. What it cost is counted on the agent's
+/// record as the provider charged it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
+    use tilo_relay::workspaces::person_model::ProviderProtocol;
+    use tilo_relay::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let (relay, actions) = crate::harness::hosted::serving_records_with_actions(
+        &root,
+        &host,
+        state.path(),
+        crate::common::catalogue,
+    )
+    .await;
+    let workspaces = relay.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let page = Browser::open_at(&relay, &browser, &host, &workspace).await;
+    let keeper = root.verifying_key().to_bytes();
+    let person = hex::encode(keeper);
+    let agents_record = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
+    make_agent(&page, &workspaces, &workspace, &person, None).await;
+    let tasks_record =
+        file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
+
+    // The keeper's own provider, as their settings and their vault keep it on this host.
+    let theirs = ScriptedProvider::answering([
+        Reply::tool_call("call-1", "tilo_ls", serde_json::json!({})).costing(700),
+        Reply::text("I looked through the workspace: the plan is ready for you.").costing(300),
+    ]);
+    workspaces.answer_models_with(theirs.clone());
+    workspaces
+        .link_model_for(
+            &keeper,
+            &Linking {
+                name: "Google",
+                protocol: ProviderProtocol::OpenAiCompatible,
+                endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
+                key: Some("sk-the-keepers-own"),
+                models: &["gemini-main"],
+            },
+            true,
+        )
+        .unwrap();
+
+    let hosts = Arc::new(Mutex::new(Vec::new()));
+    let agents = HostAgents::new(
+        workspaces.clone(),
+        actions.clone(),
+        Some(never_asked(Arc::clone(&hosts))),
+    );
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        agents.answer(&workspace, &turns[0]),
+    )
+    .await
+    .expect("the turn ends")
+    .unwrap();
+
+    assert!(
+        hosts.lock().unwrap().is_empty(),
+        "the host's own model is not asked for a keeper who linked theirs"
+    );
+    let asked = theirs.asked();
+    assert_eq!(asked.len(), 2, "one call to look, one to answer");
+    for call in &asked {
+        assert_eq!(call.model, "gemini-main");
+        assert_eq!(call.key.as_deref(), Some("sk-the-keepers-own"));
+    }
+    assert!(
+        asked[0]
+            .request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "tilo_ls"),
+        "it acts through the agent tools"
+    );
+    let answered = tracker(&workspaces, &workspace, &tasks_record).await;
+    let said: Vec<String> = answered
+        .issues
+        .values()
+        .flat_map(|issue| issue.comments.values().cloned())
+        .filter(|message| message.author == Some(ui::tilo_resource::MemberId::agent(SCOUT)))
+        .map(|message| message.text)
+        .collect();
+    assert!(
+        said.iter().any(|text| text.contains("the plan is ready")),
+        "{said:?}"
+    );
+
+    // What the keeper's provider charged is what the agent's day counts.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let bytes = workspaces
+            .resource_document(&workspace, CHAT, &agents_record)
+            .await
+            .unwrap()
+            .unwrap();
+        let record = WorkspaceAgents::read(&automerge::AutoCommit::load(&bytes).unwrap()).unwrap();
+        let scout = record
+            .agents
+            .iter()
+            .find(|agent| agent.id.0 == SCOUT)
+            .unwrap();
+        if scout
+            .spent
+            .as_ref()
+            .is_some_and(|spent| spent.cost_micros == 1_000)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "its spend is counted: {:?}",
+            scout.spent
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A keeper who linked a provider is never answered by another model: one whose key is missing is
+/// told so, where they asked, and the host's own model stays unasked. A keeper who linked nothing
+/// on a host that runs no model is told what to link.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked() {
+    use tilo_relay::workspaces::person_model::ProviderProtocol;
+    use tilo_relay::workspaces::person_model::scripted::Linking;
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let (relay, actions) = crate::harness::hosted::serving_records_with_actions(
+        &root,
+        &host,
+        state.path(),
+        crate::common::catalogue,
+    )
+    .await;
+    let workspaces = relay.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let page = Browser::open_at(&relay, &browser, &host, &workspace).await;
+    let keeper = root.verifying_key().to_bytes();
+    let person = hex::encode(keeper);
+    make_agent(&page, &workspaces, &workspace, &person, None).await;
+    let tasks_record =
+        file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
+    let said = |answered: tasks::part::IssuePart| -> Vec<String> {
+        answered
+            .issues
+            .values()
+            .flat_map(|issue| issue.comments.values().cloned())
+            .filter(|message| message.author == Some(ui::tilo_resource::MemberId::agent(SCOUT)))
+            .map(|message| message.text)
+            .collect()
+    };
+
+    // Nothing linked, and a host that runs no model: the person is told what to link.
+    let agents = HostAgents::new(workspaces.clone(), actions.clone(), None);
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    agents.answer(&workspace, &turns[0]).await.unwrap();
+    let told = said(tracker(&workspaces, &workspace, &tasks_record).await);
+    assert!(
+        told.iter()
+            .any(|text| text.contains("No model is linked for this kind of work")),
+        "{told:?}"
+    );
+
+    // A provider linked without its key: its keeper is told which key is missing, and the host's
+    // own model does not answer in its place.
+    workspaces
+        .link_model_for(
+            &keeper,
+            &Linking {
+                name: "Anthropic",
+                protocol: ProviderProtocol::Anthropic,
+                endpoint: "https://api.anthropic.com",
+                key: None,
+                models: &["claude-main"],
+            },
+            true,
+        )
+        .unwrap();
+    let hosts = Arc::new(Mutex::new(Vec::new()));
+    let agents = HostAgents::new(
+        workspaces.clone(),
+        actions,
+        Some(never_asked(Arc::clone(&hosts))),
+    );
+    agents.answer(&workspace, &turns[0]).await.unwrap();
+    assert!(hosts.lock().unwrap().is_empty(), "no other model is asked");
+    let told = said(tracker(&workspaces, &workspace, &tasks_record).await);
+    assert!(
+        told.iter()
+            .any(|text| text.contains("Anthropic has no API key here yet")),
+        "{told:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);

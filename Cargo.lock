@@ -23350,6 +23350,7 @@ dependencies = [
  "tilo-history",
  "tilo-lock",
  "tilo-mail-session",
+ "tilo-model-gateway",
  "tilo-net",
  "tilo-peer-state",
  "tilo-relay-client",
