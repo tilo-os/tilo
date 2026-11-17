@@ -784,9 +784,9 @@ impl Client {
             }
             Transport::Session(socket) => {
                 let reached = || format!("reaching the Tilo desktop at {}", socket.display());
-                let stream = tokio::net::UnixStream::connect(socket)
-                    .await
-                    .with_context(reached)?;
+                let stream = tilo_files::native::socket::connect(socket).with_context(reached)?;
+                stream.set_nonblocking(true).with_context(reached)?;
+                let stream = tokio::net::UnixStream::from_std(stream).with_context(reached)?;
                 let (mut sender, connection) =
                     hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
                         .await

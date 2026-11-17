@@ -188,7 +188,7 @@ impl Running {
             .runtime
             .join(tilo_paths::login::SESSION_DIR)
             .join(tilo_paths::login::API_SOCKET_FILE);
-        if std::os::unix::net::UnixStream::connect(&socket).is_err() {
+        if tilo_files::native::socket::connect(&socket).is_err() {
             return Err(format!(
                 "the session {} does not answer yet; try again once it shows its desktop",
                 session.state.display()
