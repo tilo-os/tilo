@@ -51,6 +51,7 @@ __all__ = [
     "Span",
     "SpanUnit",
     "Submission",
+    "Summary",
     "TextKind",
     "Triage",
     "TriageUpdate",
@@ -110,6 +111,7 @@ __all__ = [
     "DecideReportsArgs",
     "OverturnDecisionArgs",
     "MarkReadArgs",
+    "KeepSummaryArgs",
     "SubmitFeedbackArgs",
     "TriageArgs",
     "PostArgs",
@@ -317,6 +319,11 @@ class Submission(TypedDict):
     id: str
     destination: Destination
     feedback: ReviewedFeedback
+
+class Summary(TypedDict):
+    text: str
+    through: str
+    through_ts: int
 
 TextKind = Literal["interface", "content"]
 
@@ -634,6 +641,14 @@ MarkReadArgs = TypedDict("MarkReadArgs", {
 })
 """The arguments of `mark-read`."""
 
+KeepSummaryArgs = TypedDict("KeepSummaryArgs", {
+    "channel": "str",
+    "through": "str",
+    "through_ts": "int",
+    "text": "str",
+})
+"""The arguments of `keep-summary`."""
+
 SubmitFeedbackArgs = TypedDict("SubmitFeedbackArgs", {
     "channel": "str",
     "submission": "Any",
@@ -836,7 +851,7 @@ RetireAgentArgs = TypedDict("RetireAgentArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@a73427efdc5aa25a"
+    __surface__ = "so.tilo.chat@3771147eecba8e0f"
     @property
     def categories(self) -> list[Category]:
         """Read only."""
@@ -853,6 +868,10 @@ class Workspace(Resource):
     def files(self) -> WorkspaceFiles:
         """Read only."""
         return self.fields["files"]
+    @property
+    def summaries(self) -> dict[str, dict[str, Summary]]:
+        """Read only."""
+        return self.fields["summaries"]
 
     def begin_chat(self,
         *,
@@ -1117,6 +1136,20 @@ class Workspace(Resource):
         """Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("mark-read", items)
 
+    def keep_summary(self,
+        *,
+        channel: str,
+        through: str,
+        through_ts: int,
+        text: str,
+    ) -> Run | None:
+        """Runs the app's action."""
+        return self.action("keep-summary", channel=channel, through=through, through_ts=through_ts, text=text)
+
+    def keep_summary_many(self, items: list[KeepSummaryArgs]) -> list[dict[str, Any]]:
+        """Runs `keep-summary` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("keep-summary", items)
+
     def submit_feedback(self,
         *,
         channel: str,
@@ -1168,7 +1201,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@a73427efdc5aa25a"
+    __surface__ = "so.tilo.chat@3771147eecba8e0f"
     @property
     def messages(self) -> list[Message]:
         """Read only."""
@@ -1447,7 +1480,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@a73427efdc5aa25a"
+    __surface__ = "so.tilo.chat@3771147eecba8e0f"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> Run | None:
@@ -1461,7 +1494,7 @@ class Drafts(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@a73427efdc5aa25a"
+    __surface__ = "so.tilo.chat@3771147eecba8e0f"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -1495,7 +1528,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@a73427efdc5aa25a"
+    __surface__ = "so.tilo.chat@3771147eecba8e0f"
     agents: list[Agent]
 
     def create_agent(self,

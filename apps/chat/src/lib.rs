@@ -85,6 +85,7 @@ pub mod preferences;
 pub mod projection;
 pub mod question;
 pub mod question_card;
+pub mod recall;
 pub mod record;
 pub mod render_call;
 pub mod render_chat;

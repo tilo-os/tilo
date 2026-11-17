@@ -61,6 +61,7 @@ pub mod event;
 #[cfg(feature = "client")]
 pub mod live_activity;
 pub mod native_media;
+pub mod recall;
 pub mod route;
 #[cfg(feature = "client")]
 pub mod settings;

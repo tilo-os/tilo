@@ -86,6 +86,7 @@ fields = [
   { path = "files", type = { named = "WorkspaceFiles" }, readonly = true, stored = "record" },
   { path = "files.largest", type = "int" },
   { path = "files.member_hourly", type = "int" },
+  { path = "summaries", type = { map = { map = { named = "Summary" } } }, readonly = true },
 ]
 
 [[resources.verbs]]
@@ -272,6 +273,16 @@ params = [
   { name = "channel", type = "text", required = true, schema = { type = "string" } },
   { name = "part", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
   { name = "seen", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "keep-summary"
+kind = "undoable"
+params = [
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "through", type = "text", required = true, schema = { type = "string" } },
+  { name = "through_ts", type = "int", required = true, schema = { type = "integer" } },
+  { name = "text", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -599,6 +610,14 @@ fields = [
   { name = "id", type = "text" },
   { name = "destination", type = { named = "Destination" } },
   { name = "feedback", type = { named = "ReviewedFeedback" } },
+]
+
+[[resources.types]]
+name = "Summary"
+fields = [
+  { name = "text", type = "text" },
+  { name = "through", type = "text" },
+  { name = "through_ts", type = "int" },
 ]
 
 [[resources.types]]

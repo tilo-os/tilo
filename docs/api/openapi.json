@@ -8091,6 +8091,30 @@
         ],
         "description": ""
       },
+      "chat.workspace.keep-summary.Arguments": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "through": {
+            "type": "string"
+          },
+          "through_ts": {
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "through",
+          "through_ts",
+          "text"
+        ],
+        "description": ""
+      },
       "chat.workspace.submit-feedback.Arguments": {
         "type": "object",
         "properties": {
@@ -28024,6 +28048,12 @@
       "resource": "chat.workspace",
       "action": "mark-read",
       "arguments": "#/components/schemas/chat.workspace.mark-read.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.workspace",
+      "action": "keep-summary",
+      "arguments": "#/components/schemas/chat.workspace.keep-summary.Arguments"
     },
     {
       "app": "so.tilo.chat",

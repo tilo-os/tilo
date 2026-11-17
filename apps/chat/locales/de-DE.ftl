@@ -216,6 +216,7 @@ chat-deliver-message = Hat eine Nachricht von { $author } zugestellt
 chat-edit-message = Hat eine Nachricht bearbeitet: { $text }
 chat-delete-message = Hat eine Nachricht gelöscht
 chat-mark-read = Hat #{ $item } als gelesen markiert
+chat-keep-summary = Hat eine Zusammenfassung der Unterhaltung festgehalten
 chat-record-work = Hat festgehalten, was es tut
 chat-submit-feedback = Hat Rückmeldung in #{ $item } abgegeben
 chat-triage = Hat Rückmeldungen gesichtet
@@ -519,6 +520,7 @@ chat-workspace-report-person = Person melden
 chat-workspace-decide-reports = Über eine Meldung entscheiden
 chat-workspace-overturn-decision = Entscheidung aufheben
 chat-workspace-mark-read = Als gelesen markieren
+chat-workspace-keep-summary = Zusammenfassung festhalten
 chat-workspace-submit-feedback = Feedback senden
 chat-workspace-triage = Feedback sichten
 # A message moved from another chat: its author there, and the tool.
