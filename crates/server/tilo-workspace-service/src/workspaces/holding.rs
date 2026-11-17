@@ -19,13 +19,22 @@
 //! who is in it, it writes only the redemptions of invitations it answers
 //! ([`tilo_peer_state::workspace::SenderAccess::Holder`]).
 //!
+//! Each holder says in the workspace's state where its copy stands
+//! ([`tilo_peer_state::HeldCopy`]): which holders it still takes what it
+//! lacks from, and which it cannot reach and since when, as its sessions to
+//! them stand ([`Links`]). A holder that comes back after a while dials the
+//! others, takes in what they hold and it lacks, and then says it is current;
+//! the others, reaching it again, say so too. Every device reads from those
+//! rows, against how many copies the workspace wants, which holder is short
+//! of what ([`Workspaces::copies`]).
+//!
 //! The host lets the workspace go ([`Workspaces::release`]) when its owners
 //! ask ([`UNHOST_WORKSPACE`](tilo_server_session::workspaces::UNHOST_WORKSPACE))
 //! or when the workspace's governance no longer names it. The files stay; a
 //! later hand-over serves the workspace from them again.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
@@ -37,7 +46,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
 use super::{GovernedWorkspace, Workspaces, appended, peer_parts};
-use crate::attach::{HostDialer, Upstream};
+use crate::attach::{HostDialer, Link, Links, Upstream};
 use crate::handshake::LiveIdentity;
 
 /// What a holder hands the host it asks to hold one of its workspaces.
@@ -335,7 +344,7 @@ impl Workspaces {
             .iter()
             .any(|holder| holder.device_certificate.device_public_key == own);
         if governed.holders.named && !names_this {
-            governed.holders.sessions.clear();
+            governed.holders = Holders::default();
             let workspace = governed.workspace().to_owned();
             let this = self.clone();
             tokio::spawn(async move {
@@ -348,11 +357,23 @@ impl Workspaces {
         }
         governed.holders.named |= names_this;
         named.extend(governed.handed_by.clone());
+        let links = governed.holders.links.clone();
         governed.holders.sessions.retain(|device, _| {
-            named
+            let kept = named
                 .iter()
-                .any(|holder| holder.device_certificate.device_public_key == *device)
+                .any(|holder| holder.device_certificate.device_public_key == *device);
+            if !kept {
+                links.forget(device);
+            }
+            kept
         });
+        if governed.holders.reporting.is_none() {
+            governed.holders.reporting = Some(AbortOnDrop(tokio::spawn(report_copy(
+                Arc::downgrade(&self.inner),
+                governed.workspace().to_owned(),
+                links.clone(),
+            ))));
+        }
         let workspace_id = governed.workspace_id();
         for holder in named {
             let device = holder.device_certificate.device_public_key;
@@ -371,6 +392,7 @@ impl Workspaces {
                 workspaces: host.workspaces.clone(),
                 metrics: host.metrics.clone(),
                 scope: Some(vec![workspace_id]),
+                links: Some(links.clone()),
             }
             .spawn_woken(
                 Upstream {
@@ -393,11 +415,95 @@ impl Workspaces {
     }
 }
 
+/// Say in `workspace`'s state where this device's copy stands, each time a
+/// session to another holder changes how it stands, until the workspace is
+/// let go here.
+async fn report_copy(workspaces: Weak<super::WorkspacesInner>, workspace: String, links: Links) {
+    // Said once at the start, also by a holder no other holder is named
+    // beside.
+    links.touch();
+    loop {
+        links.changed().await;
+        let Some(inner) = workspaces.upgrade() else {
+            return;
+        };
+        let this = Workspaces { inner };
+        let held = held_copy(&links.now());
+        let cert = this.governor().clone();
+        let reported = this
+            .author_own_workspace_state(&workspace, &cert, |peer| {
+                peer.workspace_mut()
+                    .report_copy(&cert, &held, tilo_clock::wall())
+            })
+            .await;
+        if let Err(error) = reported {
+            // A holder that is not a member of the workspace writes nothing
+            // in it: the holders that reach it say where it stands.
+            tracing::debug!(%workspace, %error, "this holder's copy was not said");
+        }
+    }
+}
+
+/// Where this device's copy stands, as its sessions to the other holders do.
+fn held_copy(links: &std::collections::BTreeMap<[u8; 32], Link>) -> tilo_peer_state::HeldCopy {
+    let mut held = tilo_peer_state::HeldCopy::default();
+    for (device, link) in links {
+        match link {
+            Link::Reaching | Link::CatchingUp => {
+                held.catching_up_from.insert(*device);
+            }
+            Link::Unreachable { since_ns } => {
+                held.unreachable.insert(*device, *since_ns);
+            }
+            Link::Current => {}
+        }
+    }
+    held
+}
+
+impl Workspaces {
+    /// Where `workspace`'s copies stand: what it wants, each holder, and
+    /// which of them is short of what.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not held here.
+    pub async fn copies(
+        &self,
+        workspace: &str,
+    ) -> Result<tilo_peer_state::CopyStatus, super::CollaborationError> {
+        let governed = self.workspace(workspace).await?;
+        let status = governed.lock().await.peer().workspace().copies();
+        Ok(status)
+    }
+
+    /// Have `workspace` want `policy`, or the default again for `None`, as its
+    /// owners chose.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not held here, or the choice could not be kept.
+    pub async fn choose_copies(
+        &self,
+        workspace: &str,
+        policy: Option<tilo_peer_state::CopyPolicy>,
+    ) -> Result<(), String> {
+        self.name_host(workspace, |governance, key, now| {
+            governance.author_copy_policy(policy, key, now)
+        })
+        .await
+    }
+}
+
 /// This host's sessions to a workspace's other holders.
 #[derive(Default)]
 pub(super) struct Holders {
     /// A session to each other holder, by device.
     sessions: HashMap<[u8; 32], AbortOnDrop>,
+    /// Where each of those sessions stands.
+    links: Links,
+    /// What says in the workspace where this device's copy stands.
+    reporting: Option<AbortOnDrop>,
     /// Whether the workspace's governance has named this host among its
     /// holders: once it has, naming it no more lets the workspace go here.
     named: bool,

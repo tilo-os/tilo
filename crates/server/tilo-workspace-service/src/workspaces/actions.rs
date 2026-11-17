@@ -129,6 +129,9 @@ pub(crate) const HOSTS: &str = "host.list";
 pub(crate) const ADD_HOST: &str = "host.add";
 /// Having a holder hold the workspace no more.
 pub(crate) const REMOVE_HOST: &str = "host.remove";
+/// How many copies the workspace wants kept: key holders, which hold its
+/// keys and take its work, and stores, which keep its ciphertext.
+pub(crate) const SET_COPIES: &str = "copies.set";
 /// What checks choosing the workspace's hosts: its owners', which no grant of
 /// its governance gives ([`Workspaces::chooses_hosts`]).
 const CHOOSES_HOSTS: &str = "choose-hosts";
@@ -200,7 +203,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 25] = [
+const VERBS: [Verb; 26] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -277,6 +280,13 @@ const VERBS: [Verb; 25] = [
         check: CHOOSES_HOSTS,
         kind: roles::GOVERNANCE_KIND,
         params: remove_host_params,
+    },
+    Verb {
+        id: SET_COPIES,
+        label: "Choose how many copies it keeps",
+        check: CHOOSES_HOSTS,
+        kind: roles::GOVERNANCE_KIND,
+        params: copies_params,
     },
     Verb {
         id: NAME,
@@ -482,6 +492,22 @@ fn add_host_params() -> Vec<ActionParam> {
         "The other host's site, like https://tilo.sh. You must be let in there, and it may \
          refuse by its own rules.",
     )]
+}
+
+fn copies_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::optional(
+            "key_holders",
+            ParamType::Integer,
+            "Holders that hold its keys and take its work. Leave both out for the default: one \
+             of each once a server holds it, and the devices it has otherwise.",
+        ),
+        ActionParam::optional(
+            "stores",
+            ParamType::Integer,
+            "Holders that keep it encrypted and read none of it.",
+        ),
+    ]
 }
 
 fn remove_host_params() -> Vec<ActionParam> {
@@ -1543,7 +1569,9 @@ impl Workspaces {
                 self.governance_invitations(action, call).await
             }
             ADD_MEMBER => self.governance_add_member(call).await,
-            HOSTS | ADD_HOST | REMOVE_HOST => self.governance_hosts(action, call).await,
+            HOSTS | ADD_HOST | REMOVE_HOST | SET_COPIES => {
+                self.governance_hosts(action, call).await
+            }
             WAIT_LIST | UNLIST | MAIL_INVITATION => self.governance_wait_list(action, call).await,
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
             REQUEST_BOT | WITHDRAW_BOT_REQUEST => self.governance_bots(action, call).await,
@@ -1932,7 +1960,9 @@ impl Workspaces {
     }
 
     /// The workspace's hosts, having another hold it as well, and having one
-    /// hold it no more: each answers the hosts as they are then.
+    /// hold it no more: each answers the hosts as they are then. Choosing how
+    /// many copies it keeps answers the same, and each says where its copies
+    /// stand.
     async fn governance_hosts(
         &self,
         action: &str,
@@ -1953,13 +1983,39 @@ impl Workspaces {
                     .await
                     .map_err(|error| refused(&error))?,
             ),
+            SET_COPIES => {
+                let count = |name| {
+                    args.integer(name)?
+                        .map(u32::try_from)
+                        .transpose()
+                        .map_err(|_| invalid(format!("`{name}` is too large")))
+                };
+                let (key_holders, stores) = (count("key_holders")?, count("stores")?);
+                let policy = (key_holders.is_some() || stores.is_some()).then(|| {
+                    tilo_peer_state::CopyPolicy {
+                        key_holders: key_holders.unwrap_or(0),
+                        stores: stores.unwrap_or(0),
+                    }
+                });
+                self.choose_copies(workspace, policy)
+                    .await
+                    .map_err(|error| refused(&error))?;
+                None
+            }
             _ => None,
         };
         let hosts = self
             .keeping_devices(workspace)
             .await
             .map_err(|error| refused(&error))?;
+        let copies = self
+            .copies(workspace)
+            .await
+            .map_err(|error| refused(&error.to_string()))?;
         let mut answered = json!({ "workspace": workspace, "hosts": hosts });
+        if let Some(fields) = answered.as_object_mut() {
+            fields.insert("copies".into(), json!(copies));
+        }
         if let (Some(confirmed), Some(fields)) = (confirmed, answered.as_object_mut()) {
             // A host that could not be reached is no longer named to anyone,
             // and lets the workspace go once it hears so.

@@ -137,10 +137,6 @@ pub struct WorkspaceRuntime {
     /// another, and it carries its members' changes under the members' own
     /// keys.
     pub attached_hosts: HashSet<[u8; 32]>,
-    /// The session each attached host that dialed here last opened, by its
-    /// device: what ends it, so an answer to it ends with it
-    /// ([`crate::attach::HostDialer::answer`]).
-    pub(crate) attach_sessions: HashMap<[u8; 32], mpsc::Sender<()>>,
     /// What services beside the session stack keep for this workspace (a
     /// server's compute routing), one value per type.
     pub extensions: Extensions,
@@ -396,7 +392,6 @@ impl WorkspaceRuntime {
             governed_user_roots,
             subscribers: HashMap::new(),
             attached_hosts: HashSet::new(),
-            attach_sessions: HashMap::new(),
             extensions: Extensions::default(),
             content_work: Arc::default(),
             state_sessions: HashMap::new(),

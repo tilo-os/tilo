@@ -165,7 +165,7 @@ impl Workspaces {
         clippy::significant_drop_tightening,
         reason = "the workspace stays locked until its decision is committed and settled"
     )]
-    async fn name_host(
+    pub(super) async fn name_host(
         &self,
         workspace: &str,
         change: impl FnOnce(

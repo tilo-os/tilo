@@ -11,7 +11,9 @@
 //! own earlier frames by publishing a checkpoint ([`Store::retain`]), the
 //! appetite the store was opened with ([`Appetite`]), and the compaction an
 //! operator asks for ([`Store::compact`]). Nothing is retired because it
-//! looks old.
+//! looks old, and compaction never retires a frame a device that told the
+//! store what it holds ([`Store::holds`]) still lacks, nor a lineage's newest
+//! checkpoint, which a device that holds none of it starts from.
 
 use crate::join::WorkspaceId;
 pub use crate::retained::{Frame, Lineage, Refusal};
@@ -151,6 +153,9 @@ struct Held {
 struct Workspace {
     bytes: u64,
     lineages: BTreeMap<Lineage, Vec<Entry>>,
+    /// What each device that asked for the workspace's history said it
+    /// holds, by lineage ([`Store::holds`]).
+    holders: BTreeMap<[u8; 32], BTreeMap<Lineage, u64>>,
 }
 
 /// One retained frame as the index knows it.
@@ -192,6 +197,13 @@ impl Store {
             let mut held = store.held.lock_recover();
             for (workspace, frame, bytes) in store.stored()? {
                 add(&mut held, workspace, &frame, bytes, false);
+            }
+            for (workspace, device, cursors) in store.stored_holders()? {
+                held.workspaces
+                    .entry(workspace)
+                    .or_default()
+                    .holders
+                    .insert(device, holding(&cursors));
             }
             retire_to_appetite(&store.root, appetite, &mut held);
         }
@@ -430,6 +442,11 @@ impl Store {
             let Some(stored) = held.workspaces.remove(&workspace) else {
                 return Ok(Retired::default());
             };
+            match fs::remove_dir_all(holders_dir(&self.root, workspace)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
             held.bytes = held.bytes.saturating_sub(stored.bytes);
             let frames = stored.lineages.values().map(Vec::len).sum::<usize>();
             drop(held);
@@ -446,8 +463,46 @@ impl Store {
         })
     }
 
+    /// `device`, which asked for `workspace`'s history from `cursors`, holds
+    /// every frame up to them and none after: compaction keeps what it lacks
+    /// ([`Self::compact`]). Kept across restarts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when what the device holds cannot be written.
+    pub fn holds(
+        &self,
+        workspace: WorkspaceId,
+        device: [u8; 32],
+        cursors: &[Cursor],
+    ) -> Result<(), StoreError> {
+        let holding = holding(cursors);
+        let mut held = self.held.lock_recover();
+        let stored = held.workspaces.entry(workspace).or_default();
+        if stored.holders.get(&device) == Some(&holding) {
+            return Ok(());
+        }
+        let path = holder_path(&self.root, workspace, device);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let cursors: Vec<Cursor> = holding
+            .iter()
+            .map(|(lineage, after_seq)| Cursor {
+                lineage: *lineage,
+                after_seq: *after_seq,
+            })
+            .collect();
+        tilo_files::native::atomic::write(&path, &postcard::to_allocvec(&cursors)?)?;
+        stored.holders.insert(device, holding);
+        drop(held);
+        Ok(())
+    }
+
     /// Retire the frames of `workspace` published before `before_ns`, for an
-    /// operator whose store must shrink now rather than at its budget.
+    /// operator whose store must shrink now rather than at its budget. A
+    /// frame some device that told the store what it holds still lacks
+    /// stays, and so does each lineage's newest checkpoint.
     ///
     /// # Errors
     ///
@@ -458,13 +513,24 @@ impl Store {
         let Some(stored) = held.workspaces.get(&workspace) else {
             return Ok(retired);
         };
+        let everyone_holds = |lineage: &Lineage, seq: u64| {
+            stored
+                .holders
+                .values()
+                .all(|holds| holds.get(lineage).is_some_and(|after| *after >= seq))
+        };
         let old = stored
             .lineages
             .iter()
             .flat_map(|(lineage, entries)| {
+                let checkpoint = newest_checkpoint(entries);
                 entries
                     .iter()
-                    .filter(|entry| entry.authored_at_ns < before_ns)
+                    .filter(|entry| {
+                        entry.authored_at_ns < before_ns
+                            && Some(entry.seq) != checkpoint
+                            && everyone_holds(lineage, entry.seq)
+                    })
                     .map(|entry| (*lineage, *entry))
                     .collect::<Vec<_>>()
             })
@@ -481,6 +547,33 @@ impl Store {
         }
         drop(held);
         Ok(retired)
+    }
+
+    /// What every device said it holds, as [`Store::open`] reads it. A file
+    /// that is not one is skipped, as a stray frame file is.
+    fn stored_holders(&self) -> Result<Vec<(WorkspaceId, [u8; 32], Vec<Cursor>)>, StoreError> {
+        let mut found = Vec::new();
+        for workspace in directories(&self.root.join(HOLDERS))? {
+            let Some(id) = workspace
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(WorkspaceId::parse)
+            else {
+                continue;
+            };
+            for file in files(&workspace)? {
+                let device = file
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(<[u8; 32] as hex::FromHex>::from_hex);
+                let cursors = postcard::from_bytes::<Vec<Cursor>>(&fs::read(&file)?);
+                match (device, cursors) {
+                    (Some(Ok(device)), Ok(cursors)) => found.push((id, device, cursors)),
+                    _ => tracing::warn!(path = %file.display(), "not what a device holds; skipped"),
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// Every stored frame, as [`Store::open`] reads it.
@@ -608,9 +701,38 @@ pub fn author_of(message: &NeighbourMsg) -> Option<[u8; 32]> {
 }
 
 const WORKSPACES: &str = "workspaces";
+/// Where the store keeps what each device said it holds, per workspace.
+const HOLDERS: &str = "holders";
 
 fn workspace_dir(root: &Path, workspace: WorkspaceId) -> PathBuf {
     root.join(WORKSPACES).join(workspace.to_string())
+}
+
+fn holders_dir(root: &Path, workspace: WorkspaceId) -> PathBuf {
+    root.join(HOLDERS).join(workspace.to_string())
+}
+
+fn holder_path(root: &Path, workspace: WorkspaceId, device: [u8; 32]) -> PathBuf {
+    holders_dir(root, workspace).join(hex::encode(device))
+}
+
+/// `cursors` by lineage: the furthest each reaches.
+fn holding(cursors: &[Cursor]) -> BTreeMap<Lineage, u64> {
+    let mut holding = BTreeMap::new();
+    for cursor in cursors {
+        let after = holding.entry(cursor.lineage).or_insert(0);
+        *after = cursor.after_seq.max(*after);
+    }
+    holding
+}
+
+/// The newest checkpoint among a lineage's `entries`.
+fn newest_checkpoint(entries: &[Entry]) -> Option<u64> {
+    entries
+        .iter()
+        .filter(|entry| entry.retention == ContentRetention::Checkpoint)
+        .map(|entry| entry.seq)
+        .max()
 }
 
 fn frame_path(
@@ -756,11 +878,7 @@ fn retire_to_appetite(root: &Path, appetite: Appetite, held: &mut Held) {
             // The newest checkpoint of a lineage outlives everything the
             // store could otherwise drop: it is the state a later frame is
             // read against.
-            let checkpoint = entries
-                .iter()
-                .filter(|entry| entry.retention == ContentRetention::Checkpoint)
-                .map(|entry| entry.seq)
-                .max();
+            let checkpoint = newest_checkpoint(entries);
             for entry in entries {
                 if Some(entry.seq) == checkpoint {
                     continue;
@@ -1096,6 +1214,52 @@ mod tests {
             assert_eq!(
                 store.compact(WorkspaceId::from_u128(8), u64::MAX).unwrap(),
                 Retired::default()
+            );
+        }
+
+        phase compaction_keeps_what_a_holder_still_lacks;
+        // Two holders said what they hold; compacting retires only what both
+        // hold, also after the store restarts, and never the newest
+        // checkpoint a newcomer starts from. Once the one behind catches up,
+        // the rest goes.
+        {
+            let (dir, store) = open();
+            let key = device(2);
+            store
+                .retain(workspace(), &frame(&key, 1, ContentRetention::Checkpoint))
+                .unwrap();
+            let mut lineage = None;
+            for seq in 2..=5 {
+                let frame = frame(&key, seq, ContentRetention::Delta);
+                lineage = Some(frame.lineage);
+                store.retain(workspace(), &frame).unwrap();
+            }
+            let lineage = lineage.unwrap();
+            store
+                .holds(workspace(), [10; 32], &[cursor(lineage, 5)])
+                .unwrap();
+            store
+                .holds(workspace(), [11; 32], &[cursor(lineage, 3)])
+                .unwrap();
+            drop(store);
+            let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            let retired = store.compact(workspace(), u64::MAX).unwrap();
+            assert_eq!(retired.frames, 2, "the two deltas both holders hold went");
+            assert_eq!(store.lineages(workspace()), vec![(lineage, 1, 5)]);
+            let behind = store
+                .replay(workspace(), &[cursor(lineage, 3)], Budget::default())
+                .unwrap();
+            assert_eq!(behind.frames.len(), 2, "the holder behind still gets 4 and 5");
+            assert!(behind.floors.is_empty());
+
+            store
+                .holds(workspace(), [11; 32], &[cursor(lineage, 5)])
+                .unwrap();
+            assert_eq!(store.compact(workspace(), u64::MAX).unwrap().frames, 2);
+            assert_eq!(
+                store.lineages(workspace()),
+                vec![(lineage, 1, 1)],
+                "the newest checkpoint stays"
             );
         }
 

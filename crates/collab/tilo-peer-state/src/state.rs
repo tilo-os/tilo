@@ -48,6 +48,11 @@ pub(crate) mod certificate_renewal;
 mod delegates;
 pub(crate) use bot_members::requests_in as bot_requests_in;
 pub use bot_members::{InstalledBot, RequestedBot};
+mod copies;
+pub use copies::{
+    COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, HELD_COPIES_KEY, HeldCopy, HolderCopy,
+    Missing, Shortfall,
+};
 mod leases;
 pub use leases::{CLOCK_SKEW_NS, LEASES_KEY, Lease, LeaseClaim, unranked};
 mod bot_schedules;

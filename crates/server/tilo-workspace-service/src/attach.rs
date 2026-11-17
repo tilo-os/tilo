@@ -20,21 +20,23 @@
 //! arrives: no timer runs while it is connected.
 //!
 //! A session carries changes one way, from the host dialed to the host
-//! dialing. A device governing a workspace another host serves
-//! dials nothing on its own: when that host's session arrives, the device
-//! answers it with one back ([`HostDialer::answer`]) that lasts as long
-//! as it does.
+//! dialing: every holder of a workspace dials every other.
+//!
+//! Where each session stands ([`Link`]) is kept in the workspace's [`Links`]:
+//! reaching the other holder, taking in what it lacks of it, current with
+//! it, or unable to reach it since some time. The holder says so in the
+//! workspace's state, where every device reads which holder is short of what.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use iroh::endpoint::Endpoint;
 use iroh_base::EndpointAddr;
+use tilo_lock::MutexRecover as _;
 use tilo_lock::RwLockRecover as _;
 use tilo_server_session::client::ServerClient;
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::handshake::LiveIdentity;
@@ -98,11 +100,78 @@ async fn arrival(arrivals: &mut tokio::sync::broadcast::Receiver<[u8; 32]>, devi
     }
 }
 
+/// Where this device's session to another holder of a workspace stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Link {
+    /// Not reached since this device started: what it lacks of the other
+    /// is not known yet.
+    Reaching,
+    /// Reached, and taking in what the other holds and this device lacks.
+    CatchingUp,
+    /// Holding everything the other holds.
+    Current,
+    /// Not reached since `since_ns` (ns since the epoch).
+    Unreachable { since_ns: u64 },
+}
+
+/// Where each of a workspace's sessions to its other holders stands, by the
+/// other holder's device, and a wake-up for whoever says so in the
+/// workspace.
+#[derive(Clone, Default)]
+pub struct Links(Arc<LinksInner>);
+
+#[derive(Default)]
+struct LinksInner {
+    links: std::sync::Mutex<BTreeMap<[u8; 32], Link>>,
+    changed: tokio::sync::Notify,
+}
+
+impl Links {
+    /// The session to `device` stands at `link`. A holder unreachable before
+    /// stays unreachable since it first was.
+    pub(crate) fn set(&self, device: [u8; 32], link: Link) {
+        let mut links = self.0.links.lock_recover();
+        let link = match (links.get(&device), link) {
+            (Some(Link::Unreachable { since_ns }), Link::Unreachable { .. }) => Link::Unreachable {
+                since_ns: *since_ns,
+            },
+            _ => link,
+        };
+        if links.insert(device, link) != Some(link) {
+            drop(links);
+            self.0.changed.notify_one();
+        }
+    }
+
+    /// No session to `device` is kept any more.
+    pub(crate) fn forget(&self, device: &[u8; 32]) {
+        if self.0.links.lock_recover().remove(device).is_some() {
+            self.0.changed.notify_one();
+        }
+    }
+
+    /// Where each session stands now.
+    pub(crate) fn now(&self) -> BTreeMap<[u8; 32], Link> {
+        self.0.links.lock_recover().clone()
+    }
+
+    /// Wait until a session's link changes, or say it changed at once.
+    pub(crate) async fn changed(&self) {
+        self.0.changed.notified().await;
+    }
+
+    /// Have the next [`Self::changed`] return at once.
+    pub(crate) fn touch(&self) {
+        self.0.changed.notify_one();
+    }
+}
+
 /// What an outbound attach session carries: the local endpoint, this host's
 /// own identity (its revocation list read afresh for every dial and
 /// session), the workspaces it hosts and its metrics. `scope`, when given,
-/// is the only workspaces the session offers: a host serving one workspace for
-/// its governor attaches that workspace alone.
+/// is the only workspaces the session offers: a holder of a workspace
+/// beside another attaches that workspace alone. `links`, when given, is told
+/// where the session stands.
 pub struct HostDialer {
     pub endpoint: Endpoint,
     pub identity: LiveIdentity,
@@ -112,6 +181,7 @@ pub struct HostDialer {
     pub workspaces: WorkspaceRegistry,
     pub metrics: Arc<Metrics>,
     pub scope: Option<Vec<WorkspaceId>>,
+    pub links: Option<Links>,
 }
 
 impl HostDialer {
@@ -138,6 +208,7 @@ impl HostDialer {
     ) {
         let device = upstream.device;
         let mut backoff_ms: u64 = 1_000;
+        self.stands(device, Link::Reaching);
         loop {
             let dialed = tokio::select! {
                 dialed = self.dial(&upstream) => Some(dialed),
@@ -147,15 +218,18 @@ impl HostDialer {
                 Some(Ok(client)) => {
                     tracing::info!(%label, "attached to the upstream host");
                     backoff_ms = 1_000;
-                    if let Err(error) = self.run_session(&client, true).await {
+                    self.stands(device, Link::CatchingUp);
+                    if let Err(error) = self.run_session(&client).await {
                         tracing::debug!(%label, "attach session ended: {error}");
                     }
+                    self.unreachable(device);
                     // What arrived while the session lasted says nothing
                     // of the device now.
                     arrivals = arrivals.resubscribe();
                 }
                 Some(Err(error)) => {
                     tracing::debug!(%label, "attach dial failed: {error}");
+                    self.unreachable(device);
                 }
                 None => {
                     tracing::debug!(%label, "the upstream's device is back; dialing it again");
@@ -188,57 +262,38 @@ impl HostDialer {
         .map_err(|error| error.to_string())
     }
 
-    /// Answer the host that opened `inbound` here, a host serving a workspace
-    /// this device governs, with one session back to it at `upstream`: what
-    /// its members change there reaches this device that way, as what
-    /// changes here reaches it over its own session. The answer lasts as
-    /// long as `inbound` does. When it cannot be held, `inbound` is ended
-    /// too, and the host, which keeps dialing while it is up, opens it again
-    /// and is answered again: this device keeps no timer for it.
-    pub fn answer(
-        self,
-        upstream: Upstream,
-        inbound: mpsc::Sender<()>,
-        label: String,
-    ) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            let session = async {
-                let client = self.dial(&upstream).await?;
-                tracing::info!(%label, "answered a host serving a workspace governed here");
-                self.run_session(&client, false).await
-            };
-            tokio::select! {
-                result = session => {
-                    if let Err(error) = result {
-                        tracing::debug!(%label, "answer to a host ended: {error}");
-                    }
-                    let _ = inbound.try_send(());
-                }
-                () = inbound.closed() => {}
-            }
-        })
+    /// Tell this session's links that the one to `device` stands at `link`.
+    fn stands(&self, device: [u8; 32], link: Link) {
+        if let Some(links) = &self.links {
+            links.set(device, link);
+        }
     }
 
-    /// One attach session: agree on the workspaces both host (by `hello`,
-    /// or this host's scope when the upstream serves a workspace this device
-    /// governs), subscribe to them, then follow the upstream until the
-    /// session ends.
+    /// The holder `device` was not reached: since now, or since it first was
+    /// not.
+    fn unreachable(&self, device: [u8; 32]) {
+        self.stands(
+            device,
+            Link::Unreachable {
+                since_ns: tilo_clock::unix_now_ns(),
+            },
+        );
+    }
+
+    /// One attach session: agree on the workspaces both hold, subscribe to
+    /// them, then follow the upstream until the session ends.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the session borrows the client and the workspaces and is driven by the select until it ends; it holds no lock"
     )]
-    async fn run_session(&self, client: &ServerClient, hello: bool) -> Result<(), String> {
+    async fn run_session(&self, client: &ServerClient) -> Result<(), String> {
         let hosted_local = self.carried().await;
-        let intersection = if hello {
-            client
-                .send(Envelope::PeerServerHello {
-                    hosted_workspaces: hosted_local.clone(),
-                })
-                .map_err(|_| "outbound closed".to_string())?;
-            negotiate_intersection(client, &hosted_local).await?
-        } else {
-            hosted_local
-        };
+        client
+            .send(Envelope::PeerServerHello {
+                hosted_workspaces: hosted_local.clone(),
+            })
+            .map_err(|_| "outbound closed".to_string())?;
+        let intersection = negotiate_intersection(client, &hosted_local).await?;
         for id in &intersection {
             client
                 .send(Envelope::Subscribe { workspace_id: *id })
@@ -273,6 +328,7 @@ impl HostDialer {
             workspaces: &self.workspaces,
             source: &source,
             metrics: &self.metrics,
+            stands: &|link| self.stands(client.server_peer.device_public_key, link),
         };
         tokio::select! {
             result = session.follow(&intersection) => result,
@@ -336,6 +392,8 @@ struct Session<'a> {
     workspaces: &'a WorkspaceRegistry,
     source: &'a crate::peer::StateSource,
     metrics: &'a Arc<Metrics>,
+    /// Tells the session's links where it stands.
+    stands: &'a (dyn Fn(Link) + Sync),
 }
 
 impl Session<'_> {
@@ -358,12 +416,15 @@ impl Session<'_> {
                 } => {
                     if delta_since.is_empty() {
                         answered.remove(&workspace_id);
+                        (self.stands)(Link::Current);
                         continue;
                     }
                     let digest = blake3::hash(&delta_since);
                     if answered.insert(workspace_id, digest) == Some(digest) {
+                        (self.stands)(Link::Current);
                         continue;
                     }
+                    (self.stands)(Link::CatchingUp);
                     self.backfill(workspace_id, delta_since).await?;
                     if intersection.contains(&workspace_id) {
                         self.ask(workspace_id).await?;
@@ -373,6 +434,7 @@ impl Session<'_> {
                 // withheld a change another attached host sent it.
                 Envelope::SyncRequest { workspace_id, .. } => {
                     if intersection.contains(&workspace_id) {
+                        (self.stands)(Link::CatchingUp);
                         self.ask(workspace_id).await?;
                     }
                 }
