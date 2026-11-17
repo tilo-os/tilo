@@ -57,6 +57,10 @@ pub(crate) struct Kept {
     pub wants_fractional_scale: bool,
     /// The scale the desktop last asked for, kept across a restart.
     pub preferred_scale: Option<f64>,
+    /// The app's xdg decoration object and what it last asked for.
+    pub xdg_decoration: Option<crate::decorations::Xdg>,
+    /// The app's KDE decoration object and what it last asked for.
+    pub kde_decoration: Option<crate::decorations::Kde>,
     pub role: Role,
     pub up: Option<UpSurface>,
 }
@@ -77,6 +81,8 @@ impl Kept {
             frames: Vec::new(),
             wants_fractional_scale: false,
             preferred_scale: None,
+            xdg_decoration: None,
+            kde_decoration: None,
             role: Role::None,
             up: None,
         }
@@ -190,6 +196,13 @@ pub(crate) struct UpSurface {
     pub viewport: Option<wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport>,
     pub content_type: Option<wayland_protocols::wp::content_type::v1::client::wp_content_type_v1::WpContentTypeV1>,
     pub fractional_scale: Option<wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::WpFractionalScaleV1>,
+    /// The desktop's window decorations for this surface.
+    pub xdg_decoration: Option<
+        wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
+    >,
+    pub kde_decoration: Option<
+        wayland_protocols_misc::server_decoration::client::org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration,
+    >,
 }
 
 pub(crate) enum UpRole {
@@ -785,9 +798,12 @@ impl State {
             viewport: None,
             content_type: None,
             fractional_scale: None,
+            xdg_decoration: None,
+            kde_decoration: None,
         });
         self.request_surface_feedback(id);
         self.request_fractional_scale(id);
+        self.ensure_decorations(id);
         true
     }
 

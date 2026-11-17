@@ -78,10 +78,18 @@ use wayland_protocols::wp::text_input::zv3::client::{
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
+use wayland_protocols::xdg::decoration::zv1::client::{
+    zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+    zxdg_toplevel_decoration_v1::{self, Mode as DecorationMode, ZxdgToplevelDecorationV1},
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_popup::XdgPopup, xdg_positioner::XdgPositioner, xdg_surface,
     xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
     xdg_wm_base::XdgWmBase,
+};
+use wayland_protocols_misc::server_decoration::client::{
+    org_kde_kwin_server_decoration::{self as kde, Mode as KdeMode, OrgKdeKwinServerDecoration},
+    org_kde_kwin_server_decoration_manager::OrgKdeKwinServerDecorationManager,
 };
 
 pub const OUTPUT: &str = "HEADLESS-1";
@@ -325,6 +333,10 @@ pub struct Heard {
     pub fractional_scale: Option<WpFractionalScaleManagerV1>,
     pub preferred_scales: Vec<u32>,
     pub content_type: Option<WpContentTypeManagerV1>,
+    pub decoration: Option<ZxdgDecorationManagerV1>,
+    pub decoration_modes: Vec<DecorationMode>,
+    pub kde_decoration: Option<OrgKdeKwinServerDecorationManager>,
+    pub kde_modes: Vec<KdeMode>,
     pub dmabuf_done: usize,
     pub surface_feedback_done: usize,
     pub configures: Vec<(i32, i32, Vec<u32>)>,
@@ -581,6 +593,34 @@ impl App {
         object
     }
 
+    /// Ask to be decorated, preferring `mode`.
+    pub fn decoration(&self, mode: DecorationMode) -> ZxdgToplevelDecorationV1 {
+        let qh = self.qh();
+        let decoration = self
+            .heard
+            .decoration
+            .as_ref()
+            .expect("an xdg decoration manager")
+            .get_toplevel_decoration(self.toplevel.as_ref().unwrap(), &qh, ());
+        decoration.set_mode(mode);
+        self.surface.as_ref().unwrap().commit();
+        decoration
+    }
+
+    /// Ask to be decorated through the KDE spelling of the same question.
+    pub fn kde_decoration(&self, mode: KdeMode) -> OrgKdeKwinServerDecoration {
+        let qh = self.qh();
+        let decoration = self
+            .heard
+            .kde_decoration
+            .as_ref()
+            .expect("a KDE decoration manager")
+            .create(self.surface.as_ref().unwrap(), &qh, ());
+        decoration.request_mode(mode);
+        self.surface.as_ref().unwrap().commit();
+        decoration
+    }
+
     /// Ask for the next frame callback on the window.
     pub fn request_frame(&self) -> WlCallback {
         let qh = self.qh();
@@ -716,6 +756,12 @@ impl Dispatch<WlRegistry, ()> for Heard {
                 }
                 "wp_content_type_manager_v1" => {
                     heard.content_type = Some(registry.bind(name, 1, qh, ()));
+                }
+                "zxdg_decoration_manager_v1" => {
+                    heard.decoration = Some(registry.bind(name, 1, qh, ()));
+                }
+                "org_kde_kwin_server_decoration_manager" => {
+                    heard.kde_decoration = Some(registry.bind(name, 1, qh, ()));
                 }
                 "zwp_linux_dmabuf_v1" if version >= 4 => {
                     let dmabuf: ZwpLinuxDmabufV1 = registry.bind(name, version.min(5), qh, ());
@@ -1021,6 +1067,45 @@ delegate_noop!(Heard: ignore WlShm);
 delegate_noop!(Heard: ignore WlShmPool);
 delegate_noop!(Heard: ignore WlSurface);
 delegate_noop!(Heard: ignore XdgPositioner);
+
+impl Dispatch<ZxdgToplevelDecorationV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZxdgToplevelDecorationV1,
+        event: zxdg_toplevel_decoration_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zxdg_toplevel_decoration_v1::Event::Configure {
+            mode: WEnum::Value(mode),
+        } = event
+        {
+            heard.decoration_modes.push(mode);
+        }
+    }
+}
+
+impl Dispatch<OrgKdeKwinServerDecoration, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &OrgKdeKwinServerDecoration,
+        event: kde::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let kde::Event::Mode {
+            mode: WEnum::Value(mode),
+        } = event
+        {
+            heard.kde_modes.push(mode);
+        }
+    }
+}
+
+delegate_noop!(Heard: ignore ZxdgDecorationManagerV1);
+delegate_noop!(Heard: ignore OrgKdeKwinServerDecorationManager);
 
 /// The state number of `suspended` in `xdg_toplevel.configure`.
 pub const SUSPENDED: u32 = 9;

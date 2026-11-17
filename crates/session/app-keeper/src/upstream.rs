@@ -59,6 +59,12 @@ pub(crate) struct Upstream {
     pub content_type: Option<
         wayland_protocols::wp::content_type::v1::client::wp_content_type_manager_v1::WpContentTypeManagerV1,
     >,
+    pub xdg_decoration: Option<
+        wayland_protocols::xdg::decoration::zv1::client::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+    >,
+    pub kde_decoration: Option<
+        wayland_protocols_misc::server_decoration::client::org_kde_kwin_server_decoration_manager::OrgKdeKwinServerDecorationManager,
+    >,
     pub feedback: FeedbackParts,
     pub xdg_outputs: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     pub seat: Option<c::wl_seat::WlSeat>,
@@ -124,6 +130,8 @@ impl Upstream {
                 viewporter: None,
                 fractional_scale: None,
                 content_type: None,
+                xdg_decoration: None,
+                kde_decoration: None,
                 feedback: FeedbackParts::default(),
                 xdg_outputs: None,
                 seat: None,
@@ -277,6 +285,12 @@ impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
             }
             "zwp_pointer_gestures_v1" => {
                 up.gestures = Some(registry.bind(name, version.min(3), qh, ()));
+            }
+            "zxdg_decoration_manager_v1" => {
+                up.xdg_decoration = Some(registry.bind(name, 1, qh, ()));
+            }
+            "org_kde_kwin_server_decoration_manager" => {
+                up.kde_decoration = Some(registry.bind(name, 1, qh, ()));
             }
             "wl_output" => {
                 let wl: c::wl_output::WlOutput = registry.bind(name, version.min(4), qh, name);

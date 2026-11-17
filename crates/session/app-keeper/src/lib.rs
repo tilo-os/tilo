@@ -46,6 +46,7 @@
 mod child;
 mod control;
 mod data_device;
+mod decorations;
 mod dmabuf;
 mod fractional;
 mod outputs;

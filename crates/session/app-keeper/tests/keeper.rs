@@ -626,6 +626,64 @@ fn a_fault_is_attributed_to_the_window_that_caused_it_not_the_last_one_sent() {
 }
 
 #[test]
+fn the_apps_decoration_request_and_the_desktops_answer_travel_both_ways_across_a_restart() {
+    use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::Mode;
+
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Decorated", Some("decorated"));
+    app.show(&mut rig, (100, 80), RED);
+    let _decoration = app.decoration(Mode::ClientSide);
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.decoration_modes.last() == Some(&Mode::ServerSide)
+    });
+    let told = app.heard.decoration_modes.len();
+
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    rig.settle(&mut [&mut app]);
+    assert_eq!(
+        app.heard.decoration_modes.len(),
+        told,
+        "the same answer is not repeated to the app"
+    );
+    assert_eq!(
+        app.heard.decoration_modes.last(),
+        Some(&Mode::ServerSide),
+        "the app keeps the desktop's answer while the new one makes its own objects"
+    );
+    assert_eq!(rig.keeper.describe().fault, None);
+    let (_, _, (x, y, _, _)) = rig.windows()[0];
+    assert_eq!(rig.pixel((x + 50) as u32, (y + 40) as u32), RED);
+}
+
+#[test]
+fn the_kde_spelling_of_the_same_decoration_question_is_answered_across_a_restart() {
+    use wayland_protocols_misc::server_decoration::client::org_kde_kwin_server_decoration::Mode;
+
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Kde", Some("kde"));
+    app.show(&mut rig, (100, 80), GREEN);
+    let _decoration = app.kde_decoration(Mode::Client);
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.kde_modes.last() == Some(&Mode::Server)
+    });
+    let told = app.heard.kde_modes.len();
+
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    rig.settle(&mut [&mut app]);
+    assert_eq!(app.heard.kde_modes.len(), told, "not repeated");
+    assert_eq!(app.heard.kde_modes.last(), Some(&Mode::Server));
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
 fn a_viewport_crops_and_scales_the_window_on_the_desktop() {
     let mut rig = Rig::new(None);
     let mut app = App::connect(&mut rig);

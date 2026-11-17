@@ -71,6 +71,11 @@ pub struct State {
     pub(crate) fractional_scale:
         Option<smithay::wayland::fractional_scale::FractionalScaleManagerState>,
     pub(crate) content_type: Option<smithay::wayland::content_type::ContentTypeState>,
+    /// The app-facing decoration managers, once a desktop offered them.
+    pub(crate) xdg_decorations:
+        Option<smithay::wayland::shell::xdg::decoration::XdgDecorationState>,
+    pub(crate) kde_decorations:
+        Option<smithay::wayland::shell::kde::decoration::KdeDecorationState>,
     /// What the desktop answered each surface's own feedback request, kept while it is away.
     pub(crate) surface_feedback: crate::dmabuf::SurfaceFeedbacks,
     /// Every live surface of the app, by its id.
@@ -123,6 +128,8 @@ impl State {
             viewporter: None,
             fractional_scale: None,
             content_type: None,
+            xdg_decorations: None,
+            kde_decorations: None,
             surface_feedback: crate::dmabuf::SurfaceFeedbacks::default(),
             surfaces: HashMap::new(),
             next_seq: 0,
@@ -158,7 +165,7 @@ impl State {
                 self.content_type =
                     Some(smithay::wayland::content_type::ContentTypeState::new::<Self>(&self.dh));
             }
-            _ => {}
+            _ => self.offer_decorations(interface),
         }
     }
 
