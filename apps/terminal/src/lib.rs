@@ -12,13 +12,18 @@
     clippy::cast_sign_loss,
     reason = "app-local arithmetic; see the note above"
 )]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod actions;
 pub mod commands;
+#[cfg(not(target_arch = "wasm32"))]
 mod emulator;
+#[cfg(not(target_arch = "wasm32"))]
 mod graphics;
 pub mod history;
 mod i18n;
+#[cfg(not(target_arch = "wasm32"))]
 mod image_loads;
+#[cfg(not(target_arch = "wasm32"))]
 mod native_editor;
 pub mod parse;
 pub mod preferences;
@@ -26,19 +31,24 @@ pub mod resource;
 #[cfg(feature = "samples")]
 mod scenarios;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod screen;
 pub mod target;
 pub mod undoability;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use graphics::TerminalImagePlacement;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::inner::{
     Attr, CellColor, GridPos, OpenError, Requester, Selection, TermModes, TerminalBackend,
     TerminalWidget, parse_target_argument,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use portable_pty::CommandBuilder;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod inner {
     include!("main_body.rs");
     include!("scrollback_ui.rs");
@@ -46,12 +56,17 @@ mod inner {
     include!("window_ui.rs");
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 mod async_open;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod sessions;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod app_widget_impl;
+#[cfg(not(target_arch = "wasm32"))]
 mod view;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use view::TerminalView;
 
 #[must_use]
@@ -74,9 +89,11 @@ mod target_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy, Debug)]
 pub struct HostedSessionSource;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg_attr(not(unix), derive(Default))]
 pub struct HostedProcessServices {
     #[cfg(unix)]
@@ -92,6 +109,7 @@ impl Default for HostedProcessServices {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl HostedProcessServices {
     pub fn unavailable() -> Self {
         Self {
@@ -171,11 +189,13 @@ fn discover_ush(runtime: &std::path::Path) -> std::io::Result<std::os::unix::net
     Ok(stream)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub enum HostedTerminalError {
     RequiredServiceMissing(&'static str),
     ServiceFailed(String),
 }
+#[cfg(not(target_arch = "wasm32"))]
 impl std::fmt::Display for HostedTerminalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -186,8 +206,12 @@ impl std::fmt::Display for HostedTerminalError {
         }
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 impl std::error::Error for HostedTerminalError {}
 pub use resource::{Terminal, TerminalEffect, TerminalShell};
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod command_list;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn mounted_terminal(widget: &mut dyn ui::widget::Widget) -> Option<&mut TerminalWidget> {
@@ -199,6 +223,7 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(TerminalShell)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(unix))]
 impl HostedProcessServices {
     /// Whether the host handed over the `ush` supervisor: never, here.

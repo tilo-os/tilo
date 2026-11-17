@@ -2,10 +2,11 @@
 //! presence is scoped to. What the process prints stays on the device that runs it.
 
 use automerge::ObjId;
+#[cfg(not(target_arch = "wasm32"))]
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ResourceApp, ResourceSurface,
-    SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ResourceSurface, SurfaceCx,
 };
+use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::{
@@ -14,7 +15,9 @@ use ui::tilo_resource::{
 };
 use ui::widget::Element;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::TerminalWidget;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::screen::Screen;
 use crate::target::SessionTarget;
 
@@ -467,6 +470,7 @@ impl Terminal {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Keep explicit reads bounded even when retained output has very long rows; the suffix ends on a
 /// Unicode boundary and nothing is logged before the caller asks for it.
 pub(crate) fn readable_output(screen: &Screen) -> (String, bool) {
@@ -681,6 +685,14 @@ impl ResourceApp for TerminalShell {
         (1200, 720)
     }
 
+    /// A page has no shell: it shows the session's commands, and sends what
+    /// the person types to the shell the workspace's server keeps.
+    #[cfg(target_arch = "wasm32")]
+    fn view(cx: &mut ViewCx<Terminal>) -> Element {
+        crate::command_list::view(cx)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(
         clippy::expect_used,
         reason = "a framework surface without an emulator cannot present a terminal"
@@ -750,6 +762,7 @@ impl ResourceApp for TerminalShell {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
     fn read_only_changed(&mut self, read_only: bool) {
         self.native_editor_read_only_changed(read_only);
@@ -843,6 +856,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
     fn read_only_changed(&mut self, read_only: bool) {
         self.terminal_mut()

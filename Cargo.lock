@@ -23153,6 +23153,7 @@ dependencies = [
  "snippets",
  "speed-test",
  "tasks",
+ "terminal",
  "themes",
  "tilo-app",
  "tilo-app-id",

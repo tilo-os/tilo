@@ -27,40 +27,44 @@ thin = ["dep:runtime-dylib"]
 test-support = []
 
 [dependencies]
-tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process", features = ["native-editor"] }
-tilo-paths.workspace = true
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # OSC 8 links open through `ui::portal::open_uri` (the OpenURI portal on Linux).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 uuid.workspace = true
+# Where a session runs, and the environment records it can run in.
+tilo-environment = { path = "../../crates/runtime/environment" }
+tracing.workspace = true
+# Kitty graphics transmissions carry base64-encoded payloads.
+base64.workspace = true
+# What a command printed, which its record names by content.
+tilo-content = { path = "../../crates/system/content", default-features = false }
+
+# The session's shell, its emulator and its window run on a device that runs
+# the session; a page shows the session's commands instead.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+tilo-content = { path = "../../crates/system/content" }
+tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process", features = ["native-editor"] }
+tilo-paths.workspace = true
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 portable-pty = "0.9.0"
 # The application runtime the terminal hosts. Only its client half is used:
 # the service protocol and the descriptor-passing helper.
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
-# Where a session runs, and the environment records it can run in.
-tilo-environment = { path = "../../crates/runtime/environment" }
 libc.workspace = true
 # The VT emulator: parser, grid with scrollback and reflow, modes and replies.
 alacritty_terminal = "0.26.0"
 # The window bar's search can find a regular expression in the scrollback.
 regex.workspace = true
-tracing.workspace = true
 unicode-width = "0.2.2"
 unicode-segmentation = "1.12"
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
-# Kitty graphics transmissions carry base64-encoded payloads.
-base64.workspace = true
-tilo-content = { path = "../../crates/system/content" }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The workspace-hack's native feature set does not build for wasm32.
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # The stored shape History reads a session's runs by.
