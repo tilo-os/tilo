@@ -413,6 +413,10 @@ class Lander:
             return True
         inherited = False
         if lint.returncode != 0:
+            # Setting aside the changes the failure points at costs nothing; comparing with the
+            # branch's head alone costs two more lints, so it is for a failure no change explains.
+            if self.set_aside(batch, upstream, output):
+                return True
             inherited = self.inherited(len(batch), upstream, output)
             if not inherited:
                 self.failed(batch, upstream, output)
@@ -497,13 +501,20 @@ class Lander:
         except RuntimeError:
             return False
 
+    def set_aside(self, batch: list[tuple[dict, str]], upstream: str, output: str) -> bool:
+        """Set aside the changes a failed lint of several points at; whether there were any."""
+        if len(batch) < 2:
+            return False
+        blamed = self.blamed(batch, upstream, output)
+        if not blamed or len(blamed) == len(batch):
+            return False
+        # The others are linted without them next; each of them alone after that.
+        self.suspects |= blamed
+        self.place.event(kind="set-aside", ids=sorted(blamed), batch=len(batch))
+        return True
+
     def failed(self, batch: list[tuple[dict, str]], upstream: str, output: str) -> None:
         if len(batch) > 1:
-            blamed = self.blamed(batch, upstream, output)
-            if blamed and len(blamed) < len(batch):
-                # The others are linted without them next; each of them alone after that.
-                self.suspects |= blamed
-                return
             # Which change broke it is not known: the next round tries the first half.
             self.limit = max(1, len(batch) // 2)
             return
