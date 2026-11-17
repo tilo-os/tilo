@@ -1582,3 +1582,115 @@ fn an_issue_page_shows_its_description() {
         "the page follows the description: {shown:?}"
     );
 }
+/// An issue an agent files with a description shows it on the issue's page, whichever way the
+/// issue was made: `create-many` takes a description as `create` does.
+#[test]
+fn a_description_filed_with_the_issue_shows_on_its_page() {
+    let markdown =
+        "## Failure and scope\n\n[Check attempt 1](https://example.com) says the nightly failed.";
+    for many in [false, true] {
+        let mut app = open();
+        if many {
+            app.call_on(
+                &chain(),
+                "create-many",
+                json!({ "issues": [{ "title": "Fix the nightly", "body": markdown }] }),
+            )
+            .expect("create-many");
+        } else {
+            app.call_on(
+                &chain(),
+                "create",
+                json!({ "title": "Fix the nightly", "body": markdown }),
+            )
+            .expect("create");
+        }
+        app.settle();
+        let issue = only(&app);
+        let held_body = held(&app).get(&issue).unwrap().body;
+        assert!(
+            held_body.markdown().contains("Failure and scope"),
+            "the issue keeps the description (many: {many}): {:?}",
+            held_body.markdown()
+        );
+        app.call_on(&issue_resource(&issue), "open", json!({}))
+            .expect("open the issue");
+        app.settle();
+        let shown = app.texts().join("\n");
+        assert!(
+            shown.contains("Failure and scope"),
+            "the page shows the description (many: {many}): {shown}"
+        );
+    }
+}
+
+/// A press on a row opens its issue, and Enter opens the row the list has
+/// focused: one act each, never a second press.
+#[test]
+fn a_press_on_a_row_opens_the_issue_and_enter_opens_the_focused_row() {
+    let mut app = open();
+    for title in ["Write the launch notes", "Book the hall"] {
+        app.call_on(&chain(), "create", json!({ "title": title }))
+            .expect("create");
+    }
+    app.settle();
+    assert!(
+        !app.harness().targets().contains_key("tasks-issue-title"),
+        "a tracker opens on its list"
+    );
+    // A press on the row itself, where its title reads: the list's rows are
+    // flat, so no disclosure stands there.
+    let row = first_row(&mut app);
+    app.harness()
+        .click_at(row.x0 + row.width() * 0.2, row.center().y);
+    app.settle();
+    assert!(
+        app.harness().targets().contains_key("tasks-issue-title"),
+        "one press opens the issue"
+    );
+
+    // Enter opens the row the list has focused, without a press.
+    let mut app = open();
+    for title in ["Write the launch notes", "Book the hall"] {
+        app.call_on(&chain(), "create", json!({ "title": title }))
+            .expect("create");
+    }
+    app.settle();
+    let row = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::TreeItem
+                && node
+                    .label()
+                    .is_some_and(|label| label.contains("Write the launch notes"))
+        })
+        .map(|(id, _)| id)
+        .expect("the issue's row");
+    app.harness()
+        .perform_a11y_action(row, &ui::a11y::Action::Focus)
+        .expect("the row takes the keyboard");
+    app.settle();
+    assert!(
+        !app.harness().targets().contains_key("tasks-issue-title"),
+        "focusing a row does not open it"
+    );
+    app.harness().key("Enter");
+    app.settle();
+    assert!(
+        app.harness().targets().contains_key("tasks-issue-title"),
+        "Enter opens the row the list has focused"
+    );
+}
+
+/// The rect of the list's first row, by the name its widget answers.
+fn first_row(app: &mut TestApp<App>) -> Rect {
+    app.harness()
+        .targets()
+        .into_iter()
+        .filter(|(name, _)| name.starts_with("key:"))
+        .min_by(|(_, a), (_, b)| a.y0.total_cmp(&b.y0))
+        .map(|(_, rect)| rect)
+        .expect("the list has a row")
+}
