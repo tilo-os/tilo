@@ -871,6 +871,15 @@ impl HostAgents {
             // would do them twice. It ends here, and asking again is the person's to do.
             let left = Outcome::Failed(LEFT_BEGUN.to_owned());
             let ended = reply.finished(&left).await;
+            crate::workspace_telling::turn_ended(
+                &self.workspaces,
+                self.events.as_ref(),
+                &scope.person,
+                workspace,
+                &turn,
+                &left,
+            )
+            .await;
             self.sub_ended(&scope, &turn, &left, false).await;
             return (turn.ask, ended);
         }
@@ -917,6 +926,15 @@ impl HostAgents {
             .await;
         }
         let ended = reply.finished(&outcome).await;
+        crate::workspace_telling::turn_ended(
+            &self.workspaces,
+            self.events.as_ref(),
+            &scope.person,
+            workspace,
+            &turn,
+            &outcome,
+        )
+        .await;
         if matches!(outcome, Outcome::Cancelled) {
             // Its person stopped it: what it asked them and still waits is taken back.
             self.take_back_asked(workspace, &turn, &began).await;

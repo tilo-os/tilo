@@ -15,7 +15,8 @@
 //! This is also where a judgement made for a person finds whose day it is
 //! counted on: the assistant that person keeps in the workspace
 //! ([`count_judgements`]), and where a question that waits for a person in
-//! a conversation joins their log by itself ([`Feeder`]).
+//! a conversation joins their log by itself ([`Feeder`]), as does how a
+//! turn that a cause started for them ended.
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -30,7 +31,9 @@ use tilo_workspace_agent::{Agent, WorkspaceAgents};
 use crate::workspaces::person_model::Spender;
 use crate::workspaces::{Spenders, WeakWorkspaces, Workspaces};
 
+mod caused;
 mod questions;
+pub(crate) use caused::turn_ended;
 pub use questions::Feeder;
 
 /// The app that keeps the workspace's record of its agents.
