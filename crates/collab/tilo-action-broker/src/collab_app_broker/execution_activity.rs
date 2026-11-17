@@ -271,6 +271,11 @@ fn anchor_of(
             }],
         };
     }
+    if let tilo_actions::remote::InvokeArgument::Json(argument) = &parsed
+        && let Some(written) = edited_field(action, resource, argument)
+    {
+        return written;
+    }
     // An item published as its own resource (`<kind>/<field>/<item>`), or the
     // one a verb of the record names, is what the step acts on, and the view
     // draws it as a row.
@@ -332,6 +337,31 @@ fn anchor_of(
             ids: vec![item.to_owned()],
         },
     }
+}
+
+/// What an edit of whichever text field its `field` argument names writes (a tilolang
+/// item's `edit-text`): the text of its other text parameter, in that field of the resource
+/// it is offered on. The field showing it draws it as the writer's, with its caret at its end.
+fn edited_field(
+    action: &PublishedAction,
+    resource: &tilo_actions::ActionResource,
+    argument: &serde_json::Map<String, serde_json::Value>,
+) -> Option<tilo_actions::InteractionAnchor> {
+    let field = argument.get(tilo_actions::run::EDITED_FIELD)?.as_str()?;
+    let text = action
+        .params
+        .iter()
+        .filter(|param| param.ty == tilo_actions::ParamType::Text)
+        .filter(|param| param.name.as_ref() != tilo_actions::run::EDITED_FIELD)
+        .find_map(|param| argument.get(param.name.as_ref())?.as_str())?;
+    Some(tilo_actions::InteractionAnchor::Text {
+        region: field.to_owned(),
+        ranges: vec![tilo_actions::InteractionTextRange {
+            block: tilo_actions::logical_resource_id(&resource.id).into_owned(),
+            start: 0,
+            end: text.chars().count() as u64,
+        }],
+    })
 }
 
 /// The item a resource is, when it is one: `<kind>/<field>/<item>` of kind
@@ -946,6 +976,22 @@ mod anchor_tests {
             assert_eq!(
                 text_range(&anchor_of(&bound, &resource, Some(&renamed), None)),
                 ("title".into(), "7d2b".into(), 0, 15),
+            );
+            // An edit naming the field it writes by its `field` argument writes it in the
+            // resource it is offered on.
+            let (edit, resource) = published(
+                "tl:so.tilo.lang.tasks:root/i1",
+                "tl.so.tilo.lang.tasks.Task",
+                "edit-text",
+                vec![
+                    ActionParam::required_owned("field", ParamType::Text, "Field"),
+                    ActionParam::required_owned("value", ParamType::Text, "Value"),
+                ],
+            );
+            let edited = argument(&serde_json::json!({ "field": "title", "value": "Book film" }));
+            assert_eq!(
+                text_range(&anchor_of(&edit, &resource, Some(&edited), None)),
+                ("title".into(), "tl:so.tilo.lang.tasks:root/i1".into(), 0, 9),
             );
             let resource = tilo_actions::ActionResource {
                 id: "so.tilo.tasks/issues/7d2b".into(),

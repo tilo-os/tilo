@@ -3262,3 +3262,99 @@ fn broker_text_slot_keeps_the_advertised_primary_parameter_through_model_resolut
 
 #[path = "bound_policy_clock_tests.rs"]
 mod policy_clock;
+
+thread_local! {
+    static HEARD_ELSEWHERE: RefCell<Vec<crate::component_lifecycle::Heard>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The view of an app whose connection lives in its own process.
+struct HearsElsewhereProbe {
+    rect: KurboRect,
+}
+
+impl Widget for HearsElsewhereProbe {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _: &Theme,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        crate::widget::TaffyTreeExt::fill_leaf(taffy, nodes, self)
+    }
+    crate::rect_geometry!();
+    fn name(&self) -> &'static str {
+        "HearsElsewhere"
+    }
+    crate::provides!(dyn crate::component_lifecycle::HearsElsewhere);
+}
+
+impl crate::component_lifecycle::HearsElsewhere for HearsElsewhereProbe {
+    fn take_heard(&mut self) -> Vec<crate::component_lifecycle::Heard> {
+        HEARD_ELSEWHERE.with_borrow_mut(std::mem::take)
+    }
+}
+
+impl AppWidget for HearsElsewhereProbe {
+    fn app_kind(&self) -> AppKind {
+        AppKind::Editor
+    }
+    fn app_title(&self) -> &'static str {
+        "Elsewhere"
+    }
+    fn app_icon(&self) -> IconDescriptor {
+        IconDescriptor::Glyph("E")
+    }
+}
+
+/// A step of an agent's action the app's connection heard elsewhere reaches the window's
+/// presence through the component the window binds.
+#[test]
+fn a_step_heard_elsewhere_reaches_the_window_through_its_bound_component() {
+    let probe = crate::application_test_support::ProbeHost::new();
+    let definition = crate::application_test_support::definition(|mut context, _, _| {
+        context
+            .initialize_new_resource(|_| Ok(()))
+            .map_err(crate::launch::LaunchError::Record)?;
+        let root = Box::new(HearsElsewhereProbe {
+            rect: KurboRect::ZERO,
+        });
+        Ok(AppComponent::new(
+            context,
+            root,
+            tilo_actions::ActionRegistry::new(),
+        ))
+    });
+    let permissions = crate::application_test_support::runner_permissions();
+    let context = probe
+        .prepare_with_permissions(&definition, 97, &LaunchTarget::New, permissions)
+        .unwrap();
+    let component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    let mut app =
+        App::from_component(component, crate::application_test_support::runner_inputs()).unwrap();
+    let step: tilo_actions::SemanticInteraction = serde_json::from_value(serde_json::json!({
+        "version": tilo_actions::INTERACTION_VERSION,
+        "invocation": tilo_actions::InvocationId::new(),
+        "sequence": 1,
+        "actor": tilo_actions::Acting::agent("helper"),
+        "phase": tilo_actions::InteractionPhase::Applying,
+        "action": {"id": "new_task", "label": "New task"},
+        "resource": {"id": "tl:tasks:root", "kind": "tl.tasks.Tasks", "label": "Tasks"},
+        "anchor": tilo_actions::InteractionAnchor::Resource,
+    }))
+    .unwrap();
+    let heard = crate::component_lifecycle::Heard::Interaction(step.clone());
+    HEARD_ELSEWHERE.with_borrow_mut(|queued| queued.push(heard));
+    assert!(
+        app.pump_collab_presence(),
+        "what was heard changes the window"
+    );
+    let shown = app
+        .presence_ctx
+        .agent_marker_interactions(crate::time::now());
+    assert_eq!(
+        shown.first().map(|shown| shown.invocation),
+        Some(step.invocation)
+    );
+}

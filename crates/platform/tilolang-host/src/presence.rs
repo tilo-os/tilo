@@ -22,6 +22,30 @@ use ui::component_lifecycle::Heard;
 use ui::permissions::MemberId;
 use ui::presence::{DraftSaid, PresenceCtx, PresenceKey};
 
+/// Name the field a step writes text into (`edit-text` of `title`) as the window binds it: by the
+/// id its type declares it under, as the document keeps it, rather than by the name a caller used.
+fn bind_written_field(instance: &Instance, interaction: &mut tilo_actions::SemanticInteraction) {
+    let tilo_actions::InteractionAnchor::Text { region, .. } = &mut interaction.anchor else {
+        return;
+    };
+    let Some(package) = instance
+        .host()
+        .and_then(|host| host.package(instance.app()))
+    else {
+        return;
+    };
+    let declared = interaction
+        .resource
+        .kind
+        .rsplit_once('.')
+        .and_then(|(_, type_name)| package.meta.type_named(type_name));
+    if let Some(field) =
+        declared.and_then(|declared| declared.fields.iter().find(|field| field.name == *region))
+    {
+        region.clone_from(&field.id);
+    }
+}
+
 /// What an instance heard of the document's members, and what it last said of its own.
 pub struct Presence {
     app: String,
@@ -68,13 +92,11 @@ impl Presence {
                 key,
                 payload,
             } => {
-                if let PresencePayload::Interaction(interaction) = payload {
-                    let here = matches!(key, PresenceKey::Resource { app, .. } if *app == self.app);
-                    tracing::debug!(?key, here, action = %interaction.action.id, "heard a step of an action");
-                    if here {
-                        self.for_window
-                            .push(Heard::Interaction((**interaction).clone()));
-                    }
+                if let PresencePayload::Interaction(interaction) = payload
+                    && matches!(key, PresenceKey::Resource { app, .. } if *app == self.app)
+                {
+                    self.for_window
+                        .push(Heard::Interaction((**interaction).clone()));
                 }
                 self.heard
                     .apply_remote_presence(member.clone(), key.clone(), payload.clone());
@@ -146,6 +168,11 @@ impl Presence {
                 .collect()
         });
         instance.set_peers_and_composers(self.peers(), &composing);
+        for heard in &mut self.for_window {
+            if let Heard::Interaction(interaction) = heard {
+                bind_written_field(instance, interaction);
+            }
+        }
         for heard in self.take_for_window() {
             instance.say(ToUi::Heard(heard));
         }

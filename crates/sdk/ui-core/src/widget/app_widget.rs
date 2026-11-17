@@ -919,6 +919,7 @@ mod component_adapter {
             dyn crate::component_lifecycle::ComponentLifecycle,
             dyn crate::component_lifecycle::WindowActivation,
             dyn crate::component_lifecycle::WindowTitle,
+            dyn crate::component_lifecycle::HearsElsewhere,
             dyn crate::undo::UndoPoints,
             dyn crate::widget::ResourceOperations
         );
@@ -1659,6 +1660,15 @@ mod component_adapter {
         fn window_title(&self) -> Option<&str> {
             self.in_root(crate::component_lifecycle::window_title)
                 .flatten()
+        }
+    }
+
+    /// What the connection of the component's app heard elsewhere (the app's instance in its own
+    /// process) of the people at it: the app's root hands it over.
+    impl crate::component_lifecycle::HearsElsewhere for BoundAppWidget {
+        fn take_heard(&mut self) -> Vec<crate::component_lifecycle::Heard> {
+            self.in_root_mut(|root| crate::component_lifecycle::take_heard(root))
+                .unwrap_or_default()
         }
     }
 

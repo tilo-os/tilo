@@ -89,6 +89,14 @@ impl Default for TextInputProps {
     }
 }
 
+/// The field of the item a bound value edits, as an action's text anchor names it: the field
+/// by its declared id, in the item it belongs to ([`TextInput::set_edits`]).
+fn written_at(value: &Bound<String>) -> Option<(String, String)> {
+    let address = tilo_actions::ActionAddress::parse(value.identity.as_deref()?)?;
+    let item = tilo_actions::logical_resource_id(&address.resource).into_owned();
+    Some((address.action, item))
+}
+
 /// What a field changed by someone else says on hover: who changed it, and what it held.
 fn change_note(by: &Person, previous: Option<&str>) -> String {
     match previous {
@@ -147,6 +155,7 @@ impl Described for TextInput {
             .disabled(!enabled)
             .with_read_only(read_only);
         input.change_before = previous;
+        input.set_edits(written_at(&value));
         if let Some(text) = text {
             input = input
                 .with_plain_chrome()
@@ -205,6 +214,7 @@ impl Described for TextInput {
             self.follow(&value.state);
         }
         self.path.clone_from(&value.path);
+        self.set_edits(written_at(&value));
         self.change = changed_by.map(|by| {
             let note = change_note(&by, previous.as_deref());
             (by, note)
