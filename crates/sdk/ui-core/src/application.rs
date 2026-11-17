@@ -541,7 +541,7 @@ impl HostContext {
         validate_identity(definition.app_id()).map_err(LaunchError::Restore)?;
         validate_identity(definition.record_kind.as_str()).map_err(LaunchError::Restore)?;
         validate_identity(&device_id).map_err(LaunchError::Restore)?;
-        validate_identity(&author.key()).map_err(LaunchError::Restore)?;
+        validate_identity(author.id()).map_err(LaunchError::Restore)?;
         let (profile, package, workspace) = records
             .canonical_namespace()
             .ok_or_else(|| mismatch("the record store names no namespace"))?;
@@ -986,8 +986,9 @@ impl ApplicationDefinition {
     #[must_use]
     pub fn member_record_of(&self, author: &MemberId) -> Option<DocumentCheckout> {
         self.member_record
-            .then(|| DocumentId::of_member(&author.key(), self.record_kind.as_str()))
+            .then(|| author.person_id())
             .flatten()
+            .and_then(|person| DocumentId::of_member(person, self.record_kind.as_str()))
             .map(|id| DocumentCheckout::new(id, self.record_kind.clone()))
     }
 

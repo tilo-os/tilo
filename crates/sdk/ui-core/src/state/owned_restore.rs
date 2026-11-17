@@ -235,7 +235,7 @@ fn check_restore_authority(
         .into_iter()
         .filter_map(|node| node.by.member_id())
         .any(|member| match member {
-            MemberId::Person(id) => *id == author.key() || id == crate::permissions::LOCAL_USER,
+            MemberId::Person(id) => member == author || id == crate::permissions::LOCAL_USER,
             MemberId::Agent(_) | MemberId::Bot(_) => false,
         });
     if !mapped

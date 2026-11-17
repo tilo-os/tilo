@@ -4240,7 +4240,7 @@ impl ActionFrame {
 
     fn writer_of(&self, binding: &CallbackBinding) -> automerge::ActorId {
         if binding.writes_as_author {
-            crate::record::author_writer(&self.writer, &binding.author.key())
+            crate::record::author_writer(&self.writer, binding.author.actor_bytes())
         } else {
             self.writer.clone()
         }
@@ -4392,7 +4392,7 @@ impl CallbackBinding {
     pub(crate) fn authored_context(&self) -> tilo_actions::ActionContext {
         let mut context = (*self.operation_context).clone();
         if context.invoker.is_none() {
-            context.invoker = Some(tilo_actions::ActionInvoker::person(self.author.key()));
+            context.invoker = Some(tilo_actions::ActionInvoker::member(self.author.clone()));
         }
         context
     }

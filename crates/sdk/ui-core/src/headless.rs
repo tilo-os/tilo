@@ -5131,7 +5131,7 @@ impl FrameHarness {
             }
         }
         let mut peers: Vec<InspectionNode> = Vec::new();
-        let mut written: Vec<String> = Vec::new();
+        let mut written: Vec<crate::permissions::MemberId> = Vec::new();
         for mut mark in drawn {
             if mark.rect.width() <= 0.0 || mark.rect.height() <= 0.0 {
                 continue;
@@ -5140,32 +5140,35 @@ impl FrameHarness {
                 mark.saying = self
                     .drawn_action_markers
                     .iter()
-                    .find(|marker| marker.interaction.actor.by.key() == mark.user.key())
+                    .find(|marker| marker.interaction.actor.by.member_id() == Some(&mark.user))
                     .map(|marker| self.presence.interaction_status_label(&marker.interaction));
             }
-            let path = format!("presence-mark-{}", mark.user.key());
+            let path = format!("presence-mark-{}", mark.user.id());
             let name = self.presence.mark_words(&mark);
             peers.push(Self::presence_node(&path, Some(mark.rect), name));
-            written.push(mark.user.key());
+            written.push(mark.user);
         }
         for marker in &self.drawn_action_markers {
-            let actor = &marker.interaction.actor.by.key();
-            if written.contains(actor) {
+            let actor = &marker.interaction.actor.by;
+            if actor
+                .member_id()
+                .is_some_and(|member| written.contains(member))
+            {
                 continue;
             }
-            let path = format!("agent-marker-{actor}");
+            let path = format!("agent-marker-{}", actor.id());
             let name = self.presence.interaction_status_label(&marker.interaction);
             peers.push(Self::presence_node(&path, None, name));
         }
         for (index, tag) in self.presence.caret_tags().into_iter().enumerate() {
             let rect = to_surface.transform_rect_bbox(tag.rect);
             let mut node = Self::presence_node(
-                &format!("presence-tag-{}-{index}", tag.user.key()),
+                &format!("presence-tag-{}-{index}", tag.user.id()),
                 None,
                 tag.label,
             );
             node.widget = crate::presence::TAG_WIDGET.into();
-            node.test_id = Some(format!("presence-tag-{}", tag.user.key()));
+            node.test_id = Some(format!("presence-tag-{}", tag.user.id()));
             node.rect = [rect.x0, rect.y0, rect.width(), rect.height()];
             node.semantics = None;
             peers.push(node);

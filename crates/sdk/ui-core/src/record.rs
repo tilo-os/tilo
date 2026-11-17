@@ -1631,13 +1631,15 @@ impl RecordOwners {
     pub fn open_personal(
         &mut self,
         app_id: &str,
-        person: &str,
+        author: &crate::permissions::MemberId,
     ) -> Result<RecordStore, RecordOpenError> {
         self.open_scoped(
             app_id,
             person::PERSONAL_SCOPE,
             false,
-            collab_types::personal_cluster_of(person),
+            author
+                .person_id()
+                .and_then(collab_types::personal_cluster_of),
         )
     }
 
@@ -2073,13 +2075,16 @@ fn genesis_actor_of(id: &DocumentId, kind: &ResourceType, workspace: &str) -> au
 /// the host asked for per-author writers; mounts of one profile and device share a document, so
 /// this keeps each author's edits apart. Unique per writer, and the same after a reopen, so history
 /// names the same author.
-pub fn author_writer(record_writer: &automerge::ActorId, author: &str) -> automerge::ActorId {
+pub fn author_writer(
+    record_writer: &automerge::ActorId,
+    author: impl AsRef<[u8]>,
+) -> automerge::ActorId {
     use sha2::Digest as _;
     let digest = sha2::Sha256::new()
         .chain_update(b"tilo.record.author-writer\0")
         .chain_update(record_writer.to_bytes())
         .chain_update(b"\0")
-        .chain_update(author.as_bytes())
+        .chain_update(author.as_ref())
         .finalize();
     automerge::ActorId::from(digest.get(..16).unwrap_or_default())
 }

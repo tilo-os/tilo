@@ -24,7 +24,7 @@ struct Entry {
 #[derive(Serialize)]
 pub(super) struct InvocationResults {
     schema_version: u8,
-    author: String,
+    author: crate::permissions::MemberId,
     entries: Vec<Entry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     retention_error: Option<String>,
@@ -32,7 +32,7 @@ pub(super) struct InvocationResults {
     remaining: usize,
 }
 impl InvocationResults {
-    fn new(author: String) -> Self {
+    fn new(author: crate::permissions::MemberId) -> Self {
         Self {
             schema_version: 1,
             author,
@@ -128,7 +128,7 @@ impl FrameHarness {
     /// Retain outcomes from subsequent explicit scenario invocations.
     pub fn retain_invocation_results(&mut self) {
         self.invalidate_local();
-        self.invocation_results = Some(InvocationResults::new(self.author.key()));
+        self.invocation_results = Some(InvocationResults::new(self.author.clone()));
     }
     /// Serialize retained actual Completed/Accepted/Refused outcomes in invocation order. Accepted
     /// means only admission, never successful completion of a background job.
@@ -200,7 +200,7 @@ mod tests {
         frame.perform(&unknown()).unwrap();
         let raw = frame.invocation_results_json().unwrap();
         let result: Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(result["author"], "fixture");
+        assert_eq!(result["author"]["person"], "fixture");
         assert_eq!(result["schema_version"], 1);
         assert_eq!(result["entries"][0]["address"]["resource"], "missing");
         assert_eq!(result["entries"][0]["status"], "refused");

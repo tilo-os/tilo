@@ -701,7 +701,7 @@ fn action_authority_context(
 ) -> Result<PermissionContext, String> {
     let projection = read_action_authority_projection(source, workspace, app, person)?;
     Ok(PermissionContext::new(
-        crate::permissions::Acting::person(person.key()),
+        crate::permissions::Acting::member(person.clone()),
         Vec::new(),
         projection.standing(),
     ))
@@ -718,7 +718,10 @@ fn read_action_authority_projection(
     let projection: AppActionAuthorityProjection =
         serde_json::from_slice(&bytes).map_err(|_| "host action policy is invalid")?;
     projection.validate().map_err(str::to_owned)?;
-    if !projection.matches(workspace, app, &person.key()) {
+    if !person
+        .person_id()
+        .is_some_and(|person| projection.matches(workspace, app, person))
+    {
         return Err("host action policy binding mismatch".into());
     }
     Ok(projection)
@@ -899,7 +902,7 @@ impl ApplicationHost {
         permissions: crate::permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
     ) -> Result<Self, LaunchError> {
-        validate_identity(&author.key()).map_err(LaunchError::Restore)?;
+        validate_identity(author.id()).map_err(LaunchError::Restore)?;
         let views = Rc::new(
             InstanceViewStore::with_store(Rc::clone(&store), &device_id, workspace_id)
                 .map_err(LaunchError::Restore)?,
@@ -1945,9 +1948,9 @@ mod native_process_tests {
             let app = "so.tilo.store";
             let author = MemberId::person("person-a");
             let original = AppActionAuthorityProjection::project(
-                &tilo_action_policy::WorkspacePolicy::new(workspace, author.key()),
+                &tilo_action_policy::WorkspacePolicy::new(workspace, author.id()),
                 app,
-                &author.key(),
+                author.id(),
                 false,
             );
             let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
@@ -2025,9 +2028,9 @@ mod native_process_tests {
             let app = "so.tilo.store";
             let author = MemberId::person("person-a");
             let original = AppActionAuthorityProjection::project(
-                &tilo_action_policy::WorkspacePolicy::new(workspace, author.key()),
+                &tilo_action_policy::WorkspacePolicy::new(workspace, author.id()),
                 app,
-                &author.key(),
+                author.id(),
                 false,
             );
             let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));

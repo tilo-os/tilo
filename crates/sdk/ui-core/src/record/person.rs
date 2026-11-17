@@ -83,7 +83,7 @@ impl PersonRecords {
         author: MemberId,
     ) -> Result<Self, RecordOpenError> {
         Ok(Self {
-            store: owners.open_personal(app_id, &author.key())?,
+            store: owners.open_personal(app_id, &author)?,
             owners: owners.clone(),
             replica: false,
             author,
@@ -107,7 +107,7 @@ impl PersonRecords {
     fn replica_in(app_id: &str, scope: &str, author: MemberId) -> Result<Self, RecordOpenError> {
         let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
         let store = if scope == PERSONAL_SCOPE {
-            owners.open_personal(app_id, &author.key())?
+            owners.open_personal(app_id, &author)?
         } else {
             owners.open_person(app_id, scope)?
         };
@@ -138,7 +138,7 @@ impl PersonRecords {
         }
         let mut owners = self.others.clone().unwrap_or_else(|| self.owners.clone());
         Ok(Self {
-            store: owners.open_personal(app_id, &self.author.key())?,
+            store: owners.open_personal(app_id, &self.author)?,
             owners,
             replica: self.replica,
             author: self.author.clone(),
@@ -160,7 +160,12 @@ impl PersonRecords {
     /// # Errors
     /// Rejects an invalid workspace.
     pub fn in_workspace(&self, workspace: &str) -> Result<Self, RecordOpenError> {
-        if DocumentId::of_member(&self.author.key(), "kind").is_none() {
+        if self
+            .author
+            .person_id()
+            .and_then(|person| DocumentId::of_member(person, "kind"))
+            .is_none()
+        {
             return Ok(Self {
                 others: None,
                 ..self.clone()
@@ -206,7 +211,10 @@ impl PersonRecords {
         {
             return Err(RecordOpenError::UndeclaredOwnKind(kind.as_str().to_owned()));
         }
-        Ok(DocumentId::of_member(&self.author.key(), kind.as_str())
+        Ok(self
+            .author
+            .person_id()
+            .and_then(|person| DocumentId::of_member(person, kind.as_str()))
             .unwrap_or_else(|| record_id(kind)))
     }
 

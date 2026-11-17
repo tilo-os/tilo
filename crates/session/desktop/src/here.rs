@@ -835,6 +835,21 @@ impl HereState {
             .filter(|user| !user.is_empty())
     }
 
+    /// The member the device `publisher` is here as: the agent or bot its presence names, else its
+    /// person, once heard.
+    #[must_use]
+    pub fn member_of(&self, publisher: &str) -> Option<MemberId> {
+        let named = self
+            .members
+            .iter()
+            .flatten()
+            .chain(self.own.as_ref())
+            .find(|member| member.publisher == publisher)
+            .and_then(|member| member.member.clone())
+            .filter(|member| !member.is_person());
+        named.or_else(|| self.user_of(publisher).map(MemberId::person))
+    }
+
     /// Who `publisher` counts as: its person where known, else the device itself, so devices of one
     /// person count once.
     fn person_of<'a>(&'a self, publisher: &'a str) -> &'a str {

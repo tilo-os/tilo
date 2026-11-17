@@ -151,7 +151,12 @@ impl Mount {
         let Some(desktop) = &self.desktop else {
             return;
         };
-        let Some(followed) = desktop.here.borrow().following().map(str::to_owned) else {
+        let followed = {
+            let here = desktop.here.borrow();
+            here.following()
+                .and_then(|publisher| here.member_of(publisher))
+        };
+        let Some(followed) = followed else {
             self.followed_view = ui::headless::FollowedView::default();
             return;
         };

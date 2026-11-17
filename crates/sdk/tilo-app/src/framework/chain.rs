@@ -567,12 +567,7 @@ impl<P: Chained> ChainState<P> {
                 Write::Done(index, created) => {
                     // Only what the window's person did themselves: an
                     // agent's step is its own to take back.
-                    if invoker.acting.by.key()
-                        == ActionInvoker::member(self.workspace.me.clone())
-                            .acting
-                            .by
-                            .key()
-                    {
+                    if invoker.acting.by.member_id() == Some(&self.workspace.me) {
                         self.written.borrow_mut().push(index);
                         self.undone.borrow_mut().clear();
                     }

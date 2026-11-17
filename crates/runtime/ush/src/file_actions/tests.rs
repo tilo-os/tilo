@@ -749,7 +749,10 @@ tilo_test_env::scenario! {
             .invoker
             .as_ref()
             .expect("the entry names its actor");
-        assert_eq!(invoker.acting.by.key(), state.person);
+        assert_eq!(
+            invoker.acting.by,
+            tilo_actions::Actor::Member(tilo_actions::MemberId::person(state.person.clone()))
+        );
         assert!(invoker.acting.is_person());
         assert_eq!(moves[0].kind, Some(tilo_actions::ActionKind::Outside));
         let queued = state.environment.current();
@@ -818,7 +821,10 @@ tilo_test_env::scenario! {
         let moves = entries_for(&state, "move");
         assert_eq!(moves.len(), 1);
         let invoker = moves[0].invoker.as_ref().unwrap();
-        assert_eq!(invoker.acting.by.key(), "agent:agent-claude");
+        assert_eq!(
+            invoker.acting.by,
+            tilo_actions::Actor::Member(tilo_actions::MemberId::agent("agent-claude"))
+        );
         assert!(invoker.acting.is_agent());
         assert_eq!(invoker.acting.acted_for_person(), Some(state.person.as_str()));
 
