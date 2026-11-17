@@ -175,6 +175,51 @@ const options = (runtime, store, extra = {}) => ({
 /** What the workspace's members said, as the session hands it to the page. */
 const say = (runtime, said, durable = []) => runtime.peer.emit(runtime.peer.phase, durable, said);
 
+test('an action asked once is answered by the host, and nothing of it is kept in the page', async () => {
+  // A host that says which device it is: only such a host has actions to ask.
+  const runtime = certifiedBySite(fakeRuntime());
+  runtime.hostInfo = async () => siteNamed();
+  runtime.hostRefusal = text => JSON.stringify({code: JSON.parse(text).code ?? 'refused', message: JSON.parse(text).message ?? ''});
+  const peer = await connect(options(runtime, memoryStore(), {voice: false, live: false}));
+  const sent = [];
+  const answers = [];
+  runtime.peer.actionMessage = async (workspace, person, message) => {
+    sent.push({workspace, person, asked: JSON.parse(message)});
+    return JSON.stringify(answers.shift());
+  };
+  const target = {provider: 'tilo.vault', address: {resource: 'vault', action: 'add'}};
+  const argument = {kind: 'key', belongsTo: ['https://api.example'], username: '', secret: 'typed into a protected field'};
+
+  // The host ran it: its answer, under the id the caller named.
+  answers.push({Receipt: {invocation: 'inv-1', status: {Completed: {output: {value: {reference: 'vault.item:00'}}}}}});
+  assert.deepEqual(await peer.actions.once(target, argument, {invocation: 'inv-1'}),
+    {invocation: 'inv-1', state: 'succeeded', output: {value: {reference: 'vault.item:00'}, resources: []}});
+  // Asked as this page's person in its workspace, with the argument as typed.
+  assert.deepEqual(sent, [{workspace: WORKSPACE, person: 'bb'.repeat(32),
+    asked: {Invoke: {invocation: 'inv-1', target, argument: {Json: argument}}}}]);
+  // Nothing of it is kept: the page knows no such invocation, so it holds no argument of it.
+  await assert.rejects(peer.actions.status('inv-1'), {code: 'unknown_invocation'});
+
+  // One the host accepted and still runs is followed by asking the host, not by what a page kept.
+  answers.push({Receipt: {invocation: 'inv-2', status: 'Accepted'}});
+  assert.deepEqual(await peer.actions.once(target, argument, {invocation: 'inv-2'}), {invocation: 'inv-2', state: 'accepted'});
+  answers.push({Update: {state: {update: {Succeeded: {output: {value: {done: true}}}}}}});
+  assert.deepEqual(await peer.actions.observe('inv-2'), {invocation: 'inv-2', state: 'succeeded', output: {value: {done: true}, resources: []}});
+  assert.deepEqual(sent.at(-1).asked, {Observe: {invocation: 'inv-2'}});
+  answers.push({});
+  assert.deepEqual(await peer.actions.observe('inv-2'), {invocation: 'inv-2', state: 'unknown'});
+
+  // A refusal is the host's own, and a host that says nothing is said so.
+  answers.push({Receipt: {invocation: 'inv-3', status: {Rejected: {error: {code: 'unknown_action', message: 'No such action is offered'}}}}});
+  await assert.rejects(peer.actions.once(target, argument, {invocation: 'inv-3'}), {code: 'unknown_action', message: 'No such action is offered'});
+  answers.push({});
+  await assert.rejects(peer.actions.once(target, argument), {code: 'unavailable'});
+  // What is no target is refused before the host is asked.
+  const asked = sent.length;
+  await assert.rejects(peer.actions.once({provider: 'tilo.vault'}, argument), TypeError);
+  assert.equal(sent.length, asked);
+});
+
 test('httpsPost posts bodies to the host origin', async () => {
   const seen = [];
   const post = httpsPost('https://host.example:8443', async (url, init) => {
