@@ -181,9 +181,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc func openLinkFromClipboard(_ sender: Any?) {
-        guard let host, let text = NSPasteboard.general.string(forType: .string),
-              let link = host.policy.link(in: text)
-        else { return say(Words.noLink.said) }
+        guard let host else { return }
+        guard let text = NSPasteboard.general.string(forType: .string), let link = host.policy.link(in: text)
+        else { return say(Words.noLink.said(site: host.policy.origin)) }
         follow(link)
     }
 

@@ -105,7 +105,9 @@ on a phone scan the code, that "Pair a new device" shows on a device where the p
 signed in. The page says where it stands at the door on its root element
 (`data-entry`); the bar goes when it is in, and a person who came in by such a link is taken
 back to where the app starts. A link is also opened from the File menu on the Mac, from a long
-press on the phone's icon, or by sharing it to the app.
+press on the phone's icon, or by sharing it to the app. It is taken out of whatever is written
+around it; a link into another site is refused with the name of the site the app opens, and
+the same computer under another name (`localhost` for `tilo.localhost`) is another site.
 
 **One site.** The app shows the origin its settings name and nothing else
 (`SitePolicy.swift`). Any other address goes to the system's browser. The script below runs in

@@ -1,12 +1,12 @@
 /* The native part's sentences in English. Sources/ShellCore/Words.swift holds the same
-   table; a test fails when the two differ. %@ is the app's own name, which its bundle
-   gives. */
-"about" = "About %@";
+   table; a test fails when the two differ. {app} is the app's own name, which its bundle
+   gives, and {site} the site the app opens. */
+"about" = "About {app}";
 "settings" = "Settings…";
-"hide" = "Hide %@";
+"hide" = "Hide {app}";
 "hide-others" = "Hide others";
 "show-all" = "Show all";
-"quit" = "Quit %@";
+"quit" = "Quit {app}";
 "file-menu" = "File";
 "open-link" = "Open link from clipboard";
 "close-window" = "Close window";
@@ -21,7 +21,7 @@
 "reload" = "Reload";
 "window-menu" = "Window";
 "minimize" = "Minimize";
-"open-app" = "Open %@";
+"open-app" = "Open {app}";
 "dictate" = "Dictate a message";
 "open-at-login" = "Open at login";
 "unreachable-title" = "Tilo cannot be reached";
@@ -30,15 +30,15 @@
 "address-refused" = "This address cannot be used";
 "address-not-an-address" = "Enter the address of a Tilo site, such as https://tilo.sh.";
 "address-not-secure" = "A Tilo site is reached over https.";
-"no-link" = "The clipboard holds no link to this Tilo site.";
+"no-link" = "The clipboard holds no link into {site}, the Tilo site this app opens.";
 "listening" = "Listening";
 "insert-words" = "Insert";
 "cancel" = "Cancel";
 "dictation-unavailable" = "Dictation is not available in this language on this device.";
-"dictation-not-allowed" = "Allow the microphone and speech recognition for %@ in the system's settings, then try again.";
+"dictation-not-allowed" = "Allow the microphone and speech recognition for {app} in the system's settings, then try again.";
 "words-waiting" = "Press where the words should go.";
 "write-reply" = "Write a reply";
-"reply-button" = "Open in %@";
+"reply-button" = "Open in {app}";
 "reply-placeholder" = "Message";
 "site-label" = "Tilo site";
 "site-help" = "The address of the Tilo site this app opens.";
@@ -47,13 +47,13 @@
 "open-notification-settings" = "Open notification settings";
 "share-added" = "Added to your message";
 "share-nothing" = "Nothing here can go into a message.";
-"share-failed" = "%@ could not take this.";
+"share-failed" = "{app} could not take this.";
 "done" = "Done";
 "way-in-mac" = "Paste an invitation link, or the link that “Pair a new device” gives on a device where you are signed in.";
 "way-in-phone" = "Scan the code or paste the link that “Pair a new device” gives on a device where you are signed in, or paste an invitation link.";
 "paste-link" = "Paste link";
 "scan-code" = "Scan code";
-"code-no-link" = "That code is no link to this Tilo site.";
-"camera-not-allowed" = "Allow the camera for %@ in the system's settings to scan a code.";
+"code-no-link" = "That code is no link into {site}, the Tilo site this app opens.";
+"camera-not-allowed" = "Allow the camera for {app} in the system's settings to scan a code.";
 "page-stopped" = "The page stopped while it loaded.";
-"page-away" = "This Tilo site keeps leaving %@ for another page.";
+"page-away" = "This Tilo site keeps leaving {app} for another page.";

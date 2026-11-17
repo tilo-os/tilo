@@ -5,7 +5,8 @@ import Foundation
 /// shell shows when there is no page, and what the system shows for it.
 ///
 /// Two apps are built from these sources, so no sentence names one: where the app's own name
-/// belongs a sentence has `%@`, and the name is the bundle's.
+/// belongs a sentence has `{app}`, and the name is the bundle's. Where a sentence names the
+/// site the app opens it has `{site}`.
 public enum Words: String, CaseIterable, Sendable {
     case about, settings, hide, hideOthers = "hide-others", showAll = "show-all", quit
     case fileMenu = "file-menu", openLink = "open-link", closeWindow = "close-window"
@@ -27,15 +28,16 @@ public enum Words: String, CaseIterable, Sendable {
     case codeNoLink = "code-no-link", cameraNotAllowed = "camera-not-allowed", pageStopped = "page-stopped"
     case pageAway = "page-away"
 
-    /// The sentence in English, with `%@` where the app's own name goes.
+    /// The sentence in English, with `{app}` where the app's own name goes and `{site}` where
+    /// the site does.
     public var english: String {
         switch self {
-        case .about: "About %@"
+        case .about: "About {app}"
         case .settings: "Settings…"
-        case .hide: "Hide %@"
+        case .hide: "Hide {app}"
         case .hideOthers: "Hide others"
         case .showAll: "Show all"
-        case .quit: "Quit %@"
+        case .quit: "Quit {app}"
         case .fileMenu: "File"
         case .openLink: "Open link from clipboard"
         case .closeWindow: "Close window"
@@ -50,7 +52,7 @@ public enum Words: String, CaseIterable, Sendable {
         case .reload: "Reload"
         case .windowMenu: "Window"
         case .minimize: "Minimize"
-        case .openApp: "Open %@"
+        case .openApp: "Open {app}"
         case .dictate: "Dictate a message"
         case .openAtLogin: "Open at login"
         case .unreachableTitle: "Tilo cannot be reached"
@@ -59,15 +61,15 @@ public enum Words: String, CaseIterable, Sendable {
         case .addressRefused: "This address cannot be used"
         case .addressNotAnAddress: "Enter the address of a Tilo site, such as https://tilo.sh."
         case .addressNotSecure: "A Tilo site is reached over https."
-        case .noLink: "The clipboard holds no link to this Tilo site."
+        case .noLink: "The clipboard holds no link into {site}, the Tilo site this app opens."
         case .listening: "Listening"
         case .insertWords: "Insert"
         case .cancel: "Cancel"
         case .dictationUnavailable: "Dictation is not available in this language on this device."
-        case .dictationNotAllowed: "Allow the microphone and speech recognition for %@ in the system's settings, then try again."
+        case .dictationNotAllowed: "Allow the microphone and speech recognition for {app} in the system's settings, then try again."
         case .wordsWaiting: "Press where the words should go."
         case .writeReply: "Write a reply"
-        case .replyButton: "Open in %@"
+        case .replyButton: "Open in {app}"
         case .replyPlaceholder: "Message"
         case .siteLabel: "Tilo site"
         case .siteHelp: "The address of the Tilo site this app opens."
@@ -76,16 +78,16 @@ public enum Words: String, CaseIterable, Sendable {
         case .openNotificationSettings: "Open notification settings"
         case .shareAdded: "Added to your message"
         case .shareNothing: "Nothing here can go into a message."
-        case .shareFailed: "%@ could not take this."
+        case .shareFailed: "{app} could not take this."
         case .done: "Done"
         case .wayInMac: "Paste an invitation link, or the link that “Pair a new device” gives on a device where you are signed in."
         case .wayInPhone: "Scan the code or paste the link that “Pair a new device” gives on a device where you are signed in, or paste an invitation link."
         case .pasteLink: "Paste link"
         case .scanCode: "Scan code"
-        case .codeNoLink: "That code is no link to this Tilo site."
-        case .cameraNotAllowed: "Allow the camera for %@ in the system's settings to scan a code."
+        case .codeNoLink: "That code is no link into {site}, the Tilo site this app opens."
+        case .cameraNotAllowed: "Allow the camera for {app} in the system's settings to scan a code."
         case .pageStopped: "The page stopped while it loaded."
-        case .pageAway: "This Tilo site keeps leaving %@ for another page."
+        case .pageAway: "This Tilo site keeps leaving {app} for another page."
         }
     }
 
@@ -102,9 +104,15 @@ public enum Words: String, CaseIterable, Sendable {
         said(as: Words.appName())
     }
 
-    /// The sentence as an app named `name` says it.
-    public func said(as name: String, in bundle: Bundle = .main) -> String {
+    /// A sentence that names the site, about `site`: the origin the app opens.
+    public func said(site: String) -> String {
+        said(as: Words.appName(), site: site)
+    }
+
+    /// The sentence as an app named `name` says it, about the site `site`.
+    public func said(as name: String, site: String = "", in bundle: Bundle = .main) -> String {
         NSLocalizedString(rawValue, bundle: bundle, value: english, comment: "")
-            .replacingOccurrences(of: "%@", with: name)
+            .replacingOccurrences(of: "{app}", with: name)
+            .replacingOccurrences(of: "{site}", with: site)
     }
 }

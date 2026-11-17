@@ -62,15 +62,20 @@ public struct SitePolicy: Equatable, Sendable {
         return parts.count > app && parts[app] == only
     }
 
-    /// The link in `text` when it is one into this site: what a person pasted or shared to
-    /// get in (an invitation, a pairing link) or to open a document.
+    /// The first link in `text` that leads into this site: what a person pasted, scanned or
+    /// shared to get in (an invitation, a pairing link) or to open a document. It is taken out
+    /// of whatever is written around it, a sentence or brackets. The same computer under
+    /// another name is another site: the page's keys are kept under the name it was opened by.
     public func link(in text: String) -> URL? {
-        let written = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !written.contains(where: \.isWhitespace), let url = URL(string: written),
-              url.scheme == "https" || url.scheme == "http",
-              SitePolicy.origin(of: url) == origin
-        else { return nil }
-        return url
+        for word in text.split(whereSeparator: \.isWhitespace) {
+            guard let start = word.firstMatch(of: /https?:\/\//)?.range.lowerBound else { continue }
+            var written = String(word[start...])
+            // What closes a sentence or a bracket around a link is not part of it. A dash or
+            // an underline may end an invitation's key, and stays.
+            while let last = written.last, ".,;:!?)]}>\"'”’»".contains(last) { written.removeLast() }
+            if let url = URL(string: written), SitePolicy.origin(of: url) == origin { return url }
+        }
+        return nil
     }
 
     /// `scheme://host[:port]` of an http address, with the standard port left out.

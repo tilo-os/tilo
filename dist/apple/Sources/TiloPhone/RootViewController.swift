@@ -70,7 +70,8 @@ final class RootViewController: UIViewController {
 
     /// Open `text` when it is a link into the site, and say `refusal` when it is not.
     private func follow(_ text: String?, else refusal: Words) {
-        guard let host, let link = text.flatMap(host.policy.link(in:)) else { return say(refusal.said) }
+        guard let host else { return }
+        guard let link = text.flatMap(host.policy.link(in:)) else { return say(refusal.said(site: host.policy.origin)) }
         // From the door a link is the way in; from anywhere else it is what they asked to see.
         returnsToStart = wayIn != nil
         show(nil)

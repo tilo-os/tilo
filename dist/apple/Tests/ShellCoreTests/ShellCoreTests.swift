@@ -162,8 +162,21 @@ final class SitePolicyTests: XCTestCase {
         let policy = try policy()
         let pairing = "http://tilo.localhost:24120/app/#/me/so.tilo.chat?pair=\(String(repeating: "a", count: 64))"
         XCTAssertEqual(policy.link(in: "  \(pairing)\n")?.absoluteString, pairing)
-        XCTAssertNil(policy.link(in: "see \(pairing)"))
+        // Taken out of whatever is written around it.
+        for written in ["see \(pairing)", "Open this on your phone: <\(pairing)>.\nIt works once.", "(\(pairing))",
+                        "[Pair](\(pairing)),", "“\(pairing)”"] {
+            XCTAssertEqual(policy.link(in: written)?.absoluteString, pairing, written)
+        }
+        // The first that leads into the site, past one that leads elsewhere.
+        XCTAssertEqual(policy.link(in: "https://example.com/a \(pairing)")?.absoluteString, pairing)
+        // An invitation's key may end in a dash, which is part of it.
+        let sealed = "http://tilo.localhost:24120/i/abcdefghijklmnop#\(String(repeating: "k", count: 42))-"
+        XCTAssertEqual(policy.link(in: "Join here: \(sealed).")?.absoluteString, sealed)
+        // The same computer under another name is another site: the page's keys are not there.
+        XCTAssertNil(policy.link(in: "http://localhost:24120/app/#/me/so.tilo.chat?pair=\(String(repeating: "a", count: 64))"))
+        XCTAssertNil(policy.link(in: "http://127.0.0.1:24120/"))
         XCTAssertNil(policy.link(in: "https://tilo.sh/app/#/me/so.tilo.chat"))
+        XCTAssertNil(policy.link(in: "tilo.localhost:24120/app/"))
         XCTAssertNil(policy.link(in: "remind me at nine"))
         XCTAssertNil(policy.link(in: ""))
     }
@@ -287,7 +300,7 @@ final class WordsTests: XCTestCase {
     func testSentencesFollowTheDesignLanguage() {
         for app in Self.apps {
             for words in Words.allCases {
-                let english = words.said(as: app)
+                let english = words.said(as: app, site: "http://tilo.localhost:24120")
                 XCTAssertEqual(english.first?.isUppercase, true, english)
                 // Sentence case: after the first word only a name is capitalised. What stands in
                 // quotes is another control's own name, as that control writes it.
@@ -310,11 +323,16 @@ final class WordsTests: XCTestCase {
                 XCTAssertFalse(words.english.contains(word), words.english)
             }
             for app in Self.apps {
-                let said = words.said(as: app)
-                XCTAssertFalse(said.contains("%"), said)
-                XCTAssertEqual(said.contains(app), words.english.contains("%@"), said)
+                let said = words.said(as: app, site: "https://tilo.example")
+                XCTAssertFalse(said.contains("{") || said.contains("%"), said)
+                XCTAssertEqual(said.contains(app), words.english.contains("{app}"), said)
+                XCTAssertEqual(said.contains("https://tilo.example"), words.english.contains("{site}"), said)
             }
         }
+        // Where a link is refused, the sentence names the site the app expects one into.
+        XCTAssertEqual(Words.allCases.filter { $0.english.contains("{site}") }, [.noLink, .codeNoLink])
+        XCTAssertEqual(Words.noLink.said(as: "Tilo Shell", site: "http://tilo.localhost:24120"),
+                       "The clipboard holds no link into http://tilo.localhost:24120, the Tilo site this app opens.")
         XCTAssertEqual(Words.quit.said(as: "Tilo Shell"), "Quit Tilo Shell")
         XCTAssertEqual(Words.quit.said(as: "Tilo Assistant"), "Quit Tilo Assistant")
         // The name a person reads under the icon, before the bundle's short one.
