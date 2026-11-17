@@ -231,9 +231,9 @@ windows-error-operation-gone = Der Windows-Vorgang ist nicht mehr verfügbar.
 windows-windows-routes = { $op ->
     [remove] Eine App wieder auf dem Weg öffnen lassen, den der Katalog empfiehlt
    *[set] Eine App so eingestellt, dass sie { $new ->
-        [wine] mit Wine
-        [proton] mit Proton
-       *[vm] in der Windows-VM
+        [Wine] mit Wine
+        [Proton] mit Proton
+       *[Vm] in der Windows-VM
     } öffnet
 }
 

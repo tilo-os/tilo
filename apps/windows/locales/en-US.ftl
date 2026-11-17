@@ -231,9 +231,9 @@ windows-error-operation-gone = The Windows operation is no longer available.
 windows-windows-routes = { $op ->
     [remove] Let an app open the way the catalogue recommends
    *[set] Set an app to open { $new ->
-        [wine] with Wine
-        [proton] with Proton
-       *[vm] in the Windows VM
+        [Wine] with Wine
+        [Proton] with Proton
+       *[Vm] in the Windows VM
     }
 }
 
