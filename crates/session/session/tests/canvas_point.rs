@@ -300,6 +300,35 @@ fn a_dragged_rectangle_is_filled_by_the_notes() {
     the_rectangle_is_filled("my notes", "so.tilo.lang.notes");
 }
 
+/// The first point down the column at `x` from `top` (screen logical pixels, a screen `width`
+/// wide) that is the canvas's own ground: where the card drawn at `top` ends. `None` while
+/// nothing under `top` is ground again.
+fn card_foot(session: &mut Session, (x, top): (f64, f64), width: f64) -> Option<f64> {
+    let snap = crate::common::shot(session, "card-foot");
+    let scale = f64::from(snap.width) / width.max(1.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "screen pixels"
+    )]
+    let at = |y: f64| -> Option<[u8; 3]> {
+        let (px, py) = ((x * scale) as u32, (y * scale) as u32);
+        (py < snap.height).then(|| {
+            let i = ((py * snap.width + px) * 4) as usize;
+            [snap.rgba[i], snap.rgba[i + 1], snap.rgba[i + 2]]
+        })
+    };
+    let ground = at(top - 30.0)?;
+    let mut y = top + 1.0;
+    while let Some(px) = at(y) {
+        if px == ground && at(y + 4.0) == Some(ground) {
+            return Some(y);
+        }
+        y += 1.0;
+    }
+    None
+}
+
 /// A rectangle dragged just under an inbox that hugs its few rows, on ground that is free on the
 /// screen though the inbox's place could grow into it: what is found there fills the rectangle,
 /// at its corner, never below the height the inbox could grow to.
@@ -315,10 +344,24 @@ fn a_rectangle_under_a_hugging_place_is_filled_where_it_was_dragged() {
             .into_iter()
             .find(|place| place.resource.contains("so.tilo.lang.mail"))
     });
-    let (ix, iy, _, ih) = wait_for(&mut session, "the inbox on screen", |session| {
+    let (ix, iy, _, _) = wait_for(&mut session, "the inbox on screen", |session| {
         place_on_screen(session, &inbox)
     });
-    let from = (ix, iy + ih + 60.0);
+    // Where the inbox's card ends on screen: the first point under it, down a column through
+    // it, that is the canvas's own ground again.
+    // Its rows arrive after the card first draws: the foot is where the card settles, the same
+    // twice a few frames apart.
+    let mut last = None;
+    let foot = wait_for(&mut session, "the inbox's card settled", |session| {
+        let now = card_foot(session, (ix + 30.0, iy), w)?;
+        for _ in 0..20 {
+            session.step(std::time::Duration::from_millis(16)).ok()?;
+        }
+        let settled = (last == Some(now)).then_some(now);
+        last = Some(now);
+        settled
+    });
+    let from = (ix, foot + 60.0);
     let to = (ix + w * 0.4, (from.1 + 260.0).min(y + h - 20.0));
     frame_and_say(&mut session, from, to, "my notes");
     let notes = wait_for(&mut session, "the notes placed", |session| {
@@ -331,10 +374,9 @@ fn a_rectangle_under_a_hugging_place_is_filled_where_it_was_dragged() {
     });
     assert!(
         near(px, from.0) && near(py, from.1),
-        "the notes stand at the rectangle's corner {from:?}, not below the inbox's tallest \
-         height: {:?} (inbox drawn to {})",
-        (px, py),
-        iy + ih
+        "the notes stand at the rectangle's corner {from:?}, not below the height the inbox \
+         could grow to: {:?} (its card drawn to {foot})",
+        (px, py)
     );
 }
 
@@ -1873,13 +1915,15 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
             &serde_json::json!({ "resource": mails }),
         )
         .unwrap_or_else(|error| panic!("the second turn's place runs: {error}"));
-    let (mx, my, _, _) = wait_for(&mut session, "the inbox placed", |session| {
+    let (mx, my, mw, _) = wait_for(&mut session, "the inbox placed", |session| {
         canvas_box(session, "so.tilo.lang.mail")
     });
+    // Adjacent to the turn on any side, a spot in view first (canvas.md §3).
     let trailing = mx >= bx + bw && my >= by && my < by + bh;
+    let leading = mx + mw <= bx && my >= by && my < by + bh;
     let below = my >= by + bh && mx >= bx && mx < bx + bw;
     assert!(
-        trailing || below,
+        trailing || leading || below,
         "the inbox stands beside the second turn: {:?} beside {:?} (the first turn at {first:?})",
         (mx, my),
         (bx, by, bw, bh)
