@@ -246,9 +246,9 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
     assert_eq!(menu["role"], json!("popup"));
     assert_eq!(menu["anchor"], json!("at:40,50"), "where it was put");
     assert_eq!(
-        menu["place"],
-        Value::Null,
-        "the menu's own view places it; the session judges no rect"
+        place(&session, "window-menu"),
+        (0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
+        "the menu covers the display it was opened on; its own view stands the card at the point"
     );
     assert_eq!(focus(&session), "overlay:window-menu");
 
