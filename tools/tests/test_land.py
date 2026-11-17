@@ -23,12 +23,13 @@ with open(root.parent / "lint-runs", "a") as runs:
 flaky = root.parent / "builder-away-once"
 if flaky.exists():
     flaky.unlink()
-    print("rcargo: remote builder unavailable (builder helper failed)")
+    print("Error: saving container 0123 state: beginning container 0123 save transaction")
     sys.exit(1)
 def says(word):
     return [p.name for p in root.iterdir() if p.is_file() and word in p.read_text(errors="replace")]
 if says("RED") or says("BROKE"):
     print("pre-push: clippy (native) failed - rerun: python3 tools/ci/fake_clippy.py")
+    subprocess.call([sys.executable, "tools/ci/fake_clippy.py"], cwd=root)
     sys.exit(1)
 bad = [p.name for p in root.iterdir() if p.is_file() and "BAD" in p.read_text(errors="replace")]
 if bad:

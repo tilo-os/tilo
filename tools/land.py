@@ -63,10 +63,11 @@ IDLE_SECONDS = 120
 DEFAULT_WAIT = 540
 # How much of a failed lint is handed back; the lander's log keeps all of it.
 SHOWN_LINES = 120
-# A lint that failed because the machine that compiles was not there says nothing about the
-# changes: the round is tried again rather than answered. rcargo says so in these words.
-NO_BUILDER = ("remote builder unavailable",)
-NO_BUILDER_RETRY_SECONDS = 30
+# A failed lint that names no diagnostic, file or package says nothing about the changes: the
+# machine that compiles was away, or failed after compiling (a container it could not save).
+# The round is tried again, a few times, rather than answered.
+UNEXPLAINED_RETRIES = 3
+UNEXPLAINED_RETRY_SECONDS = 30
 # How a failed lint names what broke: the packages that did not build, and the files a
 # diagnostic points at or the format check found unformatted.
 NOT_BUILT = re.compile(r"could not compile `([^`]+)`")
@@ -321,6 +322,7 @@ class Lander:
         self.limit = BATCH
         # Changes a failed lint points at: each is linted alone, after the others.
         self.suspects: set[str] = set()
+        self.unexplained = 0
 
     def doing(self, line: str) -> None:
         print(time.strftime("%H:%M:%S ") + line, flush=True)
@@ -407,10 +409,17 @@ class Lander:
         print(output, flush=True)
         self.place.event(kind="lint", ok=lint.returncode == 0, seconds=seconds, batch=len(batch),
                          onto=upstream)
-        if lint.returncode != 0 and any(words in output for words in NO_BUILDER):
-            self.doing(f"the builder was unavailable; linting again in {NO_BUILDER_RETRY_SECONDS}s")
-            time.sleep(NO_BUILDER_RETRY_SECONDS)
+        explained = bool(NOT_BUILT.search(output) or POINTED_AT.search(output)
+                         or any(DIAGNOSTIC.match(line.strip()) and not any(
+                             words in line for words in NOT_A_DIAGNOSTIC)
+                                for line in output.splitlines()))
+        if lint.returncode != 0 and not explained and self.unexplained < UNEXPLAINED_RETRIES:
+            self.unexplained += 1
+            self.doing(f"the lint failed without a diagnostic (the builder?); linting again in "
+                       f"{UNEXPLAINED_RETRY_SECONDS}s")
+            time.sleep(UNEXPLAINED_RETRY_SECONDS)
             return True
+        self.unexplained = 0
         inherited = False
         if lint.returncode != 0:
             # Setting aside the changes the failure points at costs nothing; comparing with the
