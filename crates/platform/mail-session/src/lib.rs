@@ -3,20 +3,27 @@
 //! reaches no mail server (crates/hosting/tilo-workspace-host).
 //!
 //! It reads a folder as a mail program does (the newest page of
-//! messages, or what arrived since the newest one the reader holds), tells a
-//! server what changed about a message, and hands a written message to the
-//! server's SMTP endpoint. Everything is bounded by the same deadline as the
-//! sign-in probes (crates/platform/account-probe); nothing here keeps a
-//! secret or answers one.
+//! messages, what arrived since the newest one the reader holds, or the
+//! page before the oldest), reads one message, asks a server what it holds
+//! that matches, tells a server what changed about a message, keeps a draft
+//! there, and hands a written message to the server's SMTP endpoint. An
+//! account's signed-in session is kept for its next request, so a reader
+//! that asks often signs in once. Every step is bounded, and nothing here
+//! keeps a secret or answers one.
+//!
+//! What it answers fits the frame an action's answer travels in: a message
+//! whose words would not fit is answered by its start, and says so.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use tilo_actions::remote::person_accounts::{
-    FetchMail, FetchedMail, FetchedMessage, MailAddress, MailAttachment, MailFlag, MarkMail,
-    SendMail, SentMail,
+    FetchMail, FetchedMail, FetchedMessage, FoundFolder, FoundMail, MAX_FOUND, MailAddress,
+    MailAttachment, MailFlag, MarkMail, ReadMail, SearchMail, SendMail, SentMail,
 };
 use tokio::time::timeout;
+use web_time::Instant;
 
 /// The messages one read answers at most, newest first.
 const PAGE: u32 = 50;
@@ -25,6 +32,24 @@ const PAGE: u32 = 50;
 const CATCH_UP_LIMIT: u32 = 200;
 /// How long one session step may take.
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a server may take over everything one request asks of it.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long a kept session may rest before it is asked whether its server
+/// still answers, and how long that answer may take.
+const REST_CHECK: Duration = Duration::from_secs(30);
+const NOOP_ANSWER: Duration = Duration::from_secs(10);
+/// How long a session nobody uses is kept.
+const KEPT_FOR: Duration = Duration::from_secs(5 * 60);
+/// The most sessions kept at once, an account each.
+const MAX_KEPT: usize = 64;
+/// The most of its messages' words one answer carries. A frame holds a
+/// megabyte, and what the messages say is written into it with room for
+/// everything else the answer names.
+const ANSWER_WORDS: usize = 512 * 1024;
+/// The most of its words one message read on its own carries.
+const READ_WORDS: usize = 768 * 1024;
+/// The words kept of a message whose whole does not fit its answer.
+const EXCERPT_WORDS: usize = 2 * 1024;
 
 type ImapSession = async_imap::Session<tilo_account_probe::imap::SecureStream>;
 
@@ -41,6 +66,43 @@ pub trait MailSession: Send + Sync {
         secret: &accounts::Secret,
         asking: &FetchMail,
     ) -> Result<FetchedMail, String>;
+
+    /// Read the one message `reading` names, as its server holds it.
+    ///
+    /// # Errors
+    /// As [`Self::fetch`], or the message is no longer where it was read.
+    fn read(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+        reading: &ReadMail,
+    ) -> Result<FetchedMessage, String>;
+
+    /// Ask the account's server which messages it holds that match
+    /// `searching`, newest first in each folder.
+    ///
+    /// # Errors
+    /// As [`Self::fetch`], or the search names nothing a server can be asked.
+    fn search(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+        searching: &SearchMail,
+    ) -> Result<FoundMail, String>;
+
+    /// Keep `draft` in the account's Drafts folder, with the `files` it
+    /// carries and the calendar `invitation` it brings. Nothing is sent.
+    ///
+    /// # Errors
+    /// The server could not be reached, refused the sign-in or the draft.
+    fn save_draft(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+        draft: &SendMail,
+        files: &[Attachment],
+        invitation: Option<&str>,
+    ) -> Result<(), String>;
 
     /// Hand `sending` to its server, with the `files` it carries and the
     /// calendar `invitation` it brings, and keep a copy in the account's
@@ -80,13 +142,41 @@ pub struct Attachment {
     pub bytes: Vec<u8>,
 }
 
-/// The session a host opens with the servers of the accounts it keeps.
+/// The sessions a host holds with the servers of the accounts it keeps.
 #[derive(Default)]
 pub struct LiveMailSession {
     /// The secure connection the host makes, when it does not use the
     /// system's own roots (a stack whose mail server signs itself).
     tls: Option<Arc<rustls::ClientConfig>>,
     smtp_trust: Vec<rustls::pki_types::CertificateDer<'static>>,
+    /// The runtime every session's connection lives on, started with the
+    /// first request: a session kept for the next request outlives the
+    /// request that opened it.
+    runtime: OnceLock<Result<tokio::runtime::Runtime, String>>,
+    /// Each account's signed-in session, from its last request to its next.
+    kept: Mutex<HashMap<String, Kept>>,
+}
+
+/// A signed-in session between two requests, and when its server last
+/// answered.
+struct Kept {
+    session: ImapSession,
+    answered: Instant,
+}
+
+impl Drop for LiveMailSession {
+    fn drop(&mut self) {
+        // The sessions go before the runtime their connections live on, and
+        // the runtime is let go without waiting for it: this may be dropped
+        // where waiting is not allowed.
+        self.kept
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        if let Some(Ok(runtime)) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 impl LiveMailSession {
@@ -102,6 +192,8 @@ impl LiveMailSession {
         Self {
             tls,
             smtp_trust: extra,
+            runtime: OnceLock::new(),
+            kept: Mutex::default(),
         }
     }
 }
@@ -113,9 +205,53 @@ impl MailSession for LiveMailSession {
         secret: &accounts::Secret,
         asking: &FetchMail,
     ) -> Result<FetchedMail, String> {
-        Self::block(async {
-            let mut session = self.login(account, secret).await?;
-            fetch_folder(&mut session, asking).await
+        self.block(
+            self.with_session(account, secret, async |session: &mut ImapSession| {
+                fetch_folder(session, asking).await
+            }),
+        )
+    }
+
+    fn read(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+        reading: &ReadMail,
+    ) -> Result<FetchedMessage, String> {
+        self.block(
+            self.with_session(account, secret, async |session: &mut ImapSession| {
+                read_message(session, reading).await
+            }),
+        )
+    }
+
+    fn search(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+        searching: &SearchMail,
+    ) -> Result<FoundMail, String> {
+        self.block(
+            self.with_session(account, secret, async |session: &mut ImapSession| {
+                search_mail(session, searching).await
+            }),
+        )
+    }
+
+    fn save_draft(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+        draft: &SendMail,
+        files: &[Attachment],
+        invitation: Option<&str>,
+    ) -> Result<(), String> {
+        self.block(async {
+            let mime = write_mime(draft, files, invitation)?;
+            self.with_session(account, secret, async |session: &mut ImapSession| {
+                keep_draft(session, &mime).await
+            })
+            .await
         })
     }
 
@@ -127,19 +263,17 @@ impl MailSession for LiveMailSession {
         files: &[Attachment],
         invitation: Option<&str>,
     ) -> Result<SentMail, String> {
-        Self::block(async {
+        self.block(async {
             let mime = write_mime(sending, files, invitation)?;
             send_message(account, secret, sending, &mime, &self.smtp_trust).await?;
             // The message left. Its copy is told apart from that: a server
             // that will not take one does not unsend the message.
-            let unfiled = match self.login(account, secret).await {
-                Ok(mut session) => {
-                    let outcome = file_sent(&mut session, account, &mime).await;
-                    let _ = timeout(NETWORK_TIMEOUT, session.logout()).await;
-                    outcome.err()
-                }
-                Err(reason) => Some(reason),
-            };
+            let unfiled = self
+                .with_session(account, secret, async |session: &mut ImapSession| {
+                    file_sent(session, account, &mime).await
+                })
+                .await
+                .err();
             Ok(SentMail { unfiled })
         })
     }
@@ -150,20 +284,98 @@ impl MailSession for LiveMailSession {
         secret: &accounts::Secret,
         marking: &MarkMail,
     ) -> Result<(), String> {
-        Self::block(async {
-            let mut session = self.login(account, secret).await?;
-            mark_message(&mut session, account, marking).await
-        })
+        self.block(
+            self.with_session(account, secret, async |session: &mut ImapSession| {
+                mark_message(session, marking).await
+            }),
+        )
     }
 }
 
 impl LiveMailSession {
-    fn block<T>(work: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|_| "could not start the mail session".to_string())?;
-        runtime.block_on(work)
+    /// Wait here for `work`, which runs on the sessions' own runtime.
+    fn block<T>(
+        &self,
+        work: impl std::future::Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        let runtime = self.runtime.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_name("mail-session")
+                .enable_all()
+                .build()
+                .map_err(|_| "could not start the mail session".to_string())
+        });
+        match runtime {
+            Ok(runtime) => runtime.block_on(work),
+            Err(reason) => Err(reason.clone()),
+        }
+    }
+
+    /// Run `work` on the account's signed-in session: the one its last
+    /// request left, while its server still answers, or a new one. A session
+    /// is kept for the next request unless it took longer than a request
+    /// may, or stopped answering after work that failed.
+    async fn with_session<T>(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+        work: impl AsyncFnOnce(&mut ImapSession) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let key = kept_under(account);
+        let mut session = match self.take_kept(&key) {
+            Some(kept) if kept.answered.elapsed() < REST_CHECK => kept.session,
+            Some(mut kept) => {
+                let answers = timeout(NOOP_ANSWER, kept.session.noop()).await;
+                if matches!(answers, Ok(Ok(()))) {
+                    kept.session
+                } else {
+                    self.login(account, secret).await?
+                }
+            }
+            None => self.login(account, secret).await?,
+        };
+        let answer = timeout(REQUEST_TIMEOUT, work(&mut session))
+            .await
+            .map_err(|_| "the mail server did not answer in time".to_string())?;
+        // A request its server refused leaves the connection as good as it
+        // was; one that broke on the way no longer answers.
+        let answers =
+            answer.is_ok() || matches!(timeout(NOOP_ANSWER, session.noop()).await, Ok(Ok(())));
+        if answers {
+            self.keep(key, session);
+        }
+        answer
+    }
+
+    /// The session kept under `key`, taken out for one request. What nobody
+    /// used for long is let go here, where a request passes anyway.
+    fn take_kept(&self, key: &str) -> Option<Kept> {
+        let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        kept.retain(|_, kept| kept.answered.elapsed() < KEPT_FOR);
+        kept.remove(key)
+    }
+
+    /// Keep `session`, which just answered, for the account's next request.
+    fn keep(&self, key: String, session: ImapSession) {
+        let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        if kept.len() >= MAX_KEPT && !kept.contains_key(&key) {
+            // The one that rested longest makes room.
+            let longest = kept
+                .iter()
+                .min_by_key(|(_, kept)| kept.answered)
+                .map(|(key, _)| key.clone());
+            if let Some(longest) = longest {
+                kept.remove(&longest);
+            }
+        }
+        kept.insert(
+            key,
+            Kept {
+                session,
+                answered: Instant::now(),
+            },
+        );
     }
 
     async fn login(
@@ -206,6 +418,19 @@ impl LiveMailSession {
                 _ => "IMAP server closed the connection unexpectedly".to_string(),
             })
     }
+}
+
+/// What an account's session is kept under: the account, and where and as
+/// whom it signs in, so a changed account never takes the connection of what
+/// it was.
+fn kept_under(account: &accounts::Account) -> String {
+    format!(
+        "{}\n{}\n{}\n{}",
+        account.id,
+        field(account, "imap_host").unwrap_or_default(),
+        port_of(account, "imap_port", 993),
+        field(account, "username").unwrap_or_default()
+    )
 }
 
 fn field(account: &accounts::Account, name: &str) -> Option<String> {
@@ -303,10 +528,19 @@ async fn list_folders(session: &mut ImapSession) -> Result<Vec<(String, Vec<Stri
 /// its flags.
 const FETCH_ITEMS: &str = "(UID FLAGS INTERNALDATE BODY.PEEK[])";
 
+/// Read `asking`'s folder, answering as much of what its messages say as one
+/// answer carries.
 async fn fetch_folder(
     session: &mut ImapSession,
     asking: &FetchMail,
 ) -> Result<FetchedMail, String> {
+    let mut fetched = read_folder(session, asking).await?;
+    let mut room = ANSWER_WORDS;
+    fit(&mut fetched.messages, &mut room);
+    Ok(fetched)
+}
+
+async fn read_folder(session: &mut ImapSession, asking: &FetchMail) -> Result<FetchedMail, String> {
     if asking.folder.is_empty() {
         return Err("a read names its folder".into());
     }
@@ -343,6 +577,29 @@ async fn fetch_folder(
     }
     if exists == 0 {
         fetched.reset = true;
+        return Ok(fetched);
+    }
+    if let Some(before) = asking.before_uid
+        && asking.known_uid_validity == Some(uid_validity)
+    {
+        // The page before the oldest message the reader holds: what the
+        // folder holds under that message's number, newest first. The
+        // message itself may be gone by now; its number still says where
+        // the reader got to.
+        let mut older: Vec<u32> = match before.checked_sub(1).filter(|last| *last > 0) {
+            Some(last) => session
+                .uid_search(format!("UID 1:{last}"))
+                .await
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .filter(|uid| *uid < before)
+                .collect(),
+            None => Vec::new(),
+        };
+        older.sort_unstable();
+        fetched.has_older = older.len() > PAGE as usize;
+        let page: Vec<u32> = older.into_iter().rev().take(PAGE as usize).collect();
+        fetched.messages = fetch_uids(session, uid_validity, &page, now_min).await?;
         return Ok(fetched);
     }
     match (asking.known_uid, asking.known_uid_validity) {
@@ -588,14 +845,187 @@ fn parse_message(
         minutes,
         read,
         starred,
+        partial: false,
     })
 }
 
-async fn mark_message(
+/// Leave out of `messages` what `room` does not hold, the newest first to
+/// be answered whole: a message whose words do not fit is answered by their
+/// start, and says so.
+fn fit(messages: &mut [FetchedMessage], room: &mut usize) {
+    let mut newest_first: Vec<usize> = (0..messages.len()).collect();
+    newest_first.sort_by_key(|index| std::cmp::Reverse(messages.get(*index).map(|m| m.uid)));
+    for index in newest_first {
+        let Some(message) = messages.get_mut(index) else {
+            continue;
+        };
+        let words = message
+            .body
+            .len()
+            .saturating_add(message.html_body.as_ref().map_or(0, String::len));
+        if words > *room {
+            message.html_body = None;
+            message.partial = true;
+            shorten(&mut message.body, EXCERPT_WORDS);
+        }
+        *room = room.saturating_sub(message.body.len());
+        *room = room.saturating_sub(message.html_body.as_ref().map_or(0, String::len));
+    }
+}
+
+/// Cut `words` to at most `most` bytes, at a letter's edge.
+fn shorten(words: &mut String, most: usize) {
+    if words.len() <= most {
+        return;
+    }
+    let mut end = most;
+    while !words.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    words.truncate(end);
+}
+
+/// `text` as a quoted string a server is sent, when it can be one: plain
+/// letters without a control character.
+fn quoted(text: &str) -> Option<String> {
+    if text.is_empty() || !text.chars().all(|c| c.is_ascii() && !c.is_ascii_control()) {
+        return None;
+    }
+    let mut quoted = String::with_capacity(text.len().saturating_add(2));
+    quoted.push('"');
+    for c in text.chars() {
+        if c == '"' || c == '\\' {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    Some(quoted)
+}
+
+/// Read the one message `reading` names. One too long for an answer is
+/// answered without its HTML part, then by the start of its words.
+async fn read_message(
     session: &mut ImapSession,
-    account: &accounts::Account,
-    marking: &MarkMail,
-) -> Result<(), String> {
+    reading: &ReadMail,
+) -> Result<FetchedMessage, String> {
+    let listing = list_folders(session).await?;
+    let mailbox = folder_name(&listing, &reading.folder)
+        .ok_or_else(|| format!("this account's server has no {} folder", reading.folder))?;
+    let selected = session.select(&mailbox).await.map_err(|e| e.to_string())?;
+    let uid_validity = selected.uid_validity.unwrap_or(0);
+    if uid_validity != reading.uid_validity {
+        return Err("the folder changed; its messages are read again".into());
+    }
+    let now_min = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs().cast_signed() / 60);
+    let mut message = fetch_uids(session, uid_validity, &[reading.uid], now_min)
+        .await?
+        .into_iter()
+        .find(|message| message.uid == reading.uid)
+        .ok_or_else(|| "that message is no longer in its folder".to_string())?;
+    let html = message.html_body.as_ref().map_or(0, String::len);
+    if message.body.len().saturating_add(html) > READ_WORDS {
+        message.html_body = None;
+        message.partial = true;
+        shorten(&mut message.body, READ_WORDS);
+    }
+    Ok(message)
+}
+
+/// What a server is asked to find the messages `searching` describes, every
+/// part of it to match.
+fn search_keys(searching: &SearchMail) -> Result<String, String> {
+    let mut keys = Vec::new();
+    for (key, wanted) in [
+        ("TEXT", &searching.text),
+        ("FROM", &searching.from),
+        ("TO", &searching.to),
+        ("SUBJECT", &searching.subject),
+    ] {
+        let Some(wanted) = wanted.as_deref().map(str::trim).filter(|w| !w.is_empty()) else {
+            continue;
+        };
+        let wanted = quoted(wanted)
+            .ok_or_else(|| "a mail server is searched in plain letters".to_string())?;
+        keys.push(format!("{key} {wanted}"));
+    }
+    if keys.is_empty() {
+        return Err("a search names what it looks for".into());
+    }
+    Ok(keys.join(" "))
+}
+
+/// Ask the server which messages match `searching`, in the folders it
+/// names, newest first.
+async fn search_mail(
+    session: &mut ImapSession,
+    searching: &SearchMail,
+) -> Result<FoundMail, String> {
+    let keys = search_keys(searching)?;
+    let listing = list_folders(session).await?;
+    let everywhere = ["inbox".to_owned(), "archive".to_owned()];
+    let folders = if searching.folders.is_empty() {
+        &everywhere[..]
+    } else {
+        &searching.folders[..]
+    };
+    let most = searching.limit.unwrap_or(MAX_FOUND).clamp(1, MAX_FOUND) as usize;
+    let now_min = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs().cast_signed() / 60);
+    let mut found = FoundMail::default();
+    let mut room = ANSWER_WORDS;
+    for folder in folders {
+        // A server that keeps no such folder holds nothing there to find.
+        let Some(mailbox) = folder_name(&listing, folder) else {
+            continue;
+        };
+        let selected = session.select(&mailbox).await.map_err(|e| e.to_string())?;
+        let uid_validity = selected.uid_validity.unwrap_or(0);
+        let mut uids: Vec<u32> = session
+            .uid_search(&keys)
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .collect();
+        uids.sort_unstable();
+        let newest: Vec<u32> = uids.into_iter().rev().take(most).collect();
+        let mut messages = fetch_uids(session, uid_validity, &newest, now_min).await?;
+        messages.sort_by_key(|message| std::cmp::Reverse(message.uid));
+        fit(&mut messages, &mut room);
+        found.folders.push(FoundFolder {
+            folder: folder.clone(),
+            uid_validity,
+            messages,
+        });
+    }
+    Ok(found)
+}
+
+/// The name a Drafts folder is made under on a server that holds none.
+const DRAFTS: &str = "Drafts";
+
+/// Keep the draft `mime` holds in the account's Drafts folder, read and
+/// marked as a draft, making the folder where a server holds none.
+async fn keep_draft(session: &mut ImapSession, mime: &[u8]) -> Result<(), String> {
+    let listing = list_folders(session).await?;
+    let folder = if let Some(folder) = folder_name(&listing, "drafts") {
+        folder
+    } else {
+        session.create(DRAFTS).await.map_err(|e| {
+            format!("the server keeps no Drafts folder and would not make one: {e}")
+        })?;
+        DRAFTS.to_owned()
+    };
+    session
+        .append(&folder, Some("(\\Seen \\Draft)"), None, mime)
+        .await
+        .map_err(|e| format!("the draft was not kept in {folder}: {e}"))
+}
+
+async fn mark_message(session: &mut ImapSession, marking: &MarkMail) -> Result<(), String> {
     use futures_util::TryStreamExt as _;
     let listing = list_folders(session).await?;
     let mailbox = folder_name(&listing, &marking.folder)
@@ -640,8 +1070,6 @@ async fn mark_message(
             .map_err(|e| format!("server cannot safely expunge this message: {e}"))?;
         let _: Vec<_> = expunged.try_collect().await.map_err(|e| e.to_string())?;
     }
-    let _ = account;
-    let _ = timeout(NETWORK_TIMEOUT, session.logout()).await;
     Ok(())
 }
 
@@ -958,6 +1386,65 @@ mod tests {
         assert!(lowered.contains("invitation.ics"), "{mime}");
         assert!(lowered.contains("text/calendar"), "{mime}");
         assert!(mime.contains("method=REQUEST"), "{mime}");
+    }
+
+    /// What a folder's messages say is answered as far as one answer holds:
+    /// the newest whole, and one that does not fit by its start, saying so.
+    #[test]
+    fn an_answer_carries_the_newest_messages_whole_and_the_rest_by_their_start() {
+        let message = |uid: u32| FetchedMessage {
+            uid,
+            body: "a".repeat(3000),
+            html_body: Some("b".repeat(3000)),
+            ..FetchedMessage::default()
+        };
+        let mut messages = vec![message(1), message(2), message(3)];
+        let mut room = 9000;
+        fit(&mut messages, &mut room);
+        assert!(!messages[2].partial, "the newest is answered whole");
+        assert_eq!(messages[2].body.len(), 3000);
+        assert_eq!(messages[2].html_body.as_ref().map(String::len), Some(3000));
+        for older in &messages[..2] {
+            assert!(older.partial);
+            assert_eq!(older.body.len(), EXCERPT_WORDS);
+            assert!(older.html_body.is_none());
+        }
+
+        // A message is cut at a letter's edge, never inside one.
+        let mut words = "ää".to_owned();
+        shorten(&mut words, 3);
+        assert_eq!(words, "ä");
+    }
+
+    /// A search asks a server for every part it names, in words a server can
+    /// be sent, and one that names nothing is no search.
+    #[test]
+    fn a_search_asks_for_every_part_it_names() {
+        let searching = SearchMail {
+            text: Some("cap table".into()),
+            from: Some("jonas@northzone.example".into()),
+            ..SearchMail::default()
+        };
+        assert_eq!(
+            search_keys(&searching).unwrap(),
+            "TEXT \"cap table\" FROM \"jonas@northzone.example\""
+        );
+        let quoting = SearchMail {
+            subject: Some("the \"big\" one".into()),
+            ..SearchMail::default()
+        };
+        assert_eq!(
+            search_keys(&quoting).unwrap(),
+            "SUBJECT \"the \\\"big\\\" one\""
+        );
+        assert!(search_keys(&SearchMail::default()).is_err());
+        for unsendable in ["line\r\nA1 DELETE INBOX", "grüße"] {
+            let searching = SearchMail {
+                text: Some(unsendable.into()),
+                ..SearchMail::default()
+            };
+            assert!(search_keys(&searching).is_err(), "{unsendable:?}");
+        }
     }
 
     /// A fetched message is read into what a reader shows, never into how

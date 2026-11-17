@@ -28,14 +28,16 @@ use tilo_actions::remote::person_accounts::{
     MAX_SEND_TOTAL_BYTES, MailAccount, MailAccounts, PieceKept, SendId, SendMail, SendPiece,
     SentMail, StartedSend,
 };
-use tilo_actions::remote::person_accounts::{FetchMail, FetchedMail, MarkMail};
+use tilo_actions::remote::person_accounts::{
+    FetchMail, FetchedMail, FetchedMessage, FoundMail, MarkMail, ReadMail, SearchMail,
+};
 use tilo_actions::remote::person_models::{
     Assignment, ModelProviders, OfferedModel, ProviderView, SetAssignment, SetKey,
 };
 use tilo_actions::remote::{
     ActionHostError, Caller, InvokeArgument, InvokeRequest, person_accounts, person_models,
 };
-use tilo_mail_session::{Attachment, LiveMailSession};
+use tilo_mail_session::Attachment;
 use tilo_net::proxy::host::Destinations;
 use tilo_user_identity::DeviceCert;
 
@@ -69,6 +71,30 @@ impl Workspaces {
     /// Fires whenever a person's own settings kept here change.
     pub(super) fn person_settings_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.inner.person_settings_moved.subscribe()
+    }
+
+    /// The sessions this host holds with the mail servers of the accounts
+    /// its people keep: one for the whole host, so an account's signed-in
+    /// session serves its next request too.
+    pub(super) fn mail_session(&self) -> Session {
+        Arc::clone(
+            &self
+                .inner
+                .mail_session
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Carry the accounts' mail through `session` from now on: a test stands
+    /// in for the mail servers.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn carry_mail_through(&self, session: Session) {
+        *self
+            .inner
+            .mail_session
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = session;
     }
 
     /// The person `caller` asks for, on the device `certificate` certifies,
@@ -122,17 +148,28 @@ impl Workspaces {
                 answer(&kept)
             }
             person_accounts::FETCH => {
-                let asking: person_accounts::FetchMail = argument(request, "a folder to read")?;
-                answer(&fetch_mail(&root, asking).await)
+                let asking: FetchMail = argument(request, "a folder to read")?;
+                answer(&fetch_with(self.mail_session(), &root, asking).await)
+            }
+            person_accounts::READ => {
+                let reading: ReadMail = argument(request, "a message to read")?;
+                answer(&read_with(self.mail_session(), &root, reading).await)
+            }
+            person_accounts::SEARCH => {
+                let searching: SearchMail = argument(request, "what to search for")?;
+                answer(&search_with(self.mail_session(), &root, searching).await)
             }
             person_accounts::SEND => {
                 let sending: SendId = argument(request, "a message to send")?;
-                answer(&send_staged(&root, sending).await)
+                answer(&send_staged_with(self.mail_session(), &root, sending).await)
+            }
+            person_accounts::SAVE_DRAFT => {
+                let keeping: SendId = argument(request, "a draft to keep")?;
+                answer(&save_staged_draft_with(self.mail_session(), &root, keeping).await)
             }
             person_accounts::MARK => {
-                let marking: person_accounts::MarkMail =
-                    argument(request, "what changed about a message")?;
-                answer(&mark_mail(&root, marking).await)
+                let marking: MarkMail = argument(request, "what changed about a message")?;
+                answer(&mark_with(self.mail_session(), &root, marking).await)
             }
             person_accounts::BEGIN_SEND => {
                 let beginning: BeginSend = argument(request, "a message to begin")?;
@@ -365,11 +402,6 @@ fn account_with_secret(
     Ok((account, secret))
 }
 
-/// Read one folder of one account as its server holds it.
-async fn fetch_mail(root: &Path, asking: FetchMail) -> Result<FetchedMail, String> {
-    fetch_with(Arc::new(LiveMailSession::default()), root, asking).await
-}
-
 /// Where a begun message waits between its pieces and its send: one
 /// directory per message, holding what it says, whom it goes to and the
 /// files' bytes as they arrive. It is gone once the message is sent.
@@ -512,21 +544,54 @@ fn send_piece(root: &Path, piece: &SendPiece) -> Result<PieceKept, String> {
     Ok(PieceKept { written: end })
 }
 
-/// Send the message begun under `sending`'s id: the files its pieces made,
-/// its invitation, and what it says. Answers what became of its copy in the
-/// account's Sent folder.
-async fn send_staged(root: &Path, sending: SendId) -> Result<SentMail, String> {
-    send_staged_with(Arc::new(LiveMailSession::default()), root, sending).await
-}
-
-/// [`send_staged`] through `session`, so a test sends to a server it stands
-/// in for.
+/// Send the message begun under `sending`'s id through `session`: the files
+/// its pieces made, its invitation, and what it says. Answers what became of
+/// its copy in the account's Sent folder.
 async fn send_staged_with(
     session: Session,
     root: &Path,
     sending: SendId,
 ) -> Result<SentMail, String> {
     let (dir, beginning) = begun_send(root, &sending.send)?;
+    let files = staged_files(&dir, &beginning)?;
+    let outcome = send_with(
+        session,
+        root,
+        beginning.message,
+        files,
+        beginning.calendar_ics,
+    )
+    .await;
+    if outcome.is_ok() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    outcome
+}
+
+/// Keep the message begun under `keeping`'s id in its account's Drafts
+/// folder instead of sending it, and forget what was staged of it.
+async fn save_staged_draft_with(
+    session: Session,
+    root: &Path,
+    keeping: SendId,
+) -> Result<(), String> {
+    let (dir, beginning) = begun_send(root, &keeping.send)?;
+    let files = staged_files(&dir, &beginning)?;
+    let (account, secret) = account_with_secret(root, &beginning.message.account)?;
+    let (draft, invitation) = (beginning.message, beginning.calendar_ics);
+    let outcome = tokio::task::spawn_blocking(move || {
+        session.save_draft(&account, &secret, &draft, &files, invitation.as_deref())
+    })
+    .await
+    .map_err(|_| "the mail session did not finish".to_string())?;
+    if outcome.is_ok() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    outcome
+}
+
+/// The files a begun message carries, each whole as its pieces made it.
+fn staged_files(dir: &Path, beginning: &BeginSend) -> Result<Vec<Attachment>, String> {
     let mut files = Vec::with_capacity(beginning.files.len());
     for (index, file) in beginning.files.iter().enumerate() {
         let bytes = std::fs::read(dir.join(format!("file-{index}")))
@@ -545,29 +610,14 @@ async fn send_staged_with(
             bytes,
         });
     }
-    let outcome = send_with(
-        session,
-        root,
-        beginning.message,
-        files,
-        beginning.calendar_ics,
-    )
-    .await;
-    if outcome.is_ok() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    outcome
+    Ok(files)
 }
 
-/// Tell one message's server what changed about it.
-async fn mark_mail(root: &Path, marking: MarkMail) -> Result<(), String> {
-    mark_with(Arc::new(LiveMailSession::default()), root, marking).await
-}
+/// The sessions a host holds with its people's mail servers
+/// ([`Workspaces::mail_session`]).
+pub type Session = Arc<dyn tilo_mail_session::MailSession + Send + Sync>;
 
-type Session = Arc<dyn tilo_mail_session::MailSession + Send + Sync>;
-
-/// [`fetch_mail`] through `session`, so a test asks a server it stands in
-/// for.
+/// Read one folder of one account as its server holds it, through `session`.
 async fn fetch_with(
     session: Session,
     root: &Path,
@@ -575,6 +625,30 @@ async fn fetch_with(
 ) -> Result<FetchedMail, String> {
     let (account, secret) = account_with_secret(root, &asking.account)?;
     tokio::task::spawn_blocking(move || session.fetch(&account, &secret, &asking))
+        .await
+        .map_err(|_| "the mail session did not finish".to_string())?
+}
+
+/// Read one message of one account as its server holds it.
+async fn read_with(
+    session: Session,
+    root: &Path,
+    reading: ReadMail,
+) -> Result<FetchedMessage, String> {
+    let (account, secret) = account_with_secret(root, &reading.account)?;
+    tokio::task::spawn_blocking(move || session.read(&account, &secret, &reading))
+        .await
+        .map_err(|_| "the mail session did not finish".to_string())?
+}
+
+/// Ask one account's server which messages it holds that match.
+async fn search_with(
+    session: Session,
+    root: &Path,
+    searching: SearchMail,
+) -> Result<FoundMail, String> {
+    let (account, secret) = account_with_secret(root, &searching.account)?;
+    tokio::task::spawn_blocking(move || session.search(&account, &secret, &searching))
         .await
         .map_err(|_| "the mail session did not finish".to_string())?
 }
@@ -1032,6 +1106,56 @@ mod mail_session_tests {
             })
         }
 
+        fn read(
+            &self,
+            account: &accounts::Account,
+            secret: &accounts::Secret,
+            reading: &ReadMail,
+        ) -> Result<FetchedMessage, String> {
+            self.asked.lock().unwrap().push(format!(
+                "read {} {} {} with {}",
+                account.id, reading.folder, reading.uid, secret.password
+            ));
+            Ok(person_accounts_message())
+        }
+
+        fn search(
+            &self,
+            account: &accounts::Account,
+            secret: &accounts::Secret,
+            searching: &SearchMail,
+        ) -> Result<FoundMail, String> {
+            self.asked.lock().unwrap().push(format!(
+                "search {} for {:?} with {}",
+                account.id, searching.text, secret.password
+            ));
+            Ok(FoundMail {
+                folders: vec![tilo_actions::remote::person_accounts::FoundFolder {
+                    folder: "inbox".into(),
+                    uid_validity: 7,
+                    messages: vec![person_accounts_message()],
+                }],
+            })
+        }
+
+        fn save_draft(
+            &self,
+            account: &accounts::Account,
+            secret: &accounts::Secret,
+            draft: &SendMail,
+            files: &[Attachment],
+            _invitation: Option<&str>,
+        ) -> Result<(), String> {
+            self.asked.lock().unwrap().push(format!(
+                "draft {} to {} with {} carrying {} files",
+                account.id,
+                draft.to,
+                secret.password,
+                files.len()
+            ));
+            Ok(())
+        }
+
         fn send(
             &self,
             account: &accounts::Account,
@@ -1190,6 +1314,83 @@ mod mail_session_tests {
             ))
             .unwrap_err();
         assert!(unknown.contains("not kept here"), "{unknown}");
+    }
+
+    /// One message, what a search finds and a draft kept on its server are
+    /// asked of the account's server with its person's own sign-in as well.
+    #[test]
+    fn a_page_reads_one_message_searches_and_keeps_a_draft_through_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        account_with_sign_in(root);
+        let fixture = Arc::new(Fixture::default());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let read = runtime
+            .block_on(read_with(
+                fixture.clone(),
+                root,
+                ReadMail {
+                    account: "ada@example.test".into(),
+                    folder: "inbox".into(),
+                    uid: 42,
+                    uid_validity: 7,
+                },
+            ))
+            .unwrap();
+        assert_eq!(read.subject, "Hello");
+        let found = runtime
+            .block_on(search_with(
+                fixture.clone(),
+                root,
+                SearchMail {
+                    account: "ada@example.test".into(),
+                    text: Some("hello".into()),
+                    ..SearchMail::default()
+                },
+            ))
+            .unwrap();
+        assert_eq!(found.folders[0].messages[0].uid, 42);
+        // A draft is begun as a message is, and kept instead of sent.
+        let began = begin_send(
+            root,
+            &BeginSend {
+                message: SendMail {
+                    account: "ada@example.test".into(),
+                    to: "bob@example.test".into(),
+                    subject: "Not yet".into(),
+                    ..SendMail::default()
+                },
+                ..BeginSend::default()
+            },
+        )
+        .unwrap();
+        let session: Session = fixture.clone();
+        runtime
+            .block_on(save_staged_draft_with(
+                session,
+                root,
+                SendId {
+                    send: began.send.clone(),
+                },
+            ))
+            .unwrap();
+        assert!(
+            !sends_root(root).join(&began.send).exists(),
+            "a kept draft leaves nothing staged"
+        );
+
+        assert_eq!(
+            fixture.asked.lock().unwrap().clone(),
+            vec![
+                "read ada@example.test inbox 42 with fixture-password",
+                "search ada@example.test for Some(\"hello\") with fixture-password",
+                "draft ada@example.test to bob@example.test with fixture-password carrying 0 files",
+            ]
+        );
     }
 
     /// An account and its sign-in, as a test keeps them: the files the host
