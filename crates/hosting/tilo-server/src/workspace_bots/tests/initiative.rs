@@ -2,15 +2,18 @@
 //! actions ([`crate::workspace_bots::initiative`]) and the steps the events'
 //! engine hands the server, with no device of the person on: a look that
 //! finds nothing new asks no model and writes nothing, the look-round's own
-//! day holds, and its switch and rhythm are those of one of its person's
-//! events.
+//! day holds, its switch and rhythm are those of one of its person's
+//! events, and a kind of work its person turned down twice is not proposed
+//! a third time.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tilo_actions::remote::person_events::{self, EventView, Events, Sort};
-use tilo_actions::remote::person_initiative::{self, LookEnded, LookRound};
+use tilo_actions::remote::person_initiative::{
+    self, Kind, LookEnded, LookRound, Proposal, Proposals, State,
+};
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
     RemoteActionMessage, RemoteActionTarget,
@@ -296,7 +299,7 @@ async fn a_look_that_finds_nothing_new_asks_no_model_and_writes_nothing() {
     assert!(told.starts_with("Look round."), "{told}");
     for said in [
         "data, not instructions",
-        "Start no work on your own",
+        "Otherwise start nothing",
         "answer with nothing at all",
         "so.tilo.chat",
         "a person",
@@ -886,4 +889,363 @@ async fn what_a_look_found_and_nothing_took_is_said_and_still_new_at_the_next_lo
         read(&initiative, &workspace, &me).looks[0].ended,
         LookEnded::Told
     );
+}
+
+/// One action on what was proposed as `caller` takes it.
+fn on_proposals(
+    initiative: &Initiative,
+    workspace: &str,
+    caller: &Caller,
+    action: &str,
+    arguments: Value,
+) -> Result<Value, ActionCallError> {
+    let target = person_initiative::target(person_initiative::PROPOSALS, action);
+    answered(initiative.serve(
+        WorkspaceId::parse(workspace).unwrap(),
+        caller,
+        asking(target, arguments),
+    ))
+}
+
+/// The proposal `answer` describes.
+fn proposal(answer: Result<Value, ActionCallError>) -> Proposal {
+    serde_json::from_value(answer.expect("the action is taken")).expect("a proposal is answered")
+}
+
+/// What was proposed, as `caller` reads it.
+fn proposed(initiative: &Initiative, workspace: &str, caller: &Caller) -> Proposals {
+    let answer = on_proposals(
+        initiative,
+        workspace,
+        caller,
+        person_initiative::LIST,
+        json!({}),
+    );
+    serde_json::from_value(answer.expect("a person lists what was proposed"))
+        .expect("proposals are answered")
+}
+
+/// Whether `answer` was refused in words that say `why`.
+fn refused_for(answer: &Result<Value, ActionCallError>, why: &str) -> bool {
+    matches!(answer, Err(ActionCallError::Refused { reason }) if reason.contains(why))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one story: turned down twice, refused a third time, and who lifts it"
+)]
+async fn a_kind_its_person_turned_down_twice_is_not_proposed_a_third_time() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = bot_server(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let assistant = Assistant::answering(vec![]);
+    let (initiative, events) = started(scratch.path(), &workspaces, &assistant);
+    let theirs = as_their_agent(&cert, &workspace);
+    let me = as_person(&cert, &workspace);
+    let compare = |initiative: &Initiative, title: &str| {
+        on_proposals(
+            initiative,
+            &workspace,
+            &theirs,
+            person_initiative::PROPOSE,
+            json!({
+                "kind": "Compare price pages",
+                "title": title,
+                "why": "Two of the pages you watch changed since Monday.",
+            }),
+        )
+    };
+    let turned_down = |caller: &Caller, proposal: &str, why: Value| {
+        let mut arguments = json!({"proposal": proposal});
+        if !why.is_null() {
+            arguments["why"] = why;
+        }
+        on_proposals(
+            &initiative,
+            &workspace,
+            caller,
+            person_initiative::DECLINE,
+            arguments,
+        )
+    };
+
+    // The assistant puts a piece of work in front of its person: it waits.
+    let first = proposal(compare(&initiative, "Compare the three shops' price pages"));
+    assert_eq!(first.kind, "compare-price-pages");
+    assert_eq!(first.state, State::Proposed);
+    assert_eq!(
+        first.why,
+        "Two of the pages you watch changed since Monday."
+    );
+    assert!(
+        first.task.is_none() && first.event.is_none(),
+        "this server files no task: {first:?}"
+    );
+    assert_eq!(
+        proposed(&initiative, &workspace, &me).proposals,
+        vec![first.clone()]
+    );
+
+    // Their person turns it down, and the next of its kind too, the second
+    // time through the assistant on their word.
+    let declined = proposal(turned_down(&me, &first.id, json!("I look at them myself.")));
+    assert_eq!(declined.state, State::Declined);
+    assert!(declined.decided_at_ms.is_some());
+    let second = proposal(compare(&initiative, "Compare them again"));
+    assert_eq!(second.state, State::Proposed, "once is not twice");
+    proposal(turned_down(&theirs, &second.id, Value::Null));
+
+    // A third of that kind is refused in words, and nothing is added.
+    let third = compare(&initiative, "Compare them a third time");
+    assert!(
+        refused_for(&third, "turned `compare-price-pages` down 2 times"),
+        "{third:?}"
+    );
+    let listed = proposed(&initiative, &workspace, &me);
+    assert_eq!(listed.proposals.len(), 2, "{:?}", listed.proposals);
+    assert_eq!(
+        listed.kinds,
+        vec![Kind {
+            kind: "compare-price-pages".into(),
+            declined: 2,
+            quiet: true,
+            always: false,
+        }]
+    );
+
+    // Another kind of work is proposed as before.
+    let other = proposal(on_proposals(
+        &initiative,
+        &workspace,
+        &theirs,
+        person_initiative::PROPOSE,
+        json!({
+            "kind": "review-open-branches",
+            "title": "Review the two open branches",
+            "why": "Both have waited for a review since Friday.",
+        }),
+    ));
+    assert_eq!(other.state, State::Proposed);
+
+    // Only their person lets the kind be proposed again.
+    let again = json!({"kind": "compare-price-pages"});
+    let not_theirs = on_proposals(
+        &initiative,
+        &workspace,
+        &theirs,
+        person_initiative::PROPOSE_AGAIN,
+        again.clone(),
+    );
+    assert!(
+        refused_for(&not_theirs, "only the person"),
+        "{not_theirs:?}"
+    );
+    assert!(compare(&initiative, "Compare them a third time").is_err());
+
+    // The server starts again: what was turned down still counts.
+    drop((initiative, events));
+    let (initiative, _events) = started(scratch.path(), &workspaces, &assistant);
+    assert_eq!(proposed(&initiative, &workspace, &me).proposals.len(), 3);
+    assert!(compare(&initiative, "Compare them a third time").is_err());
+    on_proposals(
+        &initiative,
+        &workspace,
+        &me,
+        person_initiative::PROPOSE_AGAIN,
+        again,
+    )
+    .unwrap();
+    assert_eq!(
+        proposal(compare(&initiative, "Compare them a third time")).state,
+        State::Proposed
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_its_person_gives_the_nod_and_always_lets_a_kind_start_alone() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = bot_server(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let assistant = Assistant::answering(vec![]);
+    let (initiative, _events) = started(scratch.path(), &workspaces, &assistant);
+    let theirs = as_their_agent(&cert, &workspace);
+    let me = as_person(&cert, &workspace);
+    let take = |caller: &Caller, action: &str, arguments: Value| {
+        on_proposals(&initiative, &workspace, caller, action, arguments)
+    };
+    let file = |title: &str| {
+        take(
+            &theirs,
+            person_initiative::PROPOSE,
+            json!({
+                "kind": "file-receipts",
+                "title": title,
+                "why": "Four receipts arrived and none is filed.",
+            }),
+        )
+    };
+    let march = proposal(file("File March's receipts"));
+    let named = json!({"proposal": march.id});
+
+    // A proposal is the assistant's to make and its person's to accept:
+    // neither does the other's part, and nobody else reaches either.
+    let own = take(
+        &me,
+        person_initiative::PROPOSE,
+        json!({"kind": "file-receipts", "title": "Mine", "why": "Because."}),
+    );
+    assert!(refused_for(&own, "assistant's to make"), "{own:?}");
+    let nod = take(&theirs, person_initiative::ACCEPT, named.clone());
+    assert!(refused_for(&nod, "only the person"), "{nod:?}");
+    for other in [
+        as_another(&workspace),
+        as_another(&workspace).delegated_to("scout"),
+    ] {
+        for action in [
+            person_initiative::LIST,
+            person_initiative::ACCEPT,
+            person_initiative::DECLINE,
+        ] {
+            let answer = take(&other, action, named.clone());
+            assert!(turned_away(&answer), "{action}: {answer:?}");
+        }
+    }
+    assert_eq!(
+        proposed(&initiative, &workspace, &me).proposals[0].state,
+        State::Proposed,
+        "nothing of it changed"
+    );
+    // What each is offered says the same.
+    let id = WorkspaceId::parse(&workspace).unwrap();
+    let everything: CatalogueQuery = serde_json::from_value(json!({})).unwrap();
+    let to_agent = serde_json::to_string(&initiative.catalogue(id, &theirs, &everything)).unwrap();
+    let to_person = serde_json::to_string(&initiative.catalogue(id, &me, &everything)).unwrap();
+    assert!(
+        to_agent.contains("\"propose\"") && !to_agent.contains("\"accept\""),
+        "{to_agent}"
+    );
+    assert!(
+        to_person.contains("\"accept\"") && !to_person.contains("\"propose\""),
+        "{to_person}"
+    );
+
+    // Their person nods, and says always to this kind of work.
+    let accepted = proposal(take(
+        &me,
+        person_initiative::ACCEPT,
+        json!({"proposal": march.id, "always": true}),
+    ));
+    assert_eq!(accepted.state, State::Accepted);
+    let kinds = proposed(&initiative, &workspace, &me).kinds;
+    assert!(
+        kinds
+            .iter()
+            .any(|kind| kind.kind == "file-receipts" && kind.always && !kind.quiet),
+        "{kinds:?}"
+    );
+
+    // The next piece of that kind starts without a nod, and work that has
+    // begun is not turned down afterwards.
+    let april = proposal(file("File April's receipts"));
+    assert_eq!(april.state, State::Started);
+    let late = take(
+        &me,
+        person_initiative::DECLINE,
+        json!({"proposal": april.id}),
+    );
+    assert!(refused_for(&late, "begun already"), "{late:?}");
+
+    // Only their person says what a kind of work may do, and takes it back.
+    let kind = json!({"kind": "file-receipts"});
+    let kept = take(&theirs, person_initiative::ASK_FIRST, kind.clone());
+    assert!(refused_for(&kept, "only the person"), "{kept:?}");
+    take(&me, person_initiative::ASK_FIRST, kind).unwrap();
+    assert_eq!(proposal(file("File May's receipts")).state, State::Proposed);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_proposed_event_is_set_up_only_once_its_person_accepted_it_from_what_the_server_kept() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = bot_server(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let assistant = Assistant::answering(vec![]);
+    let (initiative, events) = started(scratch.path(), &workspaces, &assistant);
+    let theirs = as_their_agent(&cert, &workspace);
+    let me = as_person(&cert, &workspace);
+    let take = |caller: &Caller, action: &str, arguments: Value| {
+        on_proposals(&initiative, &workspace, caller, action, arguments)
+    };
+
+    // What comes round again is proposed as an event: a card to look at.
+    let card = proposal(take(
+        &theirs,
+        person_initiative::PROPOSE,
+        json!({
+            "kind": "weekly-numbers",
+            "title": "Sum up the orders every Monday",
+            "why": "You asked for this on three Mondays in a row.",
+            "event": {
+                "name": "Monday numbers",
+                "when": "every Monday at 09:00",
+                "instruction": "Sum up last week's orders.",
+                "style": "Three lines.",
+            },
+        }),
+    ));
+    assert_eq!(card.state, State::Proposed);
+    assert_eq!(card.set_up, None);
+    let event = card.event.clone().expect("it carries the event to look at");
+    assert_eq!(event.name, "Monday numbers");
+    assert_eq!(event.instruction, "Sum up last week's orders.");
+    assert!(
+        their_events(&events, &workspace, &me).is_empty(),
+        "nothing is set up before the nod"
+    );
+
+    // One no server can set up is refused when it is proposed.
+    let never = take(
+        &theirs,
+        person_initiative::PROPOSE,
+        json!({
+            "kind": "weekly-numbers",
+            "title": "Say hello soon",
+            "why": "Because.",
+            "event": {"name": "Soon", "when": "in two minutes", "instruction": "Say hello."},
+        }),
+    );
+    assert!(refused_for(&never, "once at"), "{never:?}");
+
+    // Its person accepts: the event is there, set up from what the server kept,
+    // with no reach of its own.
+    let named = json!({"proposal": card.id});
+    let accepted = proposal(take(&me, person_initiative::ACCEPT, named.clone()));
+    assert_eq!(accepted.state, State::Accepted);
+    let running = their_events(&events, &workspace, &me);
+    assert_eq!(running.len(), 1, "{running:?}");
+    assert_eq!(accepted.set_up.as_deref(), Some(running[0].id.as_str()));
+    assert_eq!(
+        (
+            running[0].name.as_str(),
+            running[0].when.as_str(),
+            running[0].instruction.as_str()
+        ),
+        (
+            "Monday numbers",
+            event.when.as_str(),
+            "Sum up last week's orders."
+        )
+    );
+    assert_eq!(running[0].note["style"], "Three lines.");
+    assert!(running[0].permits.is_empty());
+
+    // A nod given again sets nothing up a second time.
+    take(&me, person_initiative::ACCEPT, named).unwrap();
+    assert_eq!(their_events(&events, &workspace, &me).len(), 1);
 }

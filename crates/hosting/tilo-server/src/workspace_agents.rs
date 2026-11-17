@@ -39,7 +39,7 @@ use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
-    RemoteActionTarget,
+    RemoteActionTarget, pending,
 };
 use tilo_actions::{InvocationId, InvocationUpdate, api::ActionAddress};
 use tilo_agent_session::model::PlanTurns;
@@ -338,9 +338,18 @@ impl ActionProvider for WorkspaceActionProvider {
         if let Some(initiative) = &self.initiative
             && request.target.provider == person_initiative::PROVIDER
         {
-            let receipt = initiative.invoke(self.workspace, caller, &request);
-            self.answered.keep(caller, &receipt);
-            return Pending::ready(Ok(receipt));
+            // Kept whoever still waits: a tool that stopped waiting asks later how it went.
+            let (answered, by) = (self.answered.clone(), caller.clone());
+            let (completer, answer) = pending();
+            initiative
+                .invoking(self.workspace, caller, request)
+                .then(move |receipt| {
+                    if let Some(receipt) = receipt {
+                        answered.keep(&by, &receipt);
+                        completer.complete(Ok(receipt));
+                    }
+                });
+            return answer;
         }
         if let Some(own) = self.own.iter().find(|own| own.takes(&request.target))
             && let Some(ended) = &self.ended
