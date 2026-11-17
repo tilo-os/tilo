@@ -3022,15 +3022,12 @@ impl MailApp {
     fn hydrate_domain_state_now(&self, doc: &mut ui::widget::Edits<'_>) {
         let mail = read_mail(doc.doc()).unwrap_or_default();
         {
-            let mut st = self.shared.borrow_mut();
             let store = ui::tilo_resource::content::current();
-            let messages = st.messages();
-            messages.show_held(
-                &mut st.mailbox,
+            self.shared.borrow_mut().show_parts(
                 store.as_ref(),
                 &mut self.held_whole.borrow_mut(),
+                ui::collaboration::document_content::arrivals(),
             );
-            messages.apply_flags(&mut st.mailbox);
         }
         // A persisted draft becomes a local Drafts projection, but does not
         // force another member's composer open.

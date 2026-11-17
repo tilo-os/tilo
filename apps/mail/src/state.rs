@@ -300,6 +300,12 @@ pub struct MailState {
     /// Every message the parts hold, as one, with the chain's revision it
     /// was read at: read again only once a part changed.
     messages: std::cell::RefCell<Option<(u64, std::rc::Rc<MessagePart>)>>,
+    /// The parts last shown on the loaded mail ([`Self::show_parts`]), and
+    /// the content arrivals they were shown at.
+    shown_parts: (
+        std::collections::BTreeMap<u64, std::rc::Rc<MessagePart>>,
+        Option<u64>,
+    ),
 
     intents: Vec<Intent>,
     commands: Vec<Command>,
@@ -468,6 +474,7 @@ impl MailState {
             dispatcher: None,
             chain: None,
             messages: std::cell::RefCell::new(None),
+            shown_parts: (std::collections::BTreeMap::new(), None),
             intents: Vec::new(),
             commands: Vec::new(),
         }
@@ -489,6 +496,57 @@ impl MailState {
         let messages = std::rc::Rc::new(MessagePart::of(&chain.parts()));
         *self.messages.borrow_mut() = Some((revision, std::rc::Rc::clone(&messages)));
         messages
+    }
+
+    /// Show what the parts say on the loaded mail: the mail delivered to the
+    /// mailbox, the reader's flags, folders and labels, and what was deleted
+    /// for good. Only the parts that changed since they were last shown are
+    /// gone over, and then only the messages loaded since, so one change
+    /// costs its part, not the mailbox. Content arriving (`arrivals`) can
+    /// bring the original of a message kept whole, so every part is shown
+    /// again then.
+    pub(crate) fn show_parts(
+        &mut self,
+        store: Option<&tilo_content::ContentStore>,
+        whole: &mut std::collections::HashSet<MessageId>,
+        arrivals: u64,
+    ) {
+        let loaded = self.mailbox.take_loaded();
+        let Some(chain) = self.chain.clone() else {
+            return;
+        };
+        let parts = chain.parts();
+        let (mut shown, at) = std::mem::take(&mut self.shown_parts);
+        if at != Some(arrivals) {
+            shown.clear();
+        }
+        shown.retain(|index, _| parts.iter().any(|(held, _)| held == index));
+        // Every part shown again covers every message loaded.
+        let every = shown.is_empty();
+        for (index, part) in &parts {
+            if shown
+                .get(index)
+                .is_some_and(|seen| std::rc::Rc::ptr_eq(seen, part))
+            {
+                continue;
+            }
+            part.show_held(&mut self.mailbox, store, whole);
+            part.show_own_flags(&mut self.mailbox);
+            shown.insert(*index, std::rc::Rc::clone(part));
+        }
+        // Mail loaded since, from its server or the mail kept here, shows
+        // what the newest part keeping it says.
+        for id in loaded.into_iter().filter(|_| !every) {
+            let key = ui::tilo_resource::Id::from_raw(id.to_string());
+            if let Some(state) = parts
+                .iter()
+                .rev()
+                .find_map(|(_, part)| part.messages.get(&key))
+            {
+                crate::part::show_flags(&mut self.mailbox, id, state);
+            }
+        }
+        self.shown_parts = (shown, Some(arrivals));
     }
 
     /// The revision of the mailbox's parts: moves whenever one changed.

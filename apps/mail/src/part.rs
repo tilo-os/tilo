@@ -156,27 +156,20 @@ impl MessagePart {
     pub fn apply_flags(&self, mailbox: &mut crate::model::Mailbox) {
         let ids: Vec<_> = mailbox.messages.keys().copied().collect();
         for id in ids {
-            let Some(state) = self.messages.get(&Id::from_raw(id.to_string())) else {
-                continue;
-            };
-            if state.purged {
-                mailbox.purge(id);
-                continue;
+            if let Some(state) = self.messages.get(&Id::from_raw(id.to_string())) {
+                show_flags(mailbox, id, state);
             }
-            let labels: Vec<String> = state.labels.iter().cloned().collect();
-            let changed = mailbox.get(id).is_some_and(|message| {
-                message.read != state.read
-                    || message.starred != state.starred
-                    || message.folder != state.folder
-                    || message.labels != labels
-            });
-            // Only a message that differs is changed, so an unchanged
-            // mailbox keeps its revision and what is derived from it.
-            if changed && let Some(message) = mailbox.get_mut(id) {
-                message.read = state.read;
-                message.starred = state.starred;
-                message.folder = state.folder;
-                message.labels = labels;
+        }
+    }
+
+    /// [`Self::apply_flags`] for the messages this part keeps: what a part
+    /// that changed shows, at the cost of the part rather than the mailbox.
+    pub fn show_own_flags(&self, mailbox: &mut crate::model::Mailbox) {
+        for (id, state) in self.messages.iter() {
+            if let Ok(id) = id.as_str().parse::<crate::model::MessageId>()
+                && mailbox.get(id).is_some()
+            {
+                show_flags(mailbox, id, state);
             }
         }
     }
@@ -431,6 +424,33 @@ impl MessagePart {
         #[param(flatten)] message: crate::held::Delivery,
     ) -> Result<(), Refusal> {
         self.deliver(cx, &message).map(drop)
+    }
+}
+
+/// Show `state`, what the mailbox says of message `id`, on the loaded mail.
+/// Only a message that differs is changed, so an unchanged mailbox keeps its
+/// revision and what is derived from it.
+pub(crate) fn show_flags(
+    mailbox: &mut crate::model::Mailbox,
+    id: crate::model::MessageId,
+    state: &MessageState,
+) {
+    if state.purged {
+        mailbox.purge(id);
+        return;
+    }
+    let labels: Vec<String> = state.labels.iter().cloned().collect();
+    let changed = mailbox.get(id).is_some_and(|message| {
+        message.read != state.read
+            || message.starred != state.starred
+            || message.folder != state.folder
+            || message.labels != labels
+    });
+    if changed && let Some(message) = mailbox.get_mut(id) {
+        message.read = state.read;
+        message.starred = state.starred;
+        message.folder = state.folder;
+        message.labels = labels;
     }
 }
 
