@@ -24,7 +24,10 @@ public enum EngineScript {
     ///     made it and hands it in with every such ask. Without one no such ask is taken.
     ///   - providers: the providers of the person's own the script asks for the engine; an ask
     ///     of any other is refused.
-    public static func source(origin: String, unseen: Bool, pass: String = "", providers: [String] = []) -> String {
+    ///   - device: what this device is called where its person lets it in and lists their
+    ///     devices. Empty leaves the name to the page, which says the browser and the system.
+    public static func source(origin: String, unseen: Bool, pass: String = "", providers: [String] = [],
+                              device: String = "") -> String {
         let listed = (try? JSONSerialization.data(withJSONObject: providers)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         return source
             .replacingOccurrences(of: "%ORIGIN%", with: literal(origin))
@@ -32,6 +35,8 @@ public enum EngineScript {
             .replacingOccurrences(of: "%UNSEEN%", with: unseen ? "true" : "false")
             .replacingOccurrences(of: "%PASS%", with: literal(pass))
             .replacingOccurrences(of: "%PROVIDERS%", with: listed)
+            // Last, so that nothing a name holds is read as one of the places above.
+            .replacingOccurrences(of: "%DEVICE%", with: literal(String(device.prefix(64))))
     }
 
     static func literal(_ text: String) -> String {
@@ -117,6 +122,27 @@ public enum EngineScript {
         if (pending) return;
         pending = setTimeout(() => { pending = 0; post({kind: 'changed'}); }, 40);
       };
+      // Tilo's page says `tiloChanges` at every frame it draws and at every word of its
+      // session: many times a second while nothing happens. What its device heard and which
+      // documents it holds is what `tiloChannels` reads as, so only when that moved is the
+      // word handed on, looked at eight times a second at most. What arrives in a document
+      // the device holds already does not always move it, so while the app expects a change
+      // (it just changed something itself, or an agent is at work on what it shows) every
+      // word is handed on, as often.
+      let heard = '';
+      let weighing = 0;
+      let expecting = 0;
+      const expect = ms => { expecting = Math.max(expecting, Date.now() + Math.min(Math.max(Number(ms) || 0, 0), 60000)); };
+      const weigh = () => {
+        weighing = 0;
+        if (Date.now() < expecting) { changed(); return; }
+        let now = heard;
+        try { now = String(globalThis.tiloChannels()); } catch { /* said at the page's next word */ }
+        if (now === heard) return;
+        heard = now;
+        changed();
+      };
+      const perhaps = () => { if (!weighing) weighing = setTimeout(weigh, 120); };
       let watching;
       let listening;
       const watch = () => {
@@ -126,7 +152,10 @@ public enum EngineScript {
         listening = undefined;
         // A page that says what it published is listened to (`tiloChanges`, web/changes.mjs).
         // One that does not yet is watched where it describes itself.
-        const told = globalThis.tiloChanges?.listen?.(changed);
+        const weighs = typeof globalThis.tiloChannels === 'function';
+        // What the device has heard so far is where it starts from: the first read is asked for below.
+        if (weighs) { try { heard = String(globalThis.tiloChannels()); } catch { /* weighed at the page's first word */ } }
+        const told = globalThis.tiloChanges?.listen?.(weighs ? perhaps : changed);
         if (typeof told === 'function') listening = told;
         if (mount?.semantics) {
           watching = new MutationObserver(changed);
@@ -203,6 +232,8 @@ public enum EngineScript {
       // a document is taken, so nothing that runs later puts another in its place.
       let device;
       Object.defineProperty(globalThis, 'tiloNativeHost', {value: Object.freeze({
+        // What this device is called where its person lets it in: the app's name for it.
+        name: %DEVICE%,
         device(entry) { if (!device && entry && typeof entry.invoke === 'function') device = entry; },
       })});
       // The pass is this engine's own: the engine made it and hands it in with every ask of
@@ -237,6 +268,8 @@ public enum EngineScript {
 
       Object.defineProperty(globalThis, '__tiloLive', {value: Object.freeze({
         seen,
+        // The app expects what the page holds to change within `ms`.
+        expect(ms) { expect(ms); return true; },
         // One of the person's own providers on their host, asked for the app's own code alone:
         // with this engine's pass, and of the providers the engine names. `hidden` is a field
         // of the argument and what the person typed into a protected field for it.
@@ -276,8 +309,13 @@ public enum EngineScript {
         async invoke(resource, action, args, confirm, id) {
           const from = live(id);
           if (!from) return JSON.stringify({error: {code: 'not-open', reason: 'The page is not in'}});
-          try { return JSON.stringify({ok: await from.invokeAction(resource, action, args ?? {}, {confirm: Boolean(confirm)}) ?? null}); }
-          catch (error) { return JSON.stringify({error: failure(error)}); }
+          try {
+            const answer = JSON.stringify({ok: await from.invokeAction(resource, action, args ?? {}, {confirm: Boolean(confirm)}) ?? null});
+            // What the app itself changed is read again without waiting for anyone's word,
+            // and what comes of it is expected.
+            if (action !== 'read') { expect(15000); changed(); }
+            return answer;
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
         },
         // Mount `what` (`{app, record}`, or `{app, newDocument: true}`) as the live thing `id`
         // and bring it to the front. One that is mounted already only comes to the front.

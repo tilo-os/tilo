@@ -26,6 +26,9 @@ public final class TiloSource: AssistantSource {
         case assistant
         /// One conversation by its id: for a site whose Chat keeps no agents yet, and for a check.
         case conversation(id: String, name: String)
+        /// The person's conversation with one agent, named by its id: for a site whose page
+        /// does not say which agents its workspace keeps, and for a check.
+        case agent(id: String, name: String)
     }
 
     public let engine: TiloEngine
@@ -44,6 +47,9 @@ public final class TiloSource: AssistantSource {
     /// The agent that is the person's assistant, by its id in Chat's record of agents.
     private var assistant: String?
     private var recipient: ChatRecipient?
+    /// Whether the page names a member by its kind (`{"person": …}`), and so spells the id of
+    /// a conversation between members with their kinds.
+    private var namesKinds = true
     /// Whether the person's own workspace was asked for since this device got in.
     private var soughtOwn = false
     /// Chat keeps no record of its agents on this site: it is not asked again until the next way in.
@@ -59,9 +65,11 @@ public final class TiloSource: AssistantSource {
 
     /// One conversation as it is held: the id Chat keeps it under, and its pieces.
     private struct Feed {
-        var channel: String?
+        var conversation: String?
         var held: [Item] = []
         var told = false
+        /// Whether an agent is at work on a message of it.
+        var answering = false
         var listeners: [UUID: AsyncStream<ConversationChange>.Continuation] = [:]
     }
 
@@ -85,10 +93,12 @@ public final class TiloSource: AssistantSource {
     ///   - livesInOwn: the assistant lives in the person's own workspace on their host: a device
     ///     that was let in elsewhere goes there, where the page can say which workspace that is.
     ///   - defaults: where the app keeps the workspace it was paired into and the person's name.
+    ///   - deviceName: what this device is called where its person lets it in and lists their
+    ///     devices.
     public convenience init(settings: ShellSettings, store: UUID, mainChat: MainChat = .assistant, livesInOwn: Bool = true,
-                            defaults: UserDefaults = .standard) {
-        self.init(engine: TiloEngine(settings: settings, store: .kept(store)), mainChat: mainChat, livesInOwn: livesInOwn,
-                  defaults: defaults)
+                            defaults: UserDefaults = .standard, deviceName: String = "") {
+        self.init(engine: TiloEngine(settings: settings, store: .kept(store), deviceName: deviceName), mainChat: mainChat,
+                  livesInOwn: livesInOwn, defaults: defaults)
     }
 
     /// On an engine that is there already: for a check that keeps nothing.
@@ -153,7 +163,7 @@ public final class TiloSource: AssistantSource {
         learnedInChat = []
         learnedOnHost = []
         for chat in Array(feeds.keys) {
-            feeds[chat]?.channel = nil
+            feeds[chat]?.conversation = nil
             say([], in: chat)
         }
         agents.set([])
@@ -210,7 +220,8 @@ public final class TiloSource: AssistantSource {
         if let root = root ?? read?["person"]?.string {
             me = root
             // Chat's own row for the person, which a device that just got in publishes a moment later.
-            let row = try? await engine.whenPublished(within: .seconds(10)) { try await self.engine.read("chat.workspace/people/\(root)") }
+            let row = try? await engine.whenPublished(within: .seconds(10)) { try await self.ownRow(of: root) }
+            namesKinds = row?["id"]?.string == nil
             let known = Person(id: .init(root), name: row?["name"]?.string ?? person?.name ?? "",
                                workspace: read?["workspace"]?.string ?? "")
             person = known
@@ -219,8 +230,12 @@ public final class TiloSource: AssistantSource {
         tell()
         switch mainChat {
         case .conversation(let id, let name):
-            feeds[.main, default: Feed()].channel = id
+            feeds[.main, default: Feed()].conversation = id
             recipient = ChatRecipient(.conversation, id: id, name: name)
+        case .agent(let id, let name):
+            assistant = id
+            feeds[.main, default: Feed()].conversation = me.map { direct($0, id) }
+            recipient = ChatRecipient(.agent, id: id, name: name)
         case .assistant:
             await findAssistant()
         }
@@ -242,6 +257,21 @@ public final class TiloSource: AssistantSource {
     return JSON.stringify({person, workspace: globalThis.tiloMount?.state?.()?.workspaceName ?? ''});
     """#
 
+    /// Chat's row for the person: under their identity where the page addresses it so, else
+    /// the one of the rows it publishes whose id is theirs.
+    private func ownRow(of root: String) async throws -> JSON {
+        if let row = try? await engine.read("chat.workspace/people/\(root)") { return row }
+        let rows = Set(try await engine.actions().compactMap { action -> String? in
+            guard action["resource_kind"]?.string == "chat.workspace.people", action["address"]?["action"]?.string == "read"
+            else { return nil }
+            return action["address"]?["resource"]?.string
+        })
+        for resource in rows.sorted().prefix(64) {
+            if let row = try? await engine.read(resource), ChatMember(row["id"])?.id == root { return row }
+        }
+        throw TiloEngine.Problem.refused(code: "unknown_action", reason: "Chat has not published this person yet")
+    }
+
     /// Chat's record of the workspace's agents, each read whole. Nil on a site whose Chat keeps none.
     private func agentRecords() async -> [JSON]? {
         guard !keepsNoAgents else { return nil }
@@ -260,7 +290,7 @@ public final class TiloSource: AssistantSource {
     /// and that is nobody's sub-agent, the earliest made; its conversation is the direct one of
     /// the two.
     private func findAssistant() async {
-        feeds[.main, default: Feed()].channel = nil
+        feeds[.main, default: Feed()].conversation = nil
         recipient = nil
         assistant = nil
         guard let me, let all = await agentRecords() else { return }
@@ -272,13 +302,13 @@ public final class TiloSource: AssistantSource {
               let id = found["id"]?.string
         else { return }
         assistant = id
-        feeds[.main, default: Feed()].channel = TiloSource.direct(me, id)
+        feeds[.main, default: Feed()].conversation = direct(me, id)
         recipient = ChatRecipient(.agent, id: id, name: found["name"]?.string ?? id)
     }
 
-    /// The id Chat keeps the direct conversation of two under: `direct:` and the two, sorted.
-    private static func direct(_ one: String, _ other: String) -> String {
-        "direct:" + JSON.array([one, other].sorted().map(JSON.string)).text
+    /// The id Chat keeps the conversation of the person and one agent under, as this page spells it.
+    private func direct(_ person: String, _ agent: String) -> String {
+        ChatConversation.direct([ChatMember(namesKinds ? .person : nil, id: person), ChatMember(namesKinds ? .agent : nil, id: agent)])
     }
 
     /// An enum's case, however the read spells it: the bare word, or `{"$variant": word}`.
@@ -294,7 +324,10 @@ public final class TiloSource: AssistantSource {
         Task { @MainActor [weak self] in
             guard let self else { continuation.finish(); return }
             self.feeds[chat, default: Feed()].listeners[id] = continuation
-            if let feed = self.feeds[chat], feed.told { continuation.yield(.all(feed.held)) }
+            if let feed = self.feeds[chat], feed.told {
+                continuation.yield(.all(feed.held))
+                if feed.answering { continuation.yield(.answering(true)) }
+            }
         }
         continuation.onTermination = { [weak self] _ in
             Task { @MainActor in self?.feeds[chat]?.listeners[id] = nil }
@@ -316,22 +349,48 @@ public final class TiloSource: AssistantSource {
         defer { looking = false }
         repeat {
             again = false
-            guard let items = try? await engine.chatLatest(60) else { return }
-            var now: [Chat: [Item]] = [:]
-            let wanted = feeds.compactMapValues(\.channel)
+            let wanted = feeds.compactMapValues(\.conversation)
             guard !wanted.isEmpty else { return }
-            for id in items {
-                // An older piece is read once; the newest may still be growing.
-                let settled = !items.suffix(8).contains(id)
-                if settled, let (chat, known) = held(id) {
-                    now[chat, default: []].append(known)
-                } else if let message = try? await engine.chatMessage(id),
-                          let chat = wanted.first(where: { $0.value == message.channel })?.key {
-                    now[chat, default: []].append(piece(of: message, in: chat))
+            var now: [Chat: [Item]] = [:]
+            var atWork: [Chat: Bool] = [:]
+            // A page whose read names a conversation answers each one whole, in one read.
+            var whole = true
+            for (chat, id) in wanted {
+                guard let read = try? await engine.chatConversation(id) else { whole = false; break }
+                now[chat] = read.map { piece(of: $0, in: chat, isFirst: $0.id == read.first?.id) }
+                atWork[chat] = read.contains(where: \.isWorkedOn)
+            }
+            if !whole {
+                now = [:]
+                atWork = [:]
+                guard let items = try? await engine.chatLatest(60) else { return }
+                for id in items {
+                    // An older piece is read once; the newest may still be growing.
+                    let settled = !items.suffix(8).contains(id)
+                    if settled, let (chat, known) = held(id) {
+                        now[chat, default: []].append(known)
+                    } else if let message = try? await engine.chatMessage(id),
+                              let chat = wanted.first(where: { $0.value == message.conversation })?.key {
+                        now[chat, default: []].append(piece(of: message, in: chat, isFirst: now[chat]?.isEmpty ?? true))
+                        if message.isWorkedOn { atWork[chat] = true }
+                    }
                 }
             }
-            for chat in wanted.keys { say(now[chat] ?? [], in: chat) }
+            for chat in wanted.keys {
+                say(now[chat] ?? [], in: chat)
+                answers(atWork[chat] ?? false, in: chat)
+            }
+            // An answer that is being written grows: its next words are expected.
+            if atWork.values.contains(true) { engine.expectChanges(for: .seconds(4)) }
         } while again
+    }
+
+    /// Say whether an agent is at work in a conversation, when that changed.
+    private func answers(_ on: Bool, in chat: Chat) {
+        guard var feed = feeds[chat], feed.answering != on else { return }
+        feed.answering = on
+        feeds[chat] = feed
+        for listener in feed.listeners.values { listener.yield(.answering(on)) }
     }
 
     private func held(_ id: String) -> (Chat, Item)? {
@@ -363,7 +422,7 @@ public final class TiloSource: AssistantSource {
         if !added.isEmpty { for listener in feed.listeners.values { listener.yield(.added(added)) } }
     }
 
-    private func piece(of message: ChatMessage, in chat: Chat) -> Item {
+    private func piece(of message: ChatMessage, in chat: Chat, isFirst: Bool) -> Item {
         let id = Item.ID(message.id)
         let fields = message.fields
         if let question = fields["question"], !question.isNull {
@@ -393,12 +452,12 @@ public final class TiloSource: AssistantSource {
             live.append(AssistantCore.LiveThing(id: .init(message.id), title: title, reference: "record:\(app):\(record)"))
         }
         let author: Message.Author
-        if message.author == me {
+        if message.author.id == me, message.author.kind != .agent {
             author = .person
-        } else if case .subAgent(let agent) = chat, message.author != agent.value {
+        } else if case .subAgent(let agent) = chat, message.author.id != agent.value {
             // In a sub-agent's own conversation, whoever is neither the person nor the sub-agent
             // is the agent that started it: its first words are the job.
-            author = .mainAgent(feeds[chat]?.held.isEmpty ?? true ? .job : .instruction)
+            author = .mainAgent(isFirst ? .job : .instruction)
         } else {
             author = .assistant
         }
@@ -424,10 +483,29 @@ public final class TiloSource: AssistantSource {
             guard let recipient else { throw noAssistant }
             to = recipient
         case .subAgent(let agent):
-            guard let channel = feeds[chat]?.channel else { throw SourceProblem.refused("This sub-agent has no conversation yet") }
-            to = ChatRecipient(.conversation, id: channel, name: agent.value)
+            guard let id = feeds[chat]?.conversation else { throw SourceProblem.refused("This sub-agent has no conversation yet") }
+            to = ChatRecipient(.conversation, id: id, name: agent.value)
         }
         try await taken { _ = try await self.engine.chatSend(draft.text, to: to) }
+    }
+
+    /// Stop the agent that is at work in a conversation, as the person: Chat's own
+    /// `stop-agent` on the newest message an agent still works on. Nothing is asked where
+    /// none is at work.
+    public func stopAnswering(in chat: Chat) async throws {
+        guard let id = feeds[chat]?.conversation else { throw noAssistant }
+        try await taken {
+            var read = try await self.engine.chatConversation(id)
+            if read == nil {
+                var found: [ChatMessage] = []
+                for item in try await self.engine.chatLatest(60) {
+                    if let message = try await self.engine.chatMessage(item), message.conversation == id { found.append(message) }
+                }
+                read = found
+            }
+            guard let atWork = read?.last(where: \.isWorkedOn) else { return }
+            try await self.engine.chatStop(atWork)
+        }
     }
 
     public func answer(_ question: Question.ID, with choice: Choice.ID) async throws {
@@ -463,7 +541,7 @@ public final class TiloSource: AssistantSource {
                                                          belongsTo: belongsTo, username: detail?["username"]?.string ?? "")
             try await self.answer(request.value, "filled", detail: ["reference": .string(item.reference)])
         }
-        await survey(.host)
+        await survey(.server)
     }
 
     public func fetchSecret(for request: SecretRequest.ID) async throws {
@@ -494,7 +572,7 @@ public final class TiloSource: AssistantSource {
     /// its role and its model and starts it. Where Chat has no such ask yet, the job goes to
     /// the main agent as the person's own words.
     public func startSubAgent(job: String) async throws {
-        guard let channel = feeds[.main]?.channel else { throw noAssistant }
+        guard let channel = feeds[.main]?.conversation else { throw noAssistant }
         do {
             try await taken {
                 guard let messages = try await self.engine.chatMessagesResource() else { throw TiloEngine.Problem.notOpen }
@@ -522,9 +600,17 @@ public final class TiloSource: AssistantSource {
 
     public nonisolated func automations() -> AsyncStream<[Automation]> { automationList.stream() }
 
+    /// Set up something that comes at a time or when something else happens, as the person:
+    /// what it is called, what starts it and what their assistant is told to do then. The
+    /// assistant sets these up in its answers; this is the same ask, for the app's own code.
+    public func setUpEvent(name: String, when: String, instruction: String) async throws {
+        try await taken { try await self.engine.setUpEvent(name: name, when: when, instruction: instruction) }
+        await survey(.server)
+    }
+
     public func setOn(_ on: Bool, for automation: Automation.ID) async throws {
         try await taken { try await self.engine.ask(.events, on ? "resume" : "pause", of: "events", ["event": .string(automation.value)]) }
-        await survey(.host)
+        await survey(.server)
     }
 
     // MARK: Supervision
@@ -542,18 +628,46 @@ public final class TiloSource: AssistantSource {
         return read
     }
 
+    /// Link a provider the person's server knows by name (`anthropic`, `gemini`, `openai`,
+    /// `openrouter`) with the key the person typed into the protected field, and answer the
+    /// models it then offers. The key goes from the field into the one ask that carries it to
+    /// their server, which keeps it; nothing here keeps or says it. With `model`, work is done on
+    /// that model of it unless its kind names another.
+    @discardableResult
+    public func link(provider preset: String, key: Secret, model: String? = nil) async throws -> [ModelChoice] {
+        guard !key.isEmpty else { throw SourceProblem.refused("Nothing was typed") }
+        try await taken {
+            let linked = try await self.engine.modelProviders()
+            // A provider that is linked already keeps its place: only its key is typed anew.
+            let known = linked.providers.first { $0.id == preset || $0.name.lowercased() == preset.lowercased() }
+            let added = known == nil ? try await self.engine.linkModelProvider(preset: preset) : known
+            guard let provider = added else { throw TiloEngine.Problem.noAnswer }
+            try await self.engine.keepModelKey(Protected(key.handOver()), for: provider.id)
+            let listed = try await self.engine.refreshModels(of: provider.id)
+            switch listed.problem {
+            case nil, "no-list": break
+            case "key-refused": throw TiloEngine.Problem.refused(code: "key-refused", reason: "\(provider.name) did not accept this key")
+            case "unreachable": throw TiloEngine.Problem.refused(code: "unreachable", reason: "\(provider.name) did not answer")
+            case let other?: throw TiloEngine.Problem.refused(code: other, reason: "\(provider.name)'s models could not be read")
+            }
+            if let model { try await self.engine.chooseDefaultModel(model, of: provider.id) }
+        }
+        await survey(.server)
+        return choices
+    }
+
     public func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws {
         let parts = model.value.split(separator: "/", maxSplits: 1).map(String.init)
         guard parts.count == 2 else { throw SourceProblem.refused("This is no model of a provider you linked") }
         try await taken { try await self.engine.chooseModel((id: parts[1], provider: parts[0]), for: [work.rawValue]) }
-        await survey(.host)
+        await survey(.server)
     }
 
     public func forget(_ learned: Supervision.Learned.ID) async throws {
         if learned.value.hasPrefix(TiloSource.onHost) {
             let fact = String(learned.value.dropFirst(TiloSource.onHost.count))
             try await taken { try await self.engine.ask(.learned, "forget", of: "facts", ["fact": .string(fact)]) }
-            await survey(.host)
+            await survey(.server)
         } else {
             try await taken { try await self.engine.invoke("forget", on: "person:chat.learned", ["fact": .string(learned.value)]) }
         }
@@ -570,8 +684,8 @@ public final class TiloSource: AssistantSource {
     private enum Survey {
         /// What Chat keeps, which the page holds: read at the page's word of a change.
         case records
-        /// What the person's host keeps: asked when this app changed it.
-        case host
+        /// What the person's server keeps: asked when this app changed it.
+        case server
         case everything
     }
 
@@ -588,7 +702,7 @@ public final class TiloSource: AssistantSource {
         while let now = next {
             surveyAgain = nil
             var seen = supervisionNow.now
-            if now != .host { await surveyRecords(&seen) }
+            if now != .server { await surveyRecords(&seen) }
             if now != .records { await surveyHost(&seen) }
             seen.learned = learnedOnHost + learnedInChat
             seen.learnedCount = max(seen.learned.count, seen.learnedCount)
@@ -620,8 +734,8 @@ public final class TiloSource: AssistantSource {
                     started: Date(timeIntervalSince1970: (agent["created_at"]?.number ?? 0) / 1000),
                     startedBy: sub["started_by"]?.string == assistant ? .mainAgent : .person,
                     finished: state == .done ? since : nil))
-                if let channel = sub["conversation"]?.string, feeds[.subAgent(.init(id))]?.channel != channel {
-                    feeds[.subAgent(.init(id)), default: Feed()].channel = channel
+                if let channel = sub["conversation"]?.string, feeds[.subAgent(.init(id))]?.conversation != channel {
+                    feeds[.subAgent(.init(id)), default: Feed()].conversation = channel
                     again = true
                 }
             }

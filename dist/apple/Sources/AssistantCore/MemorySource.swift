@@ -142,6 +142,10 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
                        .message(Message(.person, draft.text, attachments: attachments)))])
     }
 
+    public func stopAnswering(in chat: Chat) async throws {
+        feed(chat)?.setAnswering(false)
+    }
+
     public func answer(_ question: Question.ID, with choice: Choice.ID) async throws {
         try signedIn()
         var problem: SourceProblem? = .refused("This question is gone.")

@@ -171,7 +171,7 @@ final class PhoneProbe: ObservableObject {
                     guard let message = try await engine.chatMessage(item) else { continue }
                     known.append(item)
                     printed += 1
-                    PhoneProbe.say(["message": ["channel": .string(message.channel), "author": .string(String(message.author.prefix(6))),
+                    PhoneProbe.say(["message": ["channel": .string(message.conversation), "author": .string(String(message.author.id.prefix(6))),
                                                 "text": .string(message.text)],
                                     "after": .string(reason), "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
                 }

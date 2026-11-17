@@ -6,8 +6,9 @@
 // page's mount publishes, is handed to it here: once, and to nobody else. The page puts no
 // handle on its session on a global, and it does not start to for a native host.
 //
-// A native host says it is there before any of the page's code runs: its document-start script
-// defines `globalThis.tiloNativeHost` with a function `device`. A browser has none, so in a
+// A native app says it is there before any of the page's code runs: its document-start script
+// defines `globalThis.tiloNativeHost` with a function `device`, and with `name` where it names
+// its device itself (what its person reads where they let it in: `deviceLabel` in `pairing.mjs`). A browser has none, so in a
 // browser nothing is handed to anyone. The host keeps what it is given where only its own code
 // reaches it.
 //

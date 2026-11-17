@@ -41,15 +41,17 @@ public struct Composer: View {
                         .offset(y: -FieldStyle.rise)
                 }
                 .frame(minHeight: 26, alignment: .top)
+                // While an answer is being written and nothing is typed, the same place stops it.
+                let stops = isEmpty && model.conversation(chat).isAnswering
                 Button {
-                    model.send(in: chat)
+                    if stops { model.stopAnswering(in: chat) } else { model.send(in: chat) }
                 } label: {
-                    Glyph(.ret).frame(minWidth: 26, minHeight: 22, alignment: .trailing).contentShape(Rectangle())
+                    Glyph(stops ? .stop : .ret).frame(minWidth: 26, minHeight: 22, alignment: .trailing).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(isEmpty ? Token.ink3 : Token.ink)
-                .disabled(isEmpty)
-                .accessibilityLabel(AssistantWords.send.said)
+                .foregroundStyle(isEmpty && !stops ? Token.ink3 : Token.ink)
+                .disabled(isEmpty && !stops)
+                .accessibilityLabel((stops ? AssistantWords.stop : AssistantWords.send).said)
             }
             .padding(16)
             .background(Token.content, in: RoundedRectangle(cornerRadius: Measure.bubbleRadius))

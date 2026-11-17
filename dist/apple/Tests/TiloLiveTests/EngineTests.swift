@@ -488,6 +488,66 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(raw["assignments"]?[0]?["kind"], "subtask")
     }
 
+    /// Evaluate a script in the page, for its effect.
+    private func inPage(_ script: String) async throws {
+        _ = try await engine.view.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
+    }
+
+    func testAPageThatSaysAWordAtEveryFrameIsHeardOnlyWhenWhatItsDeviceHeardMoved() async throws {
+        try await inPage("window.heardSoFar = 'heard 1 object(s)'; globalThis.tiloChannels = () => window.heardSoFar; location.hash = '#/w/ws-1/so.tilo.chat'; offerChanges(); enter()")
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
+        try await until("the first word") { self.changes >= 1 }
+        try await Task.sleep(for: .milliseconds(500))
+        // A word at every frame, with nothing heard and nothing held anew: none is handed on.
+        let before = changes
+        try await inPage("for (let frame = 0; frame < 40; frame++) told[0]()")
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(changes, before)
+        // What the device heard moved: the page's next word is handed on.
+        try await inPage("window.heardSoFar = 'heard 2 object(s)'; told[0]()")
+        try await until("the word is handed on once something was heard") { self.changes > before }
+        try await Task.sleep(for: .milliseconds(400))
+        // While the app expects a change, a word is handed on though nothing was heard.
+        let quiet = changes
+        engine.expectChanges(for: .seconds(5))
+        try await Task.sleep(for: .milliseconds(150))
+        try await inPage("told[0]()")
+        try await until("a word is handed on while the app expects one") { self.changes > quiet }
+    }
+
+    func testWhatTheAppItselfChangedIsReadAgainWithoutThePagesWord() async throws {
+        try await inPage("location.hash = '#/w/ws-1/so.tilo.chat'; enter()")
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
+        try await until("the first word") { self.changes >= 1 }
+        try await Task.sleep(for: .milliseconds(300))
+        let before = changes
+        try await engine.invoke("rename", on: "notes.book/notes/n1", ["title": "Report"])
+        try await until("the app's own change is a word") { self.changes > before }
+        try await Task.sleep(for: .milliseconds(300))
+        // A read changes nothing, and so says nothing: reading at a word never asks for another.
+        let settled = changes
+        _ = try await engine.read("notes.book")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(changes, settled)
+    }
+
+    func testTheAppNamesItsDeviceAndNothingInThePageRenamesIt() async throws {
+        // A name is one of the places the script fills; nothing it holds is read as another.
+        let named = TiloEngine(settings: try ShellSettings(site: Self.site), store: .keepsNothing,
+                               deviceName: "Tilo Assistant on Ada's Mac %PASS% " + String(repeating: "x", count: 80))
+        named.view.loadHTMLString(Self.page, baseURL: URL(string: "\(Self.site)/app/"))
+        let read = { (script: String) async -> String in
+            ((try? await named.view.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)) as? String) ?? ""
+        }
+        try await until("the page is there") { await read("return typeof globalThis.tiloNativeHost?.device") == "function" }
+        let said = await read("try { globalThis.tiloNativeHost.name = 'Someone else'; } catch { /* It cannot be written. */ } return globalThis.tiloNativeHost.name")
+        XCTAssertEqual(said, String(("Tilo Assistant on Ada's Mac %PASS% " + String(repeating: "x", count: 80)).prefix(64)))
+        XCTAssertFalse(said.contains(named.pass))
+        // An app that names nothing leaves the name to the page.
+        let unnamed = try await engine.view.callAsyncJavaScript("return globalThis.tiloNativeHost.name", arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(unnamed, "")
+    }
+
     func testOnlyTheFirstEntryOfADocumentIsTakenAndTheHostCannotBeReplaced() async throws {
         try await enterAsADevice()
         try await run(#"""

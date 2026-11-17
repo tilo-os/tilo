@@ -52,6 +52,9 @@ final class TiloSourceTests: XCTestCase {
     <script>
       const root = document.documentElement;
       const ADA = 'ad'.repeat(32);
+      // As a page that names a member by its kind spells the conversation of Ada and her assistant.
+      const DIRECT = 'direct:[{"person":"' + ADA + '"},{"agent":"assistant"}]';
+      const hex = text => [...text].map(letter => letter.charCodeAt(0).toString(16).padStart(2, '0')).join('');
       window.messages = [];
       window.heard = [];
       window.hostAsked = [];
@@ -116,20 +119,39 @@ final class TiloSourceTests: XCTestCase {
         globalThis.tiloMount = {
           semantics: document.getElementById('semantics'),
           state: () => ({workspaceName: 'Ada\'s workspace'}),
-          actions: () => [{address: {resource: 'chain:messages', action: 'read'}, resource_kind: 'chat.messages'}],
+          // `window.byKind` makes it the page that names members by their kind: its read
+          // names a conversation and the fields it wants, and a person's row stands under
+          // another address than their identity.
+          actions: () => window.byKind
+            ? [{address: {resource: 'chain:messages', action: 'read'}, resource_kind: 'chat.messages',
+                params: [{name: 'cursor'}, {name: 'pageSize'}, {name: 'fields'}, {name: 'where'}]},
+               {address: {resource: 'chat.workspace/people/' + hex(ADA), action: 'read'}, resource_kind: 'chat.workspace.people'}]
+            : [{address: {resource: 'chain:messages', action: 'read'}, resource_kind: 'chat.messages'}],
           invokeAction: async (resource, action, args) => {
             window.heard.push({resource, action, args});
             const item = resource.startsWith('chat.messages/messages/') ? window.messages.find(m => m.id === resource.split('/').pop()) : null;
             if (resource === 'chain:messages' && action === 'read') {
-              return said({kind: 'chat.messages', messages: [...window.messages].reverse().slice(0, args.pageSize ?? 50)
-                .map(m => ({item: 'chat.messages/messages/' + m.id, name: m.text}))});
+              const wanted = args.where?.channel;
+              return said({kind: 'chat.messages', messages: [...window.messages].reverse()
+                .filter(m => wanted === undefined || m.channel === wanted).slice(0, args.pageSize ?? 50)
+                .map(m => ({item: 'chat.messages/messages/' + m.id, name: m.text,
+                  ...Object.fromEntries((args.fields ?? []).map(field => [field, m[field] ?? null]))}))});
             }
             if (item && action === 'read') return said(item);
-            if (resource === 'chat.workspace/people/' + ADA && action === 'read') return said({id: ADA, name: 'Ada Lovelace'});
+            if (resource === 'chat.workspace/people/' + ADA && action === 'read' && !window.byKind) return said({id: ADA, name: 'Ada Lovelace'});
+            if (resource === 'chat.workspace/people/' + hex(ADA) && action === 'read' && window.byKind) return said({id: {person: ADA}, name: 'Ada Lovelace'});
             if (resource === 'chat.workspace' && action === 'send') {
               const id = 's' + window.messages.length;
-              window.post({id, channel: args.to[0].id, author: ADA, text: args.text});
-              return said({accepted: true, message: id, conversation: args.to[0].id});
+              const to = args.to[0];
+              window.post({id, channel: to.kind === 'agent' ? DIRECT : to.id, author: window.byKind ? {person: ADA} : ADA, text: args.text});
+              return said({accepted: true, message: id, conversation: to.id});
+            }
+            if (resource === 'chain:messages' && action === 'stop-agent') {
+              const worked = window.messages.find(m => m.id === args.message);
+              if (!worked?.work) throw new Error('unknown_item: no agent works on this message');
+              worked.stopped = {by: ADA, at: 1794900200};
+              touch();
+              return said(null);
             }
             if (resource === 'chain:messages' && action === 'answer-question') {
               const asked = window.messages.find(m => m.id === args.message);
@@ -182,6 +204,57 @@ final class TiloSourceTests: XCTestCase {
         try await run("\(before); location.hash = '#/w/ws-1/so.tilo.chat'; enter(\(device))")
         try await until("the app is signed in") { if case .signedIn = self.sessions.last { true } else { false } }
         try await until("the conversation is told") { !self.changes.isEmpty }
+    }
+
+    func testMembersAreReadByKindOrByIdAndTheirConversationIsSpelledAsChatDoes() {
+        XCTAssertEqual(ChatMember(["person": "ab"]), ChatMember(.person, id: "ab"))
+        XCTAssertEqual(ChatMember(["agent": "assistant"]), ChatMember(.agent, id: "assistant"))
+        XCTAssertEqual(ChatMember(["bot": "nightly"]), ChatMember(.automation, id: "nightly"))
+        XCTAssertEqual(ChatMember("ab"), ChatMember(nil, id: "ab"))
+        XCTAssertNil(ChatMember(["team": "x"]))
+        XCTAssertNil(ChatMember(nil))
+        // A person stands before an agent whatever their ids, and two of a kind by their ids.
+        XCTAssertEqual(ChatConversation.direct([ChatMember(.agent, id: "assistant"), ChatMember(.person, id: "ff")]),
+                       #"direct:[{"person":"ff"},{"agent":"assistant"}]"#)
+        XCTAssertEqual(ChatConversation.direct([ChatMember(.person, id: "b"), ChatMember(.person, id: "a")]),
+                       #"direct:[{"person":"a"},{"person":"b"}]"#)
+        XCTAssertEqual(ChatConversation.direct([ChatMember(nil, id: "b"), ChatMember(nil, id: "a")]), #"direct:["a","b"]"#)
+    }
+
+    func testOnAPageThatNamesMembersByKindTheConversationWithTheAgentFillsInOneReadAndItsAnswerIsStopped() async throws {
+        try await start(.agent(id: "assistant", name: "Assistant"))
+        try await enter("""
+            window.byKind = true;
+            post({id: 'm1', channel: DIRECT, author: {person: ADA}, text: 'Good morning'});
+            post({id: 'm2', channel: 'c_chat', author: {person: ADA}, text: 'Said in a channel'});
+            post({id: 'm3', channel: DIRECT, author: {agent: 'assistant'}, text: 'Good morning, Ada',
+              work: {stream: null, state: {state: {$variant: 'doing', did: '', about: ''}, since: 1794900002}}, stopped: null})
+            """)
+        try await until("the conversation with the agent is held, and nothing of a channel") { self.held.count == 2 }
+        guard case .signedIn(let person) = sessions.last else { return XCTFail("not signed in") }
+        XCTAssertEqual(person.name, "Ada Lovelace", "her row stands under another address than her identity")
+        guard case .message(let mine) = held[0].content, case .message(let theirs) = held[1].content else { return XCTFail("two messages") }
+        XCTAssertEqual(mine.author, .person)
+        XCTAssertEqual(theirs.author, .assistant)
+        try await until("the agent is said to be at work") { self.changes.contains(.answering(true)) }
+        // Each look is one read that names the conversation: no message is read by itself.
+        let reads = try await page("return JSON.stringify(window.heard.filter(h => h.action === 'read' && h.resource !== 'chat.workspace/people/' + hex(ADA)).map(h => h.args?.where?.channel === DIRECT ? 'one' : h.resource))")
+        XCTAssertFalse(reads.contains("chat.messages/messages/"), reads)
+        XCTAssertTrue(reads.contains("one"), reads)
+
+        try await source.send(Draft(text: "And now?"), to: .main)
+        let sent = try await page("return JSON.stringify(window.heard.filter(h => h.action === 'send').map(h => h.args.to[0]))")
+        XCTAssertEqual(JSON(text: sent), [["kind": "agent", "id": "assistant", "name": "Assistant"]])
+        try await until("what was sent stands in the conversation as hers") { self.held.count == 3 }
+
+        try await source.stopAnswering(in: .main)
+        let stopped = try await page("return JSON.stringify(window.heard.filter(h => h.action === 'stop-agent').map(h => h.args.message))")
+        XCTAssertEqual(stopped, #"["m3"]"#)
+        try await until("the agent is said to have stopped") { self.changes.last(where: { if case .answering = $0 { true } else { false } }) == .answering(false) }
+        // With nothing at work, stopping asks nothing.
+        try await source.stopAnswering(in: .main)
+        let again = try await page("return String(window.heard.filter(h => h.action === 'stop-agent').length)")
+        XCTAssertEqual(again, "1")
     }
 
     func testTheAppIsSignedInAsThePersonAndItsConversationFillsAndFollows() async throws {

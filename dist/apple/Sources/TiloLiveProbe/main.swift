@@ -49,7 +49,8 @@ final class Probe {
     private let engine: TiloEngine
     private let codeFile: String?
     private let routeFile: String?
-    private var known: [String] = []
+    /// The messages printed so far, each with the words it was printed with.
+    private var known: [String: String] = [:]
     private var signals = 0
     private var reads = 0
     private var looking = false
@@ -117,12 +118,16 @@ final class Probe {
             var printed = 0
             do {
                 reads += 1
-                for item in try await engine.chatLatest(50) where !known.contains(item) {
-                    guard let message = try await engine.chatMessage(item) else { continue }
-                    known.append(item)
+                let latest = try await engine.chatLatest(50)
+                for item in latest where known[item] == nil || latest.suffix(8).contains(item) {
+                    // An agent's answer is there before its words are: the newest are read again,
+                    // and printed again when their words changed.
+                    guard let message = try await engine.chatMessage(item), known[item] != message.text else { continue }
+                    known[item] = message.text
                     printed += 1
-                    say(["message": ["id": .string(String(item.split(separator: "/").last ?? "")), "channel": .string(message.channel),
-                                     "author": .string(String(message.author.prefix(6))), "text": .string(message.text),
+                    say(["message": ["id": .string(String(item.split(separator: "/").last ?? "")), "channel": .string(message.conversation),
+                                     "author": .string(String(message.author.id.prefix(6))),
+                                     "by": message.author.kind.map { .string($0.rawValue) } ?? .null, "text": .string(message.text),
                                      "at": .number(message.at.timeIntervalSince1970)],
                          "after": .string(reason), "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
                 }

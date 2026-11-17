@@ -112,8 +112,11 @@ public final class TiloEngine: NSObject {
     ///   - unseen: the view is in no window anyone looks at, so its page's frames are driven by
     ///     a clock (`EngineScript`). `false` only for a view a person looks at.
     ///   - inspectable: lets Safari's Web Inspector attach, for development.
+    ///   - deviceName: what this device is called where its person lets it in and lists their
+    ///     devices, as the app says it ("Tilo Assistant on Ada's Mac"). Empty leaves it to the page.
     public init(settings: ShellSettings, store: Store, unseen: Bool = true,
-                frame: CGRect = CGRect(x: 0, y: 0, width: 1100, height: 760), inspectable: Bool = false) {
+                frame: CGRect = CGRect(x: 0, y: 0, width: 1100, height: 760), inspectable: Bool = false,
+                deviceName: String = "") {
         self.settings = settings
         policy = SitePolicy(settings: settings)
         let configuration = WKWebViewConfiguration()
@@ -132,7 +135,7 @@ public final class TiloEngine: NSObject {
         view.configuration.userContentController.add(ear, name: EngineScript.name)
         view.configuration.userContentController.addUserScript(WKUserScript(
             source: EngineScript.source(origin: settings.origin, unseen: unseen, pass: pass,
-                                        providers: PersonProvider.allCases.map(\.rawValue)),
+                                        providers: PersonProvider.allCases.map(\.rawValue), device: deviceName),
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view.navigationDelegate = self
         view.uiDelegate = self
@@ -186,6 +189,14 @@ public final class TiloEngine: NSObject {
         changeListeners[id] = continuation
         continuation.onTermination = { [weak self] _ in Task { @MainActor in self?.changeListeners[id] = nil } }
         return stream
+    }
+
+    /// The app expects what the page holds to change soon: an agent is at work on what it
+    /// shows. For `time`, a minute at most, every word of the page is handed on, also where
+    /// nothing says that its device heard anything.
+    public func expectChanges(for time: Duration) {
+        let ms = Double(time.components.seconds) * 1000 + Double(time.components.attoseconds) / 1e15
+        view.callAsyncJavaScript("globalThis.__tiloLive?.expect(ms)", arguments: ["ms": ms], in: nil, in: .page, completionHandler: nil)
     }
 
     /// The page's next word of a change: `false` when none came within `patience`.

@@ -285,18 +285,44 @@ What keeps it the app's alone:
 
 **The assistant's source** (`TiloSource`, `Sources/AssistantTilo`) is `AssistantSource` on all
 of this: the app as a device of its person. The conversation, a question that waits,
-sub-agents and what was learned are records Chat keeps, read through the page's mount at the
-page's word of a change. The models, the vault and the events are asked of the host when the
-device gets in and after a call of the app changed them, never on a clock. A secret goes to
-the vault, and the question is answered with the item's reference: the conversation holds
-nothing else of it. Where the page says which workspace is the person's own, the app goes
-there, because that is where the assistant lives. What Tilo cannot do from an app yet is
-refused with a sentence: tasks, files, pausing the assistant, a password manager, connections.
+sub-agents and what was learned are what Chat keeps, read through the page's mount at the
+page's word of a change. A page whose read of Chat's messages names a conversation and the
+fields it wants answers each conversation whole in one read; an older page is read message by
+message. Chat names who wrote a message by their kind (`{"person": …}`, `{"agent": …}`) and
+spells the conversation of a person and an agent from the two (`ChatMember`,
+`ChatConversation.direct`); a page from before that says bare ids, and both are read. While
+an agent is at work on a message of a conversation the source says so, and
+`stopAnswering(in:)` is Chat's own `stop-agent` on that message: the message field's button
+stops the answer while nothing is typed. The models, the vault and the events are asked of
+the person's server when the device gets in and after a call of the app changed them, never
+on a clock: `link(provider:key:model:)` carries a provider's key from the protected field to
+the server, and `setUpEvent` sets up what comes at a time. A secret goes to the vault, and
+the question is answered with the item's reference: the conversation holds nothing else of
+it. Where the page says which workspace is the person's own, the app goes there, because
+that is where the assistant lives. What Tilo cannot do from an app yet is refused with a
+sentence: tasks, files, pausing the assistant, a password manager, connections.
 
-What it leans on, until Tilo's page offers each: the page's accessibility tree changing is the
-word that something changed, where the page has no `tiloChanges`; a second mount is made
-through the page's own `host.mjs` and `peer.mjs`, where the page has no `tiloOpen`; and the
-person's own providers are reached only on a page that hands a native host its device's entry.
+**Which agent is the assistant.** The source reads Chat's list of the workspace's agents
+(`chat.agent`) and takes the one the person keeps. Tilo's page publishes that list to nothing
+outside its own windows yet. Until it does, the app is told the agent by its id
+(`TiloAssistantAgent` in the app's settings, or `-TiloAssistantAgent assistant` on the
+command line; `--assistant` for the program with no window), and the assistant is made in
+Tilo's own Assistant window.
+
+**The page's word of a change.** Tilo's page says `tiloChanges` at every frame it draws and
+at every word of its session, many times a second while nothing happens. The engine hands
+the word on only when what the page's device heard or holds moved (`tiloChannels`), looked
+at eight times a second at most; when the page's description of itself for assistive
+technology changed; and after a call of the app's own changed something.
+
+**The device's name.** The app names its device where its person lets it in and lists their
+devices ("Tilo Assistant on Ada's Mac"). The engine's script says it as
+`tiloNativeHost.name`, which the page's `deviceLabel` (`web/pairing.mjs`) reads before it
+falls back to the browser and the system.
+
+What it leans on, until Tilo's page offers each: a second mount is made through the page's
+own `host.mjs` and `peer.mjs`, where the page has no `tiloOpen`; and the person's own
+providers are reached only on a page that hands a native app its device's entry.
 
 `TiloLiveProbe` is the engine with no window, driven over its standard input: it pairs, prints
 Chat's messages as they arrive, sends through Chat's own send, and shows a document in a

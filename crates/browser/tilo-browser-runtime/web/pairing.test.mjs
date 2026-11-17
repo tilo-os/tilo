@@ -76,6 +76,18 @@ test('a device is named by its browser and system, as people say them', () => {
   assert.ok(deviceLabel({userAgent: 'Firefox/1', platform: 'x'.repeat(100)}).length <= 64);
 });
 
+test('a native app that holds the page names its device itself', () => {
+  const safari = {userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15'};
+  assert.equal(deviceLabel(safari, {name: 'Tilo Assistant on Ada’s Mac'}), 'Tilo Assistant on Ada’s Mac');
+  // One line of at most 64 characters, whatever it was handed.
+  assert.equal(deviceLabel(safari, {name: '  Tilo\nAssistant\u0000 '}), 'Tilo Assistant');
+  assert.equal(deviceLabel(safari, {name: 'x'.repeat(100)}), 'x'.repeat(64));
+  // No name, an empty one or something that is no text leaves it to the browser and the system.
+  for (const none of [{}, {name: ''}, {name: ' \n '}, {name: 42}, {name: {toString: () => 'x'}}, null]) {
+    assert.equal(deviceLabel(safari, none), 'Safari on Mac');
+  }
+});
+
 test('when a device asked reads as words', () => {
   assert.equal(whenRequested(1000, {now: 20_000, locale: 'en'}), 'just now');
   assert.equal(whenRequested(0, {now: 2 * 60_000, locale: 'en'}), '2 minutes ago');

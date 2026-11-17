@@ -45,6 +45,8 @@ public protocol AssistantSource: Sendable {
 
     /// Send what the person wrote, with what they attached.
     func send(_ draft: Draft, to chat: Chat) async throws
+    /// Stop the answer that is being written in a conversation. Nothing happens where none is.
+    func stopAnswering(in chat: Chat) async throws
 
     /// Give one of a question's answers. An event's card is answered the same way.
     func answer(_ question: Question.ID, with choice: Choice.ID) async throws
@@ -122,6 +124,7 @@ extension AssistantSource {
 
     /// A source that keeps no replies apart from the conversation has none to show.
     public func replies(of task: AssistantTask.ID, in chat: Chat) async throws -> [Item] { [] }
+    public func stopAnswering(in chat: Chat) async throws {}
 }
 
 /// How a conversation changed.

@@ -236,6 +236,17 @@ extension TiloEngine {
         return ModelProviders(try await ask(.models, "set-assignments", of: "models", arguments))
     }
 
+    // MARK: The person's events
+
+    /// Set up something that happens at a time, or when something else does: what its person
+    /// reads it by, what starts it (`once at 2026-11-17T11:32:00Z`, `every day at 09:00`, or a
+    /// change in the workspace), and what their assistant is told to do then.
+    @discardableResult
+    public func setUpEvent(name: String, when: String, instruction: String) async throws -> JSON {
+        try await ask(.events, "set-up", of: "events",
+                      ["name": .string(name), "when": .string(when), "instruction": .string(instruction)])
+    }
+
     // MARK: The person's vault
 
     /// What is safe to say of every item the vault keeps, oldest first.

@@ -13,7 +13,8 @@ import WebKit
 /// model the window's views read and call, and nothing on screen. It is never the app in front
 /// and has no icon in the Dock.
 ///
-///   AssistantMac --drive --site ORIGIN --store UUID [--main-chat CONVERSATION] [--code-file FILE]
+///   AssistantMac --drive --site ORIGIN --store UUID [--main-chat CONVERSATION | --assistant AGENT]
+///                [--device-name NAME] [--code-file FILE]
 ///   AssistantMac --drive --store UUID --forget
 ///
 /// It prints one JSON object a line: where the device stands, the session, each piece of the
@@ -23,6 +24,9 @@ import WebKit
 ///   {"do": "send", "text": "…"}                      as the message field sends
 ///   {"do": "answer", "question": "…", "choice": "…"}  as a question's button answers
 ///   {"do": "keep", "request": "…", "file": "…"}       as the protected field keeps what was typed
+///   {"do": "link", "preset": "…", "file": "…", "model": "…"}   a provider's key from the protected field
+///   {"do": "event", "name": "…", "when": "…", "instruction": "…"}   something that comes at a time
+///   {"do": "stop"}                                    stop the answer that is being written
 ///   {"do": "models"}   {"do": "state"}   {"do": "quit"}
 /// It prints no link, no code and no secret, and ends when its standard input ends. With
 /// --forget it removes the store, and with it the device's key, and what it kept beside it.
@@ -82,9 +86,10 @@ final class AssistantDrive {
         }
         guard let site = argument("--site"), let settings = try? ShellSettings(site: site) else { stop("--site names a Tilo site") }
         guard let defaults = UserDefaults(suiteName: suite(store)) else { stop("no place to keep what the app keeps") }
-        let chat = argument("--main-chat")
-        let source = TiloSource(settings: settings, store: store,
-                                mainChat: chat.map { .conversation(id: $0, name: $0) } ?? .assistant, defaults: defaults)
+        let chat: TiloSource.MainChat = argument("--main-chat").map { .conversation(id: $0, name: $0) }
+            ?? argument("--assistant").map { .agent(id: $0, name: "Assistant") } ?? .assistant
+        let source = TiloSource(settings: settings, store: store, mainChat: chat, defaults: defaults,
+                                deviceName: argument("--device-name") ?? "")
         let drive = AssistantDrive(source: source, codeFile: argument("--code-file"))
         drive.start()
         // Steps arrive on a thread of their own. When whoever drives is gone, so is the program.
@@ -159,6 +164,7 @@ final class AssistantDrive {
         once("reach", .string(model.reach == .reachable ? "reachable" : "unreachable"))
         let conversation = model.conversation(.main)
         once("conversation", ["loaded": .bool(conversation.isLoaded), "pieces": .number(Double(conversation.items.count))])
+        once("answering", .bool(conversation.isAnswering))
         for item in conversation.items {
             let line = AssistantDrive.line(of: item)
             guard pieces[item.id] != line.text else { continue }
@@ -171,6 +177,10 @@ final class AssistantDrive {
                         "automations": .number(Double(model.automations.count)), "models": .number(Double(model.models.count)),
                         "model": model.supervision.model.map(JSON.string) ?? .null,
                         "logins": .number(Double(model.supervision.logins.count))])
+        once("comes", .array(model.automations.map { coming in
+            ["title": .string(coming.title), "when": .string(coming.summary), "on": .bool(coming.isOn),
+             "next": coming.next.map { .number($0.timeIntervalSince1970) } ?? .null]
+        }))
     }
 
     private static func line(of item: Item) -> JSON {
@@ -252,6 +262,35 @@ final class AssistantDrive {
             }
             let kept = await model.keep(Secret(typed), for: .init(request))
             AssistantDrive.say(["kept": .bool(kept)])
+        case "link":
+            guard let preset = step["preset"]?.string, let typed = words("file") else {
+                AssistantDrive.say(["error": "link takes preset and a file that holds what was typed"])
+                return
+            }
+            do {
+                let offered = try await source.link(provider: preset, key: Secret(typed), model: step["model"]?.string)
+                AssistantDrive.say(["linked": ["models": .number(Double(offered.count))]])
+            } catch SourceProblem.refused(let why) {
+                AssistantDrive.say(["linked": false, "why": .string(why)])
+            } catch {
+                AssistantDrive.say(["linked": false, "why": "unreachable"])
+            }
+        case "event":
+            guard let name = step["name"]?.string, let when = step["when"]?.string, let instruction = step["instruction"]?.string else {
+                AssistantDrive.say(["error": "event takes name, when and instruction"])
+                return
+            }
+            do {
+                try await source.setUpEvent(name: name, when: when, instruction: instruction)
+                AssistantDrive.say(["setUp": true])
+            } catch SourceProblem.refused(let why) {
+                AssistantDrive.say(["setUp": false, "why": .string(why)])
+            } catch {
+                AssistantDrive.say(["setUp": false, "why": "unreachable"])
+            }
+        case "stop":
+            model.stopAnswering(in: .main)
+            AssistantDrive.say(["asked": "stop"])
         case "models":
             model.loadModels()
             AssistantDrive.say(["asked": "models"])

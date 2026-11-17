@@ -235,6 +235,11 @@ public final class AssistantModel {
         }
     }
 
+    /// Stop the answer that is being written in a conversation.
+    public func stopAnswering(in chat: Chat) {
+        Task { await self.call { try await self.source.stopAnswering(in: chat) } }
+    }
+
     public func answer(_ question: Question.ID, with choice: Choice.ID) {
         Task { await self.call { try await self.source.answer(question, with: choice) } }
     }

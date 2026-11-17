@@ -10,10 +10,10 @@
  * devices may answer it.
  *
  * The new device reads the link (`parsePairSecret`) and, before it asks any
- * host to let it in, says whose device it would become (`pairingWhose`): a
+ * holder to let it in, says whose device it would become (`pairingWhose`): a
  * link is written by whoever made it, and the device that follows one acts
  * as that person from then on. Only when its person goes on does it name
- * itself (`deviceLabel`: "Safari on iPhone"), show the code the host derives
+ * itself (`deviceLabel`: "Safari on iPhone"), show the code the holder derives
  * and wait; a refusal is said in plain words (`pairingFailure`).
  */
 
@@ -184,9 +184,14 @@ const PLATFORMS = {macOS: 'Mac', 'Chrome OS': 'ChromeOS', 'Chromium OS': 'Chrome
  * What a new device is called where the person approves it: the browser
  * on the system, "Safari on iPhone", "Firefox on Linux"; at most 64
  * characters. Read from `userAgentData` where the browser has it, else
- * from its user agent string.
+ * from its user agent string. A native app that holds this page as its
+ * person's device names the device itself (`name`, `native-host.mjs`):
+ * "Tilo Assistant on Ada's Mac".
  */
-export function deviceLabel(navigator = globalThis.navigator ?? {}) {
+export function deviceLabel(navigator = globalThis.navigator ?? {}, native = globalThis.tiloNativeHost) {
+  const named = typeof native?.name === 'string'
+    ? native.name.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').trim().slice(0, 64) : '';
+  if (named) return named;
   const agent = navigator.userAgent ?? '';
   const brands = navigator.userAgentData?.brands ?? [];
   const browser = brands.map(entry => BRANDS[entry.brand]).find(name => name && name !== 'Chromium')
