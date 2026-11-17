@@ -1271,6 +1271,51 @@ params = [
 ]
 
 [[resources]]
+kind = "chat.learned"
+label = "What your agents learned"
+version = 1
+fields = [
+  { path = "facts", type = { collection = { named = "Fact" } }, readonly = true, stored = "collection" },
+  { path = "facts.*.text", type = "text", label = true },
+  { path = "facts.*.source", type = "text" },
+  { path = "facts.*.at", type = "int" },
+  { path = "facts.*.by", type = { option = "text" } },
+]
+
+[[resources.verbs]]
+id = "learn"
+kind = "undoable"
+params = [
+  { name = "text", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "source", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+]
+
+[[resources.verbs]]
+id = "correct"
+kind = "undoable"
+params = [
+  { name = "fact", type = "text", required = true, schema = { type = "string" } },
+  { name = "text", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "source", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "forget"
+kind = "undoable"
+params = [
+  { name = "fact", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "Fact"
+fields = [
+  { name = "text", type = "text" },
+  { name = "source", type = "text" },
+  { name = "at", type = "int" },
+  { name = "by", type = { option = "text" } },
+]
+
+[[resources]]
 kind = "tilo.workspace.emoji"
 label = "Workspace emoji"
 version = 1

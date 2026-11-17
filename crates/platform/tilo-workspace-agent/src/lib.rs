@@ -21,6 +21,8 @@ use tilo_resource::{
     resource,
 };
 
+pub mod learned;
+
 #[cfg(test)]
 mod tests;
 

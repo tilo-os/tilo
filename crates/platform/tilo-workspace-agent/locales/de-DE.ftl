@@ -11,3 +11,7 @@ chat-agent-set-agent-on-host = Wählen, wo ein Agent läuft
 chat-agent-set-agent-instruction = Dem Agenten sagen, wie er arbeitet
 chat-agent-set-agent-bound = Grenzen festlegen
 chat-agent-retire-agent = Agent außer Dienst stellen
+chat-learned = Was deine Agenten gelernt haben
+chat-learned-learn = Fakt festhalten
+chat-learned-correct = Fakt korrigieren
+chat-learned-forget = Fakt vergessen

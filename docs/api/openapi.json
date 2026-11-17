@@ -10349,6 +10349,62 @@
         ],
         "description": ""
       },
+      "chat.learned.learn.Arguments": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "source": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "source"
+        ],
+        "description": ""
+      },
+      "chat.learned.correct.Arguments": {
+        "type": "object",
+        "properties": {
+          "fact": {
+            "type": "string"
+          },
+          "text": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "fact",
+          "text"
+        ],
+        "description": ""
+      },
+      "chat.learned.forget.Arguments": {
+        "type": "object",
+        "properties": {
+          "fact": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fact"
+        ],
+        "description": ""
+      },
       "tilo.workspace.emoji.add-emoji.Arguments": {
         "type": "object",
         "properties": {
@@ -28841,6 +28897,24 @@
       "resource": "chat.drafts",
       "action": "start-draft",
       "arguments": "#/components/schemas/chat.drafts.start-draft.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.learned",
+      "action": "learn",
+      "arguments": "#/components/schemas/chat.learned.learn.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.learned",
+      "action": "correct",
+      "arguments": "#/components/schemas/chat.learned.correct.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.learned",
+      "action": "forget",
+      "arguments": "#/components/schemas/chat.learned.forget.Arguments"
     },
     {
       "app": "so.tilo.chat",

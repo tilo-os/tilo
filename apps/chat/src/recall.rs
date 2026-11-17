@@ -14,8 +14,11 @@
 use std::fmt::Write as _;
 
 use tilo_actions::policy::MemberId;
-use ui::collaboration::recall::{FOLD_BYTES, Fold, INSTRUCTION_BYTES, INSTRUCTION_CONVERSATION};
+use ui::collaboration::recall::{
+    FOLD_BYTES, Fold, INSTRUCTION_BYTES, INSTRUCTION_CONVERSATION, INSTRUCTION_LEARNED,
+};
 use ui::tilo_resource::Id;
+use ui::tilo_workspace_agent::learned::Learned;
 
 use crate::parts::ChatPart;
 use crate::record::{Chat, Message, Summary, member_slot};
@@ -33,6 +36,9 @@ pub const FOLD_AT_BYTES: usize = 8 * 1024;
 pub const KEPT_BYTES: usize = 4 * 1024;
 /// Room kept for the line that says how many messages a turn is not told.
 const NOTE_BYTES: usize = 64;
+/// The most of what was learned about the person a turn is told, in bytes: the newest facts
+/// first, and a line that says how many more the record keeps.
+pub const LEARNED_BYTES: usize = 4 * 1024;
 
 /// A turn's instruction with the conversation before it, and what the turn asks its agent to take
 /// into the conversation's summary while it answers.
@@ -55,11 +61,20 @@ pub struct Told {
 pub fn told(
     chat: &Chat,
     part: &ChatPart,
+    learned: Option<&Learned>,
     conversation: &Id,
     turn: &Id,
     agent: &MemberId,
     words: String,
 ) -> Told {
+    // What was learned about the person comes first after their words: it holds for every
+    // conversation, and the conversation's own stretch takes what room is left.
+    let mut words = words;
+    if let Some(known) = learned.map(known).filter(|known| {
+        !known.is_empty() && words.len().saturating_add(known.len()) <= INSTRUCTION_BYTES
+    }) {
+        words.push_str(&known);
+    }
     // The conversation's messages before the turn's, oldest first: by their time, and within one
     // second in the order the part keeps them.
     let mut held: Vec<(&Id, &Message)> = part
@@ -133,6 +148,42 @@ pub fn told(
         instruction.push_str(line);
     }
     Told { instruction, fold }
+}
+
+/// What the person's record of what was learned about them tells a turn: the newest facts first,
+/// each with where it came from, within [`LEARNED_BYTES`], and how many more the record keeps.
+/// Empty where nothing was learned.
+fn known(learned: &Learned) -> String {
+    let mut facts: Vec<_> = learned
+        .facts
+        .iter()
+        .filter(|(_, fact)| !fact.text.trim().is_empty())
+        .collect();
+    facts.sort_by_key(|(_, fact)| std::cmp::Reverse(fact.at));
+    let mut told = String::new();
+    let mut shown = 0_usize;
+    for (_, fact) in &facts {
+        let line = format!("\n- {} (from: {})", fact.text.trim(), fact.source.trim());
+        if INSTRUCTION_LEARNED
+            .len()
+            .saturating_add(told.len())
+            .saturating_add(line.len())
+            .saturating_add(NOTE_BYTES)
+            > LEARNED_BYTES
+        {
+            break;
+        }
+        told.push_str(&line);
+        shown = shown.saturating_add(1);
+    }
+    if shown == 0 {
+        return String::new();
+    }
+    let more = facts.len().saturating_sub(shown);
+    if more > 0 {
+        let _ = write!(told, "\n({more} more are kept in the record)");
+    }
+    format!("{INSTRUCTION_LEARNED}{told}")
 }
 
 /// How many of `held`, oldest first, `summary` takes in: through the message it names, or, where
@@ -249,6 +300,8 @@ mod tests {
         part: ChatPart,
         clock: i64,
         said: Vec<(Id, String)>,
+        /// What was learned about the person, when the test keeps any.
+        learned: Option<Learned>,
     }
 
     impl Thread {
@@ -258,6 +311,7 @@ mod tests {
                 part: ChatPart::default(),
                 clock: 1_000,
                 said: Vec::new(),
+                learned: None,
             }
         }
 
@@ -276,6 +330,7 @@ mod tests {
             told(
                 &self.chat.state().unwrap(),
                 &self.part,
+                self.learned.as_ref(),
                 &conversation(),
                 turn,
                 &agent(),
@@ -532,6 +587,7 @@ mod tests {
         let told = told(
             &Chat::default(),
             &part,
+            None,
             &channel,
             &turn,
             &agent(),
@@ -541,6 +597,74 @@ mod tests {
         assert!(told.instruction.contains("earlier messages left out)"));
         assert!(told.instruction.contains("\nPerson: 39: a long line"));
         assert!(told.instruction.len() <= INSTRUCTION_BYTES);
+    }
+
+    /// What was learned about the person is told to every turn, newest first with its source, and
+    /// is gone from the next turn once it is forgotten; it is never read as what the turn asks.
+    #[test]
+    fn what_was_learned_is_told_until_it_is_forgotten() {
+        use ui::tilo_resource::NonBlank;
+        use ui::tilo_workspace_agent::learned::learned;
+        let mut record = Replica::<Learned>::new().as_agent_for(AGENT, ME);
+        record.set_now_ms(1_000);
+        record
+            .apply(Learned::LEARN.with(learned::Learn {
+                text: NonBlank::parse("Prefers answers in German.").unwrap(),
+                source: NonBlank::parse("They said so").unwrap(),
+            }))
+            .unwrap();
+        record.set_now_ms(2_000);
+        record
+            .apply(Learned::LEARN.with(learned::Learn {
+                text: NonBlank::parse("Is not raising money this year.").unwrap(),
+                source: NonBlank::parse("Their note \"Plans\"").unwrap(),
+            }))
+            .unwrap();
+        let mut thread = Thread::new();
+        thread.learned = Some(record.state().unwrap());
+        thread.say(&me(), "hello");
+        thread.say(&agent(), "Hello.");
+        let turn = thread.say(&me(), "what do you know about me?");
+        let told = thread.told(&turn, "what do you know about me?");
+        assert_eq!(
+            told.instruction,
+            format!(
+                "what do you know about me?{INSTRUCTION_LEARNED}\n- Is not raising money this \
+                 year. (from: Their note \"Plans\")\n- Prefers answers in German. (from: They \
+                 said so){INSTRUCTION_CONVERSATION}\nPerson: hello\nYou: Hello."
+            )
+        );
+        // What was learned opens with a marker of its own, so the turn still reads what is
+        // asked from the person's words alone (`TurnRequest::request` cuts at it).
+        assert!(
+            told.instruction
+                .starts_with(&format!("what do you know about me?{INSTRUCTION_LEARNED}"))
+        );
+        // The person forgets one: the next turn is no longer told it.
+        let mut person = record.fork().as_author(ME);
+        let forgotten = person
+            .state()
+            .unwrap()
+            .facts
+            .iter()
+            .find(|(_, fact)| fact.text.contains("German"))
+            .map(|(id, _)| id.clone())
+            .unwrap();
+        person
+            .apply(Learned::FORGET.with(learned::Forget { fact: forgotten }))
+            .unwrap();
+        thread.learned = Some(person.state().unwrap());
+        let told = thread.told(&turn, "what do you know about me?");
+        assert!(!told.instruction.contains("German"), "{}", told.instruction);
+        assert!(told.instruction.contains("Is not raising money this year."));
+        // Nothing learned says nothing.
+        thread.learned = Some(Learned::default());
+        assert!(
+            !thread
+                .told(&turn, "hi")
+                .instruction
+                .contains(INSTRUCTION_LEARNED)
+        );
     }
 
     /// The summary is kept with the conversation, not with its messages: a turn whose part is new

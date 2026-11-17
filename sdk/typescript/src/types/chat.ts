@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@22dca5aec1753089";
+export const SURFACE = "so.tilo.chat@22a1d9a3cb0ac3f0";
 
 export interface Category {
   name: string;
@@ -463,6 +463,13 @@ export interface WorkUpdate {
   detail: string | null;
 }
 
+export interface Fact {
+  text: string;
+  source: string;
+  at: number;
+  by: string | null;
+}
+
 export interface Emoji {
   image: unknown;
   added_by: string;
@@ -797,6 +804,24 @@ export interface StreamOutputArgs {
 /** The arguments of `start-draft`. */
 export interface StartDraftArgs {
   key: string;
+}
+
+/** The arguments of `learn`. */
+export interface LearnArgs {
+  text: string;
+  source: string;
+}
+
+/** The arguments of `correct`. */
+export interface CorrectArgs {
+  fact: string;
+  text: string;
+  source?: string;
+}
+
+/** The arguments of `forget`. */
+export interface ForgetArgs {
+  fact: string;
 }
 
 /** The arguments of `add-emoji`. */
@@ -1236,6 +1261,38 @@ export const DRAFTS_ACTIONS = ["startDraft", "startDraftMany"] as const;
 /** The `chat.drafts` kind at `path`. */
 export function drafts(ws: tilo.Workspace, path: string): Drafts {
   return resourceProxy(ws, path, SURFACE, DRAFTS_ACTIONS) as unknown as Drafts;
+}
+
+/** What your agents learned — `chat.learned`. */
+export interface Learned extends tilo.Resource {
+  readonly facts: Array<tilo.Entry<Fact>>;
+  learn(args: {
+    text: string;
+    source: string;
+  }): Promise<void>;
+  /** Runs `learn` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  learnMany(items: LearnArgs[]): Promise<tilo.ActionAnswer[]>;
+  correct(args: {
+    fact: string;
+    text: string;
+    source?: string;
+  }): Promise<void>;
+  /** Runs `correct` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  correctMany(items: CorrectArgs[]): Promise<tilo.ActionAnswer[]>;
+  forget(args: {
+    fact: string;
+  }): Promise<void>;
+  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Learned` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LEARNED_ACTIONS = ["learn", "learnMany", "correct", "correctMany", "forget", "forgetMany"] as const;
+
+/** The `chat.learned` kind at `path`. */
+export function learned(ws: tilo.Workspace, path: string): Learned {
+  return resourceProxy(ws, path, SURFACE, LEARNED_ACTIONS) as unknown as Learned;
 }
 
 /** Workspace emoji — `tilo.workspace.emoji`. */

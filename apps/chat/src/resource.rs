@@ -230,6 +230,9 @@ impl ResourceApp for ChatShell {
         // the workspace, so a window that shows Chat and a device that only
         // reads its records find the drafts alike.
         records.person::<crate::drafts::ChatDrafts>();
+        // What the person's agents learned about them: theirs alone here, as their drafts are,
+        // and Chat's to keep because it serves every agent they keep in the workspace.
+        records.person::<ui::tilo_workspace_agent::learned::Learned>();
         // The workspace's emoji and its agents are Chat's: every app of the
         // workspace opens them, and their changes are decided against Chat's
         // surface.
