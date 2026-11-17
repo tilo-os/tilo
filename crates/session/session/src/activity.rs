@@ -839,7 +839,10 @@ fn read_workspace_records(
         let tree_chunks = tree_chunks(store, workspace, &document);
         read.push(DetachedRecordHistory {
             app: fs_protocol::tree::FILES_APP.to_owned(),
-            checkout: DocumentCheckout::new(document_id, ResourceType::new(fs_protocol::tree::TREE_KIND)),
+            checkout: DocumentCheckout::new(
+                document_id,
+                ResourceType::new(fs_protocol::tree::TREE_KIND),
+            ),
             tree_chunks,
             document: Some(document),
         });
