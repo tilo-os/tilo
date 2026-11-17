@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use automerge::{ObjType, ScalarValue, Value};
 use fs_protocol::files::{CheckedHistoryRequestV1, FileRestoreReceiptV1};
 use fs_protocol::{
-    ConflictResolution, ConflictStatus, FileConflictV1, FileProvenance, FileDocumentError,
-    FileDocumentId, FileVersionAttributionV1, FileVersionId, FileVersionV1, HistoryProjectionV1,
+    ConflictResolution, ConflictStatus, FileConflictV1, FileDocumentError, FileDocumentId,
+    FileProvenance, FileVersionAttributionV1, FileVersionId, FileVersionV1, HistoryProjectionV1,
     prefer_conflict_resolution,
 };
 use thiserror::Error;
@@ -240,7 +240,10 @@ impl Namespace {
         &self,
         document_id: FileDocumentId,
     ) -> Option<HistoryProjectionV1> {
-        fs_protocol::history::document_history_projection(self.history_doc(document_id)?, document_id)
+        fs_protocol::history::document_history_projection(
+            self.history_doc(document_id)?,
+            document_id,
+        )
     }
 
     pub fn document_history_heads(&self, document_id: FileDocumentId) -> Vec<FileVersionId> {
