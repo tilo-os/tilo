@@ -36,6 +36,12 @@ pub struct Apps {
     /// The copy of an app's document the API hands over while it lags the app's host: the
     /// document as it was when [`Self::lag`] froze it.
     lagging: RefCell<HashMap<String, Vec<u8>>>,
+    /// The readings the session publishes of its own resources, by the resource's id (the
+    /// device's styles, the session's windows): what a program reads within a call, as the
+    /// session's services answer it.
+    pub readings: RefCell<HashMap<String, Json>>,
+    /// The readings a program asked the API for, in order, by the app and resource it named.
+    pub read_for: RefCell<Vec<(String, String)>>,
 }
 
 impl Apps {
@@ -91,6 +97,8 @@ impl Apps {
             unreachable: Vec::new(),
             fetched: RefCell::default(),
             lagging: RefCell::default(),
+            readings: RefCell::default(),
+            read_for: RefCell::default(),
         }
     }
 
@@ -197,6 +205,29 @@ impl TaskApi for DocumentsApi {
 }
 
 impl TaskApi for Apps {
+    fn reading(
+        &self,
+        target: &tilolang_runtime::value::ResourceRef,
+    ) -> Result<Option<Json>, String> {
+        let (app, _) = target
+            .ty
+            .split_once('#')
+            .unwrap_or((target.ty.as_str(), ""));
+        self.read_for
+            .borrow_mut()
+            .push((app.to_owned(), target.id_string()));
+        if let Some(reading) = self.readings.borrow().get(&target.id_string()) {
+            return Ok(Some(reading.clone()));
+        }
+        // The session publishes a platform root no service of this device serves (no battery, no
+        // Bluetooth) empty, as the shell's own parts are handed it: a program reads its fields as
+        // absent and goes on.
+        let platform = tilolang_tilo::platform_apps::platform_roots()
+            .iter()
+            .any(|(published, ty)| *published == target.id_string() && *ty == target.ty);
+        Ok(platform.then(|| json!({})))
+    }
+
     fn read(&self, app: &str, item: &str, _: &str) -> Result<Json, String> {
         if let Some((_, why)) = self.unreachable.iter().find(|(gone, _)| *gone == app) {
             return Err((*why).to_owned());

@@ -64,6 +64,7 @@ pub mod person_models;
 pub mod person_telling;
 pub mod person_vault;
 mod providers;
+mod readings;
 mod resource_read;
 mod search;
 pub mod session_actions;
@@ -116,6 +117,7 @@ pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
+pub use readings::Readings;
 pub use resource_read::{
     HeldCopies, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, RESOURCE_READS_UNAVAILABLE,
     ResourceAddress, ResourceAsk, ResourceChange, ResourceChanges, ResourceCopy, ResourceReadings,
@@ -976,6 +978,14 @@ pub trait ActionHost {
     /// Where an agent task reads its workspace's records outside their apps ([`ResourceReads`]);
     /// `None` for a host without them.
     fn resource_reads(&self) -> Option<std::sync::Arc<dyn ResourceReads>> {
+        None
+    }
+
+    /// Where a task's programs read the resources this host publishes itself, rather than from
+    /// an app's record (a desktop's device, its windows, its styles, Settings' sections): one
+    /// reading for the shell's parts and a program alike ([`Readings`]). `None` for a host that
+    /// publishes no such resource.
+    fn readings(&self) -> Option<std::sync::Arc<dyn Readings>> {
         None
     }
 

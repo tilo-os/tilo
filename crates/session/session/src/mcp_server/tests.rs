@@ -203,3 +203,94 @@ fn the_peer_must_be_this_accounts_own_process_in_its_namespaces() {
         "a program inside a sandbox"
     );
 }
+
+/// A service publishing the one style the person may switch to, as the device's does.
+struct Styles {
+    offered: serde_json::Value,
+}
+
+impl tilo_service::Service for Styles {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        Vec::new()
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        (resource == crate::device_lists::STYLES_RESOURCE).then(|| self.offered.clone())
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        _: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
+        Err(tilo_actions::ApiError::Unknown(
+            tilo_actions::ActionAddress::new(resource, action),
+        ))
+    }
+}
+
+/// A program's read of a resource the session publishes (the device's styles) is answered from
+/// the session's own services on the loop's pass, where they are: one `tilo` call reads
+/// `device.styles.offered` with no record and no app, as the shell's own parts read it.
+#[test]
+fn a_program_reads_the_reading_a_session_service_publishes() {
+    let offered = serde_json::json!({
+        "offered": [{"style": "so.tilo.shell:strips", "package": "so.tilo.shell",
+                     "name": "strips", "line": "The shell's strips", "loads": true, "reason": ""}],
+    });
+    let mut services = tilo_service::Services::default();
+    services.add(Box::new(Styles {
+        offered: offered.clone(),
+    }));
+    let app = tilolang_tilo::platform_apps::DEVICE_APP;
+    assert_eq!(
+        published_reading(&services, app, crate::device_lists::STYLES_RESOURCE),
+        Some(offered),
+        "the reading its service publishes"
+    );
+    // A device resource no service of this device serves is published empty, as the shell's
+    // parts are handed it: a program reads its fields as absent and goes on.
+    assert_eq!(
+        published_reading(&services, app, "power"),
+        Some(serde_json::json!({})),
+        "a resource no service serves is published empty"
+    );
+    // The session's own roots (`device.windows`) are published as its own app's.
+    assert_eq!(
+        published_reading(
+            &services,
+            tilolang_tilo::platform_apps::DEVICE_APP,
+            "session:windows",
+        ),
+        Some(serde_json::json!({})),
+        "a resource of the session's own, read as it stands here"
+    );
+}
+
+/// A resource the session does not publish itself is no reading of its, whatever app names it:
+/// an app's record is read through the record API, never from a service.
+#[test]
+fn what_the_session_does_not_publish_is_no_reading_of_its() {
+    let mut services = tilo_service::Services::default();
+    services.add(Box::new(Styles {
+        offered: serde_json::json!({"offered": []}),
+    }));
+    // An app whose records are read, by the id its own record's resource has, is no reading the
+    // session publishes: none of `platform_roots` names it.
+    assert_eq!(
+        published_reading(&services, "so.tilo.notes", "notes.notebook"),
+        None,
+        "no reading of an app's record"
+    );
+    // Nor is a session resource asked of an app that does not publish it.
+    assert_eq!(
+        published_reading(
+            &services,
+            tilolang_tilo::platform_apps::SETTINGS_APP,
+            crate::device_lists::STYLES_RESOURCE,
+        ),
+        None,
+        "the device publishes the styles, not Settings"
+    );
+}

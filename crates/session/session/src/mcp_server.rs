@@ -1414,6 +1414,15 @@ enum ApiAsk {
     /// each one's compiled module, its description embedded, the packages it uses first
     /// ([`task_hosts`] adds every installed app).
     Apps(tilo_actions::remote::Completer<Vec<runtime_portal::tilolang_host::App>>),
+    /// The newest reading of the resource `resource` of the app `app`, one the session's own
+    /// services publish (the device's sound, the session's windows, Settings' sections): what a
+    /// task's program reads within the program it runs, answered on the loop's pass, where the
+    /// services are. `None` for a resource no service publishes.
+    Reading {
+        app: String,
+        resource: String,
+        done: tilo_actions::remote::Completer<Option<serde_json::Value>>,
+    },
     /// Run the change `change` of a record a service keeps for a package the session runs itself,
     /// as `actor` , on the pass: its answer as the services give it, or `None` when no service keeps
     /// that app's record.
@@ -1636,6 +1645,30 @@ impl SessionServices {
         })
     }
 
+    /// The newest reading of the resource `resource` the app `app` publishes, asked on the loop's
+    /// pass, where the services are: what a task's program reads within the program it runs, and
+    /// what the shell's parts are handed. `None` for a resource no service publishes.
+    ///
+    /// # Errors
+    ///
+    /// Why the session did not answer: it is frozen ([`unanswered`]).
+    pub(crate) fn reading(
+        &self,
+        app: &str,
+        resource: &str,
+    ) -> Result<Option<serde_json::Value>, ActionHostError> {
+        let (done, answered) = tilo_actions::remote::pending();
+        self.ask(ApiAsk::Reading {
+            app: app.to_owned(),
+            resource: resource.to_owned(),
+            done,
+        });
+        answered
+            .wait_timeout(WAIT)
+            .map(Option::flatten)
+            .map_err(|_| unanswered())
+    }
+
     /// The session's own actions these services hand a connection, once the session has them.
     pub(crate) fn keep_actions(&self, actions: Arc<crate::session_actions::SessionActions>) {
         let _ = self.actions.set(actions);
@@ -1750,6 +1783,11 @@ impl SessionServices {
                 ApiAsk::Apps(done) => {
                     done.complete(session_packages(services));
                 }
+                ApiAsk::Reading {
+                    app,
+                    resource,
+                    done,
+                } => done.complete(published_reading(&services.borrow(), &app, &resource)),
                 ApiAsk::Change {
                     actor,
                     change,
@@ -2385,6 +2423,14 @@ impl ActionHost for Host {
     fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
         Some(Arc::new(self.service_records()))
     }
+
+    /// The readings of the resources the session publishes itself, which a task's programs read
+    /// within the program they run: asked on the loop's pass, where the services are.
+    fn readings(&self) -> Option<Arc<dyn tilo_actions::remote::Readings>> {
+        Some(Arc::new(SessionReadings {
+            session: Arc::clone(&self.session),
+        }))
+    }
 }
 
 impl Host {
@@ -2397,6 +2443,25 @@ impl Host {
                 .as_ref()
                 .map(|at| (Arc::clone(&at.sessions), at.session.clone())),
         }
+    }
+}
+
+/// The readings of a session's own resources, for the programs its API runs ([`Readings`]).
+struct SessionReadings {
+    session: Arc<SessionServices>,
+}
+
+impl tilo_actions::remote::Readings for SessionReadings {
+    fn reading(
+        &self,
+        _caller: &Caller,
+        app: &str,
+        resource: &str,
+    ) -> Result<Option<serde_json::Value>, ActionHostError> {
+        if !published_root(app, resource) {
+            return Ok(None);
+        }
+        self.session.reading(app, resource)
     }
 }
 
@@ -2419,6 +2484,34 @@ fn session_packages(
             })
         })
         .collect()
+}
+
+/// The reading of the resource `resource` the app `app` publishes, asked by a program on the
+/// loop's pass: what the session's services read it as. Only the resources the session itself
+/// publishes are read here — an app's record an agent asks for is read through the record API,
+/// never from a service. A resource no service of this device serves (no Bluetooth, no battery)
+/// is published empty, as the shell's own parts are handed it: a program reads its fields as
+/// absent (off, empty) and goes on; `None` for a resource the session does not publish at all.
+fn published_reading(
+    services: &tilo_service::Services,
+    app: &str,
+    resource: &str,
+) -> Option<serde_json::Value> {
+    published_root(app, resource).then(|| {
+        services
+            .read(resource)
+            .unwrap_or_else(|| serde_json::json!({}))
+    })
+}
+
+/// Whether the session publishes the resource `resource` as the app `app`'s: the device's,
+/// Settings' and the session's own roots, each a resource the session's services read
+/// ([`tilolang_tilo::platform_apps::platform_roots`]). A resource of any other app is its
+/// record's, read through the record API.
+fn published_root(app: &str, resource: &str) -> bool {
+    tilolang_tilo::platform_apps::platform_roots()
+        .iter()
+        .any(|(published, ty)| *published == resource && ty.starts_with(&format!("{app}#")))
 }
 
 /// A client the server accepted: its socket, and where it came from.

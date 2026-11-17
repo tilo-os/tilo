@@ -285,6 +285,27 @@ impl Runtime {
         *self.core.reader.borrow_mut() = Some(Box::new(reader));
     }
 
+    /// Ask `reading` for the reading of a resource of an app this runtime does not run, when the
+    /// code meets one this holds no reading of, and take what it answers at once; the runtime of
+    /// a task's host, whose programs read the session's own resources (the device's, the
+    /// session's, Settings') within the program they run. `None` for a resource its session
+    /// publishes nothing of; a host that answers nothing with `Err` fails the read with why.
+    ///
+    /// A host that hands readings in as the session publishes them ([`Self::set_reading`], the
+    /// shell's) sets none: its reads wait for the reading to arrive, as a view's does.
+    pub fn set_readings_asked_for(
+        &self,
+        reading: impl Fn(&ResourceRef) -> Result<Option<serde_json::Value>, String> + 'static,
+    ) {
+        self.core.foreign.borrow_mut().set_ask(reading);
+    }
+
+    /// Forget the readings a program asked for, so the next one asks again: what a session
+    /// publishes moved between them.
+    pub fn forget_asked_readings(&self) {
+        self.core.foreign.borrow_mut().forget_asked();
+    }
+
     /// Find resources by text for programs' `find`: the host's search, which answers words
     /// with the resources that hold them, the best first.
     pub fn set_text_search(&self, search: impl Fn(&str, usize) -> Vec<ResourceRef> + 'static) {

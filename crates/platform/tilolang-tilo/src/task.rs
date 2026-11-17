@@ -74,6 +74,23 @@ pub trait TaskApi {
     /// `describe`: a [`tilolang_runtime::reads::ReadRequest`]), read as the task.
     fn query(&self, app: &str, request: &Json) -> Result<Json, String>;
 
+    /// The newest reading of the resource `target`, one the session publishes rather than an app
+    /// this task runs (the device's sound, the session's windows, Settings' sections): the JSON
+    /// its service reads, as the shell's parts are handed it ([`Runtime::set_reading`]). `None`
+    /// for a resource the session publishes nothing of, and `Err` for one it cannot read now.
+    ///
+    /// A program meets one of these within the program it runs, so the answer is taken at once
+    /// and read as the fields its package declares; the session publishes the same readings to
+    /// the shell, so one reading serves every reader.
+    ///
+    /// # Errors
+    ///
+    /// Why the session could not read it: it has no such resource, or its services did not
+    /// answer.
+    fn reading(&self, _target: &ResourceRef) -> Result<Option<Json>, String> {
+        Ok(None)
+    }
+
     /// A program starts: what was read for an earlier one is read again
     /// ([`crate::task_documents::DocumentReads::forget`]).
     fn begin_program(&self) {}
@@ -251,6 +268,13 @@ impl TaskSession {
             let encoded = serde_json::to_value(request).map_err(|error| error.to_string())?;
             asked.query(request.app(), &encoded)
         });
+        // A program that reads a resource the session publishes rather than an app's record (the
+        // device's sound, the session's windows, Settings' sections) is handed its newest reading
+        // there and then, so one `tilo` call reads `device.styles.offered` and switches the style
+        // in the same program. The readings are the ones the shell's own parts are given, so a
+        // resource reads the same here as there.
+        let reading_of = Rc::clone(api);
+        runtime.set_readings_asked_for(move |target| reading_of.reading(target));
         runtime.set_clock(crate::host::system_time);
         let session = Self {
             runtime,
@@ -420,6 +444,9 @@ impl TaskSession {
         };
         self.reads.borrow_mut().known.clear();
         self.api.begin_program();
+        // What the session publishes moved since the last program: each is read again, and one
+        // an earlier program read arrives as it is now.
+        self.runtime.forget_asked_readings();
         let inputs = tilolang_runtime::reads::ProgramInputs {
             me: self.person.clone(),
             ..Default::default()

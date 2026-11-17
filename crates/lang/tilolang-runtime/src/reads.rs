@@ -633,6 +633,71 @@ impl Core {
         })
     }
 
+    /// `target` as `read` gives it, from the reading its service publishes (`reading`) rather than
+    /// a record: what `read(device.styles)` answers, each field as a view of it reads it, or as it
+    /// would start where the reading leaves it out. A field that does not read as its type says is
+    /// shown as the error it gave, as [`Self::read_local`] shows one.
+    pub(crate) fn read_reading(
+        &self,
+        target: &ResourceRef,
+        reading: &Json,
+        info: &TypeInfo,
+    ) -> ReadAnswer {
+        let fields = Self::text_fields(info);
+        let values = {
+            let registry = self.registry.borrow();
+            crate::foreign::Foreign::values(target, info, reading, &registry)
+        };
+        let mut parts = Vec::new();
+        let mut others = Vec::new();
+        for f in &info.fields {
+            // What the reading holds of the field, else what its type starts as where the
+            // reading leaves it out: what a view of it reads.
+            let value = match values.get(&f.id) {
+                Some(value) => value.clone(),
+                None => crate::host_res::declared_default(&f.ty, f.default.as_ref())
+                    .map_err(|why| format!("`{}` has no `{}`: {why}", target.id_string(), f.name)),
+            };
+            let text_field = fields.iter().find(|t| t.info.id == f.id);
+            // A type with one text has a body, cited by the paragraph alone; a type with several
+            // names each text's field, as [`Self::text_of`] reads it.
+            let prefix = text_field.map(|field| {
+                if field.body {
+                    String::new()
+                } else {
+                    format!("{} ", field.info.name)
+                }
+            });
+            match (text_field, value) {
+                (Some(_), Ok(Value::Text(text))) => {
+                    parts.extend(plain_parts(&text, prefix.as_deref().unwrap_or_default()));
+                }
+                (Some(_), Ok(Value::Rich(rich))) => {
+                    for (anchor, block) in rich.anchors() {
+                        if block.text.trim().is_empty() {
+                            continue;
+                        }
+                        parts.push(Part {
+                            anchor: format!("{}{anchor}", prefix.as_deref().unwrap_or_default()),
+                            kind: block_kind(block).to_owned(),
+                            text: block.text.clone(),
+                        });
+                    }
+                }
+                (_, Ok(Value::List(items))) if f.kind == FieldKind::Collection => {
+                    others.push((f.name.clone(), format!("{} items", items.len())));
+                }
+                (_, Ok(value)) => others.push((f.name.clone(), self.show_inline(&value))),
+                (_, Err(error)) => others.push((f.name.clone(), format!("error: {error}"))),
+            }
+        }
+        ReadAnswer {
+            shown: self.shown(target),
+            parts,
+            fields: others,
+        }
+    }
+
     /// The answer to `req` over this runtime's records, as JSON.
     pub(crate) fn answer_local(&self, req: &ReadRequest) -> Result<Json, String> {
         let to_json = |v: &dyn erased::Ser| v.json();

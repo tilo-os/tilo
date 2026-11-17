@@ -41,6 +41,7 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::catalogue::NativeSurface;
 use tilolang_tilo::native::{Calls, Native, NativeReads};
 use tilolang_tilo::runtime::meta::PackageMeta;
+use tilolang_tilo::runtime::value::ResourceRef;
 use tilolang_tilo::task::{Answered, TaskApi, TaskSession, Unreachable};
 use tilolang_tilo::task_documents::{DocumentReads, DocumentSource};
 
@@ -132,6 +133,36 @@ impl TaskApi for Api {
             return NativeReads::new(&self.native, self).query(app, request);
         }
         self.reads.query(app, request)
+    }
+
+    /// The reading the session publishes of `target` (the device's sound, the session's windows,
+    /// Settings' sections), asked of the API within the program reading it and taken at once:
+    /// `{"ok": {"reading": …}}`, `{"none": true}` for one the session publishes nothing of, or
+    /// `{"err": why}`. What a platform root no service of the device serves reads as (an empty
+    /// reading, as the shell's own parts are handed it) is the session's to say, so a program and
+    /// a view read the device alike.
+    fn reading(&self, target: &ResourceRef) -> Result<Option<Json>, String> {
+        let (app, ty) = target
+            .ty
+            .split_once('#')
+            .ok_or_else(|| format!("`{}` is no app's resource", target.ty))?;
+        let reply = self.line.ask(&json!({
+            "reading": {
+                "app": app,
+                "resource": target.id_string(),
+                "type": ty,
+            },
+        }))?;
+        if reply.get("none").and_then(Json::as_bool) == Some(true) {
+            return Ok(None);
+        }
+        if let Some(reading) = reply.pointer("/ok/reading") {
+            return Ok(Some(reading.clone()));
+        }
+        Err(reply.get("err").and_then(Json::as_str).map_or_else(
+            || format!("the API answered a reading with neither ok, none nor err: {reply}"),
+            str::to_owned,
+        ))
     }
 
     fn begin_program(&self) {
@@ -1148,6 +1179,112 @@ mod tests {
             // program read, the directory once more and the question of what reads it: its document
             // does, taking the channel as its `item`. The listing read no channel's fields.
             assert_eq!(calls.len(), 10, "{calls:#?}");
+        }
+
+        phase a_program_reads_the_reading_the_session_publishes;
+        {
+            // A resource the session publishes itself (the device's styles) is read within the
+            // program: the host asks its API for the newest reading, and goes on with it, so one
+            // call reads the style ids and may switch the style itself.
+            let (task, _reader, api) = task();
+            let calls = scripted(&api, |message| match message.get("reading") {
+                Some(reading) => {
+                    assert_eq!(reading["app"], "so.tilo.device", "{message:#}");
+                    assert_eq!(reading["resource"], "session:styles", "{message:#}");
+                    json!({"ok": {"reading": {"offered": [
+                        {"style": "so.tilo.shell:strips", "package": "so.tilo.shell",
+                         "name": "strips", "line": "The strips", "loads": true, "reason": ""},
+                    ]}}})
+                }
+                None => json!({"err": format!("the API is asked only for a reading: {message}")}),
+            });
+            let answer = ran(
+                &task,
+                "for s in device.styles.offered {\n    print(s.style)\n}",
+            );
+            assert_eq!(answer["state"], "done", "{answer:#}");
+            assert_eq!(
+                answer["output"],
+                json!(["so.tilo.shell:strips"]),
+                "{answer:#}"
+            );
+            closed(&api);
+            let calls = calls.join().expect("the API");
+            assert_eq!(
+                calls,
+                [json!({"reading": {
+                    "app": "so.tilo.device",
+                    "resource": "session:styles",
+                    "type": "Styles",
+                }})],
+                "the reading asked for once, and nothing else: {calls:#?}"
+            );
+        }
+
+        phase a_read_of_a_reading_shows_its_fields;
+        {
+            // `read(device.styles)` of a resource the session publishes itself is the reading's
+            // fields, as a view of it reads them: no app is asked, and no record is read.
+            let (task, _reader, api) = task();
+            let calls = scripted(&api, |message| match message.get("reading") {
+                Some(_) => json!({"ok": {"reading": {"offered": [
+                    {"style": "so.tilo.shell:strips", "package": "so.tilo.shell",
+                     "name": "strips", "line": "The strips", "loads": true, "reason": ""},
+                ]}}}),
+                None => json!({"err": format!("the API is asked only for a reading: {message}")}),
+            });
+            let answer = ran(&task, "read(device.styles)");
+            assert_eq!(answer["state"], "done", "{answer:#}");
+            let text = answer["output"][0].as_str().unwrap_or_default().to_owned();
+            assert!(
+                text.contains(".offered") && text.contains("session:styles.offered.0"),
+                "the reading's field is read as the view reads it: {text}"
+            );
+            closed(&api);
+            let calls = calls.join().expect("the API");
+            assert_eq!(
+                calls.len(),
+                1,
+                "the reading asked once, no app asked: {calls:#?}"
+            );
+        }
+
+        phase a_platform_root_with_no_service_reads_as_it_starts;
+        {
+            // The session publishes a platform root no service of this device serves (no battery,
+            // no Bluetooth) empty, as the shell's own parts are handed it: a program reads its
+            // fields as absent and goes on, exactly as a view of it draws the device without it.
+            let (task, _reader, api) = task();
+            let calls = scripted(&api, |message| match message.get("reading") {
+                Some(_) => json!({"ok": {"reading": {}}}),
+                None => json!({"err": format!("the API is asked only for a reading: {message}")}),
+            });
+            let answer = ran(&task, "print(device.time.clock, device.time.timer_paused)");
+            assert_eq!(answer["state"], "done", "{answer:#}");
+            assert_eq!(answer["output"], json!([" 0"]), "{answer:#}");
+            closed(&api);
+            let calls = calls.join().expect("the API");
+            assert_eq!(calls.len(), 1, "the one resource asked once: {calls:#?}");
+        }
+
+        phase a_reading_the_api_has_none_of_fails_the_read_with_why;
+        {
+            // A resource the API publishes nothing of at all (an older build's reading) answers
+            // `none`, and the read fails with why rather than reading a field the session says it
+            // has none of.
+            let (task, _reader, api) = task();
+            let calls = scripted(&api, |message| match message.get("reading") {
+                Some(_) => json!({"none": true}),
+                None => json!({"err": format!("the API is asked only for a reading: {message}")}),
+            });
+            let answer = ran(&task, "print(device.time.clock)");
+            assert_eq!(
+                answer["state"], "failed",
+                "no reading, so no field: {answer:#}"
+            );
+            closed(&api);
+            let calls = calls.join().expect("the API");
+            assert_eq!(calls.len(), 1, "asked once: {calls:#?}");
         }
 
         phase a_native_read_the_policy_refuses_fails_the_program_with_why;

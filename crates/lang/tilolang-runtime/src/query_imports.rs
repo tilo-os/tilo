@@ -476,6 +476,21 @@ impl Core {
         if !is_foreign(target) {
             return Ok(Some(self.read_local(target)?));
         }
+        // A resource the session publishes itself (the device's styles, the session's windows)
+        // has no record and no app to ask for one: what it holds is the reading its service
+        // publishes, so `read` is that reading's fields, as a view of it reads them. A resource
+        // whose app keeps a record (a native app's, a tilolang app's) reads through the app, as
+        // it always has.
+        let reading = self.foreign.borrow_mut().reading(target)?;
+        if let Some(json) = reading {
+            let info = self
+                .registry
+                .borrow()
+                .type_info(&target.ty)
+                .map(|(_, info)| info)
+                .ok_or_else(|| format!("no resource `{}` here", target.id_string()))?;
+            return Ok(Some(self.read_reading(target, &json, &info)));
+        }
         let inputs = self.inputs();
         let (app, ty) = target.ty.split_once('#').unwrap_or((&target.ty, ""));
         let req = ReadRequest::Read {

@@ -11,6 +11,10 @@
 //! - a read is the app's own `read`, as the task, in the app; a resource that does not read
 //!   itself is read by the resource the app's directory lists it under, which takes it as its
 //!   `item` — the read a window and `tilo_read` take too;
+//! - a resource the session publishes itself rather than from an app's record (the device's
+//!   sound, its power, the session's windows and styles, Settings' sections) is read from the
+//!   newest reading its service publishes, taken within the program ([`Readings`]): the shell's
+//!   parts read the same ones, so `device.styles.offered` is a program's to read;
 //! - a change is an invocation of the action's own app: a method its type's declared action, an
 //!   assignment the resource's field edit. Each is decided at that action's node, asked about or
 //!   refused as the workspace's policy says, never done silently. A program never writes a record.
@@ -1273,10 +1277,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 Box::pin(self.task_children(listing, &mut providers)).await
             } else if let Some(reads) = message.get("reads") {
                 Box::pin(self.task_reads(reads, &mut providers)).await
+            } else if let Some(reading) = message.get("reading") {
+                self.task_reading(reading)
             } else if let Some(call) = message.get("invoke") {
                 Box::pin(self.task_invoke(call, &mut providers)).await
             } else {
-                json!({"err": "the API answers record reads, listings, reads and invocations"})
+                json!({"err": "the API answers record reads, listings, reads, readings and invocations"})
             };
             task.send(&reply).await?;
         }
@@ -1395,6 +1401,31 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         match self.level_reads(&provider, resource).await {
             Ok(reads) => json!({"ok": {"reads": reads}}),
             Err(why) => json!({"err": why}),
+        }
+    }
+
+    /// The newest reading of the resource `resource` the app `app` publishes (`{app, resource,
+    /// type}`), as the session's own services read it: `{"ok": {"reading": …}}`, `{"none": true}`
+    /// for a resource no service publishes, or `{"err": why}`. Taken at once, so the program
+    /// reading it goes on within the same call: `device.styles.offered`, `device.time.clock`, the
+    /// session's windows and Settings' sections are read this way, and by the shell's parts too,
+    /// so one reading serves every reader.
+    fn task_reading(&self, reading: &Value) -> Value {
+        let (Some(app), Some(resource)) = (reading["app"].as_str(), reading["resource"].as_str())
+        else {
+            return json!({"err": "a reading names its app and resource"});
+        };
+        let Some(readings) = self.host().readings() else {
+            return json!({"none": true});
+        };
+        let caller = self.execution_caller();
+        match readings.reading(&caller, app, resource) {
+            Ok(Some(reading)) => json!({"ok": {"reading": reading}}),
+            Ok(None) => json!({"none": true}),
+            Err(error) => {
+                let name = app_names(&[app.to_owned()]).join("");
+                json!({"err": format!("{name}: {error}")})
+            }
         }
     }
 

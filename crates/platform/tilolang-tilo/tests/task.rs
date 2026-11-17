@@ -73,6 +73,60 @@ fn seeded() -> Task {
     task
 }
 
+/// A program reads a resource the session publishes rather than one of an app's records — the
+/// device's styles here, as `device.styles` — in the same call it runs: the API answers the
+/// reading the session's services publish, and the program goes on with it (the style ids a
+/// person may switch to).
+#[test]
+fn a_program_reads_the_reading_the_session_publishes() {
+    let task = task(Vec::new());
+    let published = "session:styles";
+    task.api.readings.borrow_mut().insert(
+        published.to_owned(),
+        json!({
+            "offered": [
+                {"style": "so.tilo.shell:strips", "package": "so.tilo.shell",
+                 "name": "strips", "line": "The strips", "loads": true, "reason": ""},
+                {"style": "so.tilo.shell:cards", "package": "so.tilo.shell",
+                 "name": "cards", "line": "Cards", "loads": true, "reason": ""},
+            ],
+        }),
+    );
+    let said = task.said("for s in device.styles.offered { print(s.style) }");
+    assert_eq!(said, "so.tilo.shell:strips", "{said}");
+    // One call: the reading was asked for, and it was asked for once.
+    let asked = task.api.read_for.borrow().clone();
+    assert_eq!(
+        asked,
+        [("so.tilo.device".to_owned(), published.to_owned())],
+        "the reading asked of the session once, within the program"
+    );
+    assert!(
+        task.api.invoked.borrow().is_empty(),
+        "nothing an app does: a reading is read"
+    );
+    // A second program asks again: what the session publishes may have moved.
+    let again = task.said("print(device.styles.offered.len())");
+    assert_eq!(again, "2", "{again}");
+    assert_eq!(
+        task.api.read_for.borrow().len(),
+        2,
+        "the second program reads it again"
+    );
+}
+
+/// A resource the session publishes nothing of reads as its type starts, never as a fault of the
+/// program: a device without Wi-Fi publishes no networks, and a view draws it so.
+#[test]
+fn a_reading_the_session_has_none_of_reads_as_it_starts() {
+    let task = task(Vec::new());
+    let said = task.said("print(device.time.clock)");
+    // No reading: the clock's text starts empty, and the program carries on.
+    assert_eq!(said, "", "{said}");
+    let answer = task.run("print(device.time.timer_paused)", false);
+    assert_eq!(answer["state"], "done", "{answer:#}");
+}
+
 #[test]
 fn one_program_reads_notes_and_todo() {
     let task = seeded();

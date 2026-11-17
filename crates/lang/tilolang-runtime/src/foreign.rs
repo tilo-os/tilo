@@ -54,9 +54,13 @@ struct Inside {
     steps: Vec<String>,
 }
 
+/// Where a host answers the reading of a resource its code meets, while the code runs
+/// ([`crate::Runtime::set_readings_asked_for`]).
+type AskForReading = Box<dyn Fn(&ResourceRef) -> Result<Option<Json>, String>>;
+
 /// Results a value carries that `show` prints for the resources of apps the runtime does not
 /// hold: how each printed, and its reading.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Foreign {
     by_key: BTreeMap<String, Shown>,
     readings: BTreeMap<String, Reading>,
@@ -72,9 +76,114 @@ pub struct Foreign {
     /// waiting on their own reading are all read as waiting, and a fault beside them is still
     /// a fault.
     waiting: std::cell::RefCell<std::collections::BTreeSet<String>>,
+    /// Where a reading this runtime lacks is asked for while the code runs, instead of waiting
+    /// for the host to follow it ([`crate::Runtime::set_readings_asked_for`]): the runtime of a
+    /// task's host, whose programs read the session's own resources (the device's, the
+    /// session's, Settings') within the program they run, not on a next pass. `None` where the
+    /// host hands readings in as the session publishes them.
+    ask: Option<AskForReading>,
 }
 
 impl Foreign {
+    /// The host asks for the reading of a resource the code meets and this holds none of, while
+    /// the code runs, and hands the reading in at once.
+    pub(crate) fn set_ask(
+        &mut self,
+        ask: impl Fn(&ResourceRef) -> Result<Option<Json>, String> + 'static,
+    ) {
+        self.ask = Some(Box::new(ask));
+    }
+
+    /// Whether the reading of `target` is held, asking the host for one now when it is not: a
+    /// program reading a resource the session publishes gets what the session holds within the
+    /// program it runs, not on the host's next pass. A resource is asked for once (until
+    /// [`Foreign::forget_asked`], at the next program), so a loop over one that has no reading
+    /// asks once.
+    ///
+    /// # Errors
+    ///
+    /// Why the host could not read it.
+    pub(crate) fn arrive(&mut self, target: &ResourceRef) -> Result<bool, String> {
+        let at = Self::key(target);
+        if self.readings.contains_key(&at) && !self.asked.contains(&at) {
+            return Ok(true);
+        }
+        // A host that takes questions answers them; one that publishes readings on its own pass
+        // is left to it (what a read leaves in [`Foreign::wanted`]).
+        if self.ask.is_none() || !self.asked.insert(at.clone()) {
+            return Ok(self.readings.contains_key(&at));
+        }
+        match self.ask.as_ref().map(|ask| ask(target)) {
+            // A reading the session holds nothing of now leaves what came before: a resource
+            // whose service answered earlier still reads as it did.
+            Some(Ok(None)) => Ok(self.readings.contains_key(&at)),
+            Some(Ok(Some(json))) => {
+                self.set_reading(target, json);
+                Ok(true)
+            }
+            Some(Err(why)) => Err(why),
+            None => Ok(false),
+        }
+    }
+
+    /// Ask the host for the readings it was asked for again: a program starts, and what a
+    /// session publishes moved since the last one, so nothing it read before is read as it was
+    /// then. A host that publishes readings on its own pass keeps what it was asked for until it
+    /// hands one in ([`Foreign::take_wanted`]).
+    pub(crate) fn forget_asked(&mut self) {
+        if self.ask.is_none() {
+            return;
+        }
+        for at in std::mem::take(&mut self.asked) {
+            self.readings.remove(&at);
+        }
+        self.wanted.clear();
+    }
+
+    /// The reading of `target`, asking the host for one where this holds none (a program reading a
+    /// resource the session publishes): the JSON as the session holds it, `None` for a resource
+    /// the host has no reading of either.
+    ///
+    /// # Errors
+    ///
+    /// Why the host could not read it.
+    pub(crate) fn reading(&mut self, target: &ResourceRef) -> Result<Option<Json>, String> {
+        if !self.arrive(target)? {
+            return Ok(None);
+        }
+        Ok(self
+            .source(&Self::key(target))
+            .map(|(json, _)| json.clone()))
+    }
+
+    /// Every field of a resource of an app this runtime does not run, as a view of it reads them:
+    /// each field's value from `reading`, typed by its declaration. A field the reading leaves out,
+    /// or that does not read as its type says, is left out here, for the caller to read as the
+    /// type starts.
+    pub(crate) fn values(
+        target: &ResourceRef,
+        info: &crate::registry::TypeInfo,
+        reading: &Json,
+        registry: &Registry,
+    ) -> BTreeMap<String, Result<Value, String>> {
+        let mut values = BTreeMap::new();
+        for f in &info.fields {
+            let Some((step, value)) = held(reading, f) else {
+                continue;
+            };
+            let mut decoder = Decoder {
+                author: None,
+                registry,
+                base: target.id_string(),
+                steps: Vec::new(),
+                records: Vec::new(),
+            };
+            let field_value = decoder.down(step, value, &f.ty);
+            values.insert(f.id.clone(), field_value);
+        }
+        values
+    }
+
     /// The key of a foreign resource: its type (`app#Type`) and id.
     pub(crate) fn key(target: &ResourceRef) -> String {
         format!("{}@{}", target.ty, target.id_string())
@@ -154,11 +263,11 @@ impl Foreign {
     ///
     /// A message when no reading of it arrived yet, kept as a read waiting on one.
     pub(crate) fn links(
-        &self,
+        &mut self,
         target: &ResourceRef,
     ) -> Result<Vec<(ResourceRef, crate::store::LinkHow)>, String> {
         let at = Self::key(target);
-        if !self.readings.contains_key(&at) {
+        if !self.arrive(target)? {
             let why = format!(
                 "no reading of `{}` arrived yet: its app publishes it through the session",
                 target.id_string()
@@ -197,7 +306,7 @@ impl Foreign {
     /// A message when no reading of it arrived yet, kept as a read waiting on one.
     pub(crate) fn unseen(&mut self, target: &ResourceRef) -> Result<Option<Json>, String> {
         let at = Self::key(target);
-        if !self.readings.contains_key(&at) {
+        if !self.arrive(target)? {
             // The host is asked for its reading, as a field read of one yet to arrive asks.
             if self.asked.insert(at.clone()) {
                 self.wanted
@@ -230,7 +339,7 @@ impl Foreign {
     /// read a field of it does.
     pub(crate) fn whole(&mut self, target: &ResourceRef) -> Option<(Json, u64)> {
         let key = Self::key(target);
-        if !self.readings.contains_key(&key) {
+        if !self.arrive(target).unwrap_or(false) {
             // The host is asked for the resource's reading, as a field read of one yet to arrive
             // asks for it; the boundary runs again when it comes.
             if self.asked.insert(key.clone()) {
@@ -324,6 +433,9 @@ impl Foreign {
         registry: &Registry,
     ) -> Result<Value, String> {
         let at = Self::key(target);
+        // What the host holds of it, now: a program reading a resource its session publishes
+        // asks for its reading where it stands, and reads it within the same program.
+        self.arrive(target)?;
         // The reading a record stands in, and where it stands: a field of it stands one step
         // further down.
         let (parent, base) = match self.readings.get(&at) {

@@ -1808,7 +1808,7 @@ impl Core {
         if crate::foreign::is_foreign(at) {
             let key = crate::foreign::reading_key(at);
             self.note_reading(key);
-            let links = self.foreign.borrow().links(at)?;
+            let links = self.foreign.borrow_mut().links(at)?;
             return Ok(Value::List(
                 links
                     .into_iter()
