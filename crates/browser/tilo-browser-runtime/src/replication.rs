@@ -1037,6 +1037,10 @@ impl Joined {
     ///
     /// A late join or a reconnect lands a record's whole history at once: each record that
     /// landed is read from the replica and merged once per frame, however many writes it took.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass over a batch: every kind of event lands, and the mounts it woke go back together"
+    )]
     fn receive(&mut self) -> Vec<Arc<dyn Fn() + Send + Sync>> {
         let mut woken: HashSet<u64> = HashSet::new();
         let mut landed: BTreeSet<DocumentRoute> = BTreeSet::new();
