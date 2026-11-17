@@ -23,6 +23,11 @@ pub const WORKSPACE_ID_FILE: &str = "workspace-id";
 /// starts and the tools beside it, which find the display without reading
 /// the compositor's log.
 pub const WAYLAND_DISPLAY_FILE: &str = "wayland-display";
+/// File in [`SESSION_DIR`] a desktop publishes once a person can use it: the session process
+/// it names, with its kernel start time, is drawing on every output it has on and has begun
+/// restoring the windows of this device. A reader that waits for a restarted desktop reads
+/// this, never the mere existence of a compositor process.
+pub const DESKTOP_READY_FILE: &str = "desktop-ready";
 /// Prefix of the socket in [`SESSION_DIR`] on which this session says whether
 /// its first use is over: the installed folder importer asks before it
 /// continues a saved import, so nothing it carries lands under an identity

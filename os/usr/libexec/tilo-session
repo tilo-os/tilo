@@ -78,6 +78,7 @@ flight_pipe=""
 flight_relay_pid=""
 logout_request_dir=""
 logout_request_path=""
+restart_request_path=""
 restart_requested=0
 
 # The compositor cannot safely ask the display-manager wrapper to log out by
@@ -94,6 +95,10 @@ esac
 [ -d "$runtime_dir" ] || { printf 'tilo-session: runtime directory does not exist: %s\n' "$runtime_dir" >&2; exit 1; }
 logout_request_dir="$($MKDTEMP -d "$runtime_dir/tilo-session.XXXXXX")"
 logout_request_path="$logout_request_dir/logout-request"
+# The compositor run that ends and the run that follows see the same single SIGTERM, so they
+# cannot tell a restart from a logout. This marker, written before the compositor is stopped,
+# says which it is; the run that follows consumes it.
+restart_request_path="$logout_request_dir/restart-request"
 export TILO_SESSION_LOGOUT_REQUEST="$logout_request_path"
 # A fresh directory belongs to this successful PAM login. Native compositor
 # runs arm it locked while alive and hand their final lock state back only
@@ -156,6 +161,9 @@ cleanup_logout_channel() {
   if [ -n "$logout_request_path" ]; then
     "$RM" -f -- "$logout_request_path" 2>/dev/null || true
   fi
+  if [ -n "$restart_request_path" ]; then
+    "$RM" -f -- "$restart_request_path" "$restart_request_path.tmp" 2>/dev/null || true
+  fi
   if [ -n "$flight_pipe" ]; then
     "$RM" -f -- "$flight_pipe" "$flight_pipe.ready" 2>/dev/null || true
   fi
@@ -185,6 +193,12 @@ trap request_restart USR1
 request_restart() {
   if [ -n "$shell_pid" ] && kill -0 "$shell_pid" 2>/dev/null; then
     restart_requested=1
+    # Announce the restart in the login's private channel before the compositor is asked to
+    # stop: the run that ends tells it from a logout, and the run that follows knows it
+    # continues this login. Failure only means they cannot tell, which ends apps: never a
+    # reason not to restart.
+    { (umask 077; printf 'restart\n' >"$restart_request_path.tmp") &&
+      "$MV" -f -- "$restart_request_path.tmp" "$restart_request_path"; } 2>/dev/null || true
     kill -TERM "$shell_pid" 2>/dev/null || true
   fi
 }

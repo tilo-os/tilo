@@ -43,6 +43,9 @@ pub(crate) struct Restore {
     held_checked: Option<Instant>,
     /// Whether the layout has been laid out from the workspaces' layouts, which happens once.
     seeded: bool,
+    /// Whether the session has begun restoring at all: its first look at the layouts ran, even
+    /// when there was nothing to lay out (a device with no workspace yet).
+    begun: bool,
 }
 
 /// A window the person left open, and the app that opens it again.
@@ -65,6 +68,17 @@ struct Opening {
 }
 
 impl Restore {
+    /// The session has begun restoring the windows this device left open: it has looked at the
+    /// layouts, whether or not they held any to open.
+    pub(crate) fn begin(&mut self) {
+        self.begun = true;
+    }
+
+    /// Whether the restore has begun: what says a desktop is usable, beside its first frames.
+    pub(crate) fn started(&self) -> bool {
+        self.seeded || self.begun
+    }
+
     /// Take up the windows `tree` holds the first time this session lays the layout out from the
     /// workspaces' layouts: every window that opens again, the ones on the shell in front first, then
     /// the rest in the order the person left them. Whether this is that first time, in which case

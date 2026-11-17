@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 
@@ -296,6 +296,16 @@ struct Fake {
     desktops: RefCell<Vec<String>>,
     merges: RefCell<u32>,
     mounted: RefCell<BTreeSet<PathBuf>>,
+    /// The fake clock: [`LiveHost::sleep`] advances it, so a wait for a desktop costs no time.
+    clock: Cell<Duration>,
+    /// Whether the login's wrapper runs.
+    login_alive: Cell<bool>,
+    /// The compositor the login's wrapper runs, while it does.
+    compositor: Cell<Option<u32>>,
+    /// When that compositor goes away, on the fake clock.
+    compositor_gone: Cell<Option<Duration>>,
+    /// The compositor that published a usable desktop, from the clock reading it becomes one.
+    ready: RefCell<Option<(u32, Duration)>>,
 }
 
 impl Fake {
@@ -391,11 +401,44 @@ impl LiveHost for Fake {
         Ok(())
     }
 
-    fn desktop_back(&self, _login: &Login, _stable: Duration) -> bool {
-        true
+    fn login_alive(&self, _login: &Login) -> bool {
+        self.login_alive.get()
     }
 
-    fn sleep(&self, _duration: Duration) {}
+    fn compositor(&self, _login: &Login) -> Option<u32> {
+        let pid = self.compositor.get()?;
+        let now = self.clock.get();
+        if self.compositor_gone.get().is_some_and(|gone| now >= gone) {
+            None
+        } else {
+            Some(pid)
+        }
+    }
+
+    fn desktop_ready(&self, _login: &Login, pid: u32) -> bool {
+        let now = self.clock.get();
+        self.ready
+            .borrow()
+            .is_some_and(|(ready_pid, since)| ready_pid == pid && now >= since)
+    }
+
+    fn now(&self) -> Instant {
+        // One origin for the process: only the differences the wait reads matter.
+        static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        ORIGIN
+            .get_or_init(Instant::now)
+            .checked_add(self.clock.get())
+            .expect("the fake clock stays in range")
+    }
+
+    fn sleep(&self, duration: Duration) {
+        self.clock.set(
+            self.clock
+                .get()
+                .checked_add(duration)
+                .expect("the fake clock stays in range"),
+        );
+    }
 }
 
 fn machine() -> (tempfile::TempDir, Layout, Fake) {
@@ -437,8 +480,73 @@ fn machine() -> (tempfile::TempDir, Layout, Fake) {
     fake.logins.borrow_mut().push(Login {
         wrapper: 1,
         user: "ana".into(),
+        uid: 1000,
     });
+    // The default desktop is up and usable, as one is before an update restarts it.
+    fake.login_alive.set(true);
+    fake.compositor.set(Some(4242));
+    *fake.ready.borrow_mut() = Some((4242, Duration::ZERO));
     (dir, layout, fake)
+}
+
+#[test]
+fn a_restarted_desktop_is_back_only_once_it_is_usable() {
+    let fake = Fake::default();
+    let login = Login {
+        wrapper: 1,
+        user: "ana".into(),
+        uid: 1000,
+    };
+    fake.login_alive.set(true);
+    fake.compositor.set(Some(7));
+    *fake.ready.borrow_mut() = Some((7, fake.clock.get()));
+    let started = fake.clock.get();
+    assert!(
+        fake.desktop_back(&login, DESKTOP_STABLE),
+        "a desktop that is ready at once is back"
+    );
+    let took = fake.clock.get().saturating_sub(started);
+    assert!(
+        took >= DESKTOP_STABLE && took < Duration::from_secs(20),
+        "back after the short stability check, not the old 20 s: {took:?}"
+    );
+
+    *fake.ready.borrow_mut() = None;
+    let started = fake.clock.get();
+    assert!(
+        !fake.desktop_back(&login, DESKTOP_STABLE),
+        "a compositor that is alive and never ready is not back"
+    );
+    assert_eq!(
+        fake.clock.get().saturating_sub(started),
+        DESKTOP_BACK,
+        "it is given up at the bound"
+    );
+
+    fake.compositor.set(Some(8));
+    *fake.ready.borrow_mut() = Some((8, fake.clock.get()));
+    fake.compositor_gone.set(Some(
+        fake.clock.get().saturating_add(Duration::from_secs(1)),
+    ));
+    assert!(
+        !fake.desktop_back(&login, DESKTOP_STABLE),
+        "a desktop that becomes ready and crashes before it stayed up is not back"
+    );
+
+    // A record the previous run left names its own process, never this compositor's.
+    fake.compositor_gone.set(None);
+    fake.compositor.set(Some(9));
+    *fake.ready.borrow_mut() = Some((8, Duration::ZERO));
+    assert!(
+        !fake.desktop_back(&login, DESKTOP_STABLE),
+        "a stale ready record is not this desktop"
+    );
+
+    fake.login_alive.set(false);
+    assert!(
+        !fake.desktop_back(&login, DESKTOP_STABLE),
+        "a login that ended is not back"
+    );
 }
 
 tilo_test_env::scenario! {

@@ -186,6 +186,13 @@ runs=0
 [ ! -f "$runs_file" ] || runs=$(cat "$runs_file")
 runs=$((runs + 1))
 printf '%s\n' "$runs" >"$runs_file"
+# The wrapper announces an in-place restart in the login's private channel before it asks the
+# compositor to stop. The session reads that marker once at start and removes it; this stand-in
+# does the same, recording what each run saw and where the channel is.
+marker="$(dirname "$TILO_SESSION_LOGOUT_REQUEST")/restart-request"
+printf '%s\n' "$TILO_SESSION_LOGOUT_REQUEST" >"$TILO_SESSION_TEST_LOG.request-path"
+printf 'restart-marker=%s\n' "$([ -e "$marker" ] && printf yes || printf no)" >>"$TILO_SESSION_TEST_LOG.markers"
+rm -f -- "$marker"
 # Observe the real wrapper's recovery channel before simulating a compositor
 # that hands its locked state back on ordered teardown.
 recovery_file="$(dirname "$TILO_SESSION_LOGOUT_REQUEST")/lock-state"
@@ -209,7 +216,9 @@ if [ "${TILO_SESSION_WRITE_LOGOUT:-0}" = 1 ]; then
 fi
 if [ "${TILO_SESSION_HOLD:-0}" = 1 ] \
    || { [ "${TILO_SESSION_HOLD_FIRST:-0}" = 1 ] && [ "$runs" = 1 ]; }; then
-  trap 'printf "%s-term\n" "$name" >>"$TILO_SESSION_TEST_LOG"; exit 0' TERM HUP INT
+  # A test that stops the login while the compositor is being stopped needs the compositor to
+  # take a moment, as a real one does.
+  trap 'printf "%s-term\n" "$name" >>"$TILO_SESSION_TEST_LOG"; sleep "${TILO_SESSION_TERM_DELAY:-0}"; exit 0' TERM HUP INT
   printf '%s\n' "$runs" >"$TILO_SESSION_TEST_LOG.holding"
   while :; do sleep 1; done
 fi
@@ -551,7 +560,7 @@ grep -Fqx 'native-session-term' "$log"
 # restarted run's record becomes previous.log. The second compositor exiting
 # by itself ends the session: only a requested restart starts another.
 : >"$log"
-rm -f "$log.runs" "$log.holding" "$log.cpu-paths"
+rm -f "$log.runs" "$log.holding" "$log.cpu-paths" "$log.markers"
 restart_state="$tmp/restart-state"
 rm -f "$log.recovery"
 XDG_STATE_HOME="$restart_state" XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" \
@@ -572,6 +581,10 @@ status=$?
 set -e
 [ "$status" = 7 ] || { echo "restarted session ended with $status" >&2; exit 1; }
 [ "$(cat "$log.runs")" = 2 ]
+# The restart was announced to both runs: the run that ended found no marker of its own, the run
+# that followed read the one the wrapper wrote and consumed it.
+printf 'restart-marker=no\nrestart-marker=yes\n' >"$tmp/expected-markers"
+cmp "$tmp/expected-markers" "$log.markers"
 printf 'unlocked\nlocked\n' >"$tmp/expected-recovery"
 cmp "$tmp/expected-recovery" "$log.recovery"
 cat >"$tmp/expected" <<'EOF'
@@ -603,6 +616,58 @@ tail -n 1 "$restart_dir/previous.log" \
 head -n 1 "$restart_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='
 tail -n 1 "$restart_dir/latest.log" \
   | grep -Eq '^tilo-flight-record-v1 end=.* status=7 logout_request=no restart_request=no$'
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+
+# A logout asked for while the restart is under way still wins: no second compositor starts, and
+# the marker the restart wrote leaves nothing behind.
+: >"$log"
+rm -f "$log.runs" "$log.markers" "$log.holding"
+XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_HOLD=1 TILO_SESSION_WRITE_LOGOUT=1 \
+  "$test_wrapper" --backend drm >/dev/null &
+session_pid=$!
+for _ in $(seq 1 500); do
+  [ -s "$log.holding" ] && break
+  sleep 0.02
+done
+[ -s "$log.holding" ]
+kill -USR1 "$session_pid"
+set +e
+wait "$session_pid"
+status=$?
+set -e
+[ "$status" = 0 ] || { echo "a logged-out restart ended with $status" >&2; exit 1; }
+[ "$(cat "$log.runs")" = 1 ] || { echo 'a logout did not win over the restart' >&2; exit 1; }
+grep -Fxq 'restart-marker=no' "$log.markers"
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+
+# A restart whose new desktop never starts leaves no marker for a later read: the marker is in
+# the login's private directory, which goes with the login.
+: >"$log"
+rm -f "$log.runs" "$log.markers" "$log.holding" "$log.request-path"
+XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_HOLD_FIRST=1 \
+  TILO_SESSION_TERM_DELAY=3 "$test_wrapper" --backend drm >/dev/null &
+session_pid=$!
+for _ in $(seq 1 500); do
+  [ -s "$log.holding" ] && break
+  sleep 0.02
+done
+[ -s "$log.holding" ]
+channel="$(dirname "$(cat "$log.request-path")")"
+kill -USR1 "$session_pid"
+for _ in $(seq 1 500); do
+  [ -e "$channel/restart-request" ] && break
+  sleep 0.02
+done
+[ -e "$channel/restart-request" ] || { echo 'the restart was not announced' >&2; exit 1; }
+# The compositor is still stopping, so the login ends before another one could start.
+kill -TERM "$session_pid"
+set +e
+wait "$session_pid"
+status=$?
+set -e
+[ "$status" = 143 ] || { echo "a cancelled restart ended with $status" >&2; exit 1; }
+[ "$(cat "$log.runs")" = 1 ] || { echo 'a compositor started after the restart was cancelled' >&2; exit 1; }
+[ ! -d "$channel" ] || { ls -la "$channel" >&2; exit 1; }
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 
 printf 'Tilo session lifecycle contract: PASS\n'

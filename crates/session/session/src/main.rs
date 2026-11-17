@@ -774,6 +774,21 @@ fn start(
             }
         }
     }
+    // The wrapper announces an in-place restart in the login's private channel before it stops
+    // the compositor; the login's own desktop reads the marker once, so it knows it continues the
+    // login rather than starting one. Reading it consumes it, so only this run is the restart's. A
+    // session in a window or a headless one inherits the login's environment but is not what the
+    // wrapper restarts, so it leaves the channel alone.
+    let restarting = backend == Backend::Drm && tilo_session::restart::following_restart();
+    tracing::info!(
+        restarting,
+        "{}",
+        if restarting {
+            "the desktop starts again after an in-place restart"
+        } else {
+            "the desktop starts a login"
+        }
+    );
     let mcp_server = options.mcp_server.clone();
     let test_control = options.test_control.clone();
     let admin_control = options.admin_control.clone();

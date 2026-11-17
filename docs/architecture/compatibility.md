@@ -56,10 +56,16 @@ the machinery `tilo device swap` uses on a development machine:
    (`live:session`): it merges the whole update, restarts the changed session
    services and restarts every desktop in place through `tilo-session`
    (SIGUSR1): the login, the lock and the windows stay.
-5. A restarted unit that fails, or a desktop that does not come back within
-   20 s, puts the previous layer back, restarts the same parts again and
+5. A restarted unit that fails, or a desktop that does not become usable again
+   within 60 s, puts the previous layer back, restarts the same parts again and
    marks the update failed; it then applies with the next restart of the
-   machine, which the session asks for.
+   machine, which the session asks for. "Usable" is not "a compositor process
+   is running": the session publishes a record once every enabled output has
+   shown its first frame — the lock surface instead, when it starts locked —
+   and the windows this device left open are being asked for. That record names
+   the process and its kernel start time, so one a previous run left is never
+   taken for this one's. A desktop that comes back and crashes within a few
+   seconds still counts as not back.
 
 The state the session reads is `/run/tilo/live-update/state.json`. A layer is
 immutable once merged, and every apply builds a fresh one from the mounted

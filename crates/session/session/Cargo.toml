@@ -101,6 +101,8 @@ tilo-files = { path = "../../platform/tilo-files" }
 durable-store = { path = "../../system/durable-store" }
 automerge.workspace = true
 tilo-paths.workspace = true
+# This process's id and kernel start time, which the desktop's ready record names.
+tilo-process = { path = "../../platform/tilo-process" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }
 # The directory of public workspaces a site serves: what joins list and

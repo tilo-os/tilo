@@ -320,6 +320,8 @@ mod questions;
 #[cfg(target_os = "linux")]
 pub mod quick_settings;
 #[cfg(target_os = "linux")]
+mod ready;
+#[cfg(target_os = "linux")]
 mod record_index;
 #[cfg(target_os = "linux")]
 pub mod recovery;
@@ -327,6 +329,8 @@ pub mod recovery;
 mod render;
 #[cfg(target_os = "linux")]
 mod renewal;
+#[cfg(target_os = "linux")]
+pub mod restart;
 #[cfg(target_os = "linux")]
 mod restore;
 #[cfg(target_os = "linux")]

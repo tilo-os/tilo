@@ -573,6 +573,11 @@ impl Compositor {
         self.data.state.frames_presented()
     }
 
+    /// Whether `output` presented a frame since this session began: it is on and showing.
+    pub fn output_has_presented(&self, output: &str) -> bool {
+        self.data.state.output_has_presented(output)
+    }
+
     /// The turn is over: its timings go to the frame trace.
     pub fn end_tick(&mut self) {
         if !self.ticking {

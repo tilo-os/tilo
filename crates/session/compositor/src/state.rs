@@ -325,6 +325,10 @@ pub struct State {
     frame_serial: std::sync::atomic::AtomicU64,
     /// The frames the displays presented since this session began.
     frames_presented: std::sync::atomic::AtomicU64,
+    /// The outputs that have presented at least one frame since this session began: a display
+    /// that is on and drawing. The session calls a restarted desktop usable only when every
+    /// enabled output is among them.
+    presented_outputs: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// The last frame a display presented: its serial and when it was shown.
     retired: std::sync::Mutex<Option<(u64, Instant)>>,
 }
@@ -459,6 +463,7 @@ impl State {
             committed: std::collections::HashMap::new(),
             frame_serial: std::sync::atomic::AtomicU64::new(1),
             frames_presented: std::sync::atomic::AtomicU64::new(0),
+            presented_outputs: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             retired: std::sync::Mutex::new(None),
         }
     }
@@ -2678,6 +2683,13 @@ impl State {
             .saturating_sub(1)
     }
 
+    /// Whether `output` presented a frame since this session began.
+    pub(crate) fn output_has_presented(&self, output: &str) -> bool {
+        self.presented_outputs
+            .lock()
+            .is_ok_and(|presented| presented.contains(output))
+    }
+
     /// The last frame a display presented, and when: the presenter says so from wherever the
     /// display's completion arrives.
     pub(crate) fn take_retired(&self) -> Option<(u64, Instant)> {
@@ -2687,12 +2699,17 @@ impl State {
             .and_then(|mut retired| retired.take())
     }
 
-    /// The frame `serial` reached the display: answer the keys it carried,
-    /// and close a workspace switch when it was the resting frame.
-    pub(crate) fn frame_presented(&self, serial: u64) {
+    /// The frame `serial` of `output` reached the display: answer the keys it carried, and close a
+    /// workspace switch when it was the resting frame.
+    pub(crate) fn frame_presented(&self, serial: u64, output: &str) {
         let at = Instant::now();
         self.frames_presented
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut presented) = self.presented_outputs.lock()
+            && !presented.contains(output)
+        {
+            presented.insert(output.to_owned());
+        }
         if let Ok(mut retired) = self.retired.lock() {
             *retired = Some((serial, at));
         }

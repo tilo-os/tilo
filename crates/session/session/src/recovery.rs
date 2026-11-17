@@ -18,6 +18,31 @@ const LOCKED: &[u8] = b"locked\n";
 /// The state an ended session publishes for the next one.
 const UNLOCKED: &[u8] = b"unlocked\n";
 
+/// The login's private channel directory holding `request`, the file the wrapper names for this
+/// session. Its other records — the lock state, the restart marker — live beside the request.
+///
+/// # Errors
+/// The channel is not an absolute private directory of this person's.
+pub(crate) fn channel(request: &Path) -> io::Result<&Path> {
+    let directory = request
+        .parent()
+        .filter(|_| request.is_absolute())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "session channel is not absolute",
+            )
+        })?;
+    let metadata = fs::symlink_metadata(directory)?;
+    if !metadata.is_dir() || !tilo_files::native::private::private_to_me(&metadata) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "session channel is not private",
+        ));
+    }
+    Ok(directory)
+}
+
 /// What one login's lock record says, and where it is kept.
 pub struct Recovery {
     path: PathBuf,
@@ -53,22 +78,7 @@ impl Recovery {
     /// record is linked or redirected, or it cannot be written: no session
     /// starts without its record armed.
     pub fn begin(request: &Path) -> io::Result<Self> {
-        let directory = request
-            .parent()
-            .filter(|_| request.is_absolute())
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "session channel is not absolute",
-                )
-            })?;
-        let metadata = fs::symlink_metadata(directory)?;
-        if !metadata.is_dir() || !tilo_files::native::private::private_to_me(&metadata) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "session channel is not private",
-            ));
-        }
+        let directory = channel(request)?;
         let path = directory.join("lock-state");
         let starts_locked = match tilo_files::native::private::read(&path) {
             Ok(file) => {

@@ -1798,6 +1798,13 @@ impl Session {
             .recovery
             .as_ref()
             .is_some_and(crate::recovery::Recovery::starts_locked);
+        // The machine's own desktop publishes what a live update waits for after a restart; a
+        // session in a window or a headless one is not what the wrapper brings back.
+        let ready = options
+            .recovery
+            .is_some()
+            .then(crate::ready::Desktop::claim)
+            .flatten();
         let mut session = Self {
             compositor,
             shared,
@@ -1815,6 +1822,7 @@ impl Session {
             lock_view: lock_view.map(crate::lock_screen::LockView::new),
             lock_shown: crate::lock_screen::LockShown::App,
             recovery: options.recovery.take(),
+            ready,
             update_finish: crate::update_finish::Finish::for_session(options.desktop.as_deref()),
             captures: options.captures,
             capture_io,
@@ -2878,6 +2886,19 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // One SIGTERM is both a logout and an in-place restart; the wrapper's marker in the
+        // login's private channel is what tells them apart, and the flight record keeps it. Only
+        // the machine's own desktop is what the wrapper restarts.
+        let restarting = self.recovery.is_some() && crate::restart::restarting();
+        tracing::info!(
+            restarting,
+            "{}",
+            if restarting {
+                "the desktop ends for an in-place restart"
+            } else {
+                "the desktop ends its login"
+            }
+        );
         // A profile still recording is completed, its files written, before
         // the process goes.
         tilo_frame_metrics::profile::shutdown();

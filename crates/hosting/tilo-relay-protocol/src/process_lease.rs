@@ -86,19 +86,8 @@ fn proc_path(pid: u32) -> PathBuf {
 }
 
 fn process_start_time(pid: u32) -> io::Result<u64> {
-    let stat = std::fs::read_to_string(proc_path(pid).join("stat"))?;
-    // `comm` is parenthesised and may itself contain spaces or `)`. The last
-    // closing parenthesis precedes field 3 (`state`); starttime is field 22,
-    // therefore the twentieth token in the remaining tail.
-    let tail = stat
-        .rsplit_once(')')
-        .map(|(_, tail)| tail)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "process stat has no command"))?;
-    tail.split_whitespace()
-        .nth(19)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "process stat is truncated"))?
-        .parse()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid process start time"))
+    tilo_process::start_time(pid)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such process"))
 }
 
 #[cfg(test)]
