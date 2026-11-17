@@ -1958,7 +1958,11 @@ tilo_test_env::scenario! {
         )
         .err()
         .unwrap();
-        assert!(error.contains("unsupported durable version"));
+        assert!(
+            error.contains("this state is from an older format")
+                && error.contains("start fresh with a new state directory"),
+            "a version this build does not read is said plainly: {error}"
+        );
         assert_eq!(bytes, unchanged);
     }
 }
