@@ -111,7 +111,7 @@ impl Link {
 }
 
 /// The feed a session lends the layer it mounts
-/// ([`ui::application::HostContext::lend`]): the session keeps a clone of the
+/// ([`ui::application::ProcessContext::lend`]): the session keeps a clone of the
 /// link, publishes its activities on it and carries out what they ask.
 #[derive(Clone)]
 pub struct ActivityService {

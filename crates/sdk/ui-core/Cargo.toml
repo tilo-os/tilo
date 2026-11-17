@@ -26,15 +26,15 @@ default = ["native", "broker-transport"]
 # warmup, the system appearance a standalone app follows, and the
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
-# host supplies its own `ui::host::HostServices`.
-native = ["local-daemons", "collaboration/audio", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
+# host supplies its own `ui::process::ProcessServices`.
+native = ["local-daemons", "collaboration/audio", "tilo-process-services/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
 # X11 windows (winit's X11 backend) and the X11 clipboard, for development
 # builds on an X11 host: `cargo run -p <app> --features ui/x11` (through
 # `tilo-app`'s `x11`). Every Tilo app runs as a Wayland client in its
 # sandbox, so the shared runtime leaves X11 (x11rb, x11-dl and the X11
 # clipboard) out. winit's X11 backend comes through tilo-winit-x11, which the
 # workspace hack's analysis skips (.config/hakari.toml).
-x11 = ["dep:tilo-winit-x11", "tilo-host/x11"]
+x11 = ["dep:tilo-winit-x11", "tilo-process-services/x11"]
 # two-face's grammars for the code editor's highlighting (about 0.9 MB of
 # data). Without it every language highlights as plain text; the browser
 # toolkit core leaves it out.
@@ -69,7 +69,7 @@ broker-transport = ["local-daemons", "collaboration/broker-transport", "runtime-
 # An integration test links the library once, without its `cfg(test)`: the
 # fixtures a test draws with ([`headless::HeadlessApp`], the pinned font
 # catalogue) come with it.
-test-support = ["tilo-host/test-support", "collaboration/test-support", "dep:tilo-test-env"]
+test-support = ["tilo-process-services/test-support", "collaboration/test-support", "dep:tilo-test-env"]
 # Hyphenation patterns (hypher) are not linked into text layout: the program
 # fetches their code the first time text hyphenates and hands it over
 # (`HYPHENATION`); until then text breaks only
@@ -156,12 +156,12 @@ gpu-video = ["dmabuf-import"]
 # hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
 # `media` feature turns on `ui/media-session`). zbus runs on the workspace's tokio
 # backend; the server lives on its own thread with a private runtime.
-mpris = ["native", "tilo-host/mpris"]
+mpris = ["native", "tilo-process-services/mpris"]
 # Location and screen capture through the XDG Desktop Portal (Linux). The SDK's
 # native runner enables it on Linux targets; apps do not. File choosers
 # (`ui::portal`) and notifications (`ui::notify`) need no feature: their
 # platform crates select each target's backend.
-portal = ["native", "tilo-host/portal"]
+portal = ["native", "tilo-process-services/portal"]
 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
@@ -181,7 +181,7 @@ fnv.workspace = true
 # Host services: the clock, background work, clipboard, file choosers,
 # notifications, media sessions, location and screen capture, and their
 # native backends. Re-exported under the toolkit's own module paths.
-tilo-host = { version = "0.1.0", path = "../tilo-host" }
+tilo-process-services = { version = "0.1.0", path = "../tilo-process-services" }
 tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
 # The part painter interface every painter set draws through (`part_paint`).
 tilo-theme-sdk = { version = "0.1.0", path = "../theme-sdk" }
@@ -217,7 +217,7 @@ tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 # A software adapter's frames are rasterized on the CPU and uploaded, native
 # or in a page (`crate::cpu_raster`).
 tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
-# The content store a host lends a component (`HostContext::content`), in every
+# The content store a host lends a component (`ProcessContext::content`), in every
 # build.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 # A workspace file is its content manifest, and its bytes decide the app that
@@ -466,7 +466,7 @@ tokio = { workspace = true, features = ["test-util"] }
 tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony" }
 threshold-identity = { path = "../../collab/threshold-identity" }
 # The scoped chooser and URI fixtures the invocation-scope tests select.
-tilo-host = { path = "../tilo-host", features = ["test-support"] }
+tilo-process-services = { path = "../tilo-process-services", features = ["test-support"] }
 # The settings capability the shell hands an app, served by the fake broker.
 runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-host"] }
 

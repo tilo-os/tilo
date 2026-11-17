@@ -208,7 +208,7 @@ for entry in declared_entries:
 # `tilo-clipboard` and never enter non-Linux builds through ui or tilo-host.
 for manifest in (
     "crates/sdk/ui-core/Cargo.toml",
-    "crates/sdk/tilo-host/Cargo.toml",
+    "crates/sdk/tilo-process-services/Cargo.toml",
     "crates/platform/tilo-clipboard/Cargo.toml",
 ):
     parsed = tomllib.loads((ROOT / manifest).read_text())

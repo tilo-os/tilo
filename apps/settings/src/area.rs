@@ -41,7 +41,7 @@ pub trait PaneArea: Any {
         Vec::new()
     }
 
-    fn take_host_intent(&self) -> Option<ui::widget::AppHostIntent> {
+    fn take_process_intent(&self) -> Option<ui::widget::AppProcessIntent> {
         None
     }
 

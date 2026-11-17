@@ -52,7 +52,7 @@ pub(crate) struct Source {
     window_scheme: Option<Scheme>,
     system: tilo_appearance::System,
     /// Accessibility the launcher requested; the host can add to it, never take it away.
-    requested: crate::host::AccessibilityInputs,
+    requested: crate::process::AccessibilityInputs,
     applied: Option<HostAppearance>,
 }
 
@@ -63,7 +63,7 @@ impl Source {
         if session_document_owns_appearance() {
             return None;
         }
-        let environment = crate::host::environment();
+        let environment = crate::process::environment();
         host_owns_appearance(environment.desktop.as_deref()).then(|| Self {
             window_scheme: None,
             system: tilo_appearance::System::follow({
@@ -212,7 +212,7 @@ mod tests {
     }
 
     /// A source with no desktop reading: winit and the launcher only.
-    fn source(requested: crate::host::AccessibilityInputs) -> Source {
+    fn source(requested: crate::process::AccessibilityInputs) -> Source {
         Source {
             window_scheme: None,
             system: tilo_appearance::System::default(),
@@ -226,7 +226,7 @@ mod tests {
 
         phase each_change_is_reported_once_unless_forced;
         {
-            let mut source = source(crate::host::AccessibilityInputs::default());
+            let mut source = source(crate::process::AccessibilityInputs::default());
             assert_eq!(
                 source.take_change(false),
                 Some(HostAppearance::default()),
@@ -242,10 +242,10 @@ mod tests {
 
         phase launcher_accessibility_requests_survive_the_host;
         {
-            let mut source = source(crate::host::AccessibilityInputs {
+            let mut source = source(crate::process::AccessibilityInputs {
                 high_contrast: true,
                 reduce_motion: true,
-                ..crate::host::AccessibilityInputs::default()
+                ..crate::process::AccessibilityInputs::default()
             });
             let applied = source.take_change(false).expect("first reading");
             assert!(applied.high_contrast);

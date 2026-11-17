@@ -21,7 +21,7 @@ use tilo_peer_state::join::WorkspaceId;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use tilo_identity_host::identity_store::HostIdentity;
+use tilo_identity::identity_store::HostIdentity;
 use tilo_peer_state::join::{self, Role};
 use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::IssueInvitationRequest;

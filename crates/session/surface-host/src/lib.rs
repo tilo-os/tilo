@@ -1,7 +1,7 @@
 //! The shell's surface apps in the compositor's process.
 //!
 //! The top bar, the launcher and the panels are ordinary toolkit apps. An
-//! [`AppHost`] shows one of them on a rectangle of the desktop: it drives the
+//! [`AppProcess`] shows one of them on a rectangle of the desktop: it drives the
 //! app as any host does (input in, frames out), has each frame drawn where it
 //! changed the way the app's own frames are, and hands the compositor the
 //! buffer as a [`SurfaceHost`] layer. The compositor knows nothing of the app;
@@ -102,7 +102,7 @@ fn dropped_paths(data: &[u8]) -> Vec<std::path::PathBuf> {
 }
 
 /// One toolkit app shown on a rectangle of the desktop.
-pub struct AppHost {
+pub struct AppProcess {
     app: App,
     placement: Placement,
     surface: Surface,
@@ -130,7 +130,7 @@ pub struct AppHost {
     name: Option<String>,
 }
 
-impl AppHost {
+impl AppProcess {
     /// Show `app` at `placement`. Nothing is drawn before the first
     /// [`SurfaceHost::prepare_frame`].
     pub fn new(app: App, placement: Placement) -> Self {
@@ -251,7 +251,7 @@ impl AppHost {
     }
 }
 
-impl Published for AppHost {
+impl Published for AppProcess {
     fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
         self.app.collect_resources()
     }
@@ -378,7 +378,7 @@ impl Published for AppHost {
     }
 }
 
-impl SurfaceHost for AppHost {
+impl SurfaceHost for AppProcess {
     fn layers(&self) -> Vec<HostLayer> {
         let size = (
             i32::try_from(self.placement.size.0).unwrap_or(i32::MAX),

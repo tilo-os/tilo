@@ -81,7 +81,7 @@ tilo-content = { path = "../../system/content" }
 getrandom.workspace = true
 rand_core.workspace = true
 # The device identity an enrollment presents to the issuing host.
-tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-identity = { path = "../../runtime/tilo-identity" }
 
 [dev-dependencies]
 # The closure-built action host a test dispatcher is.

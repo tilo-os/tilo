@@ -61,7 +61,7 @@ use tilo_action_broker::document_content::ContentSources;
 #[cfg(target_os = "linux")]
 use tilo_endpoint_reachability::{Need, Reachability};
 #[cfg(target_os = "linux")]
-use tilo_identity_host::identity_store::HostIdentity;
+use tilo_identity::identity_store::HostIdentity;
 #[cfg(target_os = "linux")]
 use tilo_network_actor::{WorkspaceId, native_ingress};
 

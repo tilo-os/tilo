@@ -4,7 +4,7 @@ use super::{ActionDirectoryRequest, CollabEvent, CollabRequest, RouteSpec, annot
 
 /// Transport adapters must authenticate ordinary peer joins and verify inbound
 /// envelopes before publishing events. Installing this adapter grants no model,
-/// action, HostContext, or storage authority. Queue failures are fail-closed.
+/// action, ProcessContext, or storage authority. Queue failures are fail-closed.
 pub trait PeerTransport {
     /// Authenticated connection provenance from the host, never app model state.
     fn connection_snapshot(

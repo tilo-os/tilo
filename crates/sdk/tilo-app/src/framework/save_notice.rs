@@ -74,7 +74,7 @@ impl SaveNotices {
     /// The host's notifications, resolved once.
     fn notifier(&mut self) -> Arc<dyn ui_core::notify::Notifier> {
         self.notifier
-            .get_or_insert_with(|| ui_core::host::current().notifications)
+            .get_or_insert_with(|| ui_core::process::current().notifications)
             .clone()
     }
 

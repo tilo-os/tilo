@@ -785,7 +785,7 @@ tilo_test_env::scenario! {
                 })
             }
         }
-        let _host = crate::host::enter(&crate::host::HostServices::null());
+        let _host = crate::process::enter(&crate::process::ProcessServices::null());
         let opened = Rc::new(RefCell::new(Vec::new()));
         let seen = Rc::clone(&opened);
         let presented = entry(EntryKind::Details, "Alice", 10, 1);

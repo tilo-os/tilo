@@ -6,8 +6,8 @@
 use std::sync::atomic::Ordering;
 
 use serde_json::{Map, Value as Json, json};
-use tilo_ui_host::reconcile::{UiEvent, display};
-use tilo_ui_host::{UiNode, Value};
+use tilo_app_window::reconcile::{UiEvent, display};
+use tilo_app_window::{UiNode, Value};
 use tilolang_tilo::runtime::{ResourceRef, Value as RtValue};
 use ui::component::RowSource as _;
 use ui::component_lifecycle::WindowTitle as _;
@@ -35,7 +35,7 @@ fn composed(session: &mut Session) -> UiNode {
     session
         .hosted()
         .view()
-        .and_then(tilo_ui_host::AppWindow::composed)
+        .and_then(tilo_app_window::AppWindow::composed)
         .cloned()
         .expect("the window composed its shell")
 }
@@ -76,7 +76,7 @@ fn part_of<'a>(shell: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
         .children
         .iter()
         .filter(|child| {
-            child.kind == tilo_ui_host::adapter::PART
+            child.kind == tilo_app_window::adapter::PART
                 && child.props.get("name") == Some(&Value::text(name))
         })
         .flat_map(|child| child.children.iter())
@@ -215,7 +215,7 @@ fn rows(session: &mut Session) -> Vec<UiNode> {
         let view = session.hosted().view().expect("the window is connected");
         view.lists()
             .into_iter()
-            .filter(|list| !list.starts_with(tilo_ui_host::shell::DETAIL))
+            .filter(|list| !list.starts_with(tilo_app_window::shell::DETAIL))
             .filter_map(|list| view.rows_of(&list))
             .collect()
     };
@@ -323,7 +323,7 @@ fn a_notebook_is_its_tree_with_the_chosen_note_beside_it_naming_the_window() {
     let shell = session
         .hosted()
         .view()
-        .and_then(tilo_ui_host::AppWindow::shell_ref)
+        .and_then(tilo_app_window::AppWindow::shell_ref)
         .map(|shell| {
             (
                 shell.has_overview(),
@@ -1005,7 +1005,7 @@ fn approving_a_pressed_send_through_the_ask_bar_sends_the_letter_once() {
         session
             .hosted()
             .view()
-            .and_then(tilo_ui_host::AppWindow::asks)
+            .and_then(tilo_app_window::AppWindow::asks)
             .is_some(),
         "a send asks the person first"
     );
@@ -1174,7 +1174,7 @@ fn an_apps_own_list_window_gets_the_platforms_title_bar_rows_menu_and_swipe() {
     let mut session = staged(HANDMADE, "two books");
     let shell = composed(&mut session);
     assert!(
-        tilo_ui_host::shell::has_overview(&shell),
+        tilo_app_window::shell::has_overview(&shell),
         "the shelf's window is the list it composed"
     );
     assert_eq!(

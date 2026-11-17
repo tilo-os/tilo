@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::services::Caller;
-use crate::services::HostServices;
+use crate::services::ProcessServices;
 use runtime_collab::wire::{Event, Receipt};
 use tokio::sync::{mpsc, oneshot};
 
@@ -112,9 +112,9 @@ fn app_in(
         membership,
         None,
         None,
-        HostServices {
+        ProcessServices {
             published: Some(provider),
-            ..HostServices::default()
+            ..ProcessServices::default()
         },
     );
     let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));

@@ -1933,7 +1933,7 @@ mod tests {
                 None,
                 &CapabilityPlan::empty(),
             );
-            let app = tilo_process::environment::HostIdentity {
+            let app = tilo_process::environment::ProcessIdentity {
                 app_id: setenv_value(&argv, "TILO_PACKAGE_ID").map(str::to_owned),
                 ..Default::default()
             };

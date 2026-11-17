@@ -317,7 +317,7 @@ fn authenticate(
             .as_nanos(),
     )
     .map_err(|_| ())?;
-    let enrolled = tilo_identity_host::enrolled_transport::EnrolledDevice::review(
+    let enrolled = tilo_identity::enrolled_transport::EnrolledDevice::review(
         &ownership.root,
         &record,
         expected_root,
@@ -349,7 +349,7 @@ pub fn certified_fixture() -> (tempfile::TempDir, Pairing) {
         &directory.join("approver"),
         "Approving person",
         [10, 20, 30],
-        tilo_identity_host::provisioning::IdentityStorage::for_session(),
+        tilo_identity::provisioning::IdentityStorage::for_session(),
     )
     .unwrap();
     let signer = runtime_identity::load_from_path(directory.join("approver/primary.json")).unwrap();
@@ -386,9 +386,8 @@ pub fn certified_fixture() -> (tempfile::TempDir, Pairing) {
     )
     .unwrap();
     tilo_files::native::atomic::write_with_mode(&record, &bytes, 0o600).unwrap();
-    let mut fleet = tilo_identity_host::device_fleet::DeviceFleet::new(hex::encode(
-        certificate.user_public_key,
-    ));
+    let mut fleet =
+        tilo_identity::device_fleet::DeviceFleet::new(hex::encode(certificate.user_public_key));
     fleet.certificates.push(certificate.clone());
     tilo_files::native::atomic::write_with_mode(
         &identities

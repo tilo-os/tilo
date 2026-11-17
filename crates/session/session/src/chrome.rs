@@ -360,7 +360,7 @@ pub(crate) struct BarFeeds {
     pub(crate) readings: crate::status::Shared,
     pub(crate) activities: Rc<Activities>,
     /// The applications' tray items, when their watcher serves.
-    pub(crate) tray: Option<Arc<tilo_tray_host::Tray>>,
+    pub(crate) tray: Option<Arc<tilo_tray::Tray>>,
     /// The monitors of the displays a fullscreen window owns, as the loop found them this pass.
     pub(crate) fullscreen: Rc<RefCell<Vec<String>>>,
     /// The windows this session shares with its workspaces, which the bar says are being shared
@@ -422,7 +422,7 @@ pub(crate) struct SessionChrome {
     /// The apps' live activities, which the bar's pill names and the floating layer shows as cards.
     activities: Rc<Activities>,
     /// The running applications' status-notifier items, as their host keeps them.
-    tray: Option<Arc<tilo_tray_host::Tray>>,
+    tray: Option<Arc<tilo_tray::Tray>>,
     /// The monitors of the displays a fullscreen window owns, which the loop takes from the
     /// compositor each pass.
     fullscreen: Rc<RefCell<Vec<String>>>,
@@ -689,7 +689,7 @@ impl ChromeSource for SessionChrome {
 
 /// One tray item as the bar draws it: the app's own words for it, the app it demonstrably belongs
 /// to, and the pixels it sent or named, with a letter badge for an icon nothing could draw.
-fn app_tray_item(item: tilo_tray_host::TrayItem) -> AppTrayItem {
+fn app_tray_item(item: tilo_tray::TrayItem) -> AppTrayItem {
     AppTrayItem {
         key: item.key,
         id: item.id.clone(),
@@ -700,12 +700,12 @@ fn app_tray_item(item: tilo_tray_host::TrayItem) -> AppTrayItem {
             item.title
         },
         status: match item.status {
-            tilo_tray_host::ItemStatus::Passive => AppTrayStatus::Passive,
-            tilo_tray_host::ItemStatus::Active => AppTrayStatus::Active,
-            tilo_tray_host::ItemStatus::NeedsAttention => AppTrayStatus::NeedsAttention,
+            tilo_tray::ItemStatus::Passive => AppTrayStatus::Passive,
+            tilo_tray::ItemStatus::Active => AppTrayStatus::Active,
+            tilo_tray::ItemStatus::NeedsAttention => AppTrayStatus::NeedsAttention,
         },
         icon: match item.icon {
-            tilo_tray_host::TrayIcon::Pixels {
+            tilo_tray::TrayIcon::Pixels {
                 width,
                 height,
                 rgba,
@@ -714,7 +714,7 @@ fn app_tray_item(item: tilo_tray_host::TrayItem) -> AppTrayItem {
                 height,
                 rgba,
             },
-            tilo_tray_host::TrayIcon::Letter(letter) => AppTrayIcon::Letter(letter),
+            tilo_tray::TrayIcon::Letter(letter) => AppTrayIcon::Letter(letter),
         },
         item_is_menu: item.item_is_menu,
     }

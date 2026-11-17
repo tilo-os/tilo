@@ -259,7 +259,7 @@ pub trait NativeDocumentReads: Send + Sync {
     /// differently with nothing written, so nothing announced: a grant, a
     /// certificate or a revocation taking effect at an instant known in
     /// advance. A held `Await` registers it with
-    /// [`tilo_identity_host::policy_change::wake_at`].
+    /// [`tilo_identity::policy_change::wake_at`].
     ///
     /// # Errors
     ///
@@ -1012,7 +1012,7 @@ impl JoinedChannel {
     /// The checks are the Open's own (ownership, admission, the owner's
     /// authorization and capture), re-run whenever something they read may
     /// have changed: every writer of those inputs announces
-    /// ([`tilo_identity_host::policy_change`]), and the first instant a
+    /// ([`tilo_identity::policy_change`]), and the first instant a
     /// time-bound input changes is registered with `wake_at`. Where that
     /// cannot be relied on, they re-run every [`UNANNOUNCED_RECHECK`], as the
     /// reader's poll did. A check that fails ends the hold too, and the Open
@@ -1056,7 +1056,7 @@ impl JoinedChannel {
             .follow_committed_writes(&self.resource_route().channel_key(), &wake);
         let watch = {
             let wake = Arc::clone(&wake);
-            tilo_identity_host::policy_change::Watch::new(move || wake.notify_one())
+            tilo_identity::policy_change::Watch::new(move || wake.notify_one())
         };
         if let Some((granted, turn)) = turn {
             // A read waiting in the budget's queue: what changes its Open's
@@ -1101,7 +1101,7 @@ impl JoinedChannel {
                     if !self.holds_wait(generation) {
                         return Err("committed read wait was replaced".into());
                     }
-                    let epoch = tilo_identity_host::policy_change::epoch();
+                    let epoch = tilo_identity::policy_change::epoch();
                     if let Some((at, context)) = &checked
                         && *at == epoch
                         && let Some(service) = &self.state.services.committed_documents
@@ -1181,7 +1181,7 @@ impl JoinedChannel {
         ))
     }
 
-    /// Register with [`tilo_identity_host::policy_change::wake_at`] the first
+    /// Register with [`tilo_identity::policy_change::wake_at`] the first
     /// instant at which this read's checks can answer differently by time
     /// alone: the reader's certificate validity, the membership tree's next
     /// grant expiry, and what the document owner names. Returns `false` when
@@ -1192,7 +1192,7 @@ impl JoinedChannel {
         context: &NativeDocumentReadContext,
         service: &dyn NativeDocumentReads,
     ) -> bool {
-        use tilo_identity_host::policy_change;
+        use tilo_identity::policy_change;
         if !policy_change::timers_reliable() || !policy_change::identity_files_watched() {
             return false;
         }

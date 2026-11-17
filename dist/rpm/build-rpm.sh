@@ -61,16 +61,16 @@ if (( run_cargo )); then
     # separate below. Explicit bins avoid developer-only server/launcher tools.
     ( cd "$repo_root" && cargo build --release --locked --lib \
         -p launcher -p tilo-unlock-helper -p tilo-flight-log -p tilo-app-package-cli -p install -p runtime-bundle \
-        -p cli-shim -p app-host -p app-cli -p ush -p local-model-service -p tilo-model-gateway \
-        -p imager -p tilo-server -p tilo-fs -p legacy-vm -p tilo-cli -p tilolang-host \
+        -p cli-shim -p app-process -p app-cli -p ush -p local-model-service -p tilo-model-gateway \
+        -p imager -p tilo-server -p tilo-fs -p legacy-vm -p tilo-cli -p tilolang-process \
         --features tilo-model-gateway/local-models,tilo-model-gateway/host-backend,imager/installation \
         --bin tilo --bin tilo-launcher --bin tilo-signal-provider --bin tilo-unlock-helper \
         --bin tilo-flight-recorder --bin tilo-session-report \
         --bin tilo-app-package --bin tilo-install --bin tilo-runtime-bundle \
-        --bin tilo-cli-shim --bin tilo-app-host --bin app --bin tilo-ush \
+        --bin tilo-cli-shim --bin tilo-app-process --bin app --bin tilo-ush \
         --bin tilo-model-catalog --bin tilo-model-manager --bin tilo-speech-worker \
         --bin tilo-model-gateway --bin tilo-model-http --bin imager \
-        --bin tilo-server-admin --bin tilo-enroll --bin fs --bin tilo-legacy --bin tilolang-host )
+        --bin tilo-server-admin --bin tilo-enroll --bin fs --bin tilo-legacy --bin tilolang-process )
     say "cargo build --release (runtime host, no default features)"
     # The runtime package also owns developer tools such as `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
@@ -88,8 +88,8 @@ target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 [[ $target_dir = /* ]] || target_dir=$repo_root/$target_dir
 target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
-for bin in tilo-session tilolang-host fs tilo-server-admin tilo-enroll imager tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report tilo-install tilo-runtime-bundle \
-           tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway tilo-model-http \
+for bin in tilo-session tilolang-process fs tilo-server-admin tilo-enroll imager tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report tilo-install tilo-runtime-bundle \
+           tilo-cli-shim tilo-app-process tilo-ush tilo-model-manager tilo-model-gateway tilo-model-http \
            tilo-legacy app; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
@@ -150,18 +150,18 @@ install -pm 0755 "$rel/tilo-model-manager" "$app_stage/bin/tilo-model-manager"
 install -pm 0755 "$rel/tilo-model-gateway" "$app_stage/bin/tilo-model-gateway"
 install -pm 0755 "$rel/tilo-model-http" "$app_stage/bin/tilo-model-http"
 install -pm 0755 "$rel/tilo-cli-shim" "$app_stage/libexec/tilo-cli-shim"
-install -pm 0755 "$rel/tilo-app-host" "$app_stage/libexec/tilo-app-host"
+install -pm 0755 "$rel/tilo-app-process" "$app_stage/libexec/tilo-app-process"
 install -pm 0755 "$rel/tilo-ush" "$app_stage/libexec/tilo-ush"
 install -pm 0755 "$rel/tilo-legacy" "$app_stage/bin/tilo-legacy"
-install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-app-host.service" \
-    "$app_stage/systemd-user/tilo-app-host.service"
+install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-app-process.service" \
+    "$app_stage/systemd-user/tilo-app-process.service"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-models.service" \
     "$app_stage/systemd-user/tilo-models.service"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-model-gateway.service" \
     "$app_stage/systemd-user/tilo-model-gateway.service"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-ush.service" \
     "$app_stage/systemd-user/tilo-ush.service"
-for socket in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
+for socket in tilo-app-process tilo-models tilo-model-gateway tilo-ush; do
     install -pm 0644 "$repo_root/os/usr/lib/systemd/user/$socket.socket" \
         "$app_stage/systemd-user/$socket.socket"
 done

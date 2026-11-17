@@ -46,11 +46,11 @@ fn durable_fixture(
     identity_env
         .set("XDG_CONFIG_HOME", root.join("config"))
         .set("TILO_IDENTITY_ROOT", root.join("identity"))
-        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &root.join("config/tilo/identity"),
         &tilo_user_identity::IdentityPaths::under(root.join("identity")),
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("provision the host admission and terminal receipt signer");
     let root_key = SigningKey::from_bytes(&[51; 32]);
@@ -859,7 +859,7 @@ async fn the_host_learns_each_invocation_an_app_is_handed() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let recording = Arc::new(Recording(Mutex::new(Vec::new())));
-            let services = HostServices {
+            let services = ProcessServices {
                 launcher: Some(recording.clone()),
                 ..Default::default()
             };
@@ -889,7 +889,7 @@ async fn the_host_learns_each_invocation_an_app_is_handed() {
                 vec![("so.tilo.notes".to_owned(), "workspace-7".to_owned())]
             );
             assert!(
-                invocation_delivery_notice(&HostServices::default(), "a".into(), "r".into())
+                invocation_delivery_notice(&ProcessServices::default(), "a".into(), "r".into())
                     .is_none(),
                 "a host without a launcher has no one to tell"
             );

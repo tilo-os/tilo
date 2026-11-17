@@ -37,7 +37,7 @@ pub const COMPAT_SERVICE: &str = "compat";
 pub const SYSTEM_SERVICE: &str = "system";
 /// Hosted model planning is performed by this per-user, desktop-owned gateway.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
-pub const APP_HOST_SERVICE: &str = "app-host";
+pub const APP_HOST_SERVICE: &str = "app-process";
 /// The person's messaging accounts (`tilo-messaging`).
 pub const MESSAGING_SERVICE: &str = "messaging";
 /// The shell runtime's supervisor.
@@ -128,7 +128,7 @@ fn child_fd_reserved(fd: i32) -> bool {
     }
     false
 }
-/// Settings holds `app-host` for the person's languages alone: the host answers it which language packs
+/// Settings holds `app-process` for the person's languages alone: the host answers it which language packs
 /// are offered and installs one, never the Store's package-management interface (the host decides by
 /// the app id stamped on the connection).
 use tilo_app_id::apps::SETTINGS as SETTINGS_APP_ID;
@@ -200,9 +200,9 @@ pub enum ServiceError {
         source: std::io::Error,
     },
     #[error(
-        "service `app-host` is restricted to the Store, and to Settings for its language packs"
+        "service `app-process` is restricted to the Store, and to Settings for its language packs"
     )]
-    AppHostUnauthorized,
+    AppProcessUnauthorized,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -691,8 +691,8 @@ fn authenticate_service(
     }
 
     if name == APP_HOST_SERVICE {
-        let launch = context.ok_or(ServiceError::AppHostUnauthorized)?;
-        write_app_host_handoff(stream, launch.app_id).map_err(|source| {
+        let launch = context.ok_or(ServiceError::AppProcessUnauthorized)?;
+        write_app_process_handoff(stream, launch.app_id).map_err(|source| {
             ServiceError::OpenFailed {
                 path: path.to_path_buf(),
                 source,
@@ -721,7 +721,7 @@ fn write_ush_handoff(
     stream.flush()
 }
 
-fn write_app_host_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
+fn write_app_process_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(&serde_json::json!({
         "protocol": 1,
         "app_id": app_id,
@@ -753,7 +753,7 @@ fn resolve_service_binds_inner(
             && context
                 .is_none_or(|launch| ![STORE_APP_ID, SETTINGS_APP_ID].contains(&launch.app_id))
         {
-            return Err(ServiceError::AppHostUnauthorized);
+            return Err(ServiceError::AppProcessUnauthorized);
         }
 
         if no_services {
@@ -1199,7 +1199,7 @@ mod tests {
                     })
                 );
 
-                let bytes = written(|stream| write_app_host_handoff(stream, "so.tilo.notes"));
+                let bytes = written(|stream| write_app_process_handoff(stream, "so.tilo.notes"));
                 assert_eq!(handshake(b"QAH1", APP_HOST_HANDOFF_FRAMING, &bytes), app_only);
             }
             {
@@ -1455,7 +1455,7 @@ mod tests {
                     },
                 )
                 .expect_err("third-party manifest must not grant package-manager authority");
-                assert!(matches!(error, ServiceError::AppHostUnauthorized));
+                assert!(matches!(error, ServiceError::AppProcessUnauthorized));
             }
             {
                 let dir = tempfile::tempdir().unwrap();

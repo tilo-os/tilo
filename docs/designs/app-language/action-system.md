@@ -37,8 +37,8 @@ search filters and sort, views (to be published as `ResourceViewSpec`).
 2. **One policy.** Delete `Host`'s agent rights and the constant Allow; decide through
    `action-policy` with the person's agent answers and code authorship as a bound party.
 3. **One invocation path.** Decide at the carried action's node; cross-package and cross-app
-   calls as child broker invocations; headless publication. Depends on the tilolang host
-   process (ui-host.md step 2b), which changes the commit path.
+   calls as child broker invocations; headless publication. Depends on the tilolang process
+   process (app-window.md step 2b), which changes the commit path.
 4. **One schema.** Language-neutral field types in `Surface`; catalogue ↔ tilolang rendering.
    `tilo_actions::field_type::FieldType` is the field type: `Model::field_type` (derived) and the
    tilolang surface generator emit it, named resources and enums are declared once in

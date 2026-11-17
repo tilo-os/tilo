@@ -1,7 +1,7 @@
 mod construction_owner {
     use super::*;
     use crate::application::{
-        HostContext, HostContextInputs, LaunchTarget, PreparedComponentInputs, RestoreInput,
+        LaunchTarget, PreparedComponentInputs, ProcessContext, ProcessContextInputs, RestoreInput,
     };
     use crate::application_test_support as probe;
     use automerge::{ReadDoc, transaction::Transactable};
@@ -31,9 +31,9 @@ mod construction_owner {
             checkout: crate::resource::DocumentCheckout::new(id, definition.resource_type.clone()),
             reveal: None,
         };
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: probe::DEVICE.into(),
@@ -69,7 +69,7 @@ mod construction_owner {
         })
     }
 
-    fn refresh_prepared_owner(context: &HostContext) {
+    fn refresh_prepared_owner(context: &ProcessContext) {
         tilo_test_env::wait_until("original applied capture must leave staging", || {
             !crate::collaboration::native_initial::component_history_phase_for_test(
                 &context.callback_binding(),
@@ -108,7 +108,7 @@ mod construction_owner {
     }
 
     fn create(
-        context: HostContext,
+        context: ProcessContext,
         target: LaunchTarget,
         restore: RestoreInput,
     ) -> Result<crate::application::AppComponent, LaunchError> {

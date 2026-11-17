@@ -382,7 +382,7 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
         &target.path().join("identity"),
         "Owned original person",
         [1, 2, 3],
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     let declaration = store

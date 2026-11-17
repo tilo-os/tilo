@@ -107,7 +107,7 @@ fn invoked(
 fn settings_pairs_as_its_person_and_the_outcome_follows_the_host() {
     let host = Arc::new(Host::default());
     let fixture = super::super::host_steps::signed_test_support::Fixture::new(
-        crate::services::HostServices {
+        crate::services::ProcessServices {
             host_steps: vec![host.clone()],
             ..Default::default()
         },

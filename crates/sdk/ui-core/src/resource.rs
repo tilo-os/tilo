@@ -584,7 +584,7 @@ impl ResourceSet {
     /// host's app id wins over `manifest_id`, as the workspace index does, or an app's
     /// records would split from its index; the host's workspace id scopes them.
     pub fn open(manifest_id: impl Into<String>) -> Self {
-        let environment = crate::host::environment();
+        let environment = crate::process::environment();
         let identity = &environment.identity;
         let app_id = AppId::new(
             identity

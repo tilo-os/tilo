@@ -65,8 +65,8 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
                 .unwrap();
         }
     });
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = ui::prelude::TestApp::<crate::FileExplorerShell>::new().unwrap();
     app.with_surface(|files: &mut FileExplorerWidget| {
         files.state().home_path = Some(mount.clone());

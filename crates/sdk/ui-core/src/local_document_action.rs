@@ -279,7 +279,7 @@ pub(crate) fn reserve(
         return Ok(None);
     }
     let active = ACTIVE.with(|active| active.borrow().clone()).or_else(|| {
-        let owner = crate::bound_dispatch::executing_host_scope();
+        let owner = crate::bound_dispatch::executing_scope();
         INPUT_ROUTES.with_borrow(|routes| {
             routes
                 .iter()

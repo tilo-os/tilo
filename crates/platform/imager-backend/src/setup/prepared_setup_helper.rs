@@ -123,7 +123,7 @@ pub struct Receipt {
     pub identity_public_key: [u8; 32],
     pub account_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_identity: Option<tilo_identity_host::enrolled_transport::CurrentDeviceDeclaration>,
+    pub current_identity: Option<tilo_identity::enrolled_transport::CurrentDeviceDeclaration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_sessions: Option<super::service_sessions::Declaration>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -265,7 +265,7 @@ pub fn run_with_home_admission(
         review.manifest().identity_kind,
         super::prepared_setup::IdentityKind::CurrentDevice { .. }
     ) {
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
         let system = paths
             .device_cert
             .parent()
@@ -274,7 +274,7 @@ pub fn run_with_home_admission(
         Some(review.resolve_current_identity(system, identity, &password)?)
     } else {
         if let Some(host) = args.get("--host-device-root") {
-            let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+            let paths = tilo_identity::provisioning::collaboration_identity_paths();
             let configured = paths
                 .device_cert
                 .parent()

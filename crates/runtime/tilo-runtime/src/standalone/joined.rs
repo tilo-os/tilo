@@ -19,7 +19,7 @@ use tilo_action_broker::{
     workspace_keys::{GovernancePark, GovernanceTransport, InboundGovernance, KeyProvider},
 };
 use tilo_desktop_model::{Workspace, WorkspaceId};
-use tilo_identity_host::identity_store::HostIdentity;
+use tilo_identity::identity_store::HostIdentity;
 use tilo_peer_state::direct::{DirectSync, Heard};
 use tilo_peer_state::join::TransportHint;
 use tilo_peer_state::owner::{
@@ -830,7 +830,7 @@ impl Joined {
         // concurrently; each admission afterwards pins what it reads.
         unsafe {
             (*(identity.cast_mut())).identity_store =
-                std::sync::Arc::new(tilo_identity_host::identity_store::files::Files::new(paths));
+                std::sync::Arc::new(tilo_identity::identity_store::files::Files::new(paths));
         }
     }
 }

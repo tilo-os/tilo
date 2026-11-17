@@ -229,7 +229,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
     // The VM host's member: the runtime that takes the workspace's work.
     let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
     let (_, member_device) =
-        tilo_identity_host::broker::trusted_current_device(member.workspace()).unwrap();
+        tilo_identity::broker::trusted_current_device(member.workspace()).unwrap();
 
     // The server governs the workspace; its operator's shell owns it.
     let operator = SigningKey::from_bytes(&[41; 32]);
@@ -357,7 +357,7 @@ fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
     // workspace's work.
     let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
     let (_, member_device) =
-        tilo_identity_host::broker::trusted_current_device(member.workspace()).unwrap();
+        tilo_identity::broker::trusted_current_device(member.workspace()).unwrap();
 
     // The server governs the workspace; its operator's shell owns it.
     let operator = SigningKey::from_bytes(&[51; 32]);
@@ -470,7 +470,7 @@ fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
     let scenario = profile.parent().unwrap().to_path_buf();
     let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
     let (_, member_device) =
-        tilo_identity_host::broker::trusted_current_device(member.workspace()).unwrap();
+        tilo_identity::broker::trusted_current_device(member.workspace()).unwrap();
     let operator = SigningKey::from_bytes(&[61; 32]);
     let shell = certificate(
         &operator,

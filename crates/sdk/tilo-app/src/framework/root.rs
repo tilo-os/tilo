@@ -2577,18 +2577,18 @@ impl RootApp for ResourceRoot {
         request(self.content.as_mut(), self.resource.id)
     }
 
-    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<ui_core::widget::AppProcessIntent> {
         fn take(
             widget: &mut dyn Widget,
             resource: std::any::TypeId,
-        ) -> Option<ui_core::widget::AppHostIntent> {
+        ) -> Option<ui_core::widget::AppProcessIntent> {
             if let Some(surface) = surface_mut(widget, resource)
-                && let Some(intent) = surface.take_host_intent()
+                && let Some(intent) = surface.take_process_intent()
             {
                 return Some(intent);
             }
             // A view whose app runs elsewhere asks through its own API.
-            if let Some(intent) = ui_core::component_lifecycle::take_host_intent(widget) {
+            if let Some(intent) = ui_core::component_lifecycle::take_process_intent(widget) {
                 return Some(intent);
             }
             widget

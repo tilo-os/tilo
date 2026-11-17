@@ -30,8 +30,8 @@ use serde_json::Value as Json;
 use tilo_session_core::surface::{CursorIcon, HostKey, Scroll};
 use tilo_session_core::surface::{HostIme, HostLayer, HostTextInput, SurfaceHost};
 
+use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local::pair;
-use tilo_ui_host::AppWindow;
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::catalogue;
@@ -395,7 +395,7 @@ impl PartView {
         );
         let target = ResourceRef::parse_id(&spec.surface.id, ty)
             .ok_or_else(|| format!("`{}` is not a resource", spec.surface.id))?;
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let why = Rc::new(RefCell::new(None));
         let asked = Rc::new(RefCell::new(Vec::new()));
         let (app_end, window_end) = pair();

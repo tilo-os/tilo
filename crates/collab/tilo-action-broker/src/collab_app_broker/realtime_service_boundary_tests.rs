@@ -42,7 +42,7 @@ tilo_test_env::scenario! {
     phase realtime_delegation_uses_only_broker_authenticated_identity;
     {
         let service = Arc::new(RecordingRealtime::default());
-        let services = HostServices {
+        let services = ProcessServices {
             realtime: Some(service.clone()),
             ..Default::default()
         };
@@ -64,7 +64,7 @@ tilo_test_env::scenario! {
     phase realtime_claim_mismatch_and_absent_service_fail_without_delegation;
     {
         let service = Arc::new(RecordingRealtime::default());
-        let services = HostServices {
+        let services = ProcessServices {
             realtime: Some(service.clone()),
             ..Default::default()
         };
@@ -74,7 +74,7 @@ tilo_test_env::scenario! {
         assert!(service.calls.lock().expect("calls").is_empty());
 
         let unsupported =
-            delegate_realtime_command(&HostServices::default(), &context(), "so.tilo.video", b"{}")
+            delegate_realtime_command(&ProcessServices::default(), &context(), "so.tilo.video", b"{}")
                 .expect_err("host without native service fails explicitly");
         assert!(unsupported.to_string().contains("unsupported by this host"));
     }

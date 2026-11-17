@@ -66,8 +66,8 @@ tilo_test_env::scenario! {
     {
         use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
         let clipboard = std::sync::Arc::new(InProcessClipboard::default());
-        let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
-        crate::host::scoped(&services, || {
+        let services = crate::process::ProcessServices::null().with_clipboard(clipboard.clone());
+        crate::process::scoped(&services, || {
             let activated = Rc::new(Cell::new(0));
             let signal = activated.clone();
             let mut driver = FrameHarness::new(

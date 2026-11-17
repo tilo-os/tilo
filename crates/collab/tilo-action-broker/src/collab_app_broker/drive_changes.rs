@@ -3,13 +3,13 @@
 //! list again instead of asking on a timer.
 
 use crate::BrokerError;
-use crate::services::HostServices;
+use crate::services::ProcessServices;
 
 /// The wait for the drive list's next change past `after` for a connection
 /// on `route_app`: only the certified Files route may wait, as only Files
 /// lists drives.
 pub(super) fn drive_change(
-    services: &HostServices,
+    services: &ProcessServices,
     route_app: &str,
     after: u64,
 ) -> Result<crate::services::DriveChange, BrokerError> {
@@ -53,7 +53,7 @@ mod tests {
             announces: true,
             waits: Mutex::new(Vec::new()),
         });
-        let services = HostServices {
+        let services = ProcessServices {
             drives: Some(service.clone()),
             ..Default::default()
         };
@@ -77,8 +77,8 @@ mod tests {
         );
 
         for services in [
-            HostServices::default(),
-            HostServices {
+            ProcessServices::default(),
+            ProcessServices {
                 drives: Some(Arc::new(WaitingDrives {
                     announces: false,
                     waits: Mutex::new(Vec::new()),

@@ -108,7 +108,7 @@ fn broker(
     let tree = tree.shared();
     let (state, _bridge_rx) = AppBrokerState::test_state(
         Some(tree.authority()),
-        crate::services::HostServices {
+        crate::services::ProcessServices {
             host_steps: vec![counter],
             ..Default::default()
         },

@@ -593,7 +593,9 @@ pub(crate) struct RoutedOwners {
 }
 impl RoutedOwners {
     pub(crate) fn new() -> Self {
-        use crate::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+        use crate::application::{
+            LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
+        };
         use crate::application_test_support::{
             APP, author, provenance, runner_permissions, runner_probe_definition,
         };
@@ -613,9 +615,9 @@ impl RoutedOwners {
         let mut root = crate::widget::Column::new();
         let mut bindings = vec![];
         for instance in [10, 11] {
-            let context = HostContext::prepare(
+            let context = ProcessContext::prepare(
                 definition,
-                HostContextInputs {
+                ProcessContextInputs {
                     records: records.clone(),
                     views: views.clone(),
                     device_id: "D".into(),
@@ -984,7 +986,7 @@ impl PrimaryMetadataShape {
 
 #[allow(clippy::needless_pass_by_value, reason = "factory contract")]
 fn primary_routed_factory(
-    mut context: crate::application::HostContext,
+    mut context: crate::application::ProcessContext,
     target: crate::application::LaunchTarget,
     restore: crate::application::RestoreInput,
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
@@ -1010,7 +1012,7 @@ struct RoutedPrimary {
 impl RoutedPrimary {
     fn new(shape: PrimaryMetadataShape) -> Self {
         use crate::application::{
-            ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+            ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
         };
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::resource::ResourceOwners::new(temp.path().to_path_buf());
@@ -1038,9 +1040,9 @@ impl RoutedPrimary {
             create: primary_routed_factory,
         };
         let target = LaunchTarget::PrimaryNew;
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: records.clone(),
                 views,
                 device_id: "D".into(),
@@ -3504,7 +3506,7 @@ fn component_control_root(
             instance_id: 930 + index as u64,
             app_id: HISTORY.app_id.into(),
             device_id: "test-device".into(),
-            host_person: crate::permissions::MemberId::person("component-control-author"),
+            local_person: crate::permissions::MemberId::person("component-control-author"),
             records: records.clone(),
             checkout,
             permissions: crate::permissions::SharedPermissions::new(

@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use automerge::transaction::Transactable as _;
 use runtime_collab::CollabClient;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_identity_host::device_fleet::DeviceFleetStore;
-use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
+use tilo_identity::device_fleet::DeviceFleetStore;
+use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_service::LoopWake;
 use tilo_session::{AppLists, AppSocket, Launches, Lists, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
@@ -63,13 +63,13 @@ fn person() -> Person {
         .set(FILE_SECRETS_ENV, "1");
     let personal = xdg.join("tilo/identity");
     let paths = IdentityPaths::under(&system);
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,
         &paths,
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let profile = tilo_identity_host::registry::identity_for_workspace(WORKSPACE)
+    let profile = tilo_identity::registry::identity_for_workspace(WORKSPACE)
         .expect("the identity registry")
         .expect("the workspace is answered by this device's person");
     let device = tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");

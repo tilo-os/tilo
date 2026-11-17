@@ -933,7 +933,7 @@ fn assert_cloud_import_history_is_structural(
     use ui::tilo_actions::{ActionEnvelope, ActionId, ActionRegistry, ExecutionLocus};
     use ui::tilo_resource::Resource as _;
 
-    assert!(ui::bound_dispatch::executing_host_scope().is_none());
+    assert!(ui::bound_dispatch::executing_scope().is_none());
     let mut document = app.peer_document();
     let recorded = app
         .versions()
@@ -1004,7 +1004,7 @@ fn assert_cloud_import_history_is_structural(
     let (_, historical) = shown.ops.entries().next().unwrap();
     assert_eq!(historical.value, task.value);
     assert!(historical.settled.is_none());
-    assert!(ui::bound_dispatch::executing_host_scope().is_none());
+    assert!(ui::bound_dispatch::executing_scope().is_none());
     std::fs::rename(displaced, folder).unwrap();
 }
 
@@ -1189,7 +1189,7 @@ tilo_test_env::scenario! {
             })
             .unwrap();
         root.close().unwrap();
-        assert!(ui::bound_dispatch::executing_host_scope().is_none());
+        assert!(ui::bound_dispatch::executing_scope().is_none());
         let mut document = app.peer_document();
         document.set_actor(ui::automerge::ActorId::from(b"other-device".to_vec()));
         let registry = ActionRegistry::with(ui::tilo_resource::group::register::<FileExplorer>);

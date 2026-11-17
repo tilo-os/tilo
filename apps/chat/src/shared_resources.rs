@@ -642,8 +642,8 @@ mod tests {
         let _served = RemoteActions::enter(api.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let services =
-            ui::host::HostServices::null().with_clipboard(Arc::new(Clipboard::default()));
-        let _scope = ui::host::enter(&services);
+            ui::process::ProcessServices::null().with_clipboard(Arc::new(Clipboard::default()));
+        let _scope = ui::process::enter(&services);
         let id = shared(&mut app);
         assert_native_resource_controls(&mut app);
 
@@ -701,8 +701,8 @@ mod tests {
         let _served = RemoteActions::enter(api.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let services =
-            ui::host::HostServices::null().with_clipboard(Arc::new(Clipboard::default()));
-        let _scope = ui::host::enter(&services);
+            ui::process::ProcessServices::null().with_clipboard(Arc::new(Clipboard::default()));
+        let _scope = ui::process::enter(&services);
         let id = shared(&mut app);
         assert_native_resource_controls(&mut app);
         app.chat().settle_resource_navigation();
@@ -759,9 +759,9 @@ mod tests {
         let api = Arc::new(api);
         let _served = RemoteActions::enter(api.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
-        let services =
-            ui::host::HostServices::null().with_clipboard(Arc::new(ClickClipboard::default()));
-        let _scope = ui::host::enter(&services);
+        let services = ui::process::ProcessServices::null()
+            .with_clipboard(Arc::new(ClickClipboard::default()));
+        let _scope = ui::process::enter(&services);
         let id = shared(&mut app);
         app.chat().begin_resource_navigation(&id, 0);
         assert!(app.chat().resource_navigation.pending());
@@ -797,8 +797,8 @@ mod tests {
         let _served = RemoteActions::enter(api, Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let services =
-            ui::host::HostServices::null().with_clipboard(Arc::new(Clipboard::default()));
-        let _scope = ui::host::enter(&services);
+            ui::process::ProcessServices::null().with_clipboard(Arc::new(Clipboard::default()));
+        let _scope = ui::process::enter(&services);
         let id = shared(&mut app);
         ui::clipboard_copy("sentinel");
 
@@ -893,7 +893,7 @@ mod tests {
         let api = Arc::new(api());
         let _served = RemoteActions::enter(api.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
-        let _scope = ui::host::enter(&ui::host::HostServices::null());
+        let _scope = ui::process::enter(&ui::process::ProcessServices::null());
         app.call_on(
             &crate::testing::chain(),
             "post",

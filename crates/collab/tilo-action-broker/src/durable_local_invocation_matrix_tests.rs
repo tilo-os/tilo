@@ -48,11 +48,11 @@ mod durable_local_matrix {
             identity_env
                 .set("XDG_CONFIG_HOME", root.path().join("config"))
                 .set("TILO_IDENTITY_ROOT", root.path().join("identity"))
-                .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-            tilo_identity_host::provisioning::ensure_collaboration_identity(
+                .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+            tilo_identity::provisioning::ensure_collaboration_identity(
                 &root.path().join("config/tilo/identity"),
                 &tilo_user_identity::IdentityPaths::under(root.path().join("identity")),
-                tilo_identity_host::provisioning::IdentityStorage::Files,
+                tilo_identity::provisioning::IdentityStorage::Files,
             )
             .expect("provision real host receipt signer");
             let mut owner = initialize(&root.path().join("owner")).unwrap();
@@ -164,7 +164,7 @@ mod durable_local_matrix {
         async fn new(env: &Environment) -> Self {
             Self::with_services(env, env.membership.services()).await
         }
-        async fn with_services(env: &Environment, services: HostServices) -> Self {
+        async fn with_services(env: &Environment, services: ProcessServices) -> Self {
             Self::configured(env, services, None).await
         }
         /// A rig whose broker is given its own journal
@@ -172,14 +172,14 @@ mod durable_local_matrix {
         /// its broker one.
         async fn with_own_journal(
             env: &Environment,
-            services: HostServices,
+            services: ProcessServices,
             config: &crate::NativePeerBrokerConfig,
         ) -> Self {
             Self::configured(env, services, Some(config)).await
         }
         async fn configured(
             env: &Environment,
-            services: HostServices,
+            services: ProcessServices,
             config: Option<&crate::NativePeerBrokerConfig>,
         ) -> Self {
             let fanout = Arc::new(FanoutState::new());

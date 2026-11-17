@@ -148,9 +148,9 @@ struct State {
     /// The agents this device runs because the person here keeps them, by workspace and id: what
     /// each was started with, and the launch running it while one does.
     agents: BTreeMap<(String, String), AgentProcess>,
-    /// The tilolang hosts, once the session lent its links: one per workspace and author, running
+    /// The tilolang processes, once the session lent its links: one per workspace and author, running
     /// the instances of the tilolang apps' windows.
-    hosts: Option<Arc<tilo_app_launch::tilolang_hosts::Hosts>>,
+    processes: Option<Arc<tilo_app_launch::tilolang_processes::Processes>>,
     /// The connectors of the apps' outside services: what a hosted instance reaches its origin by.
     connectors: Option<Rc<crate::connectors::ConnectorHost>>,
     /// The files apps are handed, while the session serves them where a launcher binds each app's
@@ -294,7 +294,7 @@ impl Apps {
                 broker: None,
                 wake,
                 agents: BTreeMap::new(),
-                hosts: None,
+                processes: None,
                 connectors: None,
                 documents: None,
                 #[cfg(target_os = "linux")]
@@ -521,10 +521,10 @@ impl Apps {
         }));
         let mut state = self.state.borrow_mut();
         state.me = Rc::downgrade(self);
-        state.hosts = state
+        state.processes = state
             .launcher
             .clone()
-            .map(tilo_app_launch::tilolang_hosts::Hosts::new);
+            .map(tilo_app_launch::tilolang_processes::Processes::new);
         state.links = Some(links);
         state.connectors = Some(connectors);
     }
@@ -534,31 +534,31 @@ impl Apps {
     /// in the new formats ([`crate::formats`]), and their windows read their words in the
     /// language ([`crate::i18n`]).
     pub fn locale_changed(&self) {
-        let hosts = self.state.borrow().hosts.clone();
-        if let Some(hosts) = hosts {
-            hosts.locale_changed();
+        let processes = self.state.borrow().processes.clone();
+        if let Some(processes) = processes {
+            processes.locale_changed();
         }
     }
 
     /// Whether `app`'s windows hold none of its data, their instances run in a tilolang host:
-    /// a tilolang app, in a session with links and a launcher to start hosts through.
-    fn runs_in_host(&self, app: &str) -> bool {
+    /// a tilolang app, in a session with links and a launcher to start processes through.
+    fn runs_in_process(&self, app: &str) -> bool {
         let state = self.state.borrow();
-        if state.links.is_none() || state.hosts.is_none() {
+        if state.links.is_none() || state.processes.is_none() {
             return false;
         }
         drop(state);
-        tilo_app_launch::tilolang_hosts::runs_in_host(app)
+        tilo_app_launch::tilolang_processes::runs_in_process(app)
     }
 
     /// Hand the instance of the tilolang window `hosted` to the host of its workspace and author,
     /// with the connections an instance holds: who is at it, its identity service and its app's
     /// origin connector, when the app has one.
     fn host_window(&self, hosted: tilo_app_launch::HostedWindow) {
-        let (hosts, person, connectors) = {
+        let (processes, person, connectors) = {
             let state = self.state.borrow();
             (
-                state.hosts.clone(),
+                state.processes.clone(),
                 state.person.clone(),
                 state.connectors.clone(),
             )
@@ -573,7 +573,7 @@ impl Apps {
                 "a tilolang window's instance runs nowhere"
             );
         };
-        let Some(hosts) = hosts else {
+        let Some(processes) = processes else {
             return refused("no tilolang host can start here".to_owned());
         };
         // Opened and named for the app and workspace exactly as the launcher opens a launched
@@ -589,7 +589,7 @@ impl Apps {
         };
         // An app whose types hold an outside service's resources reaches its connector, which
         // holds the network and ownership the host has none of.
-        let origin = match tilo_app_launch::tilolang_hosts::origin_of(&hosted.app) {
+        let origin = match tilo_app_launch::tilolang_processes::origin_of(&hosted.app) {
             Ok(None) => None,
             Ok(Some(origin)) => {
                 let Some(connectors) = connectors else {
@@ -611,7 +611,7 @@ impl Apps {
             &self.workspace_named(&hosted.workspace),
             &hosted.app,
         );
-        hosts.hand_over(tilo_app_launch::tilolang_hosts::Instance {
+        processes.hand_over(tilo_app_launch::tilolang_processes::Instance {
             access,
             app: hosted.app,
             workspace: hosted.workspace,
@@ -841,21 +841,21 @@ impl Apps {
             return;
         };
         let revision = desktop.with_policy(|policy| policy.handle().revision());
-        let hosts = {
+        let processes = {
             let state = self.state.borrow();
             let hosted = state
-                .hosts
+                .processes
                 .as_ref()
-                .is_some_and(|hosts| !hosts.instances().is_empty());
+                .is_some_and(|processes| !processes.instances().is_empty());
             if (state.authority.is_empty() && !hosted) || state.authority_at == Some(revision) {
                 return;
             }
-            state.hosts.clone()
+            state.processes.clone()
         };
         self.state.borrow_mut().authority_at = Some(revision);
         let mut named = self.state.borrow().authority.workspaces();
-        if let Some(hosts) = &hosts {
-            named.extend(hosts.instances().into_iter().map(|(id, ..)| id));
+        if let Some(processes) = &processes {
+            named.extend(processes.instances().into_iter().map(|(id, ..)| id));
             named.sort();
             named.dedup();
         }
@@ -865,8 +865,8 @@ impl Apps {
                 tracing::warn!(%id, %error, "the person's authority there was not published");
             }
             // The windows whose instances a tilolang host runs are told on its link.
-            if let Some(hosts) = &hosts {
-                hosts.policy_changed(&workspace);
+            if let Some(processes) = &processes {
+                processes.policy_changed(&workspace);
             }
         }
     }
@@ -1567,7 +1567,7 @@ impl Apps {
         // of its workspace and author, and every window of it opens through its link, which
         // names the instance the window draws.
         let links = self.state.borrow().links.clone();
-        let hosted = launch.package().is_some() && self.runs_in_host(app);
+        let hosted = launch.package().is_some() && self.runs_in_process(app);
         if instance.is_none() {
             window_opens(launch, reveal, hosted).map_err(ApiError::Failed)?;
             if self.ask_shell(launch, workspace, new_window, reveal)? {
@@ -1648,7 +1648,7 @@ impl Apps {
             }
             planned
                 .args
-                .push(tilo_app_launch::tilolang_hosts::HOSTED_ARG.to_owned());
+                .push(tilo_app_launch::tilolang_processes::PROCESS_ARG.to_owned());
         }
         tilo_startup_metrics::launch_phase(app, "routed");
         let link = links.hold(&planned.app, &workspace.id);
@@ -1753,7 +1753,7 @@ impl Apps {
     /// asks it for one, through the link it holds as every launch of the app does. A process of
     /// the app running there already takes the action instead, and nothing starts.
     fn start_windowless(&self, launch: &Launch, workspace: &Workspace) -> Result<(), ApiError> {
-        if self.runs_in_host(launch.app()) {
+        if self.runs_in_process(launch.app()) {
             return Err(ApiError::Failed(format!(
                 "{}'s windows hold none of its data: it runs in a tilolang host, never without a window",
                 launch.app()

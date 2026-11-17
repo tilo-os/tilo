@@ -872,8 +872,8 @@ fn save_as_makes_the_new_file_the_one_the_window_shows() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("main.rs");
     std::fs::write(&file, "fn main() {}\n").unwrap();
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let launch = [file.to_str().unwrap()];
     let mut app =
         ui::framework::testing::TestApp::<crate::CodeEditorShell>::launched(&launch).unwrap();

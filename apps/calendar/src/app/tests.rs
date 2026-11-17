@@ -1090,8 +1090,8 @@ tilo_test_env::scenario! {
         let invite = dir.path().join("invite.ics");
         let today = jiff::Zoned::now().date();
         std::fs::write(&invite, crate::ics::sample_ics(today)).expect("write fixture");
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
 
         let mut app = ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
         let imported = |app: &ui::framework::testing::TestApp<crate::resource::CalendarShell>| {

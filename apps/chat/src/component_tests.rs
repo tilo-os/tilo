@@ -480,7 +480,7 @@ fn component_as(
     workspace: &str,
 ) -> (ui::application::AppComponent, ui::resource::ResourceStore) {
     use std::rc::Rc;
-    use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+    use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
 
     let cache = cache.clone();
     let definition = crate::definition();
@@ -499,9 +499,9 @@ fn component_as(
     } else {
         LaunchTarget::PrimaryNew
     };
-    let context = HostContext::prepare(
+    let context = ProcessContext::prepare(
         definition,
-        HostContextInputs {
+        ProcessContextInputs {
             records: records.clone(),
             views,
             device_id: "device".into(),

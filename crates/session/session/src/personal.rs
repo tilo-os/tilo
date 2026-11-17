@@ -2,7 +2,7 @@
 //! The store holds what this session's apps record in the person's own scope — `(app, personal)`
 //! records, routed on the cluster their identity root derives — so a record written here reaches
 //! their other devices and one written there reaches this session's apps. The broker keeps each
-//! write in it as well as in the desktop (`HostServices::personal`), and this session answers the
+//! write in it as well as in the desktop (`ProcessServices::personal`), and this session answers the
 //! store's link on the endpoint it already runs, beside the workspaces' traffic: its protocols are
 //! fixed when it binds, so the link is handed over with the other protocols the endpoint serves
 //! ([`crate::sync::Client::start`]).

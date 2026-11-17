@@ -354,9 +354,9 @@ pub fn prepare(
             &ui_core::permissions::MemberId::person(author),
             crate::permissions::Role::Owner,
         ));
-    let mut context = HostContext::prepare(
+    let mut context = ProcessContext::prepare(
         definition,
-        HostContextInputs {
+        ProcessContextInputs {
             records,
             views,
             device_id: device.to_owned(),

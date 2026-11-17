@@ -132,7 +132,7 @@ use crate::collab_broker::{
     AuditEntry, BrokerChannels, CrdtRoute, FanoutState, apply_redaction_from_envelope,
 };
 use crate::collab_outbound::PeerPublisher;
-use crate::services::{HostServices, WorkspaceAuthorityHandle as WorkspaceTreeHandle};
+use crate::services::{ProcessServices, WorkspaceAuthorityHandle as WorkspaceTreeHandle};
 use collab_types::Role as CapRole;
 #[cfg(test)]
 use tilo_action_policy::Grantee;
@@ -2780,7 +2780,7 @@ pub struct AppBrokerState {
     /// The turns people asked agents in, and the agent connections that answer them.
     turns: turns::Turns,
     invocation_id: AtomicU64,
-    services: HostServices,
+    services: ProcessServices,
     workers: Mutex<Vec<PendingWorker>>,
     /// Wakes the broker loop to adopt a newly admitted local worker at once
     /// rather than on its next housekeeping tick.
@@ -2789,7 +2789,7 @@ pub struct AppBrokerState {
     /// accept loop parks until one of these; a timer used to notice them.
     local_turn: std::sync::Arc<tokio::sync::Notify>,
     /// Admitted offloadable invocations waiting for the turn to ask
-    /// [`HostServices::action_offload`] where they run.
+    /// [`ProcessServices::action_offload`] where they run.
     offloads: Mutex<Vec<offload_api::QueuedOffload>>,
     /// Offloadable invocations the route sent back here, by wire id: what
     /// was asked and when the app was handed it.
@@ -2844,7 +2844,7 @@ impl AppBrokerState {
         self.accepting.store(false, Ordering::Release);
         self.local_turn.notify_one();
         // Held committed-read waits re-check ownership, which now refuses.
-        tilo_identity_host::policy_change::announce();
+        tilo_identity::policy_change::announce();
     }
 
     /// Hold the broker lifecycle read side for one complete shell-facade
@@ -3440,7 +3440,7 @@ impl AppBrokerState {
         membership: Option<WorkspaceTreeHandle>,
         trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
         config: Option<&super::NativePeerBrokerConfig>,
-        services: HostServices,
+        services: ProcessServices,
     ) -> (
         Arc<Self>,
         std::sync::mpsc::Receiver<ActionDirectoryBridgeRequest>,
@@ -3564,7 +3564,7 @@ impl AppBrokerState {
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_broker_with_authority(
         membership: WorkspaceTreeHandle,
-        services: HostServices,
+        services: ProcessServices,
     ) -> crate::collab_broker::AppActionBroker {
         let (state, _bridge_rx) = Self::test_state(Some(membership), services);
         crate::collab_broker::AppActionBroker::from_state_for_test(state)
@@ -3575,7 +3575,7 @@ impl AppBrokerState {
     #[cfg(any(test, feature = "test-support"))]
     fn test_state(
         membership: Option<WorkspaceTreeHandle>,
-        services: HostServices,
+        services: ProcessServices,
     ) -> (
         Arc<Self>,
         std::sync::mpsc::Receiver<ActionDirectoryBridgeRequest>,
@@ -3590,7 +3590,7 @@ impl AppBrokerState {
         membership: Option<WorkspaceTreeHandle>,
         config: Option<&super::NativePeerBrokerConfig>,
         publisher: Arc<PeerPublisher>,
-        services: HostServices,
+        services: ProcessServices,
     ) -> (
         Arc<Self>,
         std::sync::mpsc::Receiver<ActionDirectoryBridgeRequest>,
@@ -3617,7 +3617,7 @@ impl AppBrokerState {
     )]
     pub fn test_broker_with_authority_and_invoke_turn(
         membership: WorkspaceTreeHandle,
-        services: HostServices,
+        services: ProcessServices,
     ) -> (crate::collab_broker::AppActionBroker, impl Fn()) {
         let (state, bridge_rx) = Self::test_state(Some(membership), services);
         let broker = crate::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(&state));
@@ -5913,7 +5913,7 @@ impl AppBrokerState {
         let Some(approval) = tilo_user_identity::HostApproval::decode(token) else {
             return false;
         };
-        let Ok((_, cert)) = tilo_identity_host::broker::trusted_current_device(&binding.workspace)
+        let Ok((_, cert)) = tilo_identity::broker::trusted_current_device(&binding.workspace)
         else {
             return false;
         };
@@ -6862,7 +6862,7 @@ impl AppBrokerState {
         if certified {
             // A new admitted session brings its own certificate expiry: the
             // policy turn re-checks, and from then on wakes at that expiry.
-            tilo_identity_host::policy_change::announce();
+            tilo_identity::policy_change::announce();
         }
         rx
     }
@@ -7367,7 +7367,7 @@ impl AppBrokerState {
             .membership
             .as_ref()
             .is_some_and(|membership| membership.announces_policy_changes())
-            && tilo_identity_host::policy_change::timers_reliable();
+            && tilo_identity::policy_change::timers_reliable();
         let Ok(before) = before else {
             return true;
         };
@@ -7377,7 +7377,7 @@ impl AppBrokerState {
         let Ok((next, reads_fleet)) = self.next_policy_change(before) else {
             return true;
         };
-        if reads_fleet && !tilo_identity_host::policy_change::identity_files_watched() {
+        if reads_fleet && !tilo_identity::policy_change::identity_files_watched() {
             // Another process may revoke a device in the fleet file; without
             // its watch, the fleet is re-read every second as before.
             return true;
@@ -7853,7 +7853,7 @@ fn live_activity_capability(
 }
 
 fn delegate_realtime_command(
-    services: &HostServices,
+    services: &ProcessServices,
     context: &crate::services::RealtimeRequestContext,
     claimed_app: &str,
     command: &[u8],
@@ -7877,7 +7877,7 @@ use ui::apps::FILE_EXPLORER as NEARBY_TRANSFER_APP_ID;
 use ui::apps::SETTINGS as WIFI_CONTINUITY_APP_ID;
 
 fn delegate_wifi_continuity_command(
-    services: &HostServices,
+    services: &ProcessServices,
     route_app: &str,
     claimed_app: &str,
     command: &[u8],
@@ -7919,7 +7919,7 @@ fn delegate_wifi_continuity_command(
 }
 
 fn delegate_browser_service_session_command(
-    services: &HostServices,
+    services: &ProcessServices,
     context: &crate::services::BrowserServiceSessionRequestContext,
     bytes: &[u8],
 ) -> Result<zeroize::Zeroizing<Vec<u8>>, BrokerError> {
@@ -7964,7 +7964,7 @@ fn delegate_browser_service_session_command(
 /// `context`: only the certified Files route in a workspace may wait, as only
 /// it may command.
 fn nearby_transfer_change(
-    services: &HostServices,
+    services: &ProcessServices,
     context: &crate::services::NearbyTransferRequestContext,
     after: u64,
 ) -> Result<crate::services::NearbyTransferChange, BrokerError> {
@@ -7989,7 +7989,7 @@ use ui::apps::SETTINGS as SPEAKER_APP_ID;
 /// connection on `route_app`: only the certified Settings route may wait, as
 /// only it may command.
 fn speaker_change(
-    services: &HostServices,
+    services: &ProcessServices,
     route_app: &str,
     after: u64,
 ) -> Result<crate::services::SpeakerChange, BrokerError> {
@@ -8008,7 +8008,7 @@ fn speaker_change(
 }
 
 fn delegate_nearby_transfer_command(
-    services: &HostServices,
+    services: &ProcessServices,
     context: &crate::services::NearbyTransferRequestContext,
     claimed_app: &str,
     command: &[u8],
@@ -8701,7 +8701,7 @@ fn read_scrollback(
 /// What the host is told each time an invocation is handed to `app` in
 /// `workspace`; nothing when no launcher hosts it.
 fn invocation_delivery_notice(
-    services: &HostServices,
+    services: &ProcessServices,
     app: String,
     workspace: String,
 ) -> Option<Box<dyn Fn()>> {
@@ -8894,7 +8894,7 @@ pub fn spawn(
     broker_channels: Arc<Mutex<BrokerChannels>>,
     publisher: Arc<PeerPublisher>,
     membership: Option<WorkspaceTreeHandle>,
-    services: HostServices,
+    services: ProcessServices,
     quit: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
     spawn_configured(
@@ -9270,7 +9270,7 @@ pub(super) struct BrokerWiring<'a> {
     /// neither a peer configuration nor the host's services supply one.
     pub(super) certificate_authority:
         Option<Arc<dyn super::certificate_authority::CertificateAuthority>>,
-    pub(super) services: HostServices,
+    pub(super) services: ProcessServices,
     pub(super) config: Option<&'a super::NativePeerBrokerConfig>,
 }
 
@@ -9516,7 +9516,7 @@ async fn serve_broker_thread(
     let policy_turn = Arc::new(tokio::sync::Notify::new());
     let policy_watch = {
         let turn = Arc::clone(&policy_turn);
-        tilo_identity_host::policy_change::Watch::new(move || turn.notify_one())
+        tilo_identity::policy_change::Watch::new(move || turn.notify_one())
     };
     let mut policy = crate::policy_schedule::PolicySchedule::default();
     // Runs are delivered, and their questions told, as the workspace's record
@@ -9525,7 +9525,7 @@ async fn serve_broker_thread(
     let mut delivered = None;
     loop {
         let now = tilo_clock::now();
-        let epoch = tilo_identity_host::policy_change::epoch();
+        let epoch = tilo_identity::policy_change::epoch();
         if policy.due(now, epoch).is_some_and(|due| due <= now) {
             let clocked = state.refresh_policy_surfaces();
             policy.checked(now, epoch, clocked);
@@ -9574,7 +9574,7 @@ async fn serve_broker_thread(
         // `policy_turn`; connected apps run as
         // tasks of this LocalSet.
         let now = tilo_clock::now();
-        let mut recheck = policy.due(now, tilo_identity_host::policy_change::epoch());
+        let mut recheck = policy.due(now, tilo_identity::policy_change::epoch());
         let armed = policy_watch.arm();
         if (recheck.is_none() && armed != policy.epoch())
             || (state.turns.answering() && delivered != Some(armed))
@@ -9725,7 +9725,7 @@ struct AuthenticatedHandoff {
 
 async fn authenticate_launcher_handoff(
     stream: &mut tokio::net::UnixStream,
-    services: &HostServices,
+    services: &ProcessServices,
 ) -> Result<AuthenticatedHandoff, LaunchRefusal> {
     let LauncherHandoff {
         handoff,
@@ -10231,7 +10231,7 @@ pub mod tests {
                 Some(WorkspaceTree::default().shared().authority()),
                 None,
                 Some(&config),
-                HostServices::default(),
+                ProcessServices::default(),
             );
             let facade = crate::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(&state));
             assert!(
@@ -10327,7 +10327,7 @@ pub mod tests {
             None,
             PeerPublisher::disabled(),
             Some(&config),
-            HostServices {
+            ProcessServices {
                 launcher: Some(Arc::new(NoLaunchDocuments)),
                 ..Default::default()
             },
@@ -10452,7 +10452,7 @@ pub mod tests {
         const APP: &str = ui::apps::CALCULATOR;
         const WORKSPACE: &str = "5ba25f73-87c5-447f-a5a6-880dc4249a81";
         let launches = Arc::new(RecordedLaunches(Mutex::new(Vec::new())));
-        let services = HostServices {
+        let services = ProcessServices {
             launcher: Some(Arc::clone(&launches) as Arc<dyn crate::services::LauncherServices>),
             ..Default::default()
         };
@@ -10581,7 +10581,7 @@ pub mod tests {
                 None,
                 PeerPublisher::disabled(),
                 Some(&config),
-                HostServices::default(),
+                ProcessServices::default(),
                 None,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 Arc::clone(&fanout),
@@ -10648,7 +10648,7 @@ pub mod tests {
                 None,
                 PeerPublisher::disabled(),
                 Some(&config),
-                HostServices::default(),
+                ProcessServices::default(),
                 None,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 Arc::new(FanoutState::new()),
@@ -10667,7 +10667,7 @@ pub mod tests {
                 None,
                 PeerPublisher::disabled(),
                 None,
-                HostServices::default(),
+                ProcessServices::default(),
                 None,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 Arc::clone(&fanout),
@@ -10734,7 +10734,7 @@ pub mod tests {
                 Some(membership.authority()),
                 publisher,
                 Some(&config),
-                HostServices::default(),
+                ProcessServices::default(),
                 None,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 Arc::new(FanoutState::new()),
@@ -10778,7 +10778,7 @@ pub mod tests {
                 Some(WorkspaceTree::default().shared().authority()),
                 PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(HealthyOwner)),
                 Some(&other_config),
-                HostServices::default(),
+                ProcessServices::default(),
                 None,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 Arc::new(FanoutState::new()),
@@ -10805,7 +10805,7 @@ pub mod tests {
                     }),
                 ),
                 Some(&broker_config),
-                HostServices::default(),
+                ProcessServices::default(),
                 None,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 Arc::new(FanoutState::new()),
@@ -10839,7 +10839,7 @@ pub mod tests {
                 None,
                 PeerPublisher::disabled(),
                 Some(&config),
-                HostServices::default(),
+                ProcessServices::default(),
                 None,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 Arc::clone(&fanout),
@@ -10906,7 +10906,7 @@ pub mod tests {
                 None,
                 PeerPublisher::disabled(),
                 Some(&config),
-                HostServices::default(),
+                ProcessServices::default(),
                 None,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 Arc::new(FanoutState::new()),
@@ -11626,7 +11626,7 @@ pub mod tests {
             let base = local_directory_fixture();
             let mut fixture = local_directory_fixture_with_authority(
                 base.membership.as_ref().unwrap().authority(),
-                HostServices { wifi_continuity: Some(service.clone()), ..Default::default() },
+                ProcessServices { wifi_continuity: Some(service.clone()), ..Default::default() },
                 Some(71), None,
             );
             fixture.route = CrdtRoute::app(WIFI_CONTINUITY_APP_ID, collab_types::personal_cluster(&[0; 32]).to_string());
@@ -11838,7 +11838,7 @@ pub mod tests {
 
     pub fn local_directory_fixture_with_authority(
         membership: crate::services::WorkspaceAuthorityHandle,
-        services: HostServices,
+        services: ProcessServices,
         peer_id: Option<u64>,
         trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
     ) -> LocalDirectoryFixture {
@@ -12701,7 +12701,7 @@ pub mod tests {
                 Some(membership.authority()),
                 None,
                 None,
-                crate::services::HostServices {
+                crate::services::ProcessServices {
                     agents: Some(Arc::new(kept.clone())),
                     ..membership.services()
                 },
@@ -12835,7 +12835,7 @@ pub mod tests {
                 Some(membership.authority()),
                 None,
                 None,
-                crate::services::HostServices {
+                crate::services::ProcessServices {
                     agents: Some(Arc::new(kept.clone())),
                     ..membership.services()
                 },
@@ -12932,7 +12932,7 @@ pub mod tests {
             Some(tree.shared().authority()),
             None,
             None,
-            HostServices {
+            ProcessServices {
                 workspace_memberships: Some(Arc::new(NativeWorkspace(workspace_id))),
                 ..Default::default()
             },
@@ -13005,7 +13005,7 @@ pub mod tests {
             Some(membership.authority()),
             None,
             None,
-            HostServices {
+            ProcessServices {
                 workspace_memberships: Some(Arc::new(NativeWorkspace(workspace_id.clone()))),
                 ..Default::default()
             },
@@ -13758,7 +13758,7 @@ pub mod tests {
             })),
             None,
             None,
-            HostServices::default(),
+            ProcessServices::default(),
         );
         CountingCatalogueFixture {
             state,

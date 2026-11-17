@@ -14,7 +14,7 @@ pub type Editor = HeadlessApp<VideoEditor>;
 /// The editor holding `project`, with the keyboard on its surface.
 pub fn open(project: &Project) -> Editor {
     // No test may put a real file chooser on the screen.
-    ui::host::install_default(ui::host::HostServices::recording().0);
+    ui::process::install_default(ui::process::ProcessServices::recording().0);
     let mut app = Editor::new().unwrap();
     app.invoke_confirmed(Invoke::edit(&load_project(project)).unwrap())
         .unwrap();

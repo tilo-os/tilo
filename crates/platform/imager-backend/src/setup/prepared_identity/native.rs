@@ -6,15 +6,15 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use tilo_identity_host::provisioning::{IdentityStorage, create_primary_identity};
+use tilo_identity::provisioning::{IdentityStorage, create_primary_identity};
 use zeroize::Zeroizing;
 
 pub struct PreparedIdentity {
     directory: PathBuf,
     pin: Arc<PinnedDirectory>,
     public_key: [u8; 32],
-    enrolled: Option<Arc<tilo_identity_host::enrolled_transport::EnrolledDevice>>,
-    current: Option<Arc<tilo_identity_host::enrolled_transport::CurrentDeviceReference>>,
+    enrolled: Option<Arc<tilo_identity::enrolled_transport::EnrolledDevice>>,
+    current: Option<Arc<tilo_identity::enrolled_transport::CurrentDeviceReference>>,
 }
 
 impl PreparedIdentity {
@@ -40,7 +40,7 @@ impl PreparedIdentity {
                 .as_nanos(),
         )
         .map_err(io::Error::other)?;
-        let enrolled = tilo_identity_host::enrolled_transport::EnrolledDevice::review(
+        let enrolled = tilo_identity::enrolled_transport::EnrolledDevice::review(
             &operation.join("future-device"),
             record,
             public_key,
@@ -121,7 +121,7 @@ impl PreparedIdentity {
     }
 
     pub fn from_enrolled(
-        enrolled: Arc<tilo_identity_host::enrolled_transport::EnrolledDevice>,
+        enrolled: Arc<tilo_identity::enrolled_transport::EnrolledDevice>,
     ) -> io::Result<Self> {
         enrolled.validate()?;
         let directory = enrolled.identity_directory().to_owned();
@@ -138,7 +138,7 @@ impl PreparedIdentity {
     }
     pub fn from_current(
         directory: &Path,
-        current: Arc<tilo_identity_host::enrolled_transport::CurrentDeviceReference>,
+        current: Arc<tilo_identity::enrolled_transport::CurrentDeviceReference>,
     ) -> io::Result<Self> {
         current.validate()?;
         let parent = PinnedDirectory::open_absolute(
@@ -184,7 +184,7 @@ impl PreparedIdentity {
     }
     pub fn resume_current(
         directory: &Path,
-        claim: &tilo_identity_host::enrolled_transport::CurrentDeviceDeclaration,
+        claim: &tilo_identity::enrolled_transport::CurrentDeviceDeclaration,
     ) -> io::Result<Self> {
         let current = Arc::new(Self::review_current()?);
         if &current.declaration()? != claim {
@@ -200,20 +200,18 @@ impl PreparedIdentity {
         prepared.validate()?;
         Ok(prepared)
     }
-    pub fn review_current()
-    -> io::Result<tilo_identity_host::enrolled_transport::CurrentDeviceReference> {
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    pub fn review_current() -> io::Result<tilo_identity::enrolled_transport::CurrentDeviceReference>
+    {
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
         let system = paths
             .device_cert
             .parent()
             .and_then(Path::parent)
             .ok_or_else(|| io::Error::other("missing host identity namespace"))?;
         let directory = runtime_identity::identity_dir_from_env()?;
-        let current = tilo_identity_host::enrolled_transport::CurrentDeviceReference::review(
-            system, &directory,
-        )?;
-        let registry =
-            tilo_identity_host::registry::IdentityRegistryStore::at(&directory).load()?;
+        let current =
+            tilo_identity::enrolled_transport::CurrentDeviceReference::review(system, &directory)?;
+        let registry = tilo_identity::registry::IdentityRegistryStore::at(&directory).load()?;
         if !registry.identities.values().any(|profile| {
             profile.id == hex::encode(current.public_key())
                 && profile.user_public_key == current.public_key()
@@ -226,12 +224,12 @@ impl PreparedIdentity {
     }
     pub fn current_source(
         &self,
-    ) -> Option<Arc<tilo_identity_host::enrolled_transport::CurrentDeviceReference>> {
+    ) -> Option<Arc<tilo_identity::enrolled_transport::CurrentDeviceReference>> {
         self.current.clone()
     }
     pub fn current_declaration(
         &self,
-    ) -> io::Result<Option<tilo_identity_host::enrolled_transport::CurrentDeviceDeclaration>> {
+    ) -> io::Result<Option<tilo_identity::enrolled_transport::CurrentDeviceDeclaration>> {
         self.current
             .as_ref()
             .map(|current| current.declaration())
@@ -257,7 +255,7 @@ impl PreparedIdentity {
         destination: &Path,
         password: &[u8],
         binding: &str,
-    ) -> io::Result<tilo_identity_host::enrolled_transport::TransportReceipt> {
+    ) -> io::Result<tilo_identity::enrolled_transport::TransportReceipt> {
         self.validate()?;
         self.current
             .as_ref()
@@ -274,7 +272,7 @@ impl PreparedIdentity {
         destination: &Path,
         password: &[u8],
         binding: &str,
-    ) -> io::Result<tilo_identity_host::enrolled_transport::TransportReceipt> {
+    ) -> io::Result<tilo_identity::enrolled_transport::TransportReceipt> {
         self.enrolled
             .as_ref()
             .ok_or_else(|| io::Error::other("identity is not enrolled ownership"))?

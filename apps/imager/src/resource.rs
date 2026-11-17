@@ -859,8 +859,8 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let image = directory.path().join("plain.iso");
             std::fs::write(&image, b"an image for the chooser test").unwrap();
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
+            let (services, recorder) = ui::process::ProcessServices::recording();
+            let _host = ui::process::enter(&services);
             let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
             recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(image));
             app.effect(&ImagerEffect::ChooseImage).unwrap();

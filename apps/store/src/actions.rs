@@ -1,11 +1,11 @@
 //! Store action dispatch. Every privileged operation crosses the
-//! launcher-issued app-host capability; this sandbox never discovers or
+//! launcher-issued app-process capability; this sandbox never discovers or
 //! executes host package-management binaries.
 //!
 //! The Tilo side deliberately has **no "Install" button**. `Open`
 //! fetches the package the first time and launches it every time;
 //! `Keep on device` (pin) is the separate, optional step that keeps an
-//! app and ranks it first. app-host binds the download to the signed
+//! app and ranks it first. app-process binds the download to the signed
 //! catalogue's root, publisher, app id, version, and size before extracting.
 
 use crate::resource::CATALOG;
@@ -56,7 +56,7 @@ pub fn tapp_staging_dir() -> Option<PathBuf> {
 }
 
 /// HTTP-download a `.tapp` to `dest`. Blocking — runs on the worker
-/// thread. The bytes are *not* trusted here: app-host
+/// thread. The bytes are *not* trusted here: app-process
 /// re-verifies the content hash + publisher signature before it
 /// extracts anything, so a truncated or tampered download fails
 /// closed at the install step.
@@ -124,7 +124,7 @@ pub fn execute(item: &StoreItem, action: ActionKind, staging_dir: &Path) -> Acti
 /// supplies `host`; the optional form keeps pure error-path tests independent
 /// of a live session daemon.
 pub fn execute_with_host(
-    host: Option<&app_host::client::BlockingClient>,
+    host: Option<&app_process::client::BlockingClient>,
     item: &StoreItem,
     action: ActionKind,
     staging_dir: &Path,
@@ -177,7 +177,7 @@ pub fn execute_with_host(
                         .map(|_| CATALOG.t("store-app-installed"))
                 } else {
                     host.flatpak(
-                        app_host::client::FlatpakAction::Install,
+                        app_process::client::FlatpakAction::Install,
                         &item.id,
                         reference.as_deref(),
                     )
@@ -187,7 +187,7 @@ pub fn execute_with_host(
         }
         (ActionKind::FlatpakUpdate, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
             host_result(host, |host| {
-                host.flatpak(app_host::client::FlatpakAction::Update, &item.id, None)
+                host.flatpak(app_process::client::FlatpakAction::Update, &item.id, None)
                     .map(|_| CATALOG.t("store-app-updated"))
             })
         }
@@ -211,7 +211,7 @@ pub fn execute_with_host(
 }
 
 fn open_tilo(
-    host: Option<&app_host::client::BlockingClient>,
+    host: Option<&app_process::client::BlockingClient>,
     item: &StoreItem,
     action: ActionKind,
     _staging_dir: &Path,
@@ -277,7 +277,7 @@ fn open_tilo(
 /// which the host checks every byte it downloads against.
 fn install_expectation(
     item: &StoreItem,
-) -> Result<(String, app_host::install::InstallExpectation), String> {
+) -> Result<(String, app_process::install::InstallExpectation), String> {
     let version = item
         .versions
         .first()
@@ -295,7 +295,7 @@ fn install_expectation(
         (Ok(package_root), Ok(key)) if key.len() == 32 => {
             let mut publisher = [0u8; 32];
             publisher.copy_from_slice(&key);
-            app_host::install::InstallExpectation {
+            app_process::install::InstallExpectation {
                 package_root,
                 publisher,
                 app_id: item.id.clone(),
@@ -317,7 +317,7 @@ fn install_expectation(
 /// newest version through the host's verified install and keep it, without
 /// opening it.
 fn keep_new_tilo(
-    host: Option<&app_host::client::BlockingClient>,
+    host: Option<&app_process::client::BlockingClient>,
     item: &StoreItem,
 ) -> ActionOutcome {
     let Some(host) = host else {
@@ -339,8 +339,8 @@ fn keep_new_tilo(
 }
 
 fn host_result(
-    host: Option<&app_host::client::BlockingClient>,
-    action: impl FnOnce(&app_host::client::BlockingClient) -> Result<String, String>,
+    host: Option<&app_process::client::BlockingClient>,
+    action: impl FnOnce(&app_process::client::BlockingClient) -> Result<String, String>,
 ) -> ActionOutcome {
     let Some(host) = host else {
         return ActionOutcome::fail("App service is unavailable; no host command was attempted.");
@@ -352,11 +352,11 @@ fn host_result(
 }
 
 fn tilo_existing(
-    host: Option<&app_host::client::BlockingClient>,
+    host: Option<&app_process::client::BlockingClient>,
     item: &StoreItem,
     action: impl FnOnce(
-        &app_host::client::BlockingClient,
-        app_host::PackageId,
+        &app_process::client::BlockingClient,
+        app_process::PackageId,
     ) -> Result<String, String>,
 ) -> ActionOutcome {
     let Some(host) = host else {

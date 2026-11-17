@@ -1085,11 +1085,11 @@ fn provisioned_identity(
     let paths = tilo_user_identity::IdentityPaths::under(root.path());
     home.env()
         .set("TILO_IDENTITY_ROOT", root.path())
-        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &home.config().join("tilo").join("identity"),
         &paths,
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("this computer is provisioned as a device");
     let key = tilo_user_identity::persist::load_device_key(&paths).expect("this computer's key");

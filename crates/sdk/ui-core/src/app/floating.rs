@@ -269,7 +269,7 @@ mod marker_frame_tests {
 impl Drop for FloatingRuntime {
     fn drop(&mut self) {
         if self.network_status_active {
-            tilo_host::network_status::clear_host_status();
+            tilo_process_services::network_status::clear_host_status();
         }
     }
 }
@@ -486,9 +486,9 @@ impl App {
     }
 
     #[cfg(feature = "native")]
-    fn take_native_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
+    fn take_native_process_intent(&mut self) -> Option<crate::widget::AppProcessIntent> {
         crate::widget::capability::capability_mut::<dyn crate::AppWidget>(&mut *self.root_widget)?
-            .take_host_intent()
+            .take_process_intent()
     }
 
     #[cfg(feature = "native")]
@@ -497,8 +497,8 @@ impl App {
         // No shell reaches this window's strip: what a wheel left to it has
         // nowhere to go, and no later connection hears it.
         self.floating.sideways = 0.0;
-        let mut changed = if let Some(intent) = self.take_native_host_intent() {
-            if let crate::widget::AppHostIntent::AllowHostShell { reply } = intent
+        let mut changed = if let Some(intent) = self.take_native_process_intent() {
+            if let crate::widget::AppProcessIntent::AllowHostShell { reply } = intent
                 && let Some(reply) = reply.upgrade()
             {
                 reply.borrow_mut().answer = Some(false);
@@ -693,8 +693,8 @@ impl App {
         client: &mut FloatingSurfaceServiceClient,
         changed: &mut bool,
     ) -> Result<(), String> {
-        if let Some(intent) = self.take_native_host_intent() {
-            if let crate::widget::AppHostIntent::AllowHostShell { reply } = intent {
+        if let Some(intent) = self.take_native_process_intent() {
+            if let crate::widget::AppProcessIntent::AllowHostShell { reply } = intent {
                 self.floating.host_shell_allow = Some(reply);
                 client
                     .send(&crate::floating_surface::FloatingSurfaceClientMessage::AllowHostShell)?;
@@ -837,7 +837,7 @@ impl App {
         // message.
         for request in crate::shared_selection::take_send_to() {
             let attached = self.send_attached(&request);
-            let workspace = crate::host::environment().identity.workspace_id.clone();
+            let workspace = crate::process::environment().identity.workspace_id.clone();
             crate::shared_selection::deliver_send(request, attached, workspace);
             *changed = true;
         }
@@ -1172,13 +1172,13 @@ impl App {
                     }
                     if let Some(status) = network_status {
                         self.floating.network_status_active = true;
-                        tilo_host::network_status::set_host_status(
+                        tilo_process_services::network_status::set_host_status(
                             status.available,
                             status.metered,
                         );
                     } else {
                         if self.floating.network_status_active {
-                            tilo_host::network_status::clear_host_status();
+                            tilo_process_services::network_status::clear_host_status();
                         }
                         self.floating.network_status_active = false;
                     }
@@ -1364,7 +1364,7 @@ impl App {
             self.set_window_presents_history(false);
         }
         if self.floating.network_status_active {
-            tilo_host::network_status::clear_host_status();
+            tilo_process_services::network_status::clear_host_status();
             self.floating.network_status_active = false;
         }
         if let Some(reply) = self
@@ -1506,7 +1506,7 @@ impl App {
             };
             let app = publishing_app(&subject, &published)
                 .map(str::to_owned)
-                .or_else(|| crate::host::environment().identity.app_id.clone());
+                .or_else(|| crate::process::environment().identity.app_id.clone());
             if let Some(sent) = subject.to_attached(app.as_deref(), None) {
                 attached.push(sent);
             }
@@ -1646,12 +1646,18 @@ mod host_shell_allow_tests {
             frame.push(b'\n');
             shell_side.write_all(&frame).unwrap();
             app.pump_floating_surface_service();
-            assert_eq!(tilo_host::network_status::current().metered, metered);
+            assert_eq!(
+                tilo_process_services::network_status::current().metered,
+                metered
+            );
         }
         drop(shell_side);
         app.pump_floating_surface_service();
         assert!(!app.floating.network_status_active);
-        assert_ne!(tilo_host::network_status::current().metered, Some(false));
+        assert_ne!(
+            tilo_process_services::network_status::current().metered,
+            Some(false)
+        );
         // An older host has no richer status; the same appearance still parses.
         let old: FloatingSurfaceHostMessage =
             serde_json::from_str(r#"{"type":"appearance","workspace_hue":180}"#).unwrap();
@@ -1666,7 +1672,10 @@ mod host_shell_allow_tests {
         // consumed inherited descriptor or resurrect the stale snapshot.
         app.pump_floating_surface_service();
         assert!(app.floating.client.is_none());
-        assert_ne!(tilo_host::network_status::current().metered, Some(false));
+        assert_ne!(
+            tilo_process_services::network_status::current().metered,
+            Some(false)
+        );
         drop(app);
 
         // A fresh App gets a fresh launch connection. This controlled fixture
@@ -1689,9 +1698,15 @@ mod host_shell_allow_tests {
         frame.push(b'\n');
         shell_side.write_all(&frame).unwrap();
         relaunched.pump_floating_surface_service();
-        assert_eq!(tilo_host::network_status::current().metered, Some(false));
+        assert_eq!(
+            tilo_process_services::network_status::current().metered,
+            Some(false)
+        );
         drop(relaunched);
-        assert_ne!(tilo_host::network_status::current().metered, Some(false));
+        assert_ne!(
+            tilo_process_services::network_status::current().metered,
+            Some(false)
+        );
     }
 
     struct DeviceShellProbe {

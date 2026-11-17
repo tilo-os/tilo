@@ -80,7 +80,7 @@ impl Mount {
         // A host serves workspaces for people and is nobody in them itself: the person its own
         // device acts for is no row of a list of the workspace's people, unless it is this
         // page's own.
-        let host = self.peer.and_then(crate::peer_sync::host_person);
+        let host = self.peer.and_then(crate::peer_sync::local_person);
         let offered =
             |person: &str| host.as_deref() != Some(person) || own.as_deref() == Some(person);
         let named = &self.presence.named;

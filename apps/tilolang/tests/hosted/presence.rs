@@ -4,7 +4,7 @@
 //! list it hands each connection.
 
 use super::*;
-use tilolang_host::testing::Bus;
+use tilolang_process::testing::Bus;
 use tilolang_tilo::chunk::Chunks;
 
 /// Whether the window says someone is typing.
@@ -22,12 +22,12 @@ fn composer(session: &mut Session) -> (f64, f64) {
         .detail_tree()
         .expect("the window shows the conversation");
     let key = find(&tree, &|node| {
-        matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == "Message #design")
+        matches!(node.props.get("placeholder"), Some(tilo_app_window::Value::Text(p)) if p == "Message #design")
     })
     .expect("the conversation has its composer")
     .key
     .clone();
-    let key = format!("{}{key}", tilo_ui_host::shell::DETAIL);
+    let key = format!("{}{key}", tilo_app_window::shell::DETAIL);
     let rect = widget_by_id(session.window.root(), &key)
         .expect("the composer is laid out")
         .get_rect();

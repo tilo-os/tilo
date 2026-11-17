@@ -354,7 +354,7 @@ impl AppBrokerState {
         if let Ok(mut waiting) = self.membership_surface_waiters.lock() {
             waiting.push((workspace.to_owned(), told));
         }
-        tilo_identity_host::policy_change::announce();
+        tilo_identity::policy_change::announce();
         published
     }
 
@@ -1061,7 +1061,7 @@ fn membership_action(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::{HostServices, WorkspaceMemberships};
+    use crate::services::{ProcessServices, WorkspaceMemberships};
 
     struct DiscoveryMemberships;
 
@@ -1166,7 +1166,7 @@ mod tests {
                 let tree = tree.shared();
                 let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    HostServices {
+                    ProcessServices {
                         workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
                         ..Default::default()
                     },
@@ -1222,7 +1222,7 @@ mod tests {
                 });
                 let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    HostServices {
+                    ProcessServices {
                         workspace_memberships: Some(service.clone()),
                         ..Default::default()
                     },
@@ -1262,7 +1262,7 @@ mod tests {
                 let tree = tree.shared();
                 let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    HostServices {
+                    ProcessServices {
                         workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
                         ..Default::default()
                     },
@@ -1641,7 +1641,7 @@ mod tests {
                 let tree = tree.shared();
                 let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    HostServices {
+                    ProcessServices {
                         workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
                         ..Default::default()
                     },
@@ -1696,7 +1696,7 @@ mod tests {
                 let tree = tree.shared();
                 let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    HostServices {
+                    ProcessServices {
                         workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
                         ..Default::default()
                     },

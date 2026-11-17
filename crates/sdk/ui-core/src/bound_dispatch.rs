@@ -1,11 +1,10 @@
 //! Lifetime and canonical-record routing shared by retained and raw widget dispatch.
 pub(crate) mod local_target;
 
-mod executing_host;
-use executing_host::{ExecutingHostDevice, ExecutingHostPerson, ExecutingHostScope};
-pub use executing_host::{
-    executing_host_device, executing_host_person, executing_host_scope,
-    host_person_invocation_permitted,
+mod executing;
+use executing::{ExecutingHostDevice, ExecutingHostPerson, ExecutingScope};
+pub use executing::{
+    executing_device, executing_person, executing_scope, local_person_invocation_permitted,
 };
 use tilo_actions::ResourceSpec;
 
@@ -3476,23 +3475,23 @@ pub struct CallbackBinding {
     pub(crate) control_domain: crate::control_domain::WeakControlDomain,
     pub(crate) queued_controls:
         Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
-    /// Searches the component asked the host to open, drained as host intents by the shell that
+    /// Searches the component asked the process to open, drained as process intents by the shell that
     /// presents search.
     pub(crate) search_requests:
         Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
     pub(crate) instance_id: crate::application::InstanceId,
     pub(crate) app_id: String,
-    /// Executing device supplied by the component's HostContext, never its caller.
+    /// Executing device supplied by the component's ProcessContext, never its caller.
     pub(crate) device_id: String,
     /// Immutable local person supplied at host preparation, not the action author.
-    pub(crate) host_person: MemberId,
+    pub(crate) local_person: MemberId,
     pub(crate) records: ResourceStore,
     pub(crate) checkout: DocumentCheckout,
     pub(crate) permissions: SharedPermissions,
     pub(crate) author: MemberId,
     pub(crate) operation_context: Rc<tilo_actions::ActionContext>,
     /// Edits commit as the author writer on the record
-    /// ([`crate::application::HostContext::write_as_author`]).
+    /// ([`crate::application::ProcessContext::write_as_author`]).
     pub(crate) writes_as_author: bool,
 }
 
@@ -4452,7 +4451,7 @@ pub struct CallbackScopeGuard {
     _wake: WakeScopeGuard,
     _device: ExecutingHostDevice,
     _person: ExecutingHostPerson,
-    _scope: ExecutingHostScope,
+    _scope: ExecutingScope,
     _actor: tilo_resource::action::ResourceActorScope,
 }
 
@@ -4815,7 +4814,7 @@ impl CallbackBinding {
             && self.records.same_owner(&other.records)
             && self.checkout == other.checkout
             && self.device_id == other.device_id
-            && self.host_person == other.host_person
+            && self.local_person == other.local_person
             && self.author == other.author
     }
     fn check_resource(&self) -> Result<Option<*const AutoCommit>, BoundDispatchError> {
@@ -4843,8 +4842,8 @@ impl CallbackBinding {
         Ok(CallbackScopeGuard {
             _wake: wake,
             _device: ExecutingHostDevice::enter(&self.device_id),
-            _person: ExecutingHostPerson::enter(&self.host_person),
-            _scope: ExecutingHostScope::enter(self.lifetime_id),
+            _person: ExecutingHostPerson::enter(&self.local_person),
+            _scope: ExecutingScope::enter(self.lifetime_id),
             _actor: tilo_resource::action::ResourceActorScope::enter(
                 crate::invocation_scope::current_invoker()
                     .and_then(|invoker| invoker.acting.members().first().map(|m| (*m).clone()))

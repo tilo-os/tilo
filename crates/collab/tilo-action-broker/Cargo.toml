@@ -50,7 +50,7 @@ key-group = { path = "../key-group" }
 neighbour-wire = { path = "../neighbour-wire" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # The identity service hands apps their route keys from the channel service.
-tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-actions = { path = "../actions" }
 # The broker's half every host runs: the step boundary, the route, the receipts.
 tilo-broker-core = { path = "../broker-core" }

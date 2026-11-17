@@ -2,21 +2,21 @@
 //! fleet.
 //!
 //! A device that joined another person's identity holds no root, so
-//! [`tilo_identity_host::provisioning::ensure_collaboration_identity`] has
+//! [`tilo_identity::provisioning::ensure_collaboration_identity`] has
 //! no key to reissue its certificate with and answers `Existing` however
 //! due the certificate is. Its renewal has to come from a device of the
 //! person that does hold the root, exactly as a new device is certified:
 //! this session asks each of the person's devices over the fabric
-//! ([`tilo_identity_host::certification_ceremony::Gathering::renewal`]),
+//! ([`tilo_identity::certification_ceremony::Gathering::renewal`]),
 //! and the first key holder signs. The certificate that comes back replaces
 //! this device's, in its identity tree and in the identity's fleet
-//! ([`tilo_identity_host::provisioning::install_renewed_certificate`]), so
+//! ([`tilo_identity::provisioning::install_renewed_certificate`]), so
 //! a host is shown the renewal from then on.
 //!
 //! The check runs on the session's pass, off the loop, once the fabric is
 //! up and the certificate is due. A renewal that fails waits for what it
 //! failed on — the fabric coming back, ownership becoming available — through
-//! [`tilo_identity_host::provisioning::RENEWAL_CAUSES`], and the running
+//! [`tilo_identity::provisioning::RENEWAL_CAUSES`], and the running
 //! renewal loop picks up the new expiry on its own.
 //!
 //! A join renews before it presents its certificate
@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::platform::fabric::SharedLink;
-use tilo_identity_host::provisioning::RENEWAL_CAUSES;
+use tilo_identity::provisioning::RENEWAL_CAUSES;
 use tilo_user_identity::IdentityPaths;
 
 /// How long to wait after an ask that did not renew before asking again, at most: the causes it can
@@ -62,12 +62,12 @@ impl FleetRenewal {
     ///
     /// `None` for an ordinary first-boot identity, whose own session
     /// reissues its certificate
-    /// ([`tilo_identity_host::provisioning::ensure_collaboration_identity`]),
+    /// ([`tilo_identity::provisioning::ensure_collaboration_identity`]),
     /// and for a session with no identity at all.
     #[must_use]
     pub(crate) fn for_joined_device(fabric: Option<SharedLink>) -> Option<Self> {
         let identity_dir = runtime_identity::identity_dir_from_env().ok()?;
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
         if !tilo_user_identity::persist::joined_device_is_enrolled(&paths).ok()? {
             return None;
         }
@@ -175,14 +175,14 @@ impl FleetRenewal {
 /// The certificate this device holds that is due for renewal now, when it joined a person's
 /// identity and has to ask their devices.
 fn due(paths: &IdentityPaths) -> Option<tilo_user_identity::DeviceCert> {
-    tilo_identity_host::provisioning::joined_device_renewal_due(paths, tilo_clock::unix_now_ns())
+    tilo_identity::provisioning::joined_device_renewal_due(paths, tilo_clock::unix_now_ns())
 }
 
 /// Renew this device's certificate before it is presented to a host: an
 /// enrollment that joins a workspace.
 ///
 /// A device that holds its own root reissues what is due itself
-/// ([`tilo_onboarding_host::firstboot::renew_due_device_certificates`]);
+/// ([`tilo_onboarding_session::firstboot::renew_due_device_certificates`]);
 /// one that joined a person's identity asks their devices and waits for the
 /// renewal. A certificate still outside its validity is said here, so what a
 /// host is shown is never one it refuses.
@@ -192,13 +192,13 @@ fn due(paths: &IdentityPaths) -> Option<tilo_user_identity::DeviceCert> {
 /// What the reissue of a certificate held here failed on, or that a
 /// certificate outside its validity could not be renewed.
 pub(crate) fn before_presenting(renewal: Option<&FleetRenewal>) -> Result<(), String> {
-    tilo_onboarding_host::firstboot::renew_due_device_certificates()
+    tilo_onboarding_session::firstboot::renew_due_device_certificates()
         .map_err(|error| error.to_string())?;
     if let Some(renewal) = renewal {
         renewal.renew_now();
     }
-    tilo_identity_host::provisioning::device_certificate_clock_refusal(
-        &tilo_identity_host::provisioning::collaboration_identity_paths(),
+    tilo_identity::provisioning::device_certificate_clock_refusal(
+        &tilo_identity::provisioning::collaboration_identity_paths(),
         tilo_clock::unix_now_ns(),
     )
     .map_or(Ok(()), |refusal| {
@@ -219,7 +219,7 @@ fn ask(
 ) {
     match renew(fabric, identity_dir, held) {
         Ok(renewed) => {
-            match tilo_identity_host::provisioning::install_renewed_certificate(
+            match tilo_identity::provisioning::install_renewed_certificate(
                 identity_dir,
                 paths,
                 held,
@@ -259,16 +259,16 @@ fn ask(
 /// Ask the person's devices to sign a renewal of `held` : an unsigned certificate for the same
 /// device and root, issued now, granting the same and expiring as `held` did.
 /// A certificate is signed by `threshold` of the identity's `total` devices
-/// ([`tilo_identity_host::device_admin::key_holding`]); the fabric answers with this device's share
+/// ([`tilo_identity::device_admin::key_holding`]); the fabric answers with this device's share
 /// when it holds one, and with the person's other devices' when it does not.
 fn renew(
     fabric: &SharedLink,
     identity_dir: &std::path::Path,
     held: &tilo_user_identity::DeviceCert,
 ) -> Result<tilo_user_identity::DeviceCert, String> {
-    use tilo_identity_host::device_admin::{KeyHolding, key_holding};
+    use tilo_identity::device_admin::{KeyHolding, key_holding};
 
-    let person = tilo_identity_host::device_admin::PersonPaths {
+    let person = tilo_identity::device_admin::PersonPaths {
         dir: identity_dir.to_path_buf(),
         root: identity_dir.to_path_buf(),
     };

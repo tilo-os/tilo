@@ -140,7 +140,7 @@ impl TerminalWidget {
         self.sessions.target.as_ref()
     }
 
-    pub fn take_session_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+    pub fn take_session_intent(&mut self) -> Option<ui::widget::AppProcessIntent> {
         self.sessions.take_intent()
     }
 

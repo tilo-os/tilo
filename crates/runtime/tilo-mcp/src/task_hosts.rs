@@ -13,9 +13,9 @@ use std::io;
 use std::os::fd::OwnedFd;
 use std::sync::{Arc, Mutex};
 
-use runtime_portal::tilolang_host::App;
+use runtime_portal::tilolang_process::App;
 #[cfg(target_os = "linux")]
-use runtime_portal::tilolang_host::{TaskFds, TaskRequest, encode_apps, send_task};
+use runtime_portal::tilolang_process::{TaskFds, TaskRequest, encode_apps, send_task};
 use tilo_lock::MutexRecover as _;
 
 /// What a task's programs may name in one workspace: the apps it compiles against, and what the
@@ -127,15 +127,15 @@ fn program() -> io::Result<std::path::PathBuf> {
 fn start_program() -> io::Result<OwnedFd> {
     use std::os::fd::{AsRawFd as _, BorrowedFd};
     use std::os::unix::process::CommandExt as _;
-    let (ours, theirs) = runtime_portal::tilolang_host::pair()?;
+    let (ours, theirs) = runtime_portal::tilolang_process::pair()?;
     let raw = theirs.as_raw_fd();
     let mut command = std::process::Command::new(program()?);
     command
         .env(
-            runtime_portal::tilolang_host::SOCKET_FD_ENV,
+            runtime_portal::tilolang_process::SOCKET_FD_ENV,
             raw.to_string(),
         )
-        .env_remove(runtime_portal::tilolang_host::STORAGE_ENV)
+        .env_remove(runtime_portal::tilolang_process::STORAGE_ENV)
         .stdin(std::process::Stdio::null())
         // This process's own output may be a protocol (`tilo mcp` speaks on it).
         .stdout(std::process::Stdio::null());

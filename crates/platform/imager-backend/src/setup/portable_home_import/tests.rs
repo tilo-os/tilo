@@ -10,7 +10,7 @@ use std::{
     os::unix::fs::{PermissionsExt, symlink},
     time::{Duration, Instant},
 };
-use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_identity::provisioning::IdentityStorage;
 const PASSWORD: &[u8] = b"several unrelated installation words";
 const BINDING: &str = "chosen-setup-operation";
 fn private(path: &std::path::Path) {

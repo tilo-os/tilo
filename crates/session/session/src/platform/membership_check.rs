@@ -8,7 +8,7 @@
 #[cfg(target_os = "linux")]
 use tilo_desktop_model::WorkspaceId;
 #[cfg(target_os = "linux")]
-use tilo_identity_host::identity_store::HostIdentity;
+use tilo_identity::identity_store::HostIdentity;
 #[cfg(target_os = "linux")]
 use tilo_peer_state::owner::NativeWorkspaceOwner;
 

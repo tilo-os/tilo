@@ -1463,9 +1463,9 @@ mod tests {
         view
     }
 
-    fn own_clipboard() -> ui::host::HostScope {
-        let (services, _recorder) = ui::host::HostServices::recording();
-        ui::host::enter(&services)
+    fn own_clipboard() -> ui::process::ProcessScope {
+        let (services, _recorder) = ui::process::ProcessServices::recording();
+        ui::process::enter(&services)
     }
 
     tilo_test_env::scenario! {

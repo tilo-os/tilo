@@ -190,8 +190,8 @@ fn settings_import_connection_to_files_exports_independent_copies_and_undo() {
         )
         .unwrap();
 
-    let (host, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&host);
+    let (host, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&host);
     let mut app = TestApp::<FileExplorerShell>::launched(&[home.to_str().unwrap()]).unwrap();
     let account_row = file_explorer::remote_accounts::resource_id(&account.id);
     wait(&mut app, &mut service, |app| {

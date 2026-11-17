@@ -295,7 +295,7 @@ pub(crate) struct Shared {
     /// The running applications' tray items, which the bar shows and whose
     /// clicks the session hands back to the applications.
     #[cfg(target_os = "linux")]
-    pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
+    pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
     /// The pictures the session shows, by workspace.
     #[cfg(target_os = "linux")]
     pub(crate) wallpapers: std::sync::Arc<crate::wallpapers::Wallpapers>,

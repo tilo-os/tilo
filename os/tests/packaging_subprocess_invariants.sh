@@ -3,9 +3,9 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 app_cli="$root/crates/packaging/app-cli/src/install.rs"
-app_host="$root/crates/packaging/app-host/src/service.rs"
+app_process="$root/crates/packaging/app-process/src/service.rs"
 
-for source in "$app_cli" "$app_host"; do
+for source in "$app_cli" "$app_process"; do
   grep -Eq 'bounded_command::(run_prepared|spawn_prepared)\(' "$source"
   if grep -Eq '\.output\(\)|wait_with_output\(' "$source"; then
     echo "unbounded packaging subprocess in ${source#"$root/"}" >&2

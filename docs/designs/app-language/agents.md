@@ -23,7 +23,7 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
   `describe`, `print` and `me`, typed tilolang declarations whose implementations are host
   imports. A session has them in scope with no `use`; a package writes `use tilo.agent as
   agent` and calls `agent.grep(...)`.
-- A program runs sandboxed as the task, in a tilolang host whose author is that task.
+- A program runs sandboxed as the task, in a tilolang process whose author is that task.
 - **A task is many programs.** Exploring, dead ends, failures, asks, intermediate results: each
   call is one step; the task is the session of steps, with its trail and pending asks. You can
   undo one step or the whole task.
@@ -34,7 +34,7 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
 1. **Who:** the task. The program's code author is the agent task, acting for its person; what
    it may do is the lesser of both (authority.md). It never runs as an app or borrows an app's
    authorship.
-2. **Where:** one tilolang host per task, with the task as author (ui-host.md). The server starts
+2. **Where:** one tilolang process per task, with the task as author (app-window.md). The server starts
    it on the task's first `tilo` call; it lives as long as the task, holds the session's `let`s,
    opens no windows and owns no resources.
 3. **What it names:** every installed app's published types and actions, from the one schema

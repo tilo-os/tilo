@@ -71,9 +71,9 @@ fn probe_on(beside: bool, opens: bool) -> Probe {
         )
         .unwrap(),
     );
-    let context = HostContext::prepare(
+    let context = ProcessContext::prepare(
         definition,
-        HostContextInputs {
+        ProcessContextInputs {
             records,
             views,
             device_id: "fixture-device".into(),

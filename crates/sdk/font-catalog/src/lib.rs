@@ -82,7 +82,7 @@ pub fn checkout_root() -> PathBuf {
 /// checkout path, for a binary built somewhere else and run here. Without it
 /// such a run silently sets every frame in the host's faces, which looks
 /// almost right and is wrong in a way that only shows up in the review of a
-/// screenshot. The toolkit reads it into `HostPaths::font_catalog`, which is
+/// screenshot. The toolkit reads it into `ProcessPaths::font_catalog`, which is
 /// where a reader takes it from.
 pub const OVERRIDE_ENV: &str = "TILO_FONT_CATALOG";
 

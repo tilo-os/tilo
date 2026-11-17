@@ -1735,13 +1735,13 @@ fn viewing(host: &mut Member, window: &mut Option<TestClient>, viewer: &mut Memb
 #[test]
 fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
     tilo_window_share::flatpak_share::read_encoders();
-    let host_person = person(0x31);
+    let local_person = person(0x31);
     let viewer_person = person(0x32);
     let mut host = member_of(
         0x31,
         governed(
             own_shell(),
-            &host_person,
+            &local_person,
             &[(viewer_person.clone(), Role::Viewer)],
         ),
     );
@@ -1752,7 +1752,7 @@ fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
         0x32,
         governed(
             showing(host.sync.publisher(), APP, tab),
-            &host_person,
+            &local_person,
             &[(viewer_person, Role::Viewer)],
         ),
     );
@@ -1802,13 +1802,13 @@ fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
 #[test]
 fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
     tilo_window_share::flatpak_share::read_encoders();
-    let host_person = person(0x41);
+    let local_person = person(0x41);
     let member_person = person(0x42);
     let mut host = member_of(
         0x41,
         governed(
             own_shell(),
-            &host_person,
+            &local_person,
             &[(member_person.clone(), Role::Editor)],
         ),
     );
@@ -1819,7 +1819,7 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
         0x42,
         governed(
             showing(host.sync.publisher(), APP, tab),
-            &host_person,
+            &local_person,
             &[(member_person, Role::Editor)],
         ),
     );

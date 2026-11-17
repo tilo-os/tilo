@@ -93,7 +93,7 @@ tilo_test_env::scenario! {
     phase recovered_host_replay_uses_exact_owner_and_request_without_dispatch;
     {
         let fixture = crate::collab_app_broker::host_steps::signed_test_support::Fixture::new(
-            crate::services::HostServices::default(),
+            crate::services::ProcessServices::default(),
         );
         let descriptor = descriptor();
         let request = request(&descriptor);
@@ -162,7 +162,7 @@ tilo_test_env::scenario! {
     phase app_local_origin_replays_host_terminal_before_live_target_resolution;
     {
         let fixture = crate::collab_app_broker::host_steps::signed_test_support::Fixture::new(
-            crate::services::HostServices::default(),
+            crate::services::ProcessServices::default(),
         );
         let descriptor = descriptor();
         let mut request = request(&descriptor);

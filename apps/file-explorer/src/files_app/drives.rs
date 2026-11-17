@@ -205,7 +205,7 @@ impl FilesState {
     }
 
     pub(super) fn live_drive_resources(&self) -> Vec<ResourceSpec> {
-        if !ui::bound_dispatch::host_person_invocation_permitted() {
+        if !ui::bound_dispatch::local_person_invocation_permitted() {
             return Vec::new();
         }
         self.drives

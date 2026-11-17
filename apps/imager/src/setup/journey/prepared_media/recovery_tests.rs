@@ -62,7 +62,7 @@ fn prepared_stage_rechecks_recovery_ownership_at_actual_write_admission() {
             &temp.path().join("identity"),
             "Ada",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity::provisioning::IdentityStorage::for_session(),
         )
         .unwrap();
         let prepared = PreparedMedia::prepare_for_install(

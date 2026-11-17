@@ -119,7 +119,7 @@ pub(crate) struct Launched {
 }
 
 /// What an in-process host lent the app
-/// ([`HostContext::lend`](ui_core::application::HostContext::lend)), each
+/// ([`ProcessContext::lend`](ui_core::application::ProcessContext::lend)), each
 /// taken once by the view or surface that uses it.
 #[derive(Default)]
 pub(crate) struct Lent(std::cell::RefCell<Vec<Box<dyn Any>>>);

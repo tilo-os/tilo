@@ -2,7 +2,7 @@
 
 A Discord-class chat (text and voice channels in categories, threads, replies, reactions,
 mentions, slash commands, uploads) written in as little tilolang as the language allows, and as
-good as the best chat apps. It's the test case for the language changes, the UI host's
+good as the best chat apps. It's the test case for the language changes, the app window's
 interaction model and the system's defaults: if Chat is excellent in about 150 lines, the
 defaults are right for every app.
 
@@ -248,7 +248,7 @@ once, and everything below happens in the window as each key is typed.
   Keys are default shortcuts on the actions offered, a separate design.
 - **Menus and input:** the menu's typing field (filter, or ask the agent), remaining allowed
   actions, keyboard navigation, long-press, phone sheets; completion lists, markdown shortcuts and
-  uploads with progress. All of it runs in the UI host at frame rate; the app answers data and
+  uploads with progress. All of it runs in the app window at frame rate; the app answers data and
   actions only.
 - **Mentions, links, notifications, unread, search, link previews:** system-level, from
   `RichText` references and the index.
@@ -272,7 +272,7 @@ once, and everything below happens in the window as each key is typed.
 |---|---|
 | Union types, `Map`, roots as values, `type X = …`, key paths, `if let`, `?.`/`??` | language changes, in progress |
 | `RichText` with references | type, storage as tilo-doc rich text, merge, references (one form: the catalogue's resource reference), search and mention notices built; `rich_text` renders each reference as the reader's inline view (no-access shown as only existing, click opens) ; `rich_input` built, with its drawers (next row) |
-| `ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe` (attached, run in the UI host) | done |
+| `ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe` (attached, run in the app window) | done |
 | `rich_input` with its completion drawers (`@` this conversation's speakers (`speakers(items)`) then `members(r)`, and `:` emoji built; `#` index and `/` action sources to wire) | in progress |
 | Transitions, emoji picker, reactions, quote, reply banner, thread chip | to build |
 | Others' view state (typing, read position) and delivery facts readable by `std` | to build |

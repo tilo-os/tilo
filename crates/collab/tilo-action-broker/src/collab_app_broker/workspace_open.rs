@@ -299,7 +299,7 @@ mod tests {
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            crate::services::HostServices {
+            crate::services::ProcessServices {
                 launcher: Some(Arc::new(Ticketed::default())),
                 ..Default::default()
             },
@@ -420,7 +420,7 @@ mod tests {
 
     impl NativeDevice {
         fn new(launcher: Arc<dyn crate::services::LauncherServices>) -> Self {
-            use tilo_identity_host::provisioning::{self, IdentityStorage};
+            use tilo_identity::provisioning::{self, IdentityStorage};
             let scratch = tempfile::tempdir().unwrap();
             let config = scratch.path().join("config");
             let system = scratch.path().join("system");
@@ -437,14 +437,14 @@ mod tests {
             let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Signed opens");
             let workspace_id = workspace.id().to_string();
             let (_, certificate) =
-                tilo_identity_host::broker::trusted_current_device(&workspace_id).unwrap();
+                tilo_identity::broker::trusted_current_device(&workspace_id).unwrap();
             let person = hex::encode(certificate.user_public_key);
             workspace.set_owner(person.clone());
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
             let (state, bridge) = AppBrokerState::test_state(
                 Some(tree.shared().authority()),
-                crate::services::HostServices {
+                crate::services::ProcessServices {
                     launcher: Some(launcher),
                     local_person: Some(Arc::new(NativePerson(certificate.clone()))),
                     ..Default::default()

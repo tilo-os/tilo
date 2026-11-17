@@ -187,7 +187,7 @@ members = [
     "crates/sdk/tilo-history",
     "crates/sdk/tilo-cpu-raster",
     "crates/sdk/ui-kms",
-    "crates/sdk/tilo-host",
+    "crates/sdk/tilo-process-services",
     "crates/sdk/tilo-formats",
     "crates/sdk/tilo-resource",
     "crates/sdk/tilo-resource-macros",
@@ -285,7 +285,7 @@ members = [
     "crates/packaging/app-catalogue",
     "crates/packaging/app-fleet",
     "crates/packaging/app-cli",
-    "crates/packaging/app-host",
+    "crates/packaging/app-process",
     "crates/packaging/app-registry",
     "crates/packaging/oci-images",
     "crates/packaging/cli-shim",
@@ -330,7 +330,7 @@ members = [
     "crates/platform/tilo-clock",
     "crates/platform/tilo-durable-writer",
     "crates/platform/tilolang-tilo",
-    "crates/platform/tilolang-host",
+    "crates/platform/tilolang-process",
     "crates/platform/tilolang-mail",
     "crates/platform/tilolang-youtube",
     "crates/platform/tilo-failure",
@@ -368,7 +368,7 @@ members = [
     "crates/platform/tilo-presentation",
     "crates/platform/tilo-system-info",
     "crates/platform/tilo-render-protocol",
-    "crates/platform/tilo-ui-host",
+    "crates/platform/tilo-app-window",
     "crates/platform/tilo-written-view",
     "crates/platform/tilo-view",
     "crates/platform/tilo-rt",
@@ -393,7 +393,7 @@ members = [
     "crates/runtime/engines/accounts",
     "crates/runtime/engines/adblock",
     "crates/runtime/engines/agent-web",
-    "crates/runtime/engines/app-host",
+    "crates/runtime/engines/app-process",
     "crates/runtime/engines/browser-import",
     "crates/runtime/engines/contact-directory",
     "crates/runtime/engines/emoji",
@@ -418,7 +418,7 @@ members = [
     "crates/runtime/runtime-portal",
     "crates/runtime/os-search",
     "crates/runtime/tilo-file-provider",
-    "crates/runtime/tilo-identity-host",
+    "crates/runtime/tilo-identity",
     "crates/runtime/tilo-mcp",
     "crates/runtime/tilo-runtime",
     "crates/runtime/environment",
@@ -459,7 +459,7 @@ members = [
     "crates/session/activities",
     "crates/session/notifications-service",
     "crates/session/onboarding",
-    "crates/session/onboarding-host",
+    "crates/session/onboarding-session",
     "crates/session/polkit-agent",
     "crates/session/portal",
     "crates/session/capture-studio",
@@ -480,7 +480,7 @@ members = [
     "crates/session/device-fabric",
     "crates/session/nearby-service",
     "crates/session/speaker-service",
-    "crates/session/tray-host",
+    "crates/session/tray",
     "crates/session/wayland-ext",
     "crates/session/window-menu",
     "crates/session/window-share",
@@ -853,7 +853,7 @@ wayland-client = "0.31.14"
 ashpd = { version = "0.13", default-features = false, features = ["tokio"] }
 zbus = { version = "5.16", default-features = false }
 # X11, Windows and macOS only; Wayland clients use focus-gated wl_data_device
-# through smithay-clipboard (see crates/sdk/tilo-host/src/clipboard.rs).
+# through smithay-clipboard (see crates/sdk/tilo-process-services/src/clipboard.rs).
 arboard = { version = "3.6.1", default-features = false }
 fuser = "0.18.0"
 # Defaults on: the only default is `macos_fsevent`, without which notify has no

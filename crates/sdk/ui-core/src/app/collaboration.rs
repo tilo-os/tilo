@@ -19,7 +19,7 @@ impl App {
             crate::launch::LaunchError,
         >,
         instantiate: impl FnOnce(
-            crate::application::HostContext,
+            crate::application::ProcessContext,
             crate::application::LaunchTarget,
             crate::application::RestoreInput,
         )
@@ -29,7 +29,7 @@ impl App {
     }
 
     /// [`Self::from_prepared_component_with_collaboration`] for a window as
-    /// the live native launch prepares it (`ApplicationHost::prepare_default`):
+    /// the live native launch prepares it (`ApplicationOwner::prepare_default`):
     /// a workspace record the workspace does not hold yet is new, and the component
     /// makes it, its seed included. For tests that launch an app the way the
     /// session does, without a process of its own.
@@ -44,7 +44,7 @@ impl App {
             crate::launch::LaunchError,
         >,
         instantiate: impl FnOnce(
-            crate::application::HostContext,
+            crate::application::ProcessContext,
             crate::application::LaunchTarget,
             crate::application::RestoreInput,
         )
@@ -63,7 +63,7 @@ impl App {
             crate::launch::LaunchError,
         >,
         instantiate: impl FnOnce(
-            crate::application::HostContext,
+            crate::application::ProcessContext,
             crate::application::LaunchTarget,
             crate::application::RestoreInput,
         )
@@ -699,7 +699,7 @@ impl App {
         }
         // Before-action diagnostics use the existing launcher-owned startup
         // checkpoint, never a published resource or a document mutation.
-        let diagnostics = &crate::host::environment().diagnostics;
+        let diagnostics = &crate::process::environment().diagnostics;
         // Ordinary launched workers have no synthetic native scenario. Their
         // explicit timing flag must still export the before-action checkpoint.
         if diagnostics.presentation_timing || diagnostics.presentation_profile {

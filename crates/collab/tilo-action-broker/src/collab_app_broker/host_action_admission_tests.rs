@@ -11,7 +11,7 @@ use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 
 fn state(root: &std::path::Path) -> Arc<AppBrokerState> {
     let (state, _bridge) =
-        AppBrokerState::test_state(None, crate::services::HostServices::default());
+        AppBrokerState::test_state(None, crate::services::ProcessServices::default());
     *state.journal.lock().unwrap() = Ok(Some(
         invocation_journal::InvocationJournal::open(&root.join("journal")).unwrap(),
     ));
@@ -70,7 +70,7 @@ tilo_test_env::scenario! {
     {
         let (state, _) = AppBrokerState::test_state(
             None,
-            crate::services::HostServices {
+            crate::services::ProcessServices {
                 local_person: Some(Arc::new(ClosedDevice)),
                 ..Default::default()
             },
@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
     {
         let (state, _) = AppBrokerState::test_state(
             None,
-            crate::services::HostServices {
+            crate::services::ProcessServices {
                 native_certificates: Some(Arc::new(ClosedCertificates)),
                 ..Default::default()
             },

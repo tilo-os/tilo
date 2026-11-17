@@ -1,0 +1,91 @@
+# The app window: apps that are basically free
+
+**Goal.** An open tilolang app costs under 5 MB of its own memory, no CPU while idle, and shows
+its first frame within 50 ms. A slow device works fine with a large workspace.
+
+**Why apps are expensive today.** Every app process links the whole UI toolkit (widgets,
+layout, text, fonts, rendering): about 50 MB before its data.
+
+## 1. Three parts
+
+| Part | Is | Holds | One per |
+|---|---|---|---|
+| **app window** | the workspace's render service, extended | widgets, layout, text, fonts, rendering, input, accessibility | workspace |
+| **tilolang process** | a small process without the toolkit (crate `tilolang-process`) | the apps' wasm instances, their resources, undo and history | workspace and author |
+| **App instance** | wasm in a tilolang process | its module and memory | open app |
+
+- An app sends **component patches**, not pixels. The app window applies them to that app's
+  widgets and draws them with one shared font set, glyph cache and GPU device.
+- Input goes back as events. Typing happens in the app window's text field, so it shows on the
+  next frame without a round trip; the edit then goes to the app's resource.
+- Apps by one author in one workspace share a tilolang process, isolated as wasm instances.
+  Different authors get different processes, so a stranger's code never shares memory with
+  yours. An author is the app's verified publisher, the person for their own builds, or the
+  task for an agent's programs.
+
+## 2. What stays
+
+- **Identity, ownership, sandbox.** Each instance gets its own launch resource with its app's
+  creation resource and ticket. The launcher opens each instance's connections (broker, identity,
+  window) with that app's own ownership and hands them over. Nothing trusts a process's claim about
+  which app it is.
+- **Windows belong to apps.** Each app window keeps its launch identity for its surface and
+  accessibility, but opens no broker connection: the window is presentation, the instance in
+  the tilolang process holds the data and publishes the actions.
+- Native Rust apps don't change. They migrate by becoming tilolang apps.
+
+## 3. Patches are checked
+
+A patch is untrusted until checked: components, props and events must match the component
+catalogue (`components.json`); sizes are bounded; a patch can only touch its own app's widgets.
+A bad patch is refused and only that app shows an error. A crashed tilolang process takes down only
+that author's apps, which show their last frame and come back on restart.
+
+## 4. Thin mode
+
+Views are functions of resources, so they can run where the data is. On a slow device, the
+tilolang process runs on the workspace's host and only patches for what's visible travel to the
+device. Typing still applies locally first. Encrypted workspaces whose host can't read them run
+locally.
+
+## 5. Steps
+
+| Step | What | State |
+|---|---|---|
+| 0 | The commit path (broker client, managed sender) in crate `collaboration`, without the toolkit | done |
+| 1 | The patch protocol; the app half without the toolkit; the UI half (`tilo-app-window`) | done, in one process |
+| 2a | Undo, history steps and save state in `collaboration`, shared with native apps | done |
+| 2b | The tilolang process process: launch kind, sandbox, instances, `InstanceResource` holding each resource; the shell starting one host per workspace and author and handing it each window's instance; the window as presentation only | done |
+| 2c / 3 | The app window draws every app's windows | next |
+| 4 | Measure against the goal, including a slow device (2 cores, 4 GB) | partly: 2.7 MiB per extra instance, first frame 2.4 ms median |
+| 5 | Thin mode | later |
+
+Decisions made on the way:
+- The person's formats travel with the instance. A host without the toolkit writes the times and
+  dates an app puts in its own sentences (`t.clock()`, a change's before and after) through
+  `tilo-formats`, which the toolkit re-exports, and the session says again when they change in
+  Settings: what an instance wrote of a time is written again, and its window shows it.
+- The person's language travels with the instance too. Every word a hosted window paints is
+  resolved by its instance, and the host is a sandbox without the person's settings and without
+  a guarantee of their locale in its environment: the language the session names with the
+  instance is what the window speaks, its app's catalogue and the frames' words alike. A
+  language chosen in Settings later is said on the process's action API with the formats, and every
+  window relabels where it stands.
+- The resource store (`RecordStore`) stays with native apps. The tilolang process holds resources
+  through `InstanceResource`, using the same history and save code.
+- One undo, one history: the history verbs every app publishes (Undo, Redo, History, Restore,
+  Checkpoint, Diff) live in `collaboration::history_source::verbs`, below the toolkit. Native
+  apps and tilolang instances publish and answer the same verbs; the window's own Undo is the
+  `undo` verb as the person's.
+- Rust visibility isn't the security boundary inside an app's process; the broker checks every
+  route and commit. Functions public only for ui-core are hidden from docs.
+- A window's pixel buffers (about 16 MiB at 1280×800) belong to the app window and don't count
+  towards an app's memory.
+
+## 6. Open
+
+- How the compositor accepts surfaces the app window presents for several apps: per-surface
+  attribution, only from a render service it started.
+- The app window's own memory grows with open windows, not with apps.
+- Which view state lives where: scroll and selection in the app window, the state views declare
+  with the app's window.

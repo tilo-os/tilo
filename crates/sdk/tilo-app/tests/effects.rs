@@ -1663,8 +1663,8 @@ tilo_test_env::scenario! {
         let directory = tempfile::tempdir().unwrap();
         let incoming = directory.path().join("incoming.txt");
         std::fs::write(&incoming, "from a file").unwrap();
-        let (services, recorder) = tilo_app::host::HostServices::recording();
-        let _host = tilo_app::host::enter(&services);
+        let (services, recorder) = tilo_app::process::ProcessServices::recording();
+        let _host = tilo_app::process::enter(&services);
         let mut app = TestApp::<FilesApp>::new().unwrap();
 
         recorder.respond_to_pick(PortalOutcome::Opened(incoming.clone()));

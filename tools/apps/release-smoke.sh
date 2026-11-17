@@ -234,7 +234,7 @@ engines() (
                "imager libtilo_accounts_engine.so" \
                "browser libtilo_browser_import_engine.so" \
                "browser libtilo_accounts_engine.so via:libtilo_browser_import_engine.so" \
-               "store libtilo_app_host_engine.so" \
+               "store libtilo_app_process_engine.so" \
                "chat libtilo_emoji_engine.so" \
                "osk libtilo_emoji_engine.so" \
                "notes libtilo_emoji_engine.so"; do

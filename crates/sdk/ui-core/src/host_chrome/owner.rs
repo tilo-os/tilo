@@ -32,7 +32,10 @@ impl HostChrome {
     }
 
     pub(crate) fn current(conventions: PlatformConventions) -> Self {
-        Self::detect(conventions, crate::host::environment().desktop.as_deref())
+        Self::detect(
+            conventions,
+            crate::process::environment().desktop.as_deref(),
+        )
     }
 
     pub(crate) fn draws_in_window(self) -> bool {

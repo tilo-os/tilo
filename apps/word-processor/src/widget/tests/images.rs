@@ -203,14 +203,16 @@ fn temp_png(tag: &str) -> std::path::PathBuf {
     p
 }
 
-fn host_answering(outcome: portal::PortalOutcome) -> (ui::host::HostScope, ui::host::HostRecorder) {
-    let (services, recorder) = ui::host::HostServices::recording();
-    let scope = ui::host::enter(&services);
+fn host_answering(
+    outcome: portal::PortalOutcome,
+) -> (ui::process::ProcessScope, ui::process::ProcessRecorder) {
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let scope = ui::process::enter(&services);
     recorder.respond_to_pick(outcome);
     (scope, recorder)
 }
 
-fn pick_titles(recorder: &ui::host::HostRecorder) -> Vec<String> {
+fn pick_titles(recorder: &ui::process::ProcessRecorder) -> Vec<String> {
     recorder
         .pick_requests()
         .iter()

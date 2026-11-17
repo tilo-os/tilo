@@ -382,16 +382,16 @@ runtime_id=tilo-runtime/$runtime_version
 # alone (--binaries-only): the launcher runs it on the app's runtime, whose
 # loader and libraries it links, so a loader set of its own is never read.
 tilolang_bin=$thin/tilolang-app
-# Beside it, the tilolang host (crates/platform/tilolang-host), which runs a workspace's tilolang
+# Beside it, the tilolang host (crates/platform/tilolang-process), which runs a workspace's tilolang
 # apps by one author as instances: built without the toolkit, it runs on the app runtime's
 # loader and libraries alone.
-tilolang_host_bin=$bin/tilolang-host
+tilolang_process_bin=$bin/tilolang-process
 if [[ -f $tilolang_bin ]]; then
-    [[ -f $tilolang_host_bin ]] || die "no tilolang host at $tilolang_host_bin"
+    [[ -f $tilolang_process_bin ]] || die "no tilolang host at $tilolang_process_bin"
     tilolang_version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' \
         "$repo_root/apps/tilolang/tilo-runtime.toml")
     [[ -n $tilolang_version ]] || die "apps/tilolang/tilo-runtime.toml provides no tilolang version"
-    tilolang_key=$( { printf '%s\n' binaries-only "$tilolang_version" "$runtime_version" "$pubkey"; sha256sum "$tilolang_bin" "$tilolang_host_bin"; } | sha256sum | cut -c1-64)
+    tilolang_key=$( { printf '%s\n' binaries-only "$tilolang_version" "$runtime_version" "$pubkey"; sha256sum "$tilolang_bin" "$tilolang_process_bin"; } | sha256sum | cut -c1-64)
     if [[ ! -f $runtimes/.tilolang-key || $(<"$runtimes/.tilolang-key") != "$tilolang_key" \
           || ! -f $runtimes/$tilolang_version/bundle.toml ]]; then
         say "baking the tilolang runtime bundle"
@@ -400,7 +400,7 @@ if [[ -f $tilolang_bin ]]; then
         mkdir -p "$state/work"
         "$bin/tilo-runtime-bundle" build --binaries-only --version "$tilolang_version" \
             --out "$state/work/tilolang" --include-bin "$tilolang_bin" \
-            --include-bin "$tilolang_host_bin" \
+            --include-bin "$tilolang_process_bin" \
             --identity "$identity" >/dev/null
         mv "$state/work/tilolang" "$runtimes/$tilolang_version"
         printf '%s\n' "$tilolang_key" > "$runtimes/.tilolang-key"
@@ -456,7 +456,7 @@ export TILO_LAUNCHER_BIN=$bin/tilo-launcher
 # A development session: the session hands a running tilolang app each
 # reinstall of its package, verified as a launch is, so `tilolang dev` swaps a
 # new build in without a restart
-# (crates/session/app-launch/src/tilolang_hosts.rs). A shipped session ignores it.
+# (crates/session/app-launch/src/tilolang_processes.rs). A shipped session ignores it.
 export TILO_LAUNCHER_LIVE_MODULES=1
 # A development session logs warnings and errors unless RUST_LOG says
 # otherwise: a shipped session logs errors only, and a watch that could not

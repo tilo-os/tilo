@@ -10,7 +10,7 @@ components.md and layout.md.
   presence, notifications. It is chosen per person and device class, and switching keeps the
   layout.
 - **Rust keeps the mechanics, tilolang the structure.** The compositor, input, rendering and
-  the UI host are Rust; so are the hot interactions, as described components: window drag and
+  the app window are Rust; so are the hot interactions, as described components: window drag and
   resize, strip scrolling, canvas pan and zoom, gestures at native refresh. Each commits one
   arranging action when its gesture ends. Which parts exist and where they sit is tilolang.
 - **Apps draw no chrome, colours or fonts.** Frames, menus, bars and their look belong to the
@@ -239,8 +239,8 @@ everything a person can do is a published action (`Session::resources`, `Session
 The tilolang shell takes the place of `tilo-desktop`'s widgets, one part at a time, on the same
 boundaries:
 
-- **Shell views on layers.** A shell package's views run in the tilolang host like any app's
-  and draw through the same UI host; a `SurfaceHost` shows each part (bar, layout, overlays) as
+- **Shell views on layers.** A shell package's views run in the tilolang process like any app's
+  and draw through the same app window; a `SurfaceHost` shows each part (bar, layout, overlays) as
   layers, exactly as `tilo-surface-host` shows a toolkit app. Headless, nested and DRM work
   unchanged, because the compositor's backends do.
 - **System resources for the shell.** What the chrome reads today through `chrome.rs` (clock,

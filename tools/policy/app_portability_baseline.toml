@@ -168,7 +168,7 @@ R1 = 9
 W1 = 1
 W3 = 7
 
-[sdk.tilo-host]
+[sdk.tilo-process-services]
 R1 = 17
 W3 = 11
 

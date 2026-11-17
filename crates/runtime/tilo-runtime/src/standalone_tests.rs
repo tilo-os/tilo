@@ -13,7 +13,7 @@ use tilo_action_broker::services::{
 };
 use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity_host::broker::WorkspaceMembership;
+use tilo_identity::broker::WorkspaceMembership;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// The test whose phase runs in a fresh process; libtest selects it by this
@@ -238,7 +238,7 @@ pub(super) fn isolated_command(test: &str, root: &Path) -> std::process::Command
         .env("XDG_CACHE_HOME", environment.join("cache"))
         .env("XDG_STATE_HOME", environment.join("state"))
         .env("TILO_IDENTITY_ROOT", environment.join("identity"))
-        .env(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1")
+        .env(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD");
     command
@@ -253,11 +253,11 @@ pub(super) fn isolated_home(root: &Path) -> PathBuf {
 /// The synthetic caller still uses its independently certified admission.
 pub(super) fn isolated_signing_identity(test: &str) -> Option<PathBuf> {
     let root = isolated_root(test)?;
-    let registry = tilo_identity_host::registry::IdentityRegistryStore::from_env().unwrap();
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    let registry = tilo_identity::registry::IdentityRegistryStore::from_env().unwrap();
+    tilo_identity::provisioning::ensure_collaboration_identity(
         registry.identity_dir(),
-        &tilo_identity_host::provisioning::collaboration_identity_paths(),
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        &tilo_identity::provisioning::collaboration_identity_paths(),
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     Some(root)
@@ -639,7 +639,7 @@ fn listed_workspace(root: &Path) -> String {
 /// A running host holds the person's own documents store: asserted on the
 /// host a test starts first on its new profile, before anything is written.
 fn holds_the_persons_own_documents_store(session: &Standalone) {
-    let identity = tilo_identity_host::registry::identity_for_workspace(session.workspace())
+    let identity = tilo_identity::registry::identity_for_workspace(session.workspace())
         .unwrap()
         .unwrap();
     let personal = session.personal();

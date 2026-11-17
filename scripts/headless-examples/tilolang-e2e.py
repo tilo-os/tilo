@@ -299,7 +299,7 @@ def switches(pid: int) -> dict[str, int]:
 
 def host_pids(session_pid: int) -> list[int]:
     """The tilolang hosts of the session."""
-    return [p for p in descendants(session_pid) if exe(p).endswith("/bin/tilolang-host")]
+    return [p for p in descendants(session_pid) if exe(p).endswith("/bin/tilolang-process")]
 
 
 # --- checks ---------------------------------------------------------------------

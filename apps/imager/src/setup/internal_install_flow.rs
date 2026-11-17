@@ -1643,7 +1643,7 @@ pub(super) mod tests {
             &root.join("identity"),
             "Ada",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity::provisioning::IdentityStorage::for_session(),
         )
         .unwrap();
         let identity_bytes = std::fs::read(root.join("identity/primary.json")).unwrap();

@@ -2,7 +2,9 @@
 pub mod canonical;
 pub use canonical::NotebookFixture;
 use std::rc::Rc;
-use ui::application::{AppComponent, HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+use ui::application::{
+    AppComponent, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
+};
 use ui::application_view::InstanceViewStore;
 use ui::resource::DocumentCheckout;
 use ui::widget::Edits;
@@ -30,9 +32,9 @@ pub fn try_restored_component(
     target: LaunchTarget,
     restore: RestoreInput,
 ) -> Result<AppComponent, ui::launch::LaunchError> {
-    let context = HostContext::prepare(
+    let context = ProcessContext::prepare(
         notes::definition(),
-        HostContextInputs {
+        ProcessContextInputs {
             records: f.store.clone(),
             views: Rc::new(
                 InstanceViewStore::new(

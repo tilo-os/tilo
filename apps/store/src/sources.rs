@@ -187,7 +187,7 @@ pub const INSTALLED_ON_DEVICE: &str = "Installed on this device";
 /// offer an update based on stale or invented metadata.
 pub fn installed_tilo_to_store_item(
     entry: &InstalledPackage,
-    about: Option<&app_host::client::PackageAbout>,
+    about: Option<&app_process::client::PackageAbout>,
 ) -> StoreItem {
     let locale = preferred_locale();
     StoreItem {
@@ -222,7 +222,7 @@ pub fn installed_tilo_to_store_item(
         source: StoreSource::Tilo {
             registry_name: INSTALLED_ON_DEVICE.into(),
         },
-        // app-host accepts only packages whose signature and declared package
+        // app-process accepts only packages whose signature and declared package
         // identity verified at installation. This is not a current registry
         // review claim; the detail sheet spells that distinction out.
         trust: StoreTrust::PublisherSigned,

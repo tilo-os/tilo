@@ -1497,9 +1497,9 @@ impl Ceremony {
                 (done_title(), done_body(), t("onboarding-done-ready"))
             }
             OnboardingContext::HostDesktop => (
-                t("onboarding-host-done-title"),
-                t("onboarding-host-done-body"),
-                t("onboarding-host-done-ready"),
+                t("onboarding-identity-done-title"),
+                t("onboarding-identity-done-body"),
+                t("onboarding-identity-done-ready"),
             ),
         };
         let mut page = Column::new()

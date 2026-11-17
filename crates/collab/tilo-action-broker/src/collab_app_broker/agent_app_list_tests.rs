@@ -88,7 +88,7 @@ fn broker(
         attached.then(|| tree.authority()),
         None,
         None,
-        crate::services::HostServices {
+        crate::services::ProcessServices {
             launcher: Some(Arc::new(Installed(apps))),
             ..Default::default()
         },

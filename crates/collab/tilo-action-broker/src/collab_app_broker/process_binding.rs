@@ -1,11 +1,11 @@
 //! Bind descriptor ownership to the actual app without changing launch authority.
-use super::{CollabLaunchHandoff, HostServices, native_media::PeerProcess};
+use super::{CollabLaunchHandoff, ProcessServices, native_media::PeerProcess};
 use crate::BrokerError;
 use crate::services::ExecutingBindingPhase as Phase;
 use tokio::io::AsyncWriteExt as _;
 
 struct Observation<'a> {
-    services: &'a HostServices,
+    services: &'a ProcessServices,
     id: Option<u64>,
 }
 impl Observation<'_> {
@@ -19,7 +19,7 @@ impl Observation<'_> {
 pub(super) async fn bind(
     stream: &mut tokio::net::UnixStream,
     launcher: Option<PeerProcess>,
-    services: &HostServices,
+    services: &ProcessServices,
     pid: u32,
     handoff: &CollabLaunchHandoff,
 ) -> Result<PeerProcess, BrokerError> {
@@ -184,9 +184,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_slow_starting_app_is_still_bound() {
         let (mut host, mut app, launcher) = connection();
-        let services = HostServices {
+        let services = ProcessServices {
             launcher: Some(Arc::new(Attests)),
-            ..HostServices::default()
+            ..ProcessServices::default()
         };
         let starting = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(400));
@@ -211,9 +211,9 @@ mod tests {
     #[tokio::test]
     async fn an_app_that_goes_away_is_reported_as_such() {
         let (mut host, mut app, launcher) = connection();
-        let services = HostServices {
+        let services = ProcessServices {
             launcher: Some(Arc::new(Attests)),
-            ..HostServices::default()
+            ..ProcessServices::default()
         };
         // It reads the challenge, then goes away without answering.
         let leaving = std::thread::spawn(move || {
@@ -271,9 +271,9 @@ mod tests {
     #[tokio::test]
     async fn binding_observation_does_not_admit_a_missing_original_peer() {
         let observer = Arc::new(Observer::default());
-        let services = HostServices {
+        let services = ProcessServices {
             launcher: Some(observer.clone()),
-            ..HostServices::default()
+            ..ProcessServices::default()
         };
         let (mut server, _client) = tokio::net::UnixStream::pair().expect("socket pair");
         assert!(
@@ -293,9 +293,9 @@ mod tests {
     async fn binding_observation_follows_a_departed_app_to_its_refusal() {
         let (mut host, mut app, launcher) = connection();
         let observer = Arc::new(Observer::default());
-        let services = HostServices {
+        let services = ProcessServices {
             launcher: Some(observer.clone()),
-            ..HostServices::default()
+            ..ProcessServices::default()
         };
         let leaving = std::thread::spawn(move || {
             use std::io::Read as _;

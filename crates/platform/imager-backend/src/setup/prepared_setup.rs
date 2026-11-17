@@ -653,7 +653,15 @@ impl PreparedSetupReview {
                 }
             }
             IdentityKind::CurrentDevice { device_public_key } => {
-                let current = tilo_identity_host::enrolled_transport::AuthenticatedCurrentDeviceReference::open(&tree.root.join(IDENTITY_FILE), password, &manifest.setup_binding, manifest.identity_public_key, device_public_key, now_ns()?)?;
+                let current =
+                    tilo_identity::enrolled_transport::AuthenticatedCurrentDeviceReference::open(
+                        &tree.root.join(IDENTITY_FILE),
+                        password,
+                        &manifest.setup_binding,
+                        manifest.identity_public_key,
+                        device_public_key,
+                        now_ns()?,
+                    )?;
                 if manifest
                     .install_profile
                     .as_ref()
@@ -664,7 +672,7 @@ impl PreparedSetupReview {
             }
             IdentityKind::EnrolledDevice { device_public_key } => {
                 let enrolled =
-                    tilo_identity_host::enrolled_transport::AuthenticatedEnrolledDevice::open(
+                    tilo_identity::enrolled_transport::AuthenticatedEnrolledDevice::open(
                         &tree.root.join(IDENTITY_FILE),
                         password,
                         &manifest.setup_binding,
@@ -876,12 +884,12 @@ impl PreparedSetupReview {
     fn enrolled(
         &self,
         password: &[u8],
-    ) -> io::Result<tilo_identity_host::enrolled_transport::AuthenticatedEnrolledDevice> {
+    ) -> io::Result<tilo_identity::enrolled_transport::AuthenticatedEnrolledDevice> {
         self.validate()?;
         let IdentityKind::EnrolledDevice { device_public_key } = self.manifest.identity_kind else {
             return Err(invalid());
         };
-        tilo_identity_host::enrolled_transport::AuthenticatedEnrolledDevice::open(
+        tilo_identity::enrolled_transport::AuthenticatedEnrolledDevice::open(
             &self.root.join(IDENTITY_FILE),
             password,
             &self.manifest.setup_binding,
@@ -896,14 +904,14 @@ impl PreparedSetupReview {
         system: &Path,
         target: &Path,
         password: &[u8],
-    ) -> io::Result<tilo_identity_host::enrolled_transport::ResolvedCurrentIdentity> {
+    ) -> io::Result<tilo_identity::enrolled_transport::ResolvedCurrentIdentity> {
         self.require_completed_export()?;
         self.validate()?;
         let IdentityKind::CurrentDevice { device_public_key } = self.manifest.identity_kind else {
             return Err(invalid());
         };
         let reference =
-            tilo_identity_host::enrolled_transport::AuthenticatedCurrentDeviceReference::open(
+            tilo_identity::enrolled_transport::AuthenticatedCurrentDeviceReference::open(
                 &self.root.join(IDENTITY_FILE),
                 password,
                 &self.manifest.setup_binding,

@@ -29,7 +29,7 @@ impl Widget for ResponsiveNav {
 }
 
 fn responsive_nav_factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
@@ -79,9 +79,9 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
         )
         .unwrap(),
     );
-    let context = HostContext::prepare(
+    let context = ProcessContext::prepare(
         &definition,
-        HostContextInputs {
+        ProcessContextInputs {
             records,
             views,
             device_id: "fixture-device".into(),

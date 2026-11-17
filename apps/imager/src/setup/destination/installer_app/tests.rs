@@ -1877,8 +1877,8 @@ tilo_test_env::scenario! {
             );
         }
         {
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
+            let (services, recorder) = ui::process::ProcessServices::recording();
+            let _host = ui::process::enter(&services);
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Install;
             app.install_state = InstallState::Running;

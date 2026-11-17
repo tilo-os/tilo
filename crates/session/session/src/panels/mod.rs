@@ -15,7 +15,7 @@ use tilo_desktop::overlays::Overlays;
 use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
 use tilo_session_core::surfaces::Published;
 
-use crate::platform::surfaces::{AppHost, Placement};
+use crate::platform::surfaces::{AppProcess, Placement};
 use ui::host_operation::ResourceOperationStart;
 use ui::kurbo::{Point, Rect};
 
@@ -131,7 +131,7 @@ fn until(hold: ui::time::Duration) -> ui::time::Instant {
 /// The notification banners over the display in use, under the bar: the stack pins itself into its
 /// top-right corner, clear of the windows' bars.
 pub(crate) struct Banners {
-    host: AppHost,
+    host: AppProcess,
     link: tilo_notification_banners::Link,
     /// The shell whose windows the stack keeps clear of.
     shell: tilo_desktop_surface::DesktopHandle,
@@ -155,7 +155,7 @@ impl Banners {
         stack: Reserved,
     ) -> Self {
         Self {
-            host: AppHost::new(app, placement(0, 0, 1, 1, scale)).named("Notifications"),
+            host: AppProcess::new(app, placement(0, 0, 1, 1, scale)).named("Notifications"),
             link,
             shell,
             overlays,
@@ -356,7 +356,7 @@ fn docked_id(group: u64) -> String {
 /// dragged loose, clear of the bar, the banners and the readout. The session says what to show and
 /// carries out what the person did; the layer draws it.
 pub(crate) struct ActivityLayer {
-    host: AppHost,
+    host: AppProcess,
     link: tilo_activities::Link,
     /// The session's reading of every app's activity, and its rules about what shows.
     reader: Rc<crate::chrome::Activities>,
@@ -394,7 +394,7 @@ impl ActivityLayer {
         scale: f64,
     ) -> Self {
         Self {
-            host: AppHost::new(app, placement(0, 0, 1, 1, scale)).named("Activities"),
+            host: AppProcess::new(app, placement(0, 0, 1, 1, scale)).named("Activities"),
             link,
             reader,
             cards,

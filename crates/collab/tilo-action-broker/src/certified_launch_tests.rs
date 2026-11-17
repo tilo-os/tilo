@@ -36,7 +36,7 @@ async fn certified_launch_rig(env: &Environment) -> Rig {
     // Signed launch children resolve the installed app before the process check.
     Rig::with_services(
         env,
-        HostServices {
+        ProcessServices {
             launcher: Some(Arc::new(CertifiedLaunchCatalog)),
             ..env.membership.services()
         },

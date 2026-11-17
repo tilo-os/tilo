@@ -6,7 +6,7 @@ use super::super::*;
 use super::*;
 use crate::collab_app_broker::InvocationOwner;
 use crate::collab_app_broker::host_steps::signed_test_support::Fixture;
-use crate::services::{HostServices, LaunchableApplication, LauncherServices};
+use crate::services::{LaunchableApplication, LauncherServices, ProcessServices};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Launcher {
@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
             calls: AtomicUsize::new(0),
             fail: false,
         });
-        let fixture = Fixture::new(HostServices {
+        let fixture = Fixture::new(ProcessServices {
             launcher: Some(launcher.clone()),
             ..Default::default()
         });
@@ -126,7 +126,7 @@ tilo_test_env::scenario! {
                 calls: AtomicUsize::new(0),
                 fail,
             });
-            let fixture = Fixture::new(HostServices {
+            let fixture = Fixture::new(ProcessServices {
                 launcher: Some(launcher.clone()),
                 ..Default::default()
             });
@@ -172,7 +172,7 @@ tilo_test_env::scenario! {
             calls: AtomicUsize::new(0),
             fail: false,
         });
-        let fixture = Fixture::new(HostServices {
+        let fixture = Fixture::new(ProcessServices {
             launcher: Some(launcher.clone()),
             local_person: Some(Arc::new(NativePerson)),
             ..Default::default()
@@ -230,7 +230,7 @@ tilo_test_env::scenario! {
             calls: AtomicUsize::new(0),
             fail: false,
         });
-        let fixture = Fixture::new(HostServices {
+        let fixture = Fixture::new(ProcessServices {
             launcher: Some(launcher),
             ..Default::default()
         });
@@ -300,7 +300,7 @@ tilo_test_env::scenario! {
                 calls: AtomicUsize::new(0),
                 fail: false,
             });
-            let mut fixture = Fixture::new_certified_foreign(HostServices {
+            let mut fixture = Fixture::new_certified_foreign(ProcessServices {
                 launcher: Some(launcher.clone()),
                 local_person: Some(Arc::new(NativePerson)),
                 ..Default::default()
@@ -443,7 +443,7 @@ tilo_test_env::scenario! {
     // then re-derives its owner. A delegation the admission can no longer back
     // is refused there: it is never downgraded to the person themselves.
     {
-        let fixture = Fixture::new_certified(HostServices::default());
+        let fixture = Fixture::new_certified(ProcessServices::default());
         fixture
             .state
             .check_launch_origin(&fixture.caller, Some(&fixture.origin), &fixture.workspace)
@@ -523,7 +523,7 @@ impl crate::services::LocalPersonServices for NativePerson {
         workspace: &str,
         person: &str,
     ) -> Result<tilo_user_identity::DeviceCert, String> {
-        let (_, certificate) = tilo_identity_host::broker::trusted_current_device(workspace)
+        let (_, certificate) = tilo_identity::broker::trusted_current_device(workspace)
             .map_err(|error| error.to_string())?;
         if crate::collab_app_broker::person_id_for_root(certificate.user_public_key) != person {
             return Err("different person".into());
@@ -545,7 +545,7 @@ tilo_test_env::scenario! {
                     calls: AtomicUsize::new(0),
                     fail: false,
                 });
-                let services = HostServices {
+                let services = ProcessServices {
                     launcher: Some(launcher.clone()),
                     ..Default::default()
                 };
@@ -629,7 +629,7 @@ tilo_test_env::scenario! {
     // Re-enrolling a request under a new origin during admission must not turn
     // its original local ownership into fresh authority.
     {
-        let fixture = Fixture::new(HostServices::default());
+        let fixture = Fixture::new(ProcessServices::default());
         let replacement = fixture.new_policy_origin();
         fixture
             .authority
@@ -676,7 +676,7 @@ tilo_test_env::scenario! {
                     calls: AtomicUsize::new(0),
                     fail: false,
                 });
-                let mut fixture = Fixture::new(HostServices {
+                let mut fixture = Fixture::new(ProcessServices {
                     launcher: Some(launcher.clone()),
                     ..Default::default()
                 });
@@ -777,7 +777,7 @@ tilo_test_env::scenario! {
                     calls: AtomicUsize::new(0),
                     fail: false,
                 });
-                let services = HostServices {
+                let services = ProcessServices {
                     launcher: Some(launcher.clone()),
                     ..Default::default()
                 };
@@ -849,7 +849,7 @@ tilo_test_env::scenario! {
             invoking_thread: std::thread::current().id(),
             hold: std::sync::Mutex::new(None),
         });
-        let fixture = Fixture::new_certified(HostServices {
+        let fixture = Fixture::new_certified(ProcessServices {
             launcher: Some(launcher.clone()),
             ..Default::default()
         });

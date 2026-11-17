@@ -531,7 +531,7 @@ fn browse_and_select(
 fn cancel_import(
     files: &mut Files,
     service: &mut fs::cloud::CloudService,
-    recorder: &ui::host::HostRecorder,
+    recorder: &ui::process::ProcessRecorder,
     destination: &std::path::Path,
 ) -> TestResult {
     recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
@@ -592,7 +592,7 @@ fn recover_import(
 
 #[cfg(target_os = "linux")]
 fn save_imported_data(
-    recorder: &ui::host::HostRecorder,
+    recorder: &ui::process::ProcessRecorder,
     destination: &std::path::Path,
     home: &std::path::Path,
 ) -> TestResult {
@@ -610,7 +610,7 @@ fn save_imported_data(
 
 #[cfg(target_os = "linux")]
 fn assert_imported_data(
-    recorder: &ui::host::HostRecorder,
+    recorder: &ui::process::ProcessRecorder,
     destination: &std::path::Path,
     home: &std::path::Path,
     text: &[u8],
@@ -874,8 +874,8 @@ fn google_services_and_files_import_have_real_hosted_frames() -> TestResult {
     );
     let plain = drive.put_file(&drive.root_id(), "note.txt", b"independent cloud original");
     let mut service = profile.service(credential_store)?;
-    let (host, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&host);
+    let (host, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&host);
     let mut files = Files::launched(&[profile.home.to_str().ok_or("home path")?])?;
     browse_and_select(&mut files, &mut service, &account, &document, &plain)?;
     let destination = profile.home.join("Chosen folder");

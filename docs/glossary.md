@@ -60,6 +60,8 @@ the graph may make it.
 - **App wire**: the socket a session serves its apps' calls on.
 - **Document**: internal storage of one or more resources (an automerge document). Apps never see it.
 - **App**: what a person installs and runs. Identified by `AppId` (`so.tilo.chat`).
+- **App process**: the process an app runs in; it loads the app, gives it the toolkit and the
+  action service, and draws its windows.
 - **Package**: the signed file an app ships in. `PackageId` names one build.
 
 ## Screen
@@ -79,9 +81,9 @@ the graph may make it.
 
 ## Not used
 
-Old names: room, desk, space, channel (except Chat's channels), principal, subject, collaborator,
-participant, host, relay (except iroh's NAT and packet relay, and the device relaying a live
-session), run, seat, arrangement, record, slot.
+Old names: room, desk, space, channel (except Chat's channels), principal, subject,
+collaborator, participant, host (for where an app runs), relay (except iroh's NAT and packet
+relay, and the device relaying a live session), run, seat, arrangement, record, slot.
 
 Vague metaphors: door, gate, plane, lane, custody, standing, ledger, witness, seam. Name the thing.
 

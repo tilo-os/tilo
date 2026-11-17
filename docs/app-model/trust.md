@@ -164,7 +164,7 @@ independently authoritative. Existing attestation rows have no expiry field.
 
 ## The install-time policy: `--require-attestor`
 
-`tilo app install <file>` follows the app host's rule: a package a
+`tilo app install <file>` follows the app process's rule: a package a
 publisher you trust signed installs; a self-signed or unknown publisher is
 named as unverified and asked about once, and with nobody to ask (a script)
 it is refused unless `--yes` is given. A revoked publisher is refused

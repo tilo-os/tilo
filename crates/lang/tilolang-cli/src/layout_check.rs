@@ -1,5 +1,5 @@
 //! `tilolang layout-check` (docs/designs/app-language/layout.md, "Checking"): every view of an
-//! app, staged from each of its scenarios, laid out headlessly through the UI host's path at
+//! app, staged from each of its scenarios, laid out headlessly through the app window's path at
 //! the sizes, display scales and text scales people use, and what is wrong with each layout
 //! reported at the view's node in its source.
 //!
@@ -415,7 +415,7 @@ fn open(options: &Options) -> Result<(Vec<App>, BTreeSet<String>), String> {
     }
     ui::clock::freeze_for_capture();
     stage_person_locale(&options.locale)?;
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     let allow = options
         .allow
         .as_deref()
@@ -550,7 +550,7 @@ fn stage_person_locale(locale: &str) -> Result<(), String> {
 
 /// The columns whose header the window's view declares: a title that names what the column shows,
 /// or buttons that act on it.
-fn declared_headers(shell: &tilo_ui_host::UiNode) -> Vec<&'static str> {
+fn declared_headers(shell: &tilo_app_window::UiNode) -> Vec<&'static str> {
     use tilo_render_protocol::patch::Value;
     [
         ("sidebar", "sidebar_title", "sidebar_actions"),
@@ -1009,7 +1009,7 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
     std::thread::scope(|scope| {
         for _ in 0..workers {
             let started = spawn_worker(scope, || {
-                tilo_ui_host::i18n::ensure();
+                tilo_app_window::i18n::ensure();
                 let mut worker = Worker {
                     apps,
                     options,
@@ -1091,7 +1091,7 @@ fn opens_together(
                 continue;
             };
             let started = spawn_worker(scope, move || {
-                tilo_ui_host::i18n::ensure();
+                tilo_app_window::i18n::ensure();
                 *result.lock().unwrap_or_else(PoisonError::into_inner) = Some(chain(app));
             });
             if let Err(failure) = started {
@@ -1333,7 +1333,7 @@ fn on_layer(scenario: &str, root: Option<&str>) -> String {
 /// The resources the rows of the window's lists show: a row is keyed by the view that draws it,
 /// which ends in the item it draws.
 fn row_items(
-    rows: &[(String, tilo_ui_host::UiNode)],
+    rows: &[(String, tilo_app_window::UiNode)],
     resources: &[ResourceRef],
 ) -> Vec<ResourceRef> {
     rows.iter()
@@ -2405,7 +2405,7 @@ impl AppCheck<'_> {
     }
 
     /// Remember the views a tree the app sent (a row's, the window's) is of.
-    fn note_shown_row(&mut self, node: &tilo_ui_host::UiNode) {
+    fn note_shown_row(&mut self, node: &tilo_app_window::UiNode) {
         self.note_key(&node.key);
         for child in &node.children {
             self.note_shown_row(child);
@@ -2459,7 +2459,7 @@ impl AppCheck<'_> {
 }
 
 /// The keys of a row's tree, outermost first, leaving out its parts (a menu, a swipe).
-fn row_keys(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+fn row_keys(node: &tilo_app_window::UiNode, out: &mut Vec<String>) {
     if node.kind == "part" {
         return;
     }
@@ -2645,7 +2645,7 @@ mod board_list {
     /// list holding more keeps them inside the view that scrolls it.
     #[test]
     fn a_list_draws_every_card_the_window_has_room_for() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = packages();
         let staged = stage::Staged::over(
             BOARD,
@@ -2742,7 +2742,7 @@ mod board_list {
     /// list comes whole into view at the end of the scroll.
     #[test]
     fn a_narrow_board_scrolls_its_lists_whole_across_the_pane() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = packages();
         let staged = stage::Staged::over(
             BOARD,
@@ -2823,7 +2823,7 @@ mod board_list {
     /// open stays beside the lists rather than stretching them.
     #[test]
     fn a_board_with_room_for_its_lists_offers_no_sideways_scroll() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = packages();
         let staged = stage::Staged::over(
             BOARD,

@@ -932,7 +932,7 @@ pub(crate) struct NativePreparedMedia {
     applications: Option<Arc<PreparedApplications>>,
     browser: Option<Arc<PreparedBrowser>>,
     manifest: Manifest,
-    current_identity: Option<Arc<tilo_identity_host::enrolled_transport::CurrentDeviceReference>>,
+    current_identity: Option<Arc<tilo_identity::enrolled_transport::CurrentDeviceReference>>,
     browser_password: Option<Zeroizing<Vec<u8>>>,
     original_password: Zeroizing<Vec<u8>>,
     tpm_handoff: Option<imager_backend::setup::prepared_tpm::SealedPreparation>,
@@ -2375,7 +2375,7 @@ mod tests {
             &root.join("identity"),
             "Ada",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         let password = "several unrelated destination installation words";
@@ -2589,7 +2589,7 @@ mod tests {
             &root.join("identity"),
             "Ada",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         let identity = Arc::new(identity);
@@ -2702,7 +2702,7 @@ mod tests {
             &root.join("identity"),
             "Ada",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity::provisioning::IdentityStorage::for_session(),
         )
         .unwrap();
         let password = "a sufficiently long installation password";
@@ -2788,7 +2788,7 @@ mod tests {
             &root.join("identity"),
             "Ada",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         let password = "a sufficiently long transport password";
@@ -2899,7 +2899,7 @@ mod tests {
             &root.join("identity"),
             "Ada",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity::provisioning::IdentityStorage::for_session(),
         )
         .unwrap();
         let password = "a sufficiently long transport password";
@@ -3024,7 +3024,7 @@ mod tests {
         );
     }
     fn verify_fixture_device_import(
-        authenticated: &tilo_identity_host::enrolled_transport::AuthenticatedEnrolledDevice,
+        authenticated: &tilo_identity::enrolled_transport::AuthenticatedEnrolledDevice,
         root: &std::path::Path,
         certificate: &[u8],
     ) {
@@ -3273,7 +3273,7 @@ mod tests {
         assert!(sealed.is_file());
         assert!(runtime_identity::verify_portable_backup(&sealed, password.as_bytes()).is_err());
         let authentication = |binding: &str, root_key, device_key| {
-            tilo_identity_host::enrolled_transport::AuthenticatedEnrolledDevice::open(
+            tilo_identity::enrolled_transport::AuthenticatedEnrolledDevice::open(
                 &sealed,
                 password.as_bytes(),
                 binding,
@@ -3308,7 +3308,7 @@ mod tests {
             &private.join("identity"),
             "Ada",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity::provisioning::IdentityStorage::for_session(),
         )
         .unwrap();
         let password = "a sufficiently long transport password";
@@ -3385,7 +3385,7 @@ pub(crate) fn protected_account_media_fixture(
         &root.join("prepared-identity"),
         "Ada",
         [10, 20, 30],
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     let prepared = PreparedMedia::prepare(
@@ -3408,7 +3408,7 @@ pub(crate) fn home_media_fixture(root: &std::path::Path) -> Arc<PreparedMedia> {
         &root.join("prepared-identity"),
         "Ada",
         [10, 20, 30],
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     PreparedMedia::prepare_with_home(
@@ -3455,7 +3455,7 @@ pub(crate) fn selected_applications_media_fixture(root: &std::path::Path) -> Arc
         &root.join("selected-app-identity"),
         "Ada",
         [10, 20, 30],
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     let artifact = PreparedMedia::prepare_with_runner(

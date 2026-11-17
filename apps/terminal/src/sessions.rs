@@ -72,7 +72,7 @@ pub struct Sessions {
     pub directory: Directory,
     pub legacy_vms: Vec<String>,
     allow: Option<Rc<RefCell<ui::widget::HostShellAllow>>>,
-    intent: Option<ui::widget::AppHostIntent>,
+    intent: Option<ui::widget::AppProcessIntent>,
     listing: Option<std::sync::mpsc::Receiver<Listing>>,
     window: Option<ui::hosted_window::HostedWindow>,
 }
@@ -282,7 +282,7 @@ impl Sessions {
         let scripted = false;
         if scripted || matches!(self.source, Source::Hosted { .. } | Source::Standalone) {
             let reply = Rc::new(RefCell::new(ui::widget::HostShellAllow::default()));
-            self.intent = Some(ui::widget::AppHostIntent::AllowHostShell {
+            self.intent = Some(ui::widget::AppProcessIntent::AllowHostShell {
                 reply: Rc::downgrade(&reply),
             });
             self.allow = Some(reply);
@@ -297,7 +297,7 @@ impl Sessions {
         Some(answer)
     }
 
-    pub fn take_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+    pub fn take_intent(&mut self) -> Option<ui::widget::AppProcessIntent> {
         self.intent.take()
     }
 

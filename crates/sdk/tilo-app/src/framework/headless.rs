@@ -13,8 +13,8 @@ use std::sync::{Mutex, OnceLock};
 use tilo_lock::MutexRecover as _;
 use tilo_resource::{Effect, Invoke, Resource};
 use ui_core::application::{
-    ApplicationHost, Capture, ComponentRunnerInputs, HostContext, OpenFile, PlaybackHandoff,
-    PreparedComponentInputs,
+    ApplicationOwner, Capture, ComponentRunnerInputs, OpenFile, PlaybackHandoff,
+    PreparedComponentInputs, ProcessContext,
 };
 use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
@@ -114,8 +114,8 @@ pub(crate) fn data_dir_host(
     directory: &std::path::Path,
     author: &MemberId,
     permissions: SharedPermissions,
-) -> Result<ApplicationHost, LaunchError> {
-    ApplicationHost::new(
+) -> Result<ApplicationOwner, LaunchError> {
+    ApplicationOwner::new(
         data_dir_root(directory),
         "local-device".into(),
         DATA_DIR_WORKSPACE,
@@ -135,7 +135,7 @@ pub(crate) fn data_dir_host(
 /// # Errors
 /// A record with no route ([`super::app::resource_route`]).
 pub(super) fn hold_workspace_keys(
-    context: &HostContext,
+    context: &ProcessContext,
     workspace: &str,
 ) -> Result<(), LaunchError> {
     let route = super::app::resource_route(context)?;
@@ -352,7 +352,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Open a fresh person profile with a service lent by its mounting host.
-    /// The loan follows production `HostContext::lend` and is not retained on
+    /// The loan follows production `ProcessContext::lend` and is not retained on
     /// reopen: the next host must authorize and lend its own service again.
     pub fn for_person_with_lent<S: 'static>(person: &str, service: S) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
@@ -809,7 +809,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             Some(file),
             None,
             None,
-            HostContext::provide_private,
+            ProcessContext::provide_private,
         )
     }
 
@@ -837,7 +837,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         file: Option<OpenFile>,
         handoff: Option<PlaybackHandoff>,
         capture: Option<(Capture, (u32, u32))>,
-        configure: impl FnOnce(&mut HostContext),
+        configure: impl FnOnce(&mut ProcessContext),
     ) -> Result<Self, LaunchError> {
         let mut configure = Some(configure);
         // A capture photographs the window at rest: a surface drawn for one
@@ -2475,11 +2475,11 @@ fn profile_host(
     profile: &Profile,
     author: MemberId,
     permissions: &SharedPermissions,
-) -> Result<(ApplicationHost, u64), LaunchError> {
+) -> Result<(ApplicationOwner, u64), LaunchError> {
     Ok(match profile {
         Profile::Temporary(directory, workspace, device)
         | Profile::Window(directory, workspace, device, _) => (
-            ApplicationHost::new_with_profile_lifetime(
+            ApplicationOwner::new_with_profile_lifetime(
                 directory.path().join("state"),
                 device.clone(),
                 workspace,
@@ -2505,7 +2505,7 @@ fn profile_host(
 fn open_app(
     opening: &Opening,
     launch: Launch<'_>,
-    configure: &mut dyn FnMut(&mut HostContext),
+    configure: &mut dyn FnMut(&mut ProcessContext),
 ) -> Result<Opened, LaunchError> {
     strict_bindings();
     let (profile, private, private_arguments) =

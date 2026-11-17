@@ -47,7 +47,7 @@ mod tests {
     use super::*;
     use crate::setup::journey::draft::{DestinationChoice, IdentityKind, PublicChoices};
     use std::{fs, os::unix::fs::PermissionsExt, sync::atomic::AtomicBool};
-    use tilo_identity_host::provisioning::IdentityStorage;
+    use tilo_identity::provisioning::IdentityStorage;
 
     #[test]
     fn acknowledged_live_preparation_spills_and_retirement_revokes_storage() {

@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
-use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
+use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_server_protocol::directory::{EntryJoin, Listing, entry_path};
 use tilo_server_protocol::workspaces::Role;
 use tilo_test_env::DiesWithTheTest as _;
@@ -698,12 +698,12 @@ fn two_devices_of_one_person_carrying(install: impl Fn(&Device)) -> (Site, Perso
 }
 
 /// Tell each of `devices` about the rest of the person's fleet, as the machine that enrolls a
-/// device does ([`tilo_identity_host::provisioning`]): a device admits what the fleet names, and
+/// device does ([`tilo_identity::provisioning`]): a device admits what the fleet names, and
 /// dials the siblings it holds, so what the person records reaches their other devices.
 pub fn share_the_fleet(person: &Person, devices: &[&Device]) {
     let identity_id = hex::encode(person.public);
     for device in devices {
-        let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::at(
+        let fleet = tilo_identity::device_fleet::DeviceFleetStore::at(
             device.directory().join("config/tilo/identity"),
             device.identity(),
         );
@@ -813,7 +813,7 @@ impl Person {
                 .set("XDG_CACHE_HOME", identity.path().join("cache"))
                 .set("TILO_IDENTITY_ROOT", &system)
                 .set(FILE_SECRETS_ENV, "1");
-            tilo_identity_host::provisioning::ensure_collaboration_identity(
+            tilo_identity::provisioning::ensure_collaboration_identity(
                 &config.join("tilo/identity"),
                 &IdentityPaths::under(&system),
                 IdentityStorage::Files,

@@ -12,7 +12,7 @@ use crate::owner::{
 };
 use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
-use tilo_identity_host::identity_store::HostIdentity;
+use tilo_identity::identity_store::HostIdentity;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 fn current(

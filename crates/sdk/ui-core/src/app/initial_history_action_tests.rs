@@ -830,7 +830,7 @@ tilo_test_env::scenario! {
 fn ordinary_native_pump_exports_admission_before_any_action() {
     const CHILD: &str = "TILO_ADMISSION_CHECKPOINT_CHILD";
     if let Ok(case) = std::env::var(CHILD) {
-        let diagnostics = &crate::host::environment().diagnostics;
+        let diagnostics = &crate::process::environment().diagnostics;
         assert!(
             !diagnostics.presentation_profile,
             "this is not a synthetic scenario"

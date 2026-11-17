@@ -630,7 +630,7 @@ actual source commit/inventory digest. The matched Shell/control CLI must
 support programmatic action discovery and numeric broker job status. Store
 must include default Flathub browsing (PR2986), catalogue inspection and the
 catalogue import union `ba5fc5c12d` then `be85891c24` (PR3170). Generic unlisted
-import additionally needs `395c9e5f48` (PR3200), matching AppHost/capability SDK,
+import additionally needs `395c9e5f48` (PR3200), matching AppProcess/capability SDK,
 the canonical installer, and an **already configured** applicable trusted
 attestor. A self-signed cohort package is not that prerequisite. The source
 receipt and actual mapped ELF hashes, not a version label, establish the SDK
@@ -683,7 +683,7 @@ record refusal; they do not claim physical installation or presentation.
 ### Official full/thin packages through Store's chooser
 
 After the deployment owner confirms the matched apps/runtime, Shell/control,
-launcher/install and AppHost cohort is active, `store-chooser.py` uses the normal
+launcher/install and AppProcess cohort is active, `store-chooser.py` uses the normal
 owner console actions through `tilo device account exec`. It opens no private app socket,
 does not stage bytes or grant publisher trust, and submits no raw path to Store.
 The owner console must admit the actual account user; it never falls back to an

@@ -178,13 +178,13 @@ fn notify(question: &PendingConfirmation) {
     let asked = dialog(question);
     let words = asked.words();
     let notice = ui::notify::Notification::new(tag(&question.id), asked.title, words);
-    if let Err(error) = ui::host::current().notifications.show(&notice) {
+    if let Err(error) = ui::process::current().notifications.show(&notice) {
         tracing::debug!(%error, "agent questions: no notification");
     }
 }
 
 fn unnotify(id: &[u8; 32]) {
-    let _ = ui::host::current().notifications.withdraw(&tag(id));
+    let _ = ui::process::current().notifications.withdraw(&tag(id));
 }
 
 /// Hand the person's answer to question `id` back to its session.

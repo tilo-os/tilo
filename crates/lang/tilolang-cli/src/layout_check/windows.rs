@@ -56,7 +56,11 @@ fn named<'a>(root: &'a dyn Widget, name: &str) -> Vec<&'a dyn Widget> {
 }
 
 /// Every node of `kind` under `node`, in drawing order.
-fn nodes<'a>(node: &'a tilo_ui_host::UiNode, kind: &str, out: &mut Vec<&'a tilo_ui_host::UiNode>) {
+fn nodes<'a>(
+    node: &'a tilo_app_window::UiNode,
+    kind: &str,
+    out: &mut Vec<&'a tilo_app_window::UiNode>,
+) {
     if node.kind == kind {
         out.push(node);
     }
@@ -66,14 +70,14 @@ fn nodes<'a>(node: &'a tilo_ui_host::UiNode, kind: &str, out: &mut Vec<&'a tilo_
 }
 
 /// Every node of `kind` under `node`.
-fn nodes_of<'a>(node: &'a tilo_ui_host::UiNode, kind: &str) -> Vec<&'a tilo_ui_host::UiNode> {
+fn nodes_of<'a>(node: &'a tilo_app_window::UiNode, kind: &str) -> Vec<&'a tilo_app_window::UiNode> {
     let mut out = Vec::new();
     nodes(node, kind, &mut out);
     out
 }
 
 /// What the menus under `node` say, in drawing order.
-fn menu_labels(node: &tilo_ui_host::UiNode) -> Vec<String> {
+fn menu_labels(node: &tilo_app_window::UiNode) -> Vec<String> {
     nodes_of(node, "ui.MenuItem")
         .into_iter()
         .filter_map(|item| match item.props.get("label") {
@@ -85,7 +89,7 @@ fn menu_labels(node: &tilo_ui_host::UiNode) -> Vec<String> {
 
 /// The catch-up a window's mark opens: a row per record someone changed, newest first, with who
 /// changed it and when, and the one move that marks them all seen.
-fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
+fn the_catch_up_names_each_item_it_changed(window: &tilo_app_window::UiNode) {
     let content = window
         .children
         .iter()
@@ -121,7 +125,7 @@ fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
     // ("Scout marked it done"). A face alone does not say who.
     let mut rows = Vec::new();
     nodes(content, "row", &mut rows);
-    let steps: Vec<&tilo_ui_host::UiNode> = rows
+    let steps: Vec<&tilo_app_window::UiNode> = rows
         .into_iter()
         .filter(|row| row.key.ends_with("~step"))
         .collect();
@@ -269,7 +273,7 @@ fn shown_floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
 }
 
 /// The change marks the rows of the window's lists draw, by the row they stand in.
-fn row_marks(rows: &[(String, tilo_ui_host::UiNode)]) -> Vec<tilo_ui_host::UiNode> {
+fn row_marks(rows: &[(String, tilo_app_window::UiNode)]) -> Vec<tilo_app_window::UiNode> {
     let mut out = Vec::new();
     for (_, row) in rows {
         let mut marks = Vec::new();
@@ -526,7 +530,7 @@ fn it_says_what_they_did(said: &str) {
 
 /// The mark the header of `staged`'s window carries for the `count` changes the person has not
 /// seen: first among the header's actions, opening the catch-up that names each of them.
-fn the_windows_header_mark(staged: &mut stage::Staged, count: i64) -> tilo_ui_host::UiNode {
+fn the_windows_header_mark(staged: &mut stage::Staged, count: i64) -> tilo_app_window::UiNode {
     let composed = staged.composed().expect("the window composed its view");
     let window = window_mark(&composed)
         .unwrap_or_else(|| panic!("the window's header says what changed in it: {composed:?}"));
@@ -560,7 +564,7 @@ fn the_windows_header_mark(staged: &mut stage::Staged, count: i64) -> tilo_ui_ho
 }
 
 /// The mark a window's header carries: what changed in what it shows, and by whom.
-fn window_mark(tree: &tilo_ui_host::UiNode) -> Option<tilo_ui_host::UiNode> {
+fn window_mark(tree: &tilo_app_window::UiNode) -> Option<tilo_app_window::UiNode> {
     let mut marks = Vec::new();
     nodes(tree, "ui.ChangeMark", &mut marks);
     marks
@@ -574,7 +578,7 @@ fn window_mark(tree: &tilo_ui_host::UiNode) -> Option<tilo_ui_host::UiNode> {
 /// What a window's mark opens, one line of text per catch-up row: each row's item, its sentence,
 /// its posts counted in that sentence where the app's words say how many, and the count of changes
 /// it folds beside it where they do not.
-fn catch_up_rows(tree: &tilo_ui_host::UiNode) -> Vec<String> {
+fn catch_up_rows(tree: &tilo_app_window::UiNode) -> Vec<String> {
     let window = window_mark(tree).expect("the window says what changed since the person looked");
     let content = window
         .children
@@ -586,13 +590,13 @@ fn catch_up_rows(tree: &tilo_ui_host::UiNode) -> Vec<String> {
         })
         .and_then(|part| part.children.first())
         .unwrap_or_else(|| panic!("the mark opens its catch-up: {window:?}"));
-    let said = |node: &tilo_ui_host::UiNode| match node.props.get("value") {
+    let said = |node: &tilo_app_window::UiNode| match node.props.get("value") {
         Some(tilo_render_protocol::patch::Value::Text(value)) => Some(value.clone()),
         _ => None,
     };
     let mut found = Vec::new();
     nodes(content, "stack", &mut found);
-    let mut rows: Vec<&tilo_ui_host::UiNode> = found
+    let mut rows: Vec<&tilo_app_window::UiNode> = found
         .into_iter()
         .filter(|stack| {
             stack
@@ -668,7 +672,7 @@ fn the_traditional_desktop(
 /// window two parts share is only read by the first, and laid out again by the second, last.
 #[test]
 fn the_traditional_desktop_stands_as_a_person_reads_it() {
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     let (app, packages) = packages();
     {
         // Gone before the next window is staged: one window stands at a time, as when each part
@@ -755,7 +759,7 @@ fn its_windows_show_their_apps_content_under_one_bar_each(staged: &stage::Staged
 /// places the layout's own record holds.
 #[test]
 fn a_layout_of_places_stands_as_windows_that_show_their_apps() {
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     let (app, packages) = packages();
     let shell = stage::Staged::over(
         &app,
@@ -824,7 +828,7 @@ fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar(
 
 #[test]
 fn a_window_alone_in_the_shell_takes_the_shell() {
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     let (app, packages) = packages();
     let staged = stage::Staged::over(
         &app,
@@ -1257,7 +1261,7 @@ fn desktop_read_out(staged: &mut stage::Staged, size: (u32, u32)) -> Vec<(bool, 
 fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
     // A window draws its main actions as buttons and keeps the rest behind one menu: never every
     // action as a button of its own, and one button to what does not fit in one row.
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     let packages = tasks_packages();
     for size in [(1280, 800), (390, 844)] {
         let mut staged = stage::Staged::over(
@@ -1308,7 +1312,7 @@ fn an_action_without_an_icon_is_reachable_from_the_row_that_offers_it() {
     // A window that is a tree of notes keeps a note's actions in the menu
     // of the row it stands for, where a person right-clicks it: the notes
     // app's icon-less Untag is there, at a desktop's width and in a hand's.
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     let packages = app_packages("notes");
     let app = packages.0.last().expect("the app").meta.app.clone();
     for size in [(1280, 800), (390, 844)] {
@@ -1366,7 +1370,7 @@ fn rows_with_depth(
 
 #[test]
 fn a_notebook_is_a_tree_beside_the_note_it_opens() {
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     let packages = app_packages("notes");
     let app = packages.0.last().expect("the app").meta.app.clone();
     let size = (1280, 800);
@@ -1435,7 +1439,7 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
     };
     let mut buttons = Vec::new();
     nodes(shell, "ui.Button", &mut buttons);
-    let starts: Vec<&tilo_ui_host::UiNode> = buttons
+    let starts: Vec<&tilo_app_window::UiNode> = buttons
         .iter()
         .filter(|button| {
             button.props.get("label") == Some(&tilo_render_protocol::patch::Value::text("New note"))
@@ -1543,7 +1547,7 @@ fn input_at(size: (u32, u32)) -> ui::interaction::InteractionEnvironment {
 #[test]
 fn a_capture_shows_what_changed_and_its_catch_up_hangs_inside_the_window() {
     on_a_windows_stack(|| {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         ui::clock::freeze_for_capture();
         let packages = tasks_packages();
         let mut away = away_at(&packages, (1280, 800));
@@ -1729,7 +1733,7 @@ fn a_catch_up_hangs_inside_the_window_it_belongs_to(
 
 #[test]
 fn a_task_that_changed_since_you_looked_says_so_on_its_page() {
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     ui::clock::freeze_for_capture();
     let packages = tasks_packages();
     let mut changed = stage::Staged::over(
@@ -1788,7 +1792,7 @@ fn a_task_that_changed_since_you_looked_says_so_on_its_page() {
 /// reads nothing else, and the second only reads the window.
 #[test]
 fn a_channel_counts_what_is_unseen_in_its_header_and_marks_no_message() {
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     ui::clock::freeze_for_capture();
     let packages = app_packages("chat");
     let mut channels = stage::Staged::over(
@@ -1818,7 +1822,7 @@ fn a_channel_counts_what_is_unseen_in_its_header_and_marks_no_message() {
 /// what the window `channels` composed.
 fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own(
     channels: &mut stage::Staged,
-    tree: &tilo_ui_host::UiNode,
+    tree: &tilo_app_window::UiNode,
 ) {
     // The transcript is told where the part the person has not read starts.
     let mut lists = Vec::new();
@@ -1894,7 +1898,9 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own(
 /// A catch-up says what happened while the person was away, in the terms of what the window
 /// shows: a channel of items Mia, Leo and Ada put in says how many are new, never that three
 /// people changed one message. `tree` is what the window of "a team's channels" composed.
-fn a_channels_header_says_what_the_person_has_not_seen_of_it_by_whom(tree: &tilo_ui_host::UiNode) {
+fn a_channels_header_says_what_the_person_has_not_seen_of_it_by_whom(
+    tree: &tilo_app_window::UiNode,
+) {
     let mark = window_mark(tree).expect("the channel's header says what is new");
     assert_eq!(
         mark.props.get("count"),
@@ -1929,7 +1935,7 @@ fn a_channels_header_says_what_the_person_has_not_seen_of_it_by_whom(tree: &tilo
 
 #[test]
 fn a_scenario_that_fails_is_said_rather_than_shown_empty() {
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     let (app, packages) = packages();
     let failed = stage::Staged::over(
         &app,
@@ -1951,7 +1957,7 @@ fn a_scenario_that_fails_is_said_rather_than_shown_empty() {
 /// and the action narrows to its icon before it ever leaves the row.
 #[test]
 fn the_windows_main_action_stands_in_its_row_as_the_primary_button() {
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     for (app, scenario, action) in [
         ("tasks", "a busy week", "New task"),
         ("notes", "a first note", "New note"),
@@ -2091,7 +2097,7 @@ fn the_window_bar_at(
 /// window.
 #[test]
 fn the_tasks_window_shows_one_bar_and_keeps_its_title_at_every_hand_held_size() {
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     let packages = tasks_packages();
     let app = packages.0.last().expect("the app").meta.app.clone();
     let all = super::layouts();
@@ -2153,7 +2159,7 @@ fn the_tasks_window_shows_one_bar_and_keeps_its_title_at_every_hand_held_size() 
 }
 
 /// What a row of a list says its item is: the title the row's own tree carries.
-fn row_title(node: &tilo_ui_host::UiNode) -> Option<String> {
+fn row_title(node: &tilo_app_window::UiNode) -> Option<String> {
     if let Some(tilo_render_protocol::patch::Value::Text(title)) = node.props.get("title") {
         return Some(title.clone());
     }
@@ -2164,7 +2170,7 @@ fn row_title(node: &tilo_ui_host::UiNode) -> Option<String> {
 /// every run: the list's own order, never the order a hash of the row keys happens to give.
 #[test]
 fn a_list_opens_the_page_of_its_first_row_in_every_run() {
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     let packages = tasks_packages();
     let task = packages
         .0
@@ -2220,7 +2226,7 @@ fn a_narrow_channels_mark_opens_its_catch_up() {
     // under the window's header: the mark the header holds is where the person's finger lands,
     // and it opens the catch-up as a sheet across the window's foot.
     on_a_windows_stack(|| {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         ui::clock::freeze_for_capture();
         let packages = app_packages("chat");
         let mut channels = stage::Staged::over(
@@ -2309,7 +2315,7 @@ fn a_narrow_channels_mark_opens_its_catch_up() {
 /// posts holds, once: the count stands in the sentence, not as a count beside it.
 #[test]
 fn a_catch_up_row_counts_the_messages_a_step_holds_in_its_sentence() {
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     ui::clock::freeze_for_capture();
     let packages = app_packages("chat");
     // A thread two people wrote in: two posts, by two people, and nothing else since.
@@ -2350,7 +2356,7 @@ fn a_catch_up_row_counts_the_messages_a_step_holds_in_its_sentence() {
 fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
     // One row for the task however many changed it: everyone who did is named on the line, with a
     // face each, and what it says is the newest change's words.
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     ui::clock::freeze_for_capture();
     let packages = tasks_packages();
     let mut page = stage::Staged::over(
@@ -2386,7 +2392,7 @@ fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
         .unwrap_or_else(|| panic!("the mark opens its catch-up: {window:?}"));
     let mut rows = Vec::new();
     nodes(content, "row", &mut rows);
-    let steps: Vec<&tilo_ui_host::UiNode> = rows
+    let steps: Vec<&tilo_app_window::UiNode> = rows
         .into_iter()
         .filter(|row| row.key.ends_with("~step"))
         .collect();
@@ -2432,7 +2438,7 @@ fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
 #[test]
 fn the_gallerys_controls_show_what_their_fields_hold() {
     on_a_windows_stack(|| {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         ui::clock::freeze_for_capture();
         let packages = app_packages("gallery");
         let ty = packages

@@ -12,7 +12,7 @@ use tilo_lock::MutexRecover as _;
 pub use tilo_service::notice::{Closed, Notice, Notices, OPEN_ACTION, Place, SCHEME};
 
 /// A host's notifier as a role's notices: the notification platform the toolkit serves, which is
-/// the page's `ui::host::current().notifications`. What choosing one lands at comes back here;
+/// the page's `ui::process::current().notifications`. What choosing one lands at comes back here;
 /// nothing on the page reads why one closed, so it reports none.
 pub struct Toolkit {
     notifier: Arc<dyn ui::notify::Notifier>,

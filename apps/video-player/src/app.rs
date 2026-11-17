@@ -529,7 +529,7 @@ impl PlayerState {
         // Tests exercise the real request and completion paths; a recording host answers
         // every picker so no desktop chooser opens.
         #[cfg(test)]
-        ui::host::install_default(ui::host::HostServices::recording().0);
+        ui::process::install_default(ui::process::ProcessServices::recording().0);
         let preferences = PlaybackPreferences::default();
         let player = configured_player(mode, preferences);
         Self::from_prepared(player, preferences, RecentEntries::default(), mode)

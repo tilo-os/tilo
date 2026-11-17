@@ -180,7 +180,7 @@ struct PersonalFabricWireFrame {
 
 pub use tilo_desktop_model::WorkspaceId;
 pub type PeerId = EndpointId;
-pub use tilo_identity_host::identity_store::HostIdentity;
+pub use tilo_identity::identity_store::HostIdentity;
 
 /// Enrollment-bound identity expected behind a distinct server service key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3028,7 +3028,7 @@ fn report_addrs(
         }
         // A new address or home relay: the network came back or moved, and
         // a certificate renewal that failed meanwhile tries again.
-        tilo_identity_host::provisioning::RENEWAL_CAUSES.changed();
+        tilo_identity::provisioning::RENEWAL_CAUSES.changed();
     };
     report(current);
     tokio::spawn(async move {

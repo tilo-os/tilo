@@ -2965,13 +2965,13 @@ impl FrameHarness {
     }
 
     /// Consume one device-local shell request through the mounted app's canonical adapter.
-    pub fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
+    pub fn take_process_intent(&mut self) -> Option<crate::widget::AppProcessIntent> {
         self.invalidate_local();
         let bound = self
             .root
             .as_any_mut()?
             .downcast_mut::<crate::widget::BoundAppWidget>()?;
-        crate::AppWidget::take_host_intent(bound)
+        crate::AppWidget::take_process_intent(bound)
     }
 
     /// Offer the live document to its record's writer; `false` means the caller should persist it

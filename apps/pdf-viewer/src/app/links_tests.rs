@@ -163,16 +163,16 @@ fn external_links_hand_only_web_and_mail_urls_to_the_host() {
         return;
     };
     let at = link_centre(&mut app, 1, |t| matches!(t, LinkTarget::Uri(_)));
-    let (services, recorder) = ui::host::HostServices::recording();
-    ui::host::scoped(&services, || click(&mut app, &mut state, at));
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    ui::process::scoped(&services, || click(&mut app, &mut state, at));
     assert_eq!(recorder.opened_uris(), ["https://example.org/docs"]);
     assert_eq!(app.current_page, 1, "an external link does not navigate");
 
     {
         let (mut app, _state) = open_links().expect("the engine opened the fixture above");
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         let rect = PtRect::new(0.0, 0.0, 10.0, 10.0);
-        ui::host::scoped(&services, || {
+        ui::process::scoped(&services, || {
             for target in [
                 LinkTarget::Uri("mailto:ada@example.org".into()),
                 LinkTarget::Uri("javascript:alert(1)".into()),

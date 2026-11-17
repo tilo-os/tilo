@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
-use tilo_identity_host::device_admin::{command_error, node_id};
-use tilo_identity_host::registry::IdentityProfile;
+use tilo_identity::device_admin::{command_error, node_id};
+use tilo_identity::registry::IdentityProfile;
 
 use crate::pairing::{Answer, Finished, HostCommand, Runner, Started, run_bounded};
 
@@ -199,16 +199,16 @@ impl Store {
     ///
     /// Why the person's identity directory cannot be found.
     pub(crate) fn from_env() -> Result<Self, String> {
-        let paths = tilo_identity_host::device_admin::PersonPaths::from_env()?;
+        let paths = tilo_identity::device_admin::PersonPaths::from_env()?;
         Ok(Self {
             dir: paths.dir,
-            device: tilo_identity_host::provisioning::collaboration_identity_paths(),
+            device: tilo_identity::provisioning::collaboration_identity_paths(),
             root: paths.root,
         })
     }
 
-    fn fleets(&self) -> tilo_identity_host::device_fleet::DeviceFleetStore {
-        tilo_identity_host::device_fleet::DeviceFleetStore::at(&self.dir, self.device.clone())
+    fn fleets(&self) -> tilo_identity::device_fleet::DeviceFleetStore {
+        tilo_identity::device_fleet::DeviceFleetStore::at(&self.dir, self.device.clone())
     }
 }
 
@@ -218,7 +218,7 @@ impl Store {
 /// # Errors
 ///
 /// Why the person's identity directory cannot be found.
-pub(crate) fn fleet_store() -> Result<tilo_identity_host::device_fleet::DeviceFleetStore, String> {
+pub(crate) fn fleet_store() -> Result<tilo_identity::device_fleet::DeviceFleetStore, String> {
     Ok(Store::from_env()?.fleets())
 }
 
@@ -227,9 +227,7 @@ pub(crate) fn fleet_store() -> Result<tilo_identity_host::device_fleet::DeviceFl
 /// writes a certificate into the fleet on a thread of its own, and the
 /// person's record keeps the keys with their list, so a fleet that moved
 /// says the list again.
-pub(crate) fn fleet_stamps(
-    person: &[u8; 32],
-) -> Option<tilo_identity_host::device_fleet::FleetStamps> {
+pub(crate) fn fleet_stamps(person: &[u8; 32]) -> Option<tilo_identity::device_fleet::FleetStamps> {
     fleet_store().ok()?.stamps(&hex::encode(person))
 }
 
@@ -432,7 +430,7 @@ fn fleet_devices(
     store: &Store,
     identity: &IdentityProfile,
 ) -> Result<Vec<tilo_actions::remote::identity_admin::FleetDevice>, String> {
-    tilo_identity_host::device_admin::trusted_devices(
+    tilo_identity::device_admin::trusted_devices(
         &store.fleets(),
         &store.device,
         &identity.id,
@@ -452,10 +450,9 @@ pub(crate) fn devices(store: &Store, identity: &IdentityProfile) -> Answer {
 pub(crate) fn devices_with_record(
     store: &Store,
     identity: &IdentityProfile,
-    record: tilo_identity_host::device_admin::Record,
+    record: tilo_identity::device_admin::Record,
 ) -> Answer {
-    let listed =
-        tilo_identity_host::device_admin::with_record(fleet_devices(store, identity)?, record);
+    let listed = tilo_identity::device_admin::with_record(fleet_devices(store, identity)?, record);
     serde_json::to_value(listed).map_err(|error| error.to_string())
 }
 
@@ -472,7 +469,7 @@ pub(crate) fn revoke(
     identity: &IdentityProfile,
     args: &ActionArgs,
 ) -> Result<(String, tilo_user_identity::RevocationEntry), String> {
-    let entry = tilo_identity_host::device_admin::revoke(
+    let entry = tilo_identity::device_admin::revoke(
         &store.fleets(),
         &identity.id,
         args.text("device").unwrap_or_default(),
@@ -513,7 +510,7 @@ pub(crate) fn authorize(
             "{person} may not administer devices for this workspace's identity"
         ));
     }
-    tilo_identity_host::registry::identity_for_workspace(workspace)
+    tilo_identity::registry::identity_for_workspace(workspace)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "no identity selected".into())
 }
@@ -713,13 +710,13 @@ mod tests {
         let root = tempfile::tempdir().expect("temp root");
         let dir = root.path().join("config/tilo/identity");
         let device = tilo_user_identity::IdentityPaths::under(root.path().join("system"));
-        tilo_identity_host::provisioning::ensure_collaboration_identity(
+        tilo_identity::provisioning::ensure_collaboration_identity(
             &dir,
             &device,
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("provision");
-        let registry = tilo_identity_host::registry::IdentityRegistryStore::at(&dir)
+        let registry = tilo_identity::registry::IdentityRegistryStore::at(&dir)
             .load()
             .expect("registry");
         let id = registry.default_identity.clone().expect("default identity");

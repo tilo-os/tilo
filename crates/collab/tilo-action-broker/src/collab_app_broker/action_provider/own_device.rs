@@ -222,7 +222,7 @@ mod tests {
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            crate::services::HostServices {
+            crate::services::ProcessServices {
                 own_device: Some(network),
                 ..Default::default()
             },
@@ -278,7 +278,7 @@ mod tests {
         {
             for foreign in [false, true] {
                 let network = Arc::new(Network::default());
-                let services = crate::services::HostServices {
+                let services = crate::services::ProcessServices {
                     own_device: Some(network.clone()),
                     ..Default::default()
                 };
@@ -305,7 +305,7 @@ mod tests {
         {
             let network = Arc::new(Network::default());
             let f = super::super::super::host_steps::signed_test_support::Fixture::new_certified(
-                crate::services::HostServices {
+                crate::services::ProcessServices {
                     own_device: Some(network.clone()),
                     ..Default::default()
                 },
@@ -353,7 +353,7 @@ mod tests {
                     "time",
                 ] {
                     let network = Arc::new(Network::default());
-                    let services = crate::services::HostServices {
+                    let services = crate::services::ProcessServices {
                         own_device: Some(network.clone()),
                         ..Default::default()
                     };
@@ -431,7 +431,7 @@ mod tests {
         {
             let network = Arc::new(Network::default());
             let f = super::super::super::host_steps::signed_test_support::Fixture::new(
-                crate::services::HostServices {
+                crate::services::ProcessServices {
                     own_device: Some(network.clone()),
                     ..Default::default()
                 },
@@ -478,7 +478,7 @@ mod tests {
             for dropped in [false, true] {
                 let network = Arc::new(Network::default());
                 let f = super::super::super::host_steps::signed_test_support::Fixture::new(
-                    crate::services::HostServices {
+                    crate::services::ProcessServices {
                         own_device: Some(network.clone()),
                         ..Default::default()
                     },
@@ -518,7 +518,7 @@ mod tests {
             for admission_failure in [false, true] {
                 let network = Arc::new(Network::default());
                 let f = super::super::super::host_steps::signed_test_support::Fixture::new(
-                    crate::services::HostServices {
+                    crate::services::ProcessServices {
                         own_device: Some(network.clone()),
                         ..Default::default()
                     },
@@ -559,7 +559,7 @@ mod tests {
                 ..Default::default()
             });
             let f = super::super::super::host_steps::signed_test_support::Fixture::new(
-                crate::services::HostServices {
+                crate::services::ProcessServices {
                     own_device: Some(network.clone()),
                     ..Default::default()
                 },
@@ -587,7 +587,7 @@ mod tests {
             for revoked in [false, true] {
                 let network = Arc::new(Network::default());
                 let f = super::super::super::host_steps::signed_test_support::Fixture::new(
-                    crate::services::HostServices {
+                    crate::services::ProcessServices {
                         own_device: Some(network.clone()),
                         ..Default::default()
                     },
@@ -598,7 +598,7 @@ mod tests {
                         .store(true, std::sync::atomic::Ordering::SeqCst);
                 } else {
                     std::fs::remove_file(
-                        tilo_identity_host::provisioning::collaboration_identity_paths().device_privkey,
+                        tilo_identity::provisioning::collaboration_identity_paths().device_privkey,
                     )
                     .unwrap();
                 }

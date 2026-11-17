@@ -19,8 +19,8 @@ tilo_test_env::scenario! {
     {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        let services = crate::host::HostServices::null();
-        let _host = crate::host::enter(&services);
+        let services = crate::process::ProcessServices::null();
+        let _host = crate::process::enter(&services);
         crate::text_selection::clipboard_copy("clipboard");
         let mut input = TextInput::local().with_initial_value("source");
         input.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));

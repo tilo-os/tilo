@@ -2621,7 +2621,7 @@ impl CollaborationManager {
         kind: &collab_types::document::ResourceType,
         connection: crate::NativeConnection,
     ) -> Result<Self, crate::NativeLaunchError> {
-        let configured = crate::host::environment()
+        let configured = crate::process::environment()
             .identity
             .collab_service_configured;
         #[cfg(feature = "audio")]
@@ -2677,7 +2677,7 @@ impl CollaborationManager {
     /// identity-service connection `identity` holds.
     ///
     /// The session opened both connections for that app's launch and handed
-    /// them to the host (`runtime_portal::tilolang_host`): the broker attests
+    /// them to the host (`runtime_portal::tilolang_process`): the broker attests
     /// `connection` against the session's launch record of the instance, never
     /// against what the host says, and refuses a hello for another app or
     /// workspace. Nothing is read from the process's environment, which is the

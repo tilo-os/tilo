@@ -16,7 +16,7 @@ use std::fmt::Write as _;
 
 use crate::common::{WORKSPACE, catalogue};
 use ui::accesskit;
-use ui::application::{ApplicationHost, ComponentRunnerInputs};
+use ui::application::{ApplicationOwner, ComponentRunnerInputs};
 use ui::headless::FrameHarness;
 use ui::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
 use ui::resource::{DocumentCheckout, DocumentId};
@@ -38,7 +38,7 @@ fn open(app_id: &str) -> (FrameHarness, tempfile::TempDir) {
         &ui::permissions::MemberId::person(PERSON),
         Role::Owner,
     ));
-    let mut host = ApplicationHost::new(
+    let mut host = ApplicationOwner::new(
         directory.path().join("state"),
         "empty-state-device".into(),
         WORKSPACE,

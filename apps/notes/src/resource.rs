@@ -94,7 +94,7 @@ impl ResourceApp for NotesShell {
     }
 
     /// Pages a migration brought from Outline join the notebook when it opens.
-    fn import_resource(context: &ui::application::HostContext) -> Result<(), String> {
+    fn import_resource(context: &ui::application::ProcessContext) -> Result<(), String> {
         crate::import_inbox::import(context)
     }
 

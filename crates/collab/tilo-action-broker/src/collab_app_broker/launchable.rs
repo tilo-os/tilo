@@ -1030,7 +1030,7 @@ mod tests {
             let tree = tree.shared();
             let (state, _bridge) = AppBrokerState::test_state(
                 Some(tree.authority()),
-                crate::services::HostServices {
+                crate::services::ProcessServices {
                     launcher: Some(Arc::new(Pressed(Mutex::new(vec!["so.tilo.chat".into()])))),
                     ..tree.services()
                 },
@@ -2208,7 +2208,7 @@ mod tests {
         }]);
         let (state, _bridge) = AppBrokerState::test_state(
             Some(tree.authority()),
-            crate::services::HostServices {
+            crate::services::ProcessServices {
                 launcher: Some(Arc::new(installed)),
                 ..tree.services()
             },

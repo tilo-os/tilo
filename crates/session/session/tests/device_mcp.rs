@@ -592,13 +592,13 @@ impl ThisComputer {
         let state = tempfile::tempdir().expect("a state directory");
         home.env()
             .set("TILO_IDENTITY_ROOT", &system)
-            .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         let paths = IdentityPaths::under(&system);
         let identity_dir = home.config().join("tilo/identity");
-        tilo_identity_host::provisioning::ensure_collaboration_identity(
+        tilo_identity::provisioning::ensure_collaboration_identity(
             &identity_dir,
             &paths,
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("this computer has an identity of its own");
         let key = persist::load_device_key(&paths).expect("this device's key");

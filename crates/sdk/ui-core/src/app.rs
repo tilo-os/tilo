@@ -215,13 +215,13 @@ use taffy::{NodeId, TaffyTree};
 #[cfg(feature = "native")]
 use vello::kurbo::Rect as KurboRect;
 
-/// Cached [`crate::host::RunnerDiagnostics::perf_log`] check
+/// Cached [`crate::process::RunnerDiagnostics::perf_log`] check
 /// (`TILO_UI_PERF=1` natively), so the per-frame read is cheap.
 #[cfg(feature = "native")]
 fn perf_enabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| crate::host::environment().diagnostics.perf_log)
+    *FLAG.get_or_init(|| crate::process::environment().diagnostics.perf_log)
 }
 
 /// `TILO_UI_NO_SCROLL_OPT=1` disables the scroll-reposition fast path,
@@ -233,7 +233,7 @@ fn scroll_opt_disabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| {
-        crate::host::environment()
+        crate::process::environment()
             .diagnostics
             .disable_scroll_fast_path
     })
@@ -680,7 +680,7 @@ impl AppConstructionInputs {
         // The screen reader below speaks through the host's services, so a
         // process that never installed any gets the native platform's.
         #[cfg(feature = "native")]
-        crate::host::native::install_default_if_unset(None);
+        crate::process::native::install_default_if_unset(None);
         #[cfg(feature = "native")]
         crate::emoji_catalogue::keep_recents_on_the_device();
         Self {
@@ -694,13 +694,13 @@ impl AppConstructionInputs {
             },
             watch_system_settings: true,
             debug_mode: || {
-                cfg!(debug_assertions) && crate::host::environment().diagnostics.debug_overlay
+                cfg!(debug_assertions) && crate::process::environment().diagnostics.debug_overlay
             },
             theme_store_stamp: settings_store::stamp,
             local_author: ConstructionValue::Lazy(crate::collaboration::local_user_id),
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
-                if crate::host::environment().accessibility.screen_reader
+                if crate::process::environment().accessibility.screen_reader
                     || settings_store::accessibility::ScreenReaderSettings::load().enabled
                 {
                     Some(App::configured_screen_reader())
@@ -709,16 +709,16 @@ impl AppConstructionInputs {
                 }
             },
             your_colour: crate::local_identity::own_colour,
-            high_contrast: || crate::host::environment().accessibility.high_contrast,
-            reduce_motion: || crate::host::environment().accessibility.reduce_motion,
+            high_contrast: || crate::process::environment().accessibility.high_contrast,
+            reduce_motion: || crate::process::environment().accessibility.reduce_motion,
             text_scale: || {
-                crate::host::environment()
+                crate::process::environment()
                     .accessibility
                     .text_scale
                     .unwrap_or(1.0)
             },
             ui_scale: || {
-                crate::host::environment()
+                crate::process::environment()
                     .accessibility
                     .ui_scale
                     .unwrap_or(1.0)
@@ -919,7 +919,7 @@ impl App {
     }
 
     pub(crate) fn native_component_presentation() -> crate::application::ComponentRunnerInputs {
-        let accessibility = crate::host::environment().accessibility;
+        let accessibility = crate::process::environment().accessibility;
         let theme = Theme::configured().with_a11y(
             &crate::a11y::A11ySettings {
                 high_contrast: accessibility.high_contrast,
@@ -1913,7 +1913,7 @@ impl App {
             .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
         let settings = settings_store::accessibility::ScreenReaderSettings::load();
         self.set_screen_reader_enabled(
-            settings.enabled || crate::host::environment().accessibility.screen_reader,
+            settings.enabled || crate::process::environment().accessibility.screen_reader,
         );
         if let Some(reader) = self.accessibility.screen_reader.as_mut() {
             reader.configure(&settings);
@@ -2632,7 +2632,7 @@ mod generic_floating_activity_tests {
 
 #[cfg(feature = "native")]
 fn resolve_window_title(explicit: Option<&str>) -> String {
-    let environment = crate::host::environment();
+    let environment = crate::process::environment();
     let app_name = environment.identity.app_name.clone();
     let app_id = environment.identity.app_id.clone();
     let binary = std::env::current_exe()
@@ -2651,7 +2651,7 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
 /// ([`crate::presence::PointerSpace::Surface`]) — both ends must spell the
 /// surface the same way by calling this same function.
 pub fn local_surface_id() -> String {
-    let app_id = crate::host::environment().identity.app_id.clone();
+    let app_id = crate::process::environment().identity.app_id.clone();
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));

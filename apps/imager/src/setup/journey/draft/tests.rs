@@ -3,7 +3,7 @@ use std::{
     fs,
     os::unix::fs::{PermissionsExt as _, symlink},
 };
-use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_identity::provisioning::IdentityStorage;
 
 fn choices() -> PublicChoices {
     PublicChoices {

@@ -29,7 +29,7 @@ impl AppWidget for TerminalWidget {
         TerminalWidget::request_device_shell(self)
     }
 
-    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<ui::widget::AppProcessIntent> {
         self.take_session_intent()
     }
 }

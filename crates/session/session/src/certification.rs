@@ -2,7 +2,7 @@
 //! share of it.
 //! Pairing finds the new device and the person checks its code there, as always. The certificate it
 //! needs is then signed by the person's devices that hold the key
-//! ([`tilo_identity_host::certification_ceremony`]): this device proposes it to each of the
+//! ([`tilo_identity::certification_ceremony`]): this device proposes it to each of the
 //! person's other devices over their private fabric ([`certify`]); a device holding key material
 //! shows the person a notification naming the new device, the device that found it and its code, as
 //! for any device asking to be them, and signs only when they approve it there ([`answer`], from
@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use crate::platform::fabric::{DeviceId, PersonalFabricAction, PersonalFabricActionEnvelope};
 use crate::platform::fabric::{FabricLink, SharedLink};
-use tilo_identity_host::certification_ceremony::{
+use tilo_identity::certification_ceremony::{
     self as ceremony, Answer, Ask, Gathering, IdentityKey, Progress, Reply, Signer, Step,
 };
 use tilo_lock::MutexRecover as _;
@@ -907,17 +907,17 @@ mod tests {
         let root = tempfile::tempdir().expect("temp root");
         let dir = root.path().join("config/tilo/identity");
         let device = tilo_user_identity::IdentityPaths::under(root.path().join("system"));
-        tilo_identity_host::provisioning::ensure_collaboration_identity(
+        tilo_identity::provisioning::ensure_collaboration_identity(
             &dir,
             &device,
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("provision");
-        let registry = tilo_identity_host::registry::IdentityRegistryStore::at(&dir)
+        let registry = tilo_identity::registry::IdentityRegistryStore::at(&dir)
             .load()
             .expect("registry");
         let id = registry.default_identity.expect("default identity");
-        let key = tilo_identity_host::device_fleet::DeviceFleetStore::at(&dir, device)
+        let key = tilo_identity::device_fleet::DeviceFleetStore::at(&dir, device)
             .identity_key(&id)
             .expect("the person's key");
         (root, key)
@@ -1100,13 +1100,13 @@ mod tests {
 
     /// The certificate proposed for a phone, as the pairing API proposes it.
     fn proposed(person: [u8; 32]) -> (DeviceCert, [u8; 32]) {
-        let candidate = tilo_identity_host::device_admin::Candidate {
+        let candidate = tilo_identity::device_admin::Candidate {
             device_node_id: hex::encode([0x51; 32]),
             server_node_id: hex::encode([0x52; 32]),
             label: "Phone".into(),
             verification_code: "123456".into(),
         };
-        tilo_identity_host::device_admin::proposed_certificate(
+        tilo_identity::device_admin::proposed_certificate(
             person,
             &candidate,
             tilo_clock::unix_now_ns(),
@@ -1480,14 +1480,14 @@ mod tests {
         let now = tilo_clock::unix_now_ns();
         // Before it runs out, nothing is due.
         assert!(
-            tilo_identity_host::provisioning::joined_device_renewal_due(
+            tilo_identity::provisioning::joined_device_renewal_due(
                 &joined.paths,
                 joined.held.issued_at_ns
             )
             .is_none()
         );
         // Once it has, the certificate it holds is what is renewed.
-        let due = tilo_identity_host::provisioning::joined_device_renewal_due(&joined.paths, now)
+        let due = tilo_identity::provisioning::joined_device_renewal_due(&joined.paths, now)
             .expect("a lapsed joined certificate is due");
         assert_eq!(due, joined.held);
     }

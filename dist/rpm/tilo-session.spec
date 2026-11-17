@@ -259,11 +259,11 @@ ln -s ../libexec/tilo/tilo-model-gateway %{buildroot}%{_bindir}/tilo-model-gatew
 install -Dpm 0755 apps/bin/tilo-model-http %{buildroot}%{_libexecdir}/tilo/tilo-model-http
 ln -s ../libexec/tilo/tilo-model-http %{buildroot}%{_bindir}/tilo-model-http
 install -Dpm 0755 apps/libexec/tilo-cli-shim %{buildroot}%{_libexecdir}/tilo-cli-shim
-install -Dpm 0755 apps/libexec/tilo-app-host %{buildroot}%{_libexecdir}/tilo-app-host
+install -Dpm 0755 apps/libexec/tilo-app-process %{buildroot}%{_libexecdir}/tilo-app-process
 install -Dpm 0755 apps/libexec/tilo-ush %{buildroot}%{_libexecdir}/tilo-ush
 install -Dpm 0755 apps/bin/tilo-legacy %{buildroot}%{_libexecdir}/tilo/tilo-legacy
 ln -s ../libexec/tilo/tilo-legacy %{buildroot}%{_bindir}/tilo-legacy
-for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
+for unit in tilo-app-process tilo-models tilo-model-gateway tilo-ush; do
     install -Dpm 0644 apps/systemd-user/$unit.service \
         %{buildroot}%{_userunitdir}/$unit.service
     install -Dpm 0644 apps/systemd-user/$unit.socket \
@@ -346,7 +346,7 @@ grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.
 test -s %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
 # What the ush supervisor runs, at the paths it looks for it.
 test -x %{buildroot}%{_bindir}/tilo-legacy
-for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
+for unit in tilo-app-process tilo-models tilo-model-gateway tilo-ush; do
     test -f %{buildroot}%{_userunitdir}/$unit.service
     test -f %{buildroot}%{_userunitdir}/$unit.socket
     grep -q "^Service=$unit.service$" %{buildroot}%{_userunitdir}/$unit.socket
@@ -397,12 +397,12 @@ done
 %{_bindir}/tilo-model-http
 %{_libexecdir}/tilo/tilo-model-http
 %{_libexecdir}/tilo-cli-shim
-%{_libexecdir}/tilo-app-host
+%{_libexecdir}/tilo-app-process
 %{_libexecdir}/tilo-ush
 %{_bindir}/tilo-legacy
 %{_libexecdir}/tilo/tilo-legacy
-%{_userunitdir}/tilo-app-host.service
-%{_userunitdir}/tilo-app-host.socket
+%{_userunitdir}/tilo-app-process.service
+%{_userunitdir}/tilo-app-process.socket
 %{_userunitdir}/tilo-models.service
 %{_userunitdir}/tilo-models.socket
 %{_userunitdir}/tilo-model-gateway.service

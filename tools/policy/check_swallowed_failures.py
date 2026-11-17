@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A failure in session, collaboration and app-host code is heard.
+"""A failure in session, collaboration and app-process code is heard.
 
 A message from a peer, a stored record, a surface file or a write that fails
 is an error: the caller is told, the person is refused or notified, or the
@@ -74,9 +74,9 @@ SCANNED = (
 # Where only the decode rule holds: the app-hosting code that reads stored
 # surfaces and messages.
 DECODE_ONLY = (
-    Path("crates/platform/tilolang-host"),
+    Path("crates/platform/tilolang-process"),
     Path("crates/platform/tilolang-tilo"),
-    Path("crates/platform/tilo-ui-host"),
+    Path("crates/platform/tilo-app-window"),
     Path("crates/hosting/tilo-workspace-host"),
     Path("crates/runtime/runtime-portal"),
     Path("apps/tilolang"),

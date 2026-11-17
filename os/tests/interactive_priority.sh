@@ -75,8 +75,8 @@ if [ "$mode" = static ]; then
     bad "${scope#"$repo"/} caps the session"
   fi
   ok 'session tier: weights, floors, io delegation, oomd limits, OOM score'
-  grep -Fqx 'Slice=session.slice' "$repo/os/usr/lib/systemd/user/tilo-app-host.service" \
-    || bad 'tilo-app-host is not in session.slice'
+  grep -Fqx 'Slice=session.slice' "$repo/os/usr/lib/systemd/user/tilo-app-process.service" \
+    || bad 'tilo-app-process is not in session.slice'
   grep -Fqx 'Slice=background.slice' "$repo/os/usr/lib/systemd/user/tilo-fs-cloud.service" \
     || bad 'tilo-fs-cloud sync is not background'
   # Everything else nobody is waiting on: updates, catalogue and model
@@ -102,7 +102,7 @@ else
   prop --user user.slice ManagedOOMMemoryPressure kill
   prop --user app.slice ManagedOOMMemoryPressure auto
   prop --user session.slice CPUWeight 400
-  prop --user tilo-app-host.service Slice session.slice
+  prop --user tilo-app-process.service Slice session.slice
   prop --user tilo-app-update.service Slice background.slice
   prop --user tilo-models.service Slice background.slice
   prop --system fs.service ManagedOOMPreference avoid

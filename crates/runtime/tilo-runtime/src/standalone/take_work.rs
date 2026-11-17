@@ -292,7 +292,7 @@ impl Member {
         server: Server,
         browsers: Option<PathBuf>,
     ) -> std::io::Result<Self> {
-        let identity = tilo_identity_host::identity_store::HostIdentity::kept(cert, key);
+        let identity = tilo_identity::identity_store::HostIdentity::kept(cert, key);
         let joined = Joined::from_profile(profile, identity, endpoint.clone())?;
         let action_service = action_service(profile, &joined, server, None, browsers)?;
         // The action service holds the workspaces it serves; this member answers them

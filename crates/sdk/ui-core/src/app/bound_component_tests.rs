@@ -1,6 +1,7 @@
 use super::*;
 use crate::application::{
-    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
+    RestoreInput,
 };
 use crate::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
 use crate::widget::{AppModel, ModelPath};
@@ -22,7 +23,7 @@ thread_local! {
 }
 
 fn collaboration_probe_factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
@@ -628,7 +629,7 @@ impl AppWidget for Probe {
 }
 #[allow(clippy::needless_pass_by_value, reason = "factory contract")]
 fn factory(
-    context: HostContext,
+    context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
@@ -636,14 +637,14 @@ fn factory(
 }
 #[allow(clippy::needless_pass_by_value, reason = "factory contract")]
 fn strict_factory(
-    context: HostContext,
+    context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
     build_probe(context, &target, true)
 }
 fn build_probe(
-    mut context: HostContext,
+    mut context: ProcessContext,
     target: &LaunchTarget,
     strict: bool,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
@@ -693,9 +694,9 @@ fn bound_components_keep_child_binding() {
             opens_before_resource: false,
             create: factory,
         };
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: records.clone(),
                 views,
                 device_id: "D".into(),
@@ -927,9 +928,9 @@ impl ActionFixture {
             } else {
                 LaunchTarget::New
             };
-            let context = HostContext::prepare(
+            let context = ProcessContext::prepare(
                 &definition,
-                HostContextInputs {
+                ProcessContextInputs {
                     records: records.clone(),
                     views: views.clone(),
                     device_id: "D".into(),
@@ -1508,7 +1509,7 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
     );
     let held = Arc::new(Mutex::new(serde_json::to_vec(&owner).unwrap()));
     let reads = Arc::new(AtomicUsize::new(0));
-    let read: tilo_host::action_authority::AuthoritySource = {
+    let read: tilo_process_services::action_authority::AuthoritySource = {
         let (held, reads) = (held.clone(), reads.clone());
         Arc::new(move || {
             reads.fetch_add(1, Ordering::SeqCst);
@@ -1518,7 +1519,7 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
     let (watch, changed) = crate::application::manual_authority_watch();
     let mut fixture = ActionFixture::new();
     fixture.permissions.set(
-        crate::application::follow_host_authority(
+        crate::application::follow_process_authority(
             crate::permissions::PermissionContext::member_of(
                 WORKSPACE,
                 &crate::permissions::MemberId::person("fixture-user"),
@@ -2584,7 +2585,7 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
 }
 
 fn behaviour_probe_factory(
-    context: HostContext,
+    context: ProcessContext,
     target: LaunchTarget,
     restore: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
@@ -2666,7 +2667,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_hosted_components_search_request_becomes_a_host_intent;
+    phase a_hosted_components_search_request_becomes_a_process_intent;
     // Inside the Tilo shell the app's window does not present search: a
     // component's request to open it is handed to the host as an intent, and
     // the host's tile drains it.
@@ -2723,9 +2724,9 @@ tilo_test_env::scenario! {
             opens: &[],
             create: factory,
         };
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "D".into(),
@@ -2744,13 +2745,13 @@ tilo_test_env::scenario! {
             .unwrap();
         let binding = component.callback_binding();
         let mut tile = TileHost::from_component(component);
-        assert!(tile.take_host_intent().is_none());
+        assert!(tile.take_process_intent().is_none());
         binding.request_search(request.clone());
         assert_eq!(
-            tile.take_host_intent(),
-            Some(crate::widget::AppHostIntent::OpenSearch(request))
+            tile.take_process_intent(),
+            Some(crate::widget::AppProcessIntent::OpenSearch(request))
         );
-        assert!(tile.take_host_intent().is_none(), "the request drains once");
+        assert!(tile.take_process_intent().is_none(), "the request drains once");
     }
 
     phase the_hosting_window_takes_the_components_behaviour;

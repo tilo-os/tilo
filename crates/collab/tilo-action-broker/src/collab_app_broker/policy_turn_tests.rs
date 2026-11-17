@@ -10,7 +10,7 @@ use crate::policy_schedule::RECHECK_INTERVAL;
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
 #[cfg(target_os = "linux")]
-use tilo_identity_host::policy_change;
+use tilo_identity::policy_change;
 
 const NS: u64 = 1_000_000_000;
 
@@ -129,7 +129,7 @@ tilo_test_env::scenario! {
         )
         .expect("the owner's workspace admits a verified person");
         let authority = Arc::new(Announcing(tree.shared()));
-        let (state, _bridge) = AppBrokerState::test_state(Some(authority), HostServices::default());
+        let (state, _bridge) = AppBrokerState::test_state(Some(authority), ProcessServices::default());
         let after = now.saturating_mul(NS);
         assert_eq!(
             state.next_policy_change(after).unwrap(),
@@ -217,9 +217,9 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(
         workspace,
         checks: Mutex::new(Vec::new()),
     });
-    let services = HostServices {
+    let services = ProcessServices {
         workspace_memberships: Some(Arc::clone(&owner) as Arc<_>),
-        ..HostServices::default()
+        ..ProcessServices::default()
     };
     let membership: crate::services::WorkspaceAuthorityHandle = authority.clone();
     // The kernel's 15-byte name of `tilo-collab-broker`.

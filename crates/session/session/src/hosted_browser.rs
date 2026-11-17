@@ -856,7 +856,7 @@ fn say_on_stdout(report: &Report) {
 /// Take `material`'s device as this session's own: the key it signs with, and the certificate the
 /// server issued for it, where every part of the session that reads this device of itself reads it.
 fn take_identity(material: &Material) -> Result<(), String> {
-    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
     paths
         .ensure_directories()
         .map_err(|error| format!("this device's identity has nowhere to live: {error}"))?;
@@ -932,7 +932,7 @@ fn take_identity(material: &Material) -> Result<(), String> {
     // The person's devices this device trusts are the ones their fleet lists, and an app's identity
     // service answers only while this device is one of them: the certificate the server issued is
     // listed, as a device enrolled at this login lists its own.
-    tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+    tilo_identity::device_fleet::DeviceFleetStore::from_env()
         .and_then(|fleet| fleet.register_current_device(&user))
         .map_err(|error| format!("this device was not listed among the person's: {error}"))?;
     Ok(())
@@ -1146,7 +1146,7 @@ mod tests {
         take_identity(&handed).expect("the session took the identity it was handed");
         // Taken again, as a session restarted in the same VM takes it.
         take_identity(&handed).expect("the session took the identity it was handed again");
-        let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+        let fleet = tilo_identity::device_fleet::DeviceFleetStore::from_env()
             .unwrap()
             .load(&hex::encode(handed.user_public_key))
             .unwrap();
@@ -1157,7 +1157,7 @@ mod tests {
                 .any(|cert| cert.device_public_key == handed.device.device_public_key),
             "the device is among the person's trusted devices, so an app's identity service answers"
         );
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
         let mode =
             |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(

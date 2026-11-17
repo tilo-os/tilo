@@ -266,7 +266,7 @@ impl ResourceApp for App {
     }
 
     /// Issues a migration brought from Linear join the tracker when it opens.
-    fn import_resource(context: &ui::application::HostContext) -> Result<(), String> {
+    fn import_resource(context: &ui::application::ProcessContext) -> Result<(), String> {
         crate::import_inbox::import(context)
     }
 

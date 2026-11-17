@@ -455,7 +455,7 @@ tilo_test_env::scenario! {
     phase hosted_pump_host_owner_permission_replacement_refreshes;
     {
         use crate::application::{
-            ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+            ApplicationDefinition, ProcessContext, ProcessContextInputs, LaunchTarget, RestoreInput,
         };
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
@@ -486,9 +486,9 @@ tilo_test_env::scenario! {
         let permissions = crate::permissions::SharedPermissions::new(
             crate::permissions::PermissionContext::permissive(),
         );
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "D".into(),
@@ -558,7 +558,7 @@ tilo_test_env::scenario! {
     // it woke keeps the directory's revision and the continuation it issued.
     {
         use crate::application::{
-            ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+            ApplicationDefinition, ProcessContext, ProcessContextInputs, LaunchTarget, RestoreInput,
         };
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
@@ -586,9 +586,9 @@ tilo_test_env::scenario! {
             opens_before_resource: false,
             create: owned_declared_directory_factory,
         };
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "D".into(),

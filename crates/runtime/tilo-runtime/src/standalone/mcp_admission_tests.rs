@@ -76,12 +76,12 @@ impl Fixture {
         )
         .unwrap();
         tilo_user_identity::persist::write_device_cert(&paths.device_cert, cert).unwrap();
-        let store = tilo_identity_host::registry::IdentityRegistryStore::from_env().unwrap();
+        let store = tilo_identity::registry::IdentityRegistryStore::from_env().unwrap();
         let mut registry = store.load_reconciled().unwrap();
         registry.default_identity = Some(id.clone());
         registry.identities.insert(
             id.clone(),
-            tilo_identity_host::registry::IdentityProfile {
+            tilo_identity::registry::IdentityProfile {
                 id: id.clone(),
                 display_name: "Synthetic runtime".into(),
                 record_path: paths.user_privkey.clone(),

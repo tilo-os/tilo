@@ -28,11 +28,11 @@ shell-ui = 34
 runtime = 31
 
 # App ↔ app host: the resources and actions the Store reads and invokes, and the
-# language-pack requests Settings makes, on the app-host service only those
-# two apps are handed (crates/packaging/app-host/interface.toml).
+# language-pack requests Settings makes, on the app-process service only those
+# two apps are handed (crates/packaging/app-process/interface.toml).
 # Its own interface, so a change to what the Store reads never versions the
 # apps that never talk to the app host.
-app-host = 5
+app-process = 5
 
 # App ↔ messaging service: the person's messaging accounts for Messages and
 # the service's permission requests for Passwords, on the messaging service

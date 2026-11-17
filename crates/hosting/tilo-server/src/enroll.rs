@@ -13,9 +13,9 @@ use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use tilo_clock::try_unix_now_ns;
-use tilo_identity_host::certification_ceremony::pairing_code;
-use tilo_identity_host::device_fleet::{DeviceFleet, DeviceFleetStore};
-use tilo_identity_host::enrollment::{Certifier, NonceStore, Redemption};
+use tilo_identity::certification_ceremony::pairing_code;
+use tilo_identity::device_fleet::{DeviceFleet, DeviceFleetStore};
+use tilo_identity::enrollment::{Certifier, NonceStore, Redemption};
 use tilo_server::HomePeerRegistration;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{
@@ -54,12 +54,12 @@ static PERSON_UID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 
 /// Write into the person's identity directory as the person: never as root
 /// for another account, and never through a directory swapped for a symlink
-/// ([`tilo_identity_host::person_files::as_person`]).
+/// ([`tilo_identity::person_files::as_person`]).
 fn as_person<T>(
     identity_dir: &std::path::Path,
     write: impl FnOnce() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
-    tilo_identity_host::person_files::as_person(PERSON_UID.get().copied(), identity_dir, write)
+    tilo_identity::person_files::as_person(PERSON_UID.get().copied(), identity_dir, write)
 }
 
 #[derive(Subcommand)]
@@ -2092,7 +2092,7 @@ fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<Appro
         (Some(root), user_public_key)
     };
     let (device, issuer_cert) =
-        tilo_identity_host::enrollment::device_for(&paths, user_public_key, now_ns()?)
+        tilo_identity::enrollment::device_for(&paths, user_public_key, now_ns()?)
             .context("verify approving device certificate validity")?;
     if root.is_some() && !issuer_cert.capabilities.can_admit_devices {
         bail!("this device is not authorised to approve enrollment");
@@ -2144,7 +2144,7 @@ fn handle_solicitation(
         // device was certified: redemption checks the issuer at that instant.
         let issued_at_ns = validity_start_ns(now).max(identity.issuer_cert.issued_at_ns);
         let expires_at_ns = now.saturating_add(5 * 60 * 1_000_000_000);
-        let token_text = tilo_identity_host::enrollment::mint_token(
+        let token_text = tilo_identity::enrollment::mint_token(
             identity.user_public_key,
             DeviceCapabilities::member(),
             issued_at_ns,
@@ -2389,7 +2389,7 @@ fn redeem_pending(
             .sign_message(digest)
             .map_err(|error| std::io::Error::other(error.to_string()))
     };
-    tilo_identity_host::enrollment::redeem(
+    tilo_identity::enrollment::redeem(
         fleet.as_ref(),
         &NonceStore::under(options.identity_root),
         &Redemption {

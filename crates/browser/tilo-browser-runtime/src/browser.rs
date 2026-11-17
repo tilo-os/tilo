@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use js_sys::{Function, Reflect};
-use ui::application::{ComponentRunnerInputs, HostContext};
+use ui::application::{ComponentRunnerInputs, ProcessContext};
 use ui::headless::FrameHarness;
 use ui::permissions::{MemberId, PermissionContext, SharedPermissions};
 use ui::resource::{DocumentCheckout, ResourceStore};
@@ -287,7 +287,7 @@ impl Config {
 
     /// Lend Model Providers the administration; any other application
     /// gets none.
-    fn lend_provider_admin(&self, context: &mut HostContext) -> Result<(), JsValue> {
+    fn lend_provider_admin(&self, context: &mut ProcessContext) -> Result<(), JsValue> {
         crate::host_services::provide_provider_admin(context, self.provider_admin()?);
         Ok(())
     }

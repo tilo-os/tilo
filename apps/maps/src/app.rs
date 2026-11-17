@@ -1032,9 +1032,9 @@ impl ui::widget::controls::ActionControls for MapsApp {
 
 #[cfg(test)]
 fn host_location(outcome: LocationOutcome) -> LocationChannel {
-    let (services, recorder) = ui::host::HostServices::recording();
+    let (services, recorder) = ui::process::ProcessServices::recording();
     recorder.respond_to_location(outcome);
-    let channel = ui::host::scoped(&services, location::request_location);
+    let channel = ui::process::scoped(&services, location::request_location);
     assert_eq!(recorder.location_requests(), 1);
     channel
 }

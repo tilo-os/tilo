@@ -1,4 +1,4 @@
-//! The page's `HostServices`: each platform crate's web backend — the
+//! The page's `ProcessServices`: each platform crate's web backend — the
 //! clipboard of trusted clipboard events, `<input type=file>` choosers,
 //! downloads, `window.open`, the Notifications API and the Geolocation API.
 //! Speech is silent (`tts::NullSpeaker`); media controls and screen capture
@@ -407,7 +407,7 @@ impl ProviderAdmin for LazyAdministration {
 /// label or requested alias: the page runs Model Providers, never Settings (a
 /// Tilo OS app).
 pub(crate) fn provide_provider_admin(
-    context: &mut ui::application::HostContext,
+    context: &mut ui::application::ProcessContext,
     handle: ui::models::ProviderAdministration,
 ) {
     if context.app_id() == "so.tilo.model-providers" {
@@ -489,10 +489,10 @@ fn open_in_app(link: &str) -> bool {
 /// in that app's window, as it does on a device; every other link is the
 /// browser's.
 struct PageOpener {
-    elsewhere: Arc<dyn ui::host::UriOpener>,
+    elsewhere: Arc<dyn ui::process::UriOpener>,
 }
 
-impl ui::host::UriOpener for PageOpener {
+impl ui::process::UriOpener for PageOpener {
     fn open(&self, uri: &str) -> std::io::Result<()> {
         if open_in_app(uri) {
             return Ok(());
@@ -506,7 +506,7 @@ impl ui::host::UriOpener for PageOpener {
 pub fn install(wake: Arc<dyn Fn() + Send + Sync>) {
     crate::page_theme::install(Arc::clone(&wake));
     WAKE.with_borrow_mut(|slot| *slot = Some(Arc::clone(&wake)));
-    let system = ui::host::HostServices::system(None);
+    let system = ui::process::ProcessServices::system(None);
     BROWSER.with_borrow_mut(|slot| *slot = Some(Arc::clone(&system.notifications)));
     let notifier = Arc::new(AppNotifier::new(
         Arc::clone(&system.notifications),
@@ -514,10 +514,10 @@ pub fn install(wake: Arc<dyn Fn() + Send + Sync>) {
         wake,
     ));
     NOTIFIER.with_borrow_mut(|slot| *slot = Some(Arc::clone(&notifier)));
-    let opener: Arc<dyn ui::host::UriOpener> = Arc::new(PageOpener {
+    let opener: Arc<dyn ui::process::UriOpener> = Arc::new(PageOpener {
         elsewhere: Arc::clone(&system.opener),
     });
-    ui::host::install_default(ui::host::HostServices {
+    ui::process::install_default(ui::process::ProcessServices {
         notifications: notifier,
         opener,
         ..system
@@ -531,7 +531,7 @@ thread_local! {
 /// What the session's roles tell the person on this page: one for the page, so the place of a
 /// notice they choose is reported once.
 pub(crate) fn notices() -> Rc<Toolkit> {
-    let made = || Rc::new(Toolkit::new(ui::host::current().notifications, ""));
+    let made = || Rc::new(Toolkit::new(ui::process::current().notifications, ""));
     NOTICES.with(|notices| Rc::clone(notices.get_or_init(made)))
 }
 

@@ -8,7 +8,7 @@
 //! workspace's one policy as the task's. Nothing here decides anything or writes a resource.
 //!
 //! The API ([`TaskApi`]) is the task's connection: in the session the program connection to
-//! the MCP server (`crates/platform/tilolang-host/src/task.rs`), whose caller is the task.
+//! the MCP server (`crates/platform/tilolang-process/src/task.rs`), whose caller is the task.
 //!
 //! **Packages that do not load.** A package the session cannot load here (a module that does not
 //! link, a description that does not read) leaves only its app unreachable: the session reports

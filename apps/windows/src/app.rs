@@ -2468,12 +2468,12 @@ mod tests {
             let path = dir.path().join("selected-installer.msi");
             std::fs::write(&path, b"accepted descriptor bytes").unwrap();
             let source = File::open(&path).unwrap();
-            let (services, recorder) = ui::host::HostServices::recording();
+            let (services, recorder) = ui::process::ProcessServices::recording();
             recorder.respond_to_open_file(OpenFileOutcome::Opened(ui::portal::OpenedFile::new(
                 source,
                 "display-name.msi",
             )));
-            ui::host::scoped(&services, || apply(&mut app, Intent::Install));
+            ui::process::scoped(&services, || apply(&mut app, Intent::Install));
             assert_eq!(
                 recorder.pick_requests()[0].title(),
                 "Add a Windows application"
@@ -2511,12 +2511,12 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("document.bin");
             std::fs::write(&path, b"portal document bytes").unwrap();
-            let (services, recorder) = ui::host::HostServices::recording();
+            let (services, recorder) = ui::process::ProcessServices::recording();
             recorder.respond_to_open_file(OpenFileOutcome::Opened(ui::portal::OpenedFile::new(
                 File::open(path).unwrap(),
                 "document.bin",
             )));
-            ui::host::scoped(&services, || {
+            ui::process::scoped(&services, || {
                 app.perform_effect(&actions::WindowsEffect::OpenFile {
                     app: entry_id.clone(),
                     path: None,

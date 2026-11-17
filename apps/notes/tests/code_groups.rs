@@ -310,8 +310,8 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
             }
         }
         let clipboard = std::sync::Arc::new(Clipboard::default());
-        let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-        let _host = ui::host::enter(&services);
+        let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+        let _host = ui::process::enter(&services);
         for (target, expected) in targets
             .iter()
             .zip(["first()\nsecond()", "third()\nfourth()"])

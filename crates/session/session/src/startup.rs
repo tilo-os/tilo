@@ -15,12 +15,12 @@
 
 use std::path::{Path, PathBuf};
 
-use tilo_onboarding_host::firstboot;
-use tilo_onboarding_host::identity::IdentityProblem;
-use tilo_onboarding_host::identity_provisioning::{
+use tilo_onboarding_session::firstboot;
+use tilo_onboarding_session::identity::IdentityProblem;
+use tilo_onboarding_session::identity_provisioning::{
     DiskIdentityStore, IDENTITY_RECOVERY_ENV, is_secret_service_unavailable, needs_first_run_flow,
 };
-use tilo_onboarding_host::view::OnboardingView;
+use tilo_onboarding_session::view::OnboardingView;
 use tilo_user_identity::{CertificateClockError, IdentityPaths};
 
 use crate::clock_wait::ClockWait;
@@ -191,7 +191,7 @@ pub fn identity() -> Identity {
     // A device enrolled without the person's root (a node's session, certified when its node was
     // installed) takes up the identity it holds before the store below is asked what is here, so
     // this login reads the person's record rather than the absence setup would take as a first use.
-    if let Err(error) = tilo_onboarding_host::identity_provisioning::complete_enrolled_device() {
+    if let Err(error) = tilo_onboarding_session::identity_provisioning::complete_enrolled_device() {
         tracing::warn!(%error, "the enrolled device could not take up its identity");
     }
     let store = match DiskIdentityStore::from_env() {
@@ -365,7 +365,7 @@ pub(crate) fn settle(identity_dir: &Path) -> Result<(), String> {
 /// setup cannot be told apart from an interrupted one, which is theirs to keep: the session stops
 /// rather than open a shell that hides it.
 fn reconcile(identity_dir: &Path) -> Result<(), String> {
-    match tilo_onboarding_host::view::clear_verified_pre_acquisition_progress(identity_dir) {
+    match tilo_onboarding_session::view::clear_verified_pre_acquisition_progress(identity_dir) {
         Ok(true) => {
             tracing::info!(
                 "cleared interrupted pre-acquisition onboarding journal after identity verification"

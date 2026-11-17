@@ -4,7 +4,7 @@
 
 use super::{Session, place_at};
 use collaboration::{CollabRequest, RouteSpec};
-use tilolang_host::testing::delivered;
+use tilolang_process::testing::delivered;
 use tilolang_tilo::personal;
 
 /// The places the sidebar shows picked, each once: its row is said in more than one layer of

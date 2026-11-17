@@ -22,7 +22,8 @@ use tilo_desktop_surface::{
     DesktopHandle, DesktopSurface, HostAction, SearchHost, SearchHostFeed, TileSource, seed_tree,
 };
 use ui::application::{
-    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
+    RestoreInput,
 };
 use ui::automerge::{ROOT, transaction::Transactable};
 use ui::kurbo::{Point, Rect};
@@ -559,7 +560,7 @@ thread_local! {
 }
 
 fn factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, ui::launch::LaunchError> {
@@ -656,9 +657,9 @@ impl TileSource for Source {
                 &ui::permissions::MemberId::person("keyboard-author"),
                 ui::permissions::Role::Owner,
             ));
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "device".into(),

@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::application::{HostContext, HostContextInputs, LaunchTarget};
+use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs};
 use ui::application_view::InstanceViewStore;
 use ui::permissions::{MemberId, SharedPermissions};
 use ui::resource::{ResourceOwners, ResourceStore};
@@ -133,7 +133,7 @@ impl AppPage {
             named_new.as_ref(),
         )
         .map_err(error)?;
-        let inputs = HostContextInputs {
+        let inputs = ProcessContextInputs {
             records: record,
             views,
             device_id: config.device.clone(),
@@ -143,8 +143,8 @@ impl AppPage {
             action_context: tilo_actions::ActionContext::default(),
         };
         let prepared = match named_new {
-            Some(id) => HostContext::prepare_new_resource(definition, inputs, id),
-            None => HostContext::prepare(definition, inputs, &target),
+            Some(id) => ProcessContext::prepare_new_resource(definition, inputs, id),
+            None => ProcessContext::prepare(definition, inputs, &target),
         };
         let mut context = match prepared.map_err(crate::app_page::Unbuilt::of) {
             Ok(context) => context,

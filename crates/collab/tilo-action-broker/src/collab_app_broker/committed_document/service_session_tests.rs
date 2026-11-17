@@ -1,7 +1,7 @@
 use super::NativeDocumentReadContext;
 use crate::collab_app_broker::delegate_browser_service_session_command;
 use crate::services::{
-    BrowserServiceSessionRequestContext, BrowserServiceSessionServices, HostServices,
+    BrowserServiceSessionRequestContext, BrowserServiceSessionServices, ProcessServices,
 };
 use runtime_collab::{BrowserServiceSessionCommand, BrowserServiceSessionReply};
 use std::sync::{
@@ -120,7 +120,7 @@ tilo_test_env::scenario! {
                 calls: AtomicUsize::new(0),
                 revoke,
             });
-            let services = HostServices {
+            let services = ProcessServices {
                 browser_service_sessions: Some(service.clone()),
                 ..Default::default()
             };
@@ -149,7 +149,7 @@ tilo_test_env::scenario! {
             calls: AtomicUsize::new(0),
             revoke: false,
         });
-        let services = HostServices {
+        let services = ProcessServices {
             browser_service_sessions: Some(service.clone()),
             ..Default::default()
         };
@@ -178,7 +178,7 @@ tilo_test_env::scenario! {
             calls: AtomicUsize::new(0),
             revoke: false,
         });
-        let services = HostServices {
+        let services = ProcessServices {
             browser_service_sessions: Some(service.clone()),
             ..Default::default()
         };
@@ -213,7 +213,7 @@ tilo_test_env::scenario! {
             .is_err()
         );
         assert_eq!(service.calls.load(Ordering::Acquire), 1);
-        let services = HostServices {
+        let services = ProcessServices {
             browser_service_sessions: Some(Arc::new(Service {
                 live: live.clone(),
                 calls: AtomicUsize::new(0),

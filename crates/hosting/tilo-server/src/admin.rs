@@ -482,7 +482,7 @@ fn persist_fleet_revocation(
             .ok_or_else(|| anyhow::anyhow!("user configuration directory is unavailable"))?
             .join("tilo/identities"),
     };
-    let store = tilo_identity_host::device_fleet::DeviceFleetStore::at(
+    let store = tilo_identity::device_fleet::DeviceFleetStore::at(
         &directory,
         tilo_user_identity::IdentityPaths::under(identity_root),
     );
@@ -619,10 +619,10 @@ mod tests {
             let identities = temp.path().join("identities");
             let identity_root = temp.path().join("tilo");
             let paths = tilo_user_identity::IdentityPaths::under(&identity_root);
-            tilo_identity_host::provisioning::ensure_collaboration_identity(
+            tilo_identity::provisioning::ensure_collaboration_identity(
                 &identities,
                 &paths,
-                tilo_identity_host::provisioning::IdentityStorage::Files,
+                tilo_identity::provisioning::IdentityStorage::Files,
             )
             .unwrap();
             assert!(!paths.user_privkey.exists());
@@ -633,7 +633,7 @@ mod tests {
             assert_eq!(revocation.revoked_device_public_key, [72; 32]);
             persist_fleet_revocation(&identity_root, Some(&identities), &revocation).unwrap();
             let fleet =
-                tilo_identity_host::device_fleet::DeviceFleetStore::at(&identities, paths.clone())
+                tilo_identity::device_fleet::DeviceFleetStore::at(&identities, paths.clone())
                     .load(&hex::encode(user))
                     .unwrap();
             assert_eq!(fleet.revocations, vec![revocation]);

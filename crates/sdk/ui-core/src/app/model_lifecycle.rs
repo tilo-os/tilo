@@ -11,13 +11,13 @@ pub(super) struct IdleModelProgress {
 /// commits (`store::side_log`).
 fn host_perf_baseline() -> bool {
     static BASELINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *BASELINE.get_or_init(|| crate::host::environment().diagnostics.host_perf_baseline)
+    *BASELINE.get_or_init(|| crate::process::environment().diagnostics.host_perf_baseline)
 }
 
 /// `TILO_HOSTED_PUMP_TIMING=1` prints one payload-free line per hosted pump.
 fn hosted_pump_timing() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| crate::host::environment().diagnostics.hosted_pump_timing)
+    *ENABLED.get_or_init(|| crate::process::environment().diagnostics.hosted_pump_timing)
 }
 
 /// Policy meaning observed by the previous hosted pump: the App's own context
@@ -74,7 +74,7 @@ impl super::App {
     }
 
     /// One wake of an app the session runs with no window
-    /// ([`crate::host::WINDOWLESS_ENV`]): the passes a frame runs before it
+    /// ([`crate::process::WINDOWLESS_ENV`]): the passes a frame runs before it
     /// paints, so it takes its actions and publishes. Answers when it wakes
     /// next.
     ///

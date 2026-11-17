@@ -67,8 +67,8 @@ fn paste(app: &mut TestApp<NotesShell>) {
 
 #[test]
 fn ctrl_v_puts_a_copied_image_in_the_note() {
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (mut app, page) = note();
     let screenshot = png(8, 6, false);
     recorder.copy_image_elsewhere(ClipboardImage {
@@ -96,8 +96,8 @@ fn ctrl_v_puts_a_copied_image_in_the_note() {
 /// look (before the notebook's bytes reached the snapshot) as a failure.
 #[test]
 fn a_pasted_screenshot_decodes_for_drawing() {
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (mut app, page) = note();
     recorder.copy_image_elsewhere(ClipboardImage {
         mime: "image/png",
@@ -127,8 +127,8 @@ fn a_pasted_screenshot_decodes_for_drawing() {
 /// next input to show its picture is the grey box a person sees.
 #[test]
 fn a_pasted_screenshot_is_painted_once_it_decodes_without_further_input() {
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (mut app, page) = note();
     recorder.copy_image_elsewhere(ClipboardImage {
         mime: "image/png",
@@ -182,8 +182,8 @@ fn a_pasted_screenshot_is_painted_once_it_decodes_without_further_input() {
 
 #[test]
 fn a_screenshot_larger_than_an_asset_is_kept_smaller() {
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (mut app, page) = note();
     let screenshot = png(1400, 900, true);
     assert!(screenshot.len() > notes::notebook::MAX_ASSET_BYTES);
@@ -260,8 +260,8 @@ fn an_image_a_page_drops_goes_into_the_note_from_its_bytes() {
 #[test]
 fn pictures_pasted_in_a_row_with_typing_between_keep_their_order() {
     for enter_first in [false, true] {
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let (mut app, page) = note();
         let mut expected = vec!["above".to_owned()];
         for n in 0..5u8 {

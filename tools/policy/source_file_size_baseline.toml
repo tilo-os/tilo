@@ -91,7 +91,7 @@
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
 "crates/session/device-fabric/src/lib.rs" = 4000
 "crates/session/network-actor/src/lib.rs" = 4000
-"crates/session/onboarding-host/src/view.rs" = 7000
+"crates/session/onboarding-session/src/view.rs" = 7000
 "crates/session/speaker-service/src/remote_audio.rs" = 3500
 "crates/system/fs/src/fs.rs" = 6500
 "crates/system/settings-store/src/hardware.rs" = 4000

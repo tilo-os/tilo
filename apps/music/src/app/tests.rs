@@ -633,8 +633,8 @@ fn picked_covers_normalise_to_portable_values() {
     }
 
     {
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let work = ui::background::Pumped::new();
         let _work = work.background().enter();
         let dir = tempfile::tempdir().unwrap();

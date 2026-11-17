@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tilo_ui_host::{UiNode, Value};
+use tilo_app_window::{UiNode, Value};
 use ui::a11y::Role;
 use ui::headless::InspectionNode;
 use ui::kurbo::Rect;

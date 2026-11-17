@@ -30,7 +30,7 @@ pub mod request_rendezvous;
 pub mod retained_role;
 pub mod runtime_request;
 pub mod service_socket;
-pub mod tilolang_host;
+pub mod tilolang_process;
 pub mod tools;
 pub mod windows;
 

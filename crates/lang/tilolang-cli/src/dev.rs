@@ -23,7 +23,7 @@
 //! With `--session` the package is developed inside a running nested session: a good build is
 //! signed into a `.tapp` and installed with `tilo-install`, exactly as any install: verified,
 //! recorded, its old version kept while something runs it. The session follows reinstalls of
-//! the apps its tilolang hosts run (`crates/session/app-launch/src/tilolang_hosts.rs`), verifies
+//! the apps its tilolang hosts run (`crates/session/app-launch/src/tilolang_processes.rs`), verifies
 //! the new installation as a launch would, and hands its module to the host running the app,
 //! whose instances take it over in place or start over, as on the desktop.
 //! With `--runtime BIN` the apps run on a tilolang runtime binary of the developer's own build
@@ -773,7 +773,7 @@ impl Dev {
                 .arg("--include-bin")
                 .arg(binary)
                 .args(
-                    Some(bin.join("tilolang-host"))
+                    Some(bin.join("tilolang-process"))
                         .filter(|host| host.is_file())
                         .map(|host| [std::ffi::OsString::from("--include-bin"), host.into()])
                         .into_iter()

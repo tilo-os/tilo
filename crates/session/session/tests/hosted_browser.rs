@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_actions::remote::browser::READY;
-use tilo_identity_host::provisioning::FILE_SECRETS_ENV;
+use tilo_identity::provisioning::FILE_SECRETS_ENV;
 use tilo_server_protocol::hosted::Material;
 use tilo_session::apps::Apps;
 use tilo_session::hosted_browser::HostedBrowser;

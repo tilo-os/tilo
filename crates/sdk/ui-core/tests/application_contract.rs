@@ -3,7 +3,7 @@ use crate::support::application::*;
 use automerge::{ROOT, transaction::Transactable};
 use std::rc::Rc;
 use tilo_ui::application::{
-    ApplicationCatalog, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    ApplicationCatalog, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
 };
 use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
 use tilo_ui::launch::LaunchError;
@@ -64,9 +64,9 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
             tilo_ui::permissions::policy::KindSet::ALL,
             None,
         ));
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: host.records.clone(),
                 views: host.views.clone(),
                 device_id: DEVICE.into(),
@@ -97,9 +97,9 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         ] {
             let views = Rc::new(InstanceViewStore::new(root, device, workspace).unwrap());
             assert!(matches!(
-                HostContext::prepare(
+                ProcessContext::prepare(
                     probe_definition(),
-                    HostContextInputs {
+                    ProcessContextInputs {
                         records: host.records.clone(),
                         views,
                         device_id: DEVICE.into(),
@@ -229,9 +229,9 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
         assert_eq!(record.id, minted.id);
         assert_eq!(body(&records, &record), "initialized");
         let target = existing(&record);
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             probe_definition(),
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views: host.views,
                 device_id: DEVICE.into(),
@@ -411,9 +411,9 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         assert_eq!(record.id, minted.id);
         assert_eq!(body(&records, &record), "initialized");
         let target = existing(&record);
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             probe_definition(),
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: DEVICE.into(),
@@ -934,9 +934,9 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             ));
         }
         let target = existing(&checkout);
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: host.records,
                 views: host.views.clone(),
                 device_id: DEVICE.into(),
@@ -1004,9 +1004,9 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             None,
         ));
         let target = existing(&record);
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: records.clone(),
                 views: host.views,
                 device_id: DEVICE.into(),
@@ -1292,7 +1292,7 @@ mod save_status_fixture {
         }
     }
     fn factory(
-        mut context: HostContext,
+        mut context: ProcessContext,
         target: &LaunchTarget,
         _: RestoreInput,
     ) -> Result<tilo_ui::application::AppComponent, LaunchError> {
@@ -1692,7 +1692,7 @@ mod paired_local {
         reason = "ComponentFactory has an owned target signature"
     )]
     fn factory(
-        mut context: HostContext,
+        mut context: ProcessContext,
         target: LaunchTarget,
         _: RestoreInput,
     ) -> Result<AppComponent, LaunchError> {

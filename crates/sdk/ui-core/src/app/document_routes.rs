@@ -360,7 +360,7 @@ impl App {
             .iter()
             .map(|entry| entry.owners.len())
             .sum();
-        let continuity = crate::host::environment()
+        let continuity = crate::process::environment()
             .identity
             .continuity_instance
             .as_deref()

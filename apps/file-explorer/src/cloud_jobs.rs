@@ -30,10 +30,10 @@ pub(crate) fn approve(device: &str, op: &FileOp, entry: &str) -> Result<(), Stri
     if ui::tilo_actions::executor::is_replaying() {
         return Err("replay cannot approve a private cloud import".into());
     }
-    if !ui::bound_dispatch::host_person_invocation_permitted() {
+    if !ui::bound_dispatch::local_person_invocation_permitted() {
         return Err("only the host person can approve a personal cloud import".into());
     }
-    let scope = ui::bound_dispatch::executing_host_scope()
+    let scope = ui::bound_dispatch::executing_scope()
         .ok_or("cloud import requires a checked host issuer")?;
     let FileOp::CloudImport {
         job_id,
@@ -62,7 +62,7 @@ pub(crate) fn consume(
     op: &FileOp,
     entry: &str,
 ) -> Result<tilo_cloud_files::ImportConsent, String> {
-    let scope = ui::bound_dispatch::executing_host_scope()
+    let scope = ui::bound_dispatch::executing_scope()
         .ok_or("cloud import requires a checked host issuer")?;
     let FileOp::CloudImport {
         job_id,
@@ -110,12 +110,12 @@ pub(crate) fn approve_mounted(device: &str, op: &FileOp, entry: &str) -> Result<
     if ui::tilo_actions::executor::is_replaying() {
         return Err("replay cannot approve a private mounted import".into());
     }
-    if !ui::bound_dispatch::host_person_invocation_permitted()
-        || ui::bound_dispatch::executing_host_device().as_deref() != Some(device)
+    if !ui::bound_dispatch::local_person_invocation_permitted()
+        || ui::bound_dispatch::executing_device().as_deref() != Some(device)
     {
         return Err("only the receiving host's person can approve a mounted import".into());
     }
-    let scope = ui::bound_dispatch::executing_host_scope()
+    let scope = ui::bound_dispatch::executing_scope()
         .ok_or("mounted import requires a checked host issuer")?;
     let FileOp::ImportMounted { folder, .. } = op else {
         return Err("approval requires a mounted import".into());
@@ -142,7 +142,7 @@ pub(crate) fn consume_mounted(
     op: &FileOp,
     entry: &str,
 ) -> Result<MountedConsent, String> {
-    let scope = ui::bound_dispatch::executing_host_scope()
+    let scope = ui::bound_dispatch::executing_scope()
         .ok_or("mounted import requires a checked host issuer")?;
     MOUNTED_APPROVALS.with_borrow_mut(|approvals| {
         let MountedApproval {
@@ -155,7 +155,7 @@ pub(crate) fn consume_mounted(
             .ok_or("mounted import has no unused local approval")?;
         if approved_device != device
             || approved_op != *op
-            || ui::bound_dispatch::executing_host_device().as_deref() != Some(device)
+            || ui::bound_dispatch::executing_device().as_deref() != Some(device)
         {
             return Err("mounted import differs from its local approval".into());
         }

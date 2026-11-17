@@ -577,8 +577,8 @@ fn every_format_exports_to_a_path_and_imports_back_once() {
 fn the_file_chooser_saves_exports_and_picks_imports() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("Exported.csv");
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = sample_app();
 
     recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
@@ -1608,7 +1608,7 @@ fn commands_open_the_hosts_search_and_go_to_cells() {
 
 fn asked_search(app: &mut SheetsApp) -> ui::search::SearchRequest {
     let invocation = ui::widget::controls::take_control_invocation(app)
-        .expect("the app asked the host to open search");
+        .expect("the app asked the process to open search");
     ui::search::SearchRequest::from_arguments(&invocation.arguments)
 }
 

@@ -147,7 +147,7 @@
 //!   its own — the app is the same component, on a record the host opens
 //!   for it, publishing into the host's palette and MCP server. What only
 //!   the host can provide (the session's process supervisor) it lends
-//!   ([`HostContext::lend`](ui_core::application::HostContext::lend)); the
+//!   ([`ProcessContext::lend`](ui_core::application::ProcessContext::lend)); the
 //!   view takes it with [`ResourceEnv::take_lent`] and otherwise uses its own.
 //! * **Who is editing** is [`ResourceEnv::me`] for the reader
 //!   of a view, and [`ActionCx::author`](tilo_resource::ActionCx::author)

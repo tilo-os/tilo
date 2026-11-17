@@ -73,7 +73,7 @@ fn main() -> std::process::ExitCode {
         // A session installed on another distribution keeps its device identity where that login
         // can write, and every child it starts — the launcher, the brokers — reads the same tree.
         // This runs before anything here starts a thread, as it requires.
-        match tilo_onboarding_host::identity_provisioning::configure_host_identity_root() {
+        match tilo_onboarding_session::identity_provisioning::configure_host_identity_root() {
             Ok(root) => eprintln!(
                 "Tilo host session: device identity will be stored under {}",
                 root.display()
@@ -223,9 +223,9 @@ struct CommandLine {
 #[cfg(target_os = "linux")]
 fn device_owner() -> std::io::Result<bool> {
     let identity_dir = runtime_identity::identity_dir_from_env()?;
-    tilo_identity_host::provisioning::active_identity_owns_device(
+    tilo_identity::provisioning::active_identity_owns_device(
         &identity_dir,
-        &tilo_identity_host::provisioning::collaboration_identity_paths(),
+        &tilo_identity::provisioning::collaboration_identity_paths(),
     )
 }
 

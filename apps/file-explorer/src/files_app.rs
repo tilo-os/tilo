@@ -565,7 +565,7 @@ pub struct FilesState {
     mounted_cloud: mounted_cloud::MountedCloud,
     drives: drives::Drives,
     applications: applications::Applications,
-    host_intent: Option<ui::widget::AppHostIntent>,
+    process_intent: Option<ui::widget::AppProcessIntent>,
     drop_targets: crate::views::file_view::DropTargets,
     item_rects: crate::views::file_view::ItemRects,
     marquee: Option<(Point, Point, Vec<usize>)>,
@@ -914,7 +914,7 @@ impl FileExplorerWidget {
             mounted_cloud: mounted_cloud::MountedCloud::default(),
             drives: drives::Drives::default(),
             applications: applications::Applications::default(),
-            host_intent: None,
+            process_intent: None,
             open_request: crate::open_with::request,
             document_candidates: crate::open_with::candidates,
             open_replies: Arc::default(),
@@ -3922,7 +3922,7 @@ impl FilesState {
                         target: None,
                     }
                 });
-                self.host_intent = Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
+                self.process_intent = Some(ui::widget::AppProcessIntent::ShowWorkspaceActivity {
                     resource_id: document_id,
                     version_id: Some(*version_id.0.as_bytes()),
                     entry,
@@ -7432,7 +7432,7 @@ impl FilesState {
     fn live_other_resources(&self) -> Vec<ResourceSpec> {
         let mut extras = self.live_remote_account_resources();
         extras.extend(self.live_drive_resources());
-        if ui::bound_dispatch::host_person_invocation_permitted() {
+        if ui::bound_dispatch::local_person_invocation_permitted() {
             extras.extend(self.cloud_resources());
         }
         let mut nearby_root = ResourceSpec::new(
@@ -7451,7 +7451,7 @@ impl FilesState {
     fn live_remote_account_resources(&self) -> Vec<ResourceSpec> {
         // Account discovery belongs to the host person, not to whoever owns
         // the workspace. Checked resource reads install this trusted scope too.
-        if !ui::bound_dispatch::host_person_invocation_permitted() {
+        if !ui::bound_dispatch::local_person_invocation_permitted() {
             return Vec::new();
         }
         self.remote_account_snapshot()
@@ -8143,7 +8143,7 @@ impl FilesState {
     pub(crate) fn search_entries_shown(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         let mut entries = self.places_search.entries();
         entries.extend(self.collaborative_search.entries());
-        if ui::bound_dispatch::host_person_invocation_permitted() {
+        if ui::bound_dispatch::local_person_invocation_permitted() {
             entries.extend(self.remote_accounts_search.entries());
         }
         entries
@@ -8177,7 +8177,7 @@ impl FilesState {
                     .resource(id)
                     .or_else(|| self.collaborative_search.resource(id))
                     .or_else(|| {
-                        ui::bound_dispatch::host_person_invocation_permitted()
+                        ui::bound_dispatch::local_person_invocation_permitted()
                             .then(|| self.remote_accounts_search.resource(id))
                             .flatten()
                     })
@@ -8191,8 +8191,8 @@ impl FilesState {
 }
 
 impl FilesState {
-    pub(crate) fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
-        self.host_intent.take()
+    pub(crate) fn take_process_intent(&mut self) -> Option<ui::widget::AppProcessIntent> {
+        self.process_intent.take()
     }
 }
 

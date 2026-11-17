@@ -368,7 +368,7 @@ mod tests {
         let cert = testing::member_certificate(&root, &key, "Laptop");
         let engine = Arc::new(
             Engine::open(
-                tilo_identity_host::identity_store::HostIdentity::kept(cert.clone(), key.clone()),
+                tilo_identity::identity_store::HostIdentity::kept(cert.clone(), key.clone()),
                 Some(state),
                 std::iter::empty(),
                 crate::platform::membership_check::of_this_session(),
@@ -686,7 +686,7 @@ mod tests {
         let state = tempfile::TempDir::new().expect("the host's state directory");
         let host = Arc::new(
             Engine::open(
-                tilo_identity_host::identity_store::HostIdentity::kept(
+                tilo_identity::identity_store::HostIdentity::kept(
                     host_cert.clone(),
                     host_key.clone(),
                 ),

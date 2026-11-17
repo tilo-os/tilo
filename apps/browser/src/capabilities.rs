@@ -970,8 +970,8 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("download.txt");
             std::fs::write(&path, b"done").unwrap();
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
+            let (services, recorder) = ui::process::ProcessServices::recording();
+            let _host = ui::process::enter(&services);
             recorder.respond_to_launch(ui::portal::LaunchOutcome::Failed("no handler".into()));
             let opened = open_download(&path, false).unwrap();
             assert_eq!(

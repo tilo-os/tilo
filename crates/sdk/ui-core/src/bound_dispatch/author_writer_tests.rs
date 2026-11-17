@@ -66,7 +66,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase trusted_host_person_scope_rejects_reattribution_and_restores_after_nested_callbacks;
+    phase trusted_person_scope_rejects_reattribution_and_restores_after_nested_callbacks;
     {
         use crate::invocation_scope::InvokerScope;
         use tilo_actions::ActionInvoker;
@@ -82,42 +82,42 @@ tilo_test_env::scenario! {
         std::rc::Rc::make_mut(&mut binding.operation_context).invoker =
             Some(ActionInvoker::person("person"));
         let mut outer = AutoCommit::new();
-        assert_eq!(executing_host_person(), None);
-        assert!(!host_person_invocation_permitted());
+        assert_eq!(executing_person(), None);
+        assert!(!local_person_invocation_permitted());
         binding
             .with_resource_frame(&mut outer, false, |doc, _| {
-                assert_eq!(executing_host_person(), Some(MemberId::person("person")));
-                assert!(host_person_invocation_permitted());
+                assert_eq!(executing_person(), Some(MemberId::person("person")));
+                assert!(local_person_invocation_permitted());
                 {
                     let _invoker = InvokerScope::enter(ActionInvoker::person("agent"));
-                    assert!(!host_person_invocation_permitted());
+                    assert!(!local_person_invocation_permitted());
                 }
                 {
                     let _invoker = InvokerScope::enter(ActionInvoker::person("person"));
-                    assert!(host_person_invocation_permitted());
+                    assert!(local_person_invocation_permitted());
                 }
                 let mut nested = binding.clone();
-                nested.host_person = MemberId::person("other-person");
+                nested.local_person = MemberId::person("other-person");
                 nested
                     .with_resource_frame(doc, false, |_, _| {
-                        assert_eq!(executing_host_person(), Some(MemberId::person("other-person")));
+                        assert_eq!(executing_person(), Some(MemberId::person("other-person")));
                     })
                     .unwrap();
-                assert_eq!(executing_host_person(), Some(MemberId::person("person")));
+                assert_eq!(executing_person(), Some(MemberId::person("person")));
             })
             .unwrap();
-        assert_eq!(executing_host_person(), None);
-        assert!(!host_person_invocation_permitted());
+        assert_eq!(executing_person(), None);
+        assert!(!local_person_invocation_permitted());
 
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = binding.with_resource_frame(&mut outer, false, |_, _| {
-                assert_eq!(executing_host_person(), Some(MemberId::person("person")));
+                assert_eq!(executing_person(), Some(MemberId::person("person")));
                 panic!("callback unwound");
             });
         }));
         assert!(panic.is_err());
-        assert_eq!(executing_host_person(), None);
-        assert!(!host_person_invocation_permitted());
+        assert_eq!(executing_person(), None);
+        assert!(!local_person_invocation_permitted());
     }
 
     phase checked_record_preview_attribution_uses_admitted_actor_and_restores_on_unwind;
@@ -150,7 +150,7 @@ tilo_test_env::scenario! {
                             ActionCx::for_apply(doc, b"preview", 0).author(),
                             Some(&MemberId::person("guest"))
                         );
-                        assert!(!host_person_invocation_permitted());
+                        assert!(!local_person_invocation_permitted());
                     })
                     .unwrap();
                 assert_eq!(
@@ -265,7 +265,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A mount of `checkout` for `author`, as `HostContext::callback_binding` makes one.
+/// A mount of `checkout` for `author`, as `ProcessContext::callback_binding` makes one.
 pub(super) fn mount(
     records: &ResourceStore,
     checkout: &DocumentCheckout,
@@ -286,7 +286,7 @@ pub(super) fn mount(
         instance_id: instance,
         app_id: APP.into(),
         device_id: "test-device".into(),
-        host_person: MemberId::person(author),
+        local_person: MemberId::person(author),
         records: records.clone(),
         checkout: checkout.clone(),
         permissions: crate::permissions::SharedPermissions::new(PermissionContext::permissive()),

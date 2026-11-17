@@ -42,8 +42,8 @@ fn shows(app: &mut TestApp<CodeEditorShell>, name: &str) -> bool {
 #[test]
 fn open_folder_picks_a_folder_and_shows_its_tree() {
     ui::i18n::I18nManager::init("en-US");
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let folder = project_folder().unwrap();
     recorder.respond_to_pick(PortalOutcome::Opened(folder.path().to_path_buf()));
 
@@ -70,8 +70,8 @@ fn open_folder_picks_a_folder_and_shows_its_tree() {
 #[test]
 fn a_picker_that_cannot_open_is_told_in_plain_words() {
     ui::i18n::I18nManager::init("en-US");
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let reason = "This app's workspace isn't the one on screen. Switch to it, then try again.";
     recorder.respond_to_pick(PortalOutcome::Failed(reason.into()));
 

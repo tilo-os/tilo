@@ -28,11 +28,11 @@ pub use linux::Hosted;
 pub use tilo_surface_host::shell_part::{ShellIdentity, compile_shell, installed_shell};
 /// The desktop's own hosts, as a Linux session drives them: the toolkit's widget trees on their
 /// layers ([`WidgetHost`]), the shell under the windows and its window policy ([`DesktopHost`],
-/// [`StripPolicy`]), a surface app on a layer of its own ([`AppHost`]) and the tilolang shell's
+/// [`StripPolicy`]), a surface app on a layer of its own ([`AppProcess`]) and the tilolang shell's
 /// parts and slot views.
 #[cfg(target_os = "linux")]
 pub use tilo_surface_host::{
-    AppHost, DesktopHost, PointerSamples, SessionLink, ShellGesture, ShellPart, ShellWork,
+    AppProcess, DesktopHost, PointerSamples, SessionLink, ShellGesture, ShellPart, ShellWork,
     StripPolicy, WellPolicy, WidgetHost, WindowObserver, desktop, desktop_with, part_view,
 };
 

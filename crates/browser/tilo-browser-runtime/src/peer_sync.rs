@@ -28,7 +28,7 @@ struct Page {
     host: [u8; 32],
     /// The person the host acts for, its root key as hex: a host serves workspaces for people
     /// and is nobody in them itself.
-    host_person: String,
+    local_person: String,
     handle: Link,
     /// The person this page belongs to, their root key as hex.
     user: String,
@@ -119,7 +119,7 @@ pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceC
             id,
             Page {
                 host: host.device_public_key,
-                host_person: hex::encode(host.user_public_key),
+                local_person: hex::encode(host.user_public_key),
                 handle: handle.clone(),
                 user: hex::encode(cert.user_public_key),
                 device: cert.device_public_key,
@@ -153,8 +153,8 @@ pub(crate) fn device_of(id: u32) -> Option<[u8; 32]> {
 
 /// The person `id`'s workspace host acts for, its root key as hex: the host serves workspaces
 /// for people and is nobody in them itself, so a list of a workspace's people never offers it.
-pub(crate) fn host_person(id: u32) -> Option<String> {
-    PAGES.with_borrow(|pages| pages.get(&id).map(|page| page.host_person.clone()))
+pub(crate) fn local_person(id: u32) -> Option<String> {
+    PAGES.with_borrow(|pages| pages.get(&id).map(|page| page.local_person.clone()))
 }
 
 /// The host handle of the started page `id`: what this page asks its session for over the peer it

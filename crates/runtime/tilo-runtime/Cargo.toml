@@ -23,7 +23,7 @@ path = "src/lib.rs"
 # the desktop does. NEVER SHIP THIS: it accepts fixed credentials from the
 # environment (tools/policy/check_dev_overrides_contract.py).
 dev-overrides = [
-  "tilo-identity-host/throwaway-test-identity",
+  "tilo-identity/throwaway-test-identity",
   "package-store/dev-overrides",
   "launcher/dev-overrides",
 ]
@@ -97,7 +97,7 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 # files mirrored into a folder where nothing mounts them.
 tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
-tilo-identity-host = { path = "../tilo-identity-host" }
+tilo-identity = { path = "../tilo-identity" }
 # The surface an app under development names (`app_surface`), and the
 # runtime's own words (consent prompt, device grants), from Fluent. The
 # broker links it on every platform already.

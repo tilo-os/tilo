@@ -61,7 +61,7 @@ use tilo_app_launch::Links as WindowLinks;
 
 pub use os_actions::SessionAction;
 
-pub use tilo_onboarding_host::view::OnboardingView;
+pub use tilo_onboarding_session::view::OnboardingView;
 
 /// The generation the session's own desktop snapshots carry: a snapshot of
 /// an older one is stale.
@@ -225,7 +225,7 @@ impl Session {
             if let Some(lists) = crate::app_icons::app_lists() {
                 crate::app_icons::tell_names(&lists);
             }
-            tilo_identity_host::policy_change::announce();
+            tilo_identity::policy_change::announce();
         });
         let settings_watch = settings_store::watch::watch_settings(move || {
             let document = settings_store::load();
@@ -804,7 +804,7 @@ impl Session {
         let live_activities = std::sync::Arc::new(runtime_collab::LiveActivities::default());
         // A timer starting in the background must reach the bar on the next
         // frame, not the next minute.
-        live_activities.set_host_wake(options.wake.handle());
+        live_activities.set_shell_wake(options.wake.handle());
         // The cards apps draw themselves, over the shell: the session
         // authorises what each presents, and the floating layer's place is
         // where the shell stands its window.
@@ -821,7 +821,7 @@ impl Session {
             .as_ref()
             .and_then(|desktop| desktop.tray().cloned());
         if let Some(tray) = &tray {
-            tray.set_host_wake(options.wake.handle());
+            tray.set_shell_wake(options.wake.handle());
         }
         // The displays a fullscreen window owns, which the loop takes from
         // the compositor every pass: the bar there steps aside for it.
@@ -1523,8 +1523,8 @@ impl Session {
         let directory_store = Rc::new(crate::directory::Store::default());
         let clipboard = Rc::new(crate::clipboard::Clipboard::new(options.wake.handle()));
         // The shell's own fields copy and paste through the shell's clipboard, as apps do.
-        ui::host::install_default(
-            ui::host::HostServices::null().with_clipboard(Arc::new(clipboard.shell())),
+        ui::process::install_default(
+            ui::process::ProcessServices::null().with_clipboard(Arc::new(clipboard.shell())),
         );
         let boot_join = crate::boot_join::BootJoin::at_boot(&directory_store, &handle);
         let community =

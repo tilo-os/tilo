@@ -6,7 +6,7 @@ Bearer tokens, Basic credentials and API keys live in the app's host-provided
 explicitly provisioned the corresponding secret. Sending with a missing, locked
 or invalid secret fails rather than silently sending without authentication.
 Native standalone launches select the platform store at their composition root;
-host-mounted components use `HostContext::secrets()`.
+app-process-mounted components use `ProcessContext::secrets()`.
 
 On opening an older document, migration seals the visible authentication values
 before replacing their current fields, including legacy JSON resource blobs.

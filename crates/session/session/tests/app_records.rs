@@ -60,10 +60,10 @@ fn session_launching(
     home.env()
         .set("TILO_IDENTITY_ROOT", &system)
         .set("TILO_SECRETS_DIR", secrets());
-    tilo_identity_host::provisioning::ensure_throwaway_test_identity(
+    tilo_identity::provisioning::ensure_throwaway_test_identity(
         &identity,
-        &tilo_identity_host::provisioning::collaboration_identity_paths(),
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        &tilo_identity::provisioning::collaboration_identity_paths(),
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("the throwaway identity");
     let mut session = crate::common::headless(Options {
@@ -358,7 +358,7 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
         .expect("the seeded task is published");
 
     // The person at this device, as the app's window names them: by their root key.
-    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
     let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this device's certificate");
     let person = hex::encode(cert.user_public_key);

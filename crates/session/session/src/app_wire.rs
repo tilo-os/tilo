@@ -25,7 +25,7 @@ use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutStat
 use tilo_action_broker::collab_outbound::PeerPublisher;
 use tilo_action_broker::services::{
     ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
-    DriveServices, HostServices, PublishedResources, Reading, ResourceWatch,
+    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch,
     ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
     WifiContinuityServices, WorkspaceMemberships,
 };
@@ -589,7 +589,7 @@ async fn save_shortcut(
     engine: std::sync::Arc<crate::engine::Engine>,
     request: ShortcutLibraryRequest,
 ) -> Result<(), String> {
-    let (key, device) = tilo_identity_host::broker::trusted_current_device(&request.workspace)
+    let (key, device) = tilo_identity::broker::trusted_current_device(&request.workspace)
         .map_err(|error| format!("this device cannot sign in the workspace: {error}"))?;
     if request.actor.person_id() != Some(hex::encode(device.user_public_key).as_str()) {
         return Err("a shortcut is saved from its saver's own device".into());
@@ -741,7 +741,7 @@ impl LayoutAuthority {
     fn announce(&self) {
         self.generation
             .send_modify(|generation| *generation = generation.wrapping_add(1));
-        tilo_identity_host::policy_change::announce();
+        tilo_identity::policy_change::announce();
     }
 
     /// The session as the loop shows it now, for the broker's next decision, which re-checks what
@@ -797,7 +797,7 @@ fn claim_earlier_owners(tree: &mut tilo_desktop_model::Layout, names: &Names) {
 /// The session as the identity service reads it: an app signs in the person's
 /// workspace through the session this session shows, so the workspace the
 /// request names is the one the person sees it in.
-impl tilo_identity_host::broker::WorkspaceMembership for LayoutAuthority {
+impl tilo_identity::broker::WorkspaceMembership for LayoutAuthority {
     fn with_workspace(
         &self,
         workspace: &tilo_desktop_model::WorkspaceId,
@@ -1013,7 +1013,7 @@ fn host_services(
     hosted: Hosted,
     certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
     memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
-) -> HostServices {
+) -> ProcessServices {
     host_services_with_hosts(link, launches, fabric, hosted, certificates, memberships).0
 }
 
@@ -1028,7 +1028,7 @@ fn host_services_with_hosts(
     certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
     memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
 ) -> (
-    HostServices,
+    ProcessServices,
     Option<crate::hosted_workspaces::HostedWorkspaces>,
 ) {
     // The hosts of the workspaces placed away from this device: where the person's actions on
@@ -1061,7 +1061,7 @@ fn host_services_with_hosts(
     (decided.into_host_services(), hosting)
 }
 
-/// This session's decision for every service of the broker's [`HostServices`]:
+/// This session's decision for every service of the broker's [`ProcessServices`]:
 /// what it serves, and for what it serves nothing, the reason it was left
 /// out (see [`crate::services`]).
 #[allow(
@@ -1557,7 +1557,7 @@ impl AppWire {
 /// Whether the shortcut catalogue the services hand an app on this machine names every
 /// shortcut of the desktop.
 #[cfg(test)]
-fn shortcut_catalogue(services: &tilo_action_broker::services::HostServices) -> bool {
+fn shortcut_catalogue(services: &tilo_action_broker::services::ProcessServices) -> bool {
     let Some(keys) = services.keyboard_shortcuts.as_ref() else {
         return false;
     };
@@ -1687,7 +1687,7 @@ mod tests {
         ))
     }
 
-    fn services(fabric: Option<crate::platform::fabric::SharedLink>) -> HostServices {
+    fn services(fabric: Option<crate::platform::fabric::SharedLink>) -> ProcessServices {
         let wake: Wake = std::sync::Arc::new(|| ());
         let link = Link::new(wake);
         host_services(
@@ -2183,14 +2183,14 @@ mod tests {
     }
 
     /// A device of a person, certified for their root, that holds workspaces.
-    fn held_identity() -> tilo_identity_host::identity_store::HostIdentity {
+    fn held_identity() -> tilo_identity::identity_store::HostIdentity {
         let key = ed25519_dalek::SigningKey::from_bytes(&[0x34; 32]);
         let cert = tilo_peer_state::owner::testing::member_certificate(
             &ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]),
             &key,
             "Laptop",
         );
-        tilo_identity_host::identity_store::HostIdentity::kept(cert, key)
+        tilo_identity::identity_store::HostIdentity::kept(cert, key)
     }
 
     /// Every service the broker offers is decided here: served, served where
@@ -2215,7 +2215,7 @@ mod tests {
         // notice a name that went missing.
         assert_eq!(
             decisions.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-            tilo_action_broker::services::HostServices::NAMES,
+            tilo_action_broker::services::ProcessServices::NAMES,
             "the broker's services, each decided in its order"
         );
         let mut names = std::collections::BTreeSet::new();

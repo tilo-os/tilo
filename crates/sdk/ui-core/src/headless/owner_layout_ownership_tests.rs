@@ -1,6 +1,6 @@
 //! Genuine mapped, mounted record owners. RED refuses unsafe reads after actual drop.
 use super::*;
-use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
+use crate::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
 use crate::application_test_support::{self as probe, ProbeHost};
 use crate::owner_wake::OwnerWakeQueue;
 use crate::widget::{
@@ -145,7 +145,7 @@ impl AppWidget for Owner {
 }
 thread_local! { static NEXT: RefCell<Option<Seen>> = const { RefCell::new(None) }; }
 fn factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {

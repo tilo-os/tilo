@@ -576,9 +576,9 @@ fn open_and_save_as_read_and_write_through_the_host() {
     let painted = canvas::document::read(&path).unwrap();
 
     let mut app = TestApp::<App>::new().unwrap();
-    let (services, recorder) = ui::host::HostServices::recording();
+    let (services, recorder) = ui::process::ProcessServices::recording();
     let copy = dir.path().join("Valley copy.artwork");
-    ui::host::scoped(&services, || {
+    ui::process::scoped(&services, || {
         let work = ui::background::Pumped::new();
         let _work = work.background().enter();
         app.harness()
@@ -629,7 +629,7 @@ struct PathlessHost {
     written: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
 }
 
-impl ui::host::FilePicker for PathlessHost {
+impl ui::process::FilePicker for PathlessHost {
     fn pick(&self, _: ui::portal::PickRequest) -> ui::portal::PortalChannel {
         answered(ui::portal::PortalOutcome::Failed("no paths".into()))
     }
@@ -669,7 +669,7 @@ fn answered<T>(outcome: T) -> std::sync::mpsc::Receiver<T> {
 #[test]
 fn a_place_with_no_path_is_kept_and_later_saves_write_there_quietly() {
     let host = std::sync::Arc::new(PathlessHost::default());
-    let services = ui::host::HostServices::null().with_files(host.clone());
+    let services = ui::process::ProcessServices::null().with_files(host.clone());
     let mut app = TestApp::<App>::new().unwrap();
     let press = |app: &mut TestApp<App>, modifiers: &[&str], key: &str| {
         let modifiers: Vec<String> = modifiers.iter().map(|m| (*m).to_owned()).collect();
@@ -679,7 +679,7 @@ fn a_place_with_no_path_is_kept_and_later_saves_write_there_quietly() {
         app.settle();
         app.settle();
     };
-    ui::host::scoped(&services, || {
+    ui::process::scoped(&services, || {
         app.harness()
             .perform_named("canvas", &ui::a11y::Action::Focus)
             .unwrap();

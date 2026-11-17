@@ -85,7 +85,7 @@ pub(crate) struct Observer {
 impl Observer {
     pub(crate) fn from_environment(worker_id: u64) -> Option<Self> {
         enabled(
-            crate::host::environment().diagnostics.gpu_timestamps,
+            crate::process::environment().diagnostics.gpu_timestamps,
             worker_id,
         )
     }

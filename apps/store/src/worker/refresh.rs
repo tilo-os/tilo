@@ -4,7 +4,7 @@ use crate::resource::CATALOG;
 use std::collections::{HashMap, HashSet, VecDeque};
 use ui::time::Instant;
 
-use app_host::client::{
+use app_process::client::{
     CatalogueError, FlatpakStatus, ListedPackage, PackageAbout, PendingRead, Refusal,
 };
 use package_store::InstalledPackage;
@@ -49,7 +49,7 @@ enum Response {
 }
 
 impl Read {
-    fn poll(&mut self, host: &app_host::client::BlockingClient) -> Option<Response> {
+    fn poll(&mut self, host: &app_process::client::BlockingClient) -> Option<Response> {
         match self {
             Self::Status(read) => read.poll(host).map(Response::Status),
             Self::Repositories(read) => read.poll(host).map(Response::Repositories),
@@ -1069,12 +1069,12 @@ mod tests {
                 "declaration unreadable",
                 "Failed: remote exception: timed out",
             ] {
-                let (service, connection) = app_host::testing::ConnectedService::start(RefusingHost(
-                    app_host::client::Refusal::SystemUpdateNeeded,
+                let (service, connection) = app_process::testing::ConnectedService::start(RefusingServer(
+                    app_process::client::Refusal::SystemUpdateNeeded,
                     detail,
                 ))
                 .unwrap();
-                let client = app_host::client::BlockingClient::from_connected_fd(connection).unwrap();
+                let client = app_process::client::BlockingClient::from_connected_fd(connection).unwrap();
                 let error = client.registry_catalogue(MAIN).unwrap_err();
                 assert_eq!(
                     error.refusal(),
@@ -1121,14 +1121,14 @@ mod tests {
 
     /// A host that refuses every catalogue read with one refusal and the
     /// detail it is given.
-    struct RefusingHost(app_host::client::Refusal, &'static str);
-    impl app_host::wire::Host for RefusingHost {
+    struct RefusingServer(app_process::client::Refusal, &'static str);
+    impl app_process::wire::Server for RefusingServer {
         fn handle(
             self: std::rc::Rc<Self>,
-            request: app_host::wire::Operation,
-        ) -> impl core::future::Future<Output = Result<app_host::wire::Answer, String>> + 'static
+            request: app_process::wire::Operation,
+        ) -> impl core::future::Future<Output = Result<app_process::wire::Answer, String>> + 'static
         {
-            use app_host::wire::{Answer, Catalogue, Operation, Resource};
+            use app_process::wire::{Answer, Catalogue, Operation, Resource};
             std::future::ready(match request {
                 Operation::Read(Resource::RegistryCatalogue { .. }) => {
                     Ok(Answer::Catalogue(Catalogue::Refused {
@@ -1136,7 +1136,7 @@ mod tests {
                         detail: self.1.into(),
                     }))
                 }
-                other => app_host::testing::refuse(&other),
+                other => app_process::testing::refuse(&other),
             })
         }
     }

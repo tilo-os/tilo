@@ -229,7 +229,7 @@ fn invocation_fixture(
 ) {
     let broker = AppBrokerState::test_broker_with_authority(
         Arc::clone(authority) as WorkspaceTreeHandle,
-        HostServices::default(),
+        ProcessServices::default(),
     );
     let state = Arc::clone(broker.state());
     state.replace_published_surfaces_for_test(vec![write_surface(workspace)]);
@@ -412,7 +412,7 @@ async fn query_wide_page(
         Some(Arc::clone(authority) as WorkspaceTreeHandle),
         None,
         None,
-        HostServices::default(),
+        ProcessServices::default(),
     );
     let route = CrdtRoute::record("so.tilo.atlas", workspace, "atlas");
     let directories = LocalActionDirectoryRegistry::new(bridge_rx);

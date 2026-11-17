@@ -26,7 +26,7 @@ use tilo_actions::remote::{
 };
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity_host::device_admin;
+use tilo_identity::device_admin;
 use tilo_lock::MutexRecover as _;
 use tilo_server_session::workspaces::PersonalList;
 use tilo_session_client::PeerConfig;

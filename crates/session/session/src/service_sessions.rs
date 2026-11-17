@@ -91,9 +91,8 @@ impl ServiceSessions {
             }
             Ok(())
         })?;
-        let selected =
-            tilo_identity_host::registry::selected_actor_id_prompt(context.workspace_id())
-                .map_err(|_| "This workspace's selected identity is unavailable")?;
+        let selected = tilo_identity::registry::selected_actor_id_prompt(context.workspace_id())
+            .map_err(|_| "This workspace's selected identity is unavailable")?;
         if selected.as_deref() != Some(context.person()) {
             return Err("This workspace's selected identity changed".into());
         }

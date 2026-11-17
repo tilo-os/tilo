@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use base64::Engine as _;
 use serde::Deserialize;
-use ui::application::HostContext;
+use ui::application::ProcessContext;
 use ui::framework::Chain;
 use ui::tilo_resource::{Bytes, Id, Invoke};
 
@@ -50,7 +50,7 @@ fn note_for(source: &str, key: &str) -> Id {
     page_id(uuid::Builder::from_random_bytes(bytes).into_uuid())
 }
 
-pub(crate) fn import(context: &HostContext) -> Result<(), String> {
+pub(crate) fn import(context: &ProcessContext) -> Result<(), String> {
     let files = context.files();
     let data = files.data().map_err(|error| error.to_string())?;
     let Ok(inbox) = tilo_files::VPath::new(INBOX) else {

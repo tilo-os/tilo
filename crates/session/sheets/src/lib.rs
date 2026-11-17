@@ -5,7 +5,7 @@
 //! The shell mounts each one in its own process and shows it over the
 //! desktop; what only the shell can do for a sheet (power the machine down,
 //! say whether the sheet is up) it lends the app as a service of plain data
-//! in and requests out ([`ui::application::HostContext::lend`]).
+//! in and requests out ([`ui::application::ProcessContext::lend`]).
 
 pub mod add_app;
 pub mod delete_workspace;

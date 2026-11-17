@@ -59,7 +59,7 @@ pub fn load_root(
     if !identity.is_single_device() {
         bail!(
             "{}",
-            tilo_identity_host::certification_ceremony::cannot_sign_alone()
+            tilo_identity::certification_ceremony::cannot_sign_alone()
         );
     }
     Ok(Box::new(identity))
@@ -106,10 +106,10 @@ mod tests {
             let identities = temp.path().join("identities");
             let root = temp.path().join("tilo");
             let paths = IdentityPaths::under(&root);
-            tilo_identity_host::provisioning::ensure_collaboration_identity(
+            tilo_identity::provisioning::ensure_collaboration_identity(
                 &identities,
                 &paths,
-                tilo_identity_host::provisioning::IdentityStorage::Files,
+                tilo_identity::provisioning::IdentityStorage::Files,
             )
             .unwrap();
             assert!(load_root(&root, Some(&identities)).is_ok());
@@ -123,10 +123,10 @@ mod tests {
             let identities = temp.path().join("identities");
             let root = temp.path().join("tilo");
             let paths = IdentityPaths::under(&root);
-            tilo_identity_host::provisioning::ensure_collaboration_identity(
+            tilo_identity::provisioning::ensure_collaboration_identity(
                 &identities,
                 &paths,
-                tilo_identity_host::provisioning::IdentityStorage::Files,
+                tilo_identity::provisioning::IdentityStorage::Files,
             )
             .unwrap();
             let record = runtime_identity::resolve_active_identity(&identities).unwrap();

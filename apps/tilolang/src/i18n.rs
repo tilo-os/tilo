@@ -1,8 +1,8 @@
 //! The host's fluent catalogue: chrome only. What an app says comes from the app's own source.
-//! The catalogue is the UI host's (`tilo_ui_host::i18n`), which says the window's chrome; the
+//! The catalogue is the app window's (`tilo_app_window::i18n`), which says the window's chrome; the
 //! standard library's frames say its phrases through the instance.
 
-pub use tilo_ui_host::i18n::{CATALOG, t, t_args};
+pub use tilo_app_window::i18n::{CATALOG, t, t_args};
 
 /// Load the chrome's catalogue and speak the installed package's language: the person's when
 /// the package ships it, else the package's source language. The toolkit's own words and the
@@ -11,7 +11,7 @@ pub use tilo_ui_host::i18n::{CATALOG, t, t_args};
 /// the window's; calling it again is free.
 pub fn ensure() {
     static SPOKEN: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     if SPOKEN.get().is_some() {
         return;
     }

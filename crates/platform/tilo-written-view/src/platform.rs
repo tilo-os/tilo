@@ -44,16 +44,16 @@ impl Platform for ViewPlatform {
     }
 
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
-        tilo_ui_host::i18n::word(id, args, id)
+        tilo_app_window::i18n::word(id, args, id)
     }
 
     /// The view speaks the language its window speaks: the words of the apps it names ride along.
     fn add_words(&self, _window: bool, catalogues: &[(String, String)]) {
-        tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+        tilo_app_window::i18n::add_shared_catalogues(catalogues);
     }
 
     fn words_revision(&self) -> u64 {
-        tilo_ui_host::i18n::revision()
+        tilo_app_window::i18n::revision()
     }
 
     fn now(&self) -> String {
@@ -69,7 +69,7 @@ impl Platform for ViewPlatform {
     }
 
     fn shown(&self, kind: &str, value: &str) -> String {
-        tilo_ui_host::date::shown_text(kind, value)
+        tilo_app_window::date::shown_text(kind, value)
     }
 
     fn clock(&self, hour: u32, minute: u32) -> String {

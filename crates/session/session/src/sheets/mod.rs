@@ -8,7 +8,7 @@
 
 pub(crate) mod mount;
 
-use crate::platform::surfaces::{AppHost, Placement};
+use crate::platform::surfaces::{AppProcess, Placement};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_session_core::surface::{HostKey, KeyClaim, Scroll};
 use tilo_session_core::surface::{HostLayer, SurfaceHost};
@@ -83,7 +83,7 @@ pub(crate) fn set_theme(theme: &ui::Theme) {
 
 /// One sheet's app on its layer.
 pub(crate) struct Sheet<S: SheetState> {
-    host: AppHost,
+    host: AppProcess,
     state: S,
     /// The displays as the compositor last said they are.
     outputs: Vec<tilo_session_core::surface::HostedOutput>,
@@ -114,7 +114,7 @@ impl<S: SheetState> Sheet<S> {
             scale,
         };
         Ok(Self {
-            host: AppHost::new(app, placement).named(definition.title()),
+            host: AppProcess::new(app, placement).named(definition.title()),
             state,
             outputs: Vec::new(),
             role: Role::Presented,

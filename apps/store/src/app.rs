@@ -3662,8 +3662,8 @@ mod tests {
                 .state()
                 .set_operation_error(Some(crate::flathub_client::remote_error(
                     &remote,
-                    &app_host::client::CatalogueError::Refused {
-                        refusal: app_host::client::Refusal::TimedOut,
+                    &app_process::client::CatalogueError::Refused {
+                        refusal: app_process::client::Refusal::TimedOut,
                         detail: "command timed out after 8000 ms".into(),
                     },
                 )));

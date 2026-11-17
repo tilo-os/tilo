@@ -13,7 +13,7 @@ struct MesaFixture {
 fn fixture_seed() -> Result<Option<(std::path::PathBuf, &'static str)>, Box<dyn std::error::Error>>
 {
     let mut roots = Vec::new();
-    if let Some(dir) = tilo_ui::host::environment().paths.pipeline_seed.clone() {
+    if let Some(dir) = tilo_ui::process::environment().paths.pipeline_seed.clone() {
         roots.push((dir, "probe-mesa-source-session"));
     }
     let executable = std::env::current_exe()?;

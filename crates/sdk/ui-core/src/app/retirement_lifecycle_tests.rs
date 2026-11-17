@@ -1,6 +1,6 @@
 //! Real SDK construction/lifecycle tests; the marker is resource-only.
 use super::*;
-use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
+use crate::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
 use crate::application_test_support::{ProbeHost, definition, runner_inputs, runner_permissions};
 use crate::semantic_document_read::retirement::{
     MountRetirement, RetirementDomain, RetirementError, RetirementHandle, retirement_test_probe,
@@ -124,7 +124,7 @@ impl Drop for Root {
     }
 }
 fn factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {

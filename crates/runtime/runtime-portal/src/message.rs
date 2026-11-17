@@ -2,7 +2,7 @@
 //!
 //! A socket an app is handed as one of its
 //! service descriptors (`runtime_portal::windows`, `launch_hold`,
-//! `origin_connector`, `tilolang_host`): every request is one message of
+//! `origin_connector`, `tilolang_process`): every request is one message of
 //! NUL-separated fields, with the descriptors it carries beside it, and every
 //! answer is one message back. Seqlpacket keeps message boundaries, so a verb
 //! and its arguments arrive together and neither side buffers a stream.

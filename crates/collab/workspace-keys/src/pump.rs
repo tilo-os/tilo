@@ -130,8 +130,7 @@ impl GovernancePump {
         std::thread::Builder::new()
             .name(name.into())
             .spawn(move || {
-                let policy_watch =
-                    tilo_identity_host::policy_change::Watch::new(move || wake.poke());
+                let policy_watch = tilo_identity::policy_change::Watch::new(move || wake.poke());
                 while !stopped.load(Ordering::Relaxed) {
                     let mut due = access
                         .as_ref()

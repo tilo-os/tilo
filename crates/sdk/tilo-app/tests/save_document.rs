@@ -83,8 +83,8 @@ fn saving_the_document_somewhere_new_makes_it_the_file_the_window_shows() {
     let directory = tempfile::tempdir().unwrap();
     let from = directory.path().join("Draft.txt");
     std::fs::write(&from, "one line").unwrap();
-    let (services, recorder) = tilo_app::host::HostServices::recording();
-    let _host = tilo_app::host::enter(&services);
+    let (services, recorder) = tilo_app::process::ProcessServices::recording();
+    let _host = tilo_app::process::enter(&services);
     let mut app = TestApp::<DraftApp>::new().unwrap();
     SHOWS.with(|shows| {
         let shows = shows.borrow();

@@ -718,7 +718,7 @@ impl Theme {
     pub fn configured_from(settings: &serde_json::Map<String, serde_json::Value>) -> Self {
         let text = serde_json::Value::Object(with_host_scheme(settings.clone(), host_scheme()))
             .to_string();
-        let reduce_motion_override = crate::host::environment().accessibility.reduce_motion;
+        let reduce_motion_override = crate::process::environment().accessibility.reduce_motion;
         Self::configured_from_text(&text, reduce_motion_override)
     }
 
@@ -749,7 +749,7 @@ impl Theme {
 
     /// The accessibility comforts the person chose in this process's settings document
     /// (the installed source, else the settings file), with what the launcher requested
-    /// ([`crate::host::environment()`]) on top: high contrast, text size, interface scale
+    /// ([`crate::process::environment()`]) on top: high contrast, text size, interface scale
     /// and reduced motion.
     #[must_use]
     pub fn configured_accessibility() -> crate::theme_layers::AccessibilityLayer {
@@ -761,7 +761,7 @@ impl Theme {
     #[must_use]
     pub fn configured_comforts() -> ConfiguredComforts {
         let document = serde_json::Value::Object(settings_store::load());
-        Self::comforts_in(&document, crate::host::environment().accessibility)
+        Self::comforts_in(&document, crate::process::environment().accessibility)
     }
 
     /// [`Self::configured_comforts`] of an explicit settings document and launch request.
@@ -772,7 +772,7 @@ impl Theme {
     #[must_use]
     pub fn comforts_in(
         document: &serde_json::Value,
-        requested: crate::host::AccessibilityInputs,
+        requested: crate::process::AccessibilityInputs,
     ) -> ConfiguredComforts {
         let stack = crate::theme_layers::ThemeLayerStack::from_settings_json(
             &document.to_string(),
@@ -2192,7 +2192,7 @@ mod configured_theme {
         // Case `the_reduce_motion_switch_reaches_the_shells_chrome_live`: the shell
         // re-reads its theme through this API on every settings change, so flipping the
         // switch must flip the chrome's motion.
-        if !crate::host::environment().accessibility.reduce_motion {
+        if !crate::process::environment().accessibility.reduce_motion {
             let settings = settings_store::parse(r#"{"appearance":{"reduce_motion":true}}"#);
             assert!(Theme::configured_from(&settings).reduce_motion);
             let settings = settings_store::parse(r#"{"appearance":{"reduce_motion":false}}"#);

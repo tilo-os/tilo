@@ -172,7 +172,7 @@ impl StoreWorker {
         Self::spawn_with_host(
             directory,
             wake,
-            app_host::client::BlockingClient::from_service,
+            app_process::client::BlockingClient::from_service,
         )
     }
 
@@ -183,7 +183,7 @@ impl StoreWorker {
     fn spawn_with_host(
         directory: StoreDirectory,
         wake: WakeHandle,
-        connect: impl FnOnce() -> Result<app_host::client::BlockingClient, String> + Send + 'static,
+        connect: impl FnOnce() -> Result<app_process::client::BlockingClient, String> + Send + 'static,
     ) -> Self {
         let (request_tx, request_rx) = mpsc::channel();
         let (snapshot_tx, snapshot_rx) = mpsc::channel();
@@ -224,7 +224,7 @@ impl StoreWorker {
         fd: std::os::fd::OwnedFd,
     ) -> Self {
         Self::spawn_with_host(directory, self.wake.clone(), move || {
-            app_host::client::BlockingClient::from_connected_fd(fd)
+            app_process::client::BlockingClient::from_connected_fd(fd)
         })
     }
 
@@ -293,7 +293,7 @@ struct State {
     refresh_requested: bool,
     /// Passive source hydration must not erase a completed operation's notice.
     operation_notice: Option<String>,
-    host: Option<app_host::client::BlockingClient>,
+    host: Option<app_process::client::BlockingClient>,
     opened_ref: Option<FlatpakRef>,
     imported_package: Option<crate::package_import::ImportedPackage>,
     base_items: Vec<StoreItem>,
@@ -320,14 +320,14 @@ struct State {
 
 fn initial_state(
     directory: StoreDirectory,
-    host: Result<app_host::client::BlockingClient, String>,
+    host: Result<app_process::client::BlockingClient, String>,
 ) -> State {
     State {
         refresh_requested: false,
         operation_notice: None,
         host: host
             .map_err(|error| {
-                tracing::error!(%error, "required app-host capability unavailable");
+                tracing::error!(%error, "required app-process capability unavailable");
                 error
             })
             .ok(),
@@ -384,7 +384,7 @@ fn run(
     requests: &mpsc::Receiver<QueuedRequest>,
     snapshots: &Snapshots,
     directory: StoreDirectory,
-    host: Result<app_host::client::BlockingClient, String>,
+    host: Result<app_process::client::BlockingClient, String>,
 ) {
     let staging = crate::actions::tapp_staging_dir()
         .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
@@ -635,7 +635,7 @@ fn runtime_details(
 )]
 fn runtime_item(
     offer: app_cli::CatalogueApp,
-    installed: &[app_host::client::ListedPackage],
+    installed: &[app_process::client::ListedPackage],
 ) -> StoreItem {
     let installed = installed
         .iter()
@@ -1319,7 +1319,7 @@ fn refresh_flatpak(state: &mut State) {
         .host
         .as_ref()
         .ok_or_else(|| "App service unavailable.".to_string())
-        .and_then(app_host::client::BlockingClient::flatpak_status);
+        .and_then(app_process::client::BlockingClient::flatpak_status);
     match result {
         Ok(status) => {
             state.flatpak_error = None;
@@ -1517,28 +1517,28 @@ mod tests {
         }
     }
 
-    struct ImportOfferHost {
+    struct ImportOfferServer {
         registry: String,
-        expected: app_host::install::InstallExpectation,
+        expected: app_process::install::InstallExpectation,
         installs: Arc<AtomicUsize>,
         offer: Option<app_cli::CatalogueApp>,
         installed_root: Option<[u8; 32]>,
     }
 
-    impl app_host::wire::Host for ImportOfferHost {
+    impl app_process::wire::Server for ImportOfferServer {
         fn handle(
             self: std::rc::Rc<Self>,
-            request: app_host::wire::Operation,
-        ) -> impl core::future::Future<Output = Result<app_host::wire::Answer, String>> + 'static
+            request: app_process::wire::Operation,
+        ) -> impl core::future::Future<Output = Result<app_process::wire::Answer, String>> + 'static
         {
-            use app_host::wire::{Action, Answer, Operation, Resource};
+            use app_process::wire::{Action, Answer, Operation, Resource};
             std::future::ready(match request {
                 Operation::Read(Resource::Packages) => Ok(Answer::Packages(
                     self.installed_root
                         .into_iter()
-                        .map(|root| app_host::wire::PackageEntry {
+                        .map(|root| app_process::wire::PackageEntry {
                             id: root,
-                            pinning: app_host::wire::WirePinning::Tried,
+                            pinning: app_process::wire::WirePinning::Tried,
                             payload_root: "/payloads/engine".into(),
                             manifest_path: "/payloads/engine/manifest.toml".into(),
                             manifest_text: concat!(
@@ -1583,7 +1583,7 @@ mod tests {
                     self.installs.fetch_add(1, Ordering::SeqCst);
                     Ok(Answer::Installed(*self.expected.package_root.as_bytes()))
                 }
-                other => app_host::testing::refuse(&other),
+                other => app_process::testing::refuse(&other),
             })
         }
     }
@@ -1602,7 +1602,7 @@ mod tests {
             }))
             .unwrap();
             let installs = Arc::new(AtomicUsize::new(0));
-            let expected = app_host::install::InstallExpectation {
+            let expected = app_process::install::InstallExpectation {
                 package_root: format!("tapp:{}", offer.tapp_root_hash_hex)
                     .parse()
                     .unwrap(),
@@ -1611,7 +1611,7 @@ mod tests {
                 version: offer.version.clone(),
                 size_bytes: offer.tapp_size_bytes,
             };
-            let (service, connection) = app_host::testing::ConnectedService::start(ImportOfferHost {
+            let (service, connection) = app_process::testing::ConnectedService::start(ImportOfferServer {
                 registry: "main".into(),
                 expected,
                 installs: installs.clone(),
@@ -1620,7 +1620,7 @@ mod tests {
             })
             .unwrap();
             let mut state = state_with_items(Vec::new(), StoreDirectory::default());
-            state.host = Some(app_host::client::BlockingClient::from_connected_fd(connection).unwrap());
+            state.host = Some(app_process::client::BlockingClient::from_connected_fd(connection).unwrap());
             let (sender, received) = mpsc::channel();
             let snapshots = Snapshots {
                 sender,
@@ -1679,9 +1679,9 @@ mod tests {
             .unwrap();
             for (installed_root, installed) in [([0x11; 32], true), ([0x33; 32], false)] {
                 let (service, connection) =
-                    app_host::testing::ConnectedService::start(ImportOfferHost {
+                    app_process::testing::ConnectedService::start(ImportOfferServer {
                         registry: "main".into(),
-                        expected: app_host::install::InstallExpectation {
+                        expected: app_process::install::InstallExpectation {
                             package_root: format!("tapp:{}", "11".repeat(32)).parse().unwrap(),
                             publisher: [0x22; 32],
                             app_id: offer.package_id.clone(),
@@ -1695,7 +1695,7 @@ mod tests {
                     .unwrap();
                 let mut state = state_with_items(Vec::new(), StoreDirectory::default());
                 state.host =
-                    Some(app_host::client::BlockingClient::from_connected_fd(connection).unwrap());
+                    Some(app_process::client::BlockingClient::from_connected_fd(connection).unwrap());
                 let item = runtime_details("tilo-runtime/2026.10.4-chromium", None, &state).unwrap();
                 assert_eq!(item.installed.is_installed(), installed);
                 assert_eq!(
@@ -1741,9 +1741,9 @@ mod tests {
             ] {
                 let installs = Arc::new(AtomicUsize::new(0));
                 let (service, connection) =
-                    app_host::testing::ConnectedService::start(ImportOfferHost {
+                    app_process::testing::ConnectedService::start(ImportOfferServer {
                         registry: "main".into(),
-                        expected: app_host::install::InstallExpectation {
+                        expected: app_process::install::InstallExpectation {
                             package_root: format!("tapp:{}", "11".repeat(32)).parse().unwrap(),
                             publisher: [0x22; 32],
                             app_id: "so.tilo.runtime.chromium".into(),
@@ -1757,7 +1757,7 @@ mod tests {
                     .unwrap();
                 let mut state = state_with_items(Vec::new(), StoreDirectory::default());
                 state.host =
-                    Some(app_host::client::BlockingClient::from_connected_fd(connection).unwrap());
+                    Some(app_process::client::BlockingClient::from_connected_fd(connection).unwrap());
                 assert!(runtime_details("tilo-runtime/2026.10.4-chromium", None, &state).is_err());
                 assert_eq!(installs.load(Ordering::SeqCst), 0);
                 drop(state);
@@ -1785,16 +1785,18 @@ mod tests {
         let reviewed =
             crate::package_import::review(bytes.clone(), std::slice::from_ref(&item)).unwrap();
         let installs = Arc::new(AtomicUsize::new(0));
-        let (service, connection) = app_host::testing::ConnectedService::start(ImportOfferHost {
-            registry: reviewed.registry.clone(),
-            expected: reviewed.expected.clone(),
-            installs: installs.clone(),
-            offer: None,
-            installed_root: None,
-        })
-        .unwrap();
+        let (service, connection) =
+            app_process::testing::ConnectedService::start(ImportOfferServer {
+                registry: reviewed.registry.clone(),
+                expected: reviewed.expected.clone(),
+                installs: installs.clone(),
+                offer: None,
+                installed_root: None,
+            })
+            .unwrap();
         let mut state = state_with_items(vec![item.clone()], StoreDirectory::default());
-        state.host = Some(app_host::client::BlockingClient::from_connected_fd(connection).unwrap());
+        state.host =
+            Some(app_process::client::BlockingClient::from_connected_fd(connection).unwrap());
         let (sender, received) = mpsc::channel();
         let snapshots = Snapshots {
             sender,

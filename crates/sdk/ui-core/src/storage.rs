@@ -4,18 +4,18 @@
 //! | What | Boundary | Backed by |
 //! |---|---|---|
 //! | Documents (collaborative, synced) | resources and records | Automerge records |
-//! | App files (caches, imports, databases) | [`AppFiles`], [`HostContext::files`] | `tilo_files::Dir` in `tilo_paths::AppPaths`: the per-user directories natively, the origin-private file system in a page |
-//! | Preferences | typed [`Settings`] with a declared [`Scope`], [`HostContext::settings`] | the shell settings document (`settings-store`), or the host's settings source: in a sandboxed app the shell's records, reached through the app's collaboration channel; personal sections roam between the person's devices |
-//! | Secrets | [`secrets`], [`HostContext::secrets`]; one per document item with `SecretStore::item` | `tilo-secrets`: the Secret Service, the Keychain, the page's wrapped store |
+//! | App files (caches, imports, databases) | [`AppFiles`], [`ProcessContext::files`] | `tilo_files::Dir` in `tilo_paths::AppPaths`: the per-user directories natively, the origin-private file system in a page |
+//! | Preferences | typed [`Settings`] with a declared [`Scope`], [`ProcessContext::settings`] | the shell settings document (`settings-store`), or the host's settings source: in a sandboxed app the shell's records, reached through the app's collaboration channel; personal sections roam between the person's devices |
+//! | Secrets | [`secrets`], [`ProcessContext::secrets`]; one per document item with `SecretStore::item` | `tilo-secrets`: the Secret Service, the Keychain, the page's wrapped store |
 //!
 //! [`AppStorage`] bundles the three for one app; framework views and surfaces get it from
-//! their context instead of building paths. Code with a [`HostContext`] uses its methods,
+//! their context instead of building paths. Code with a [`ProcessContext`] uses its methods,
 //! which are scoped to the app the host prepared.
 //!
-//! [`HostContext`]: crate::application::HostContext
-//! [`HostContext::files`]: crate::application::HostContext::files
-//! [`HostContext::settings`]: crate::application::HostContext::settings
-//! [`HostContext::secrets`]: crate::application::HostContext::secrets
+//! [`ProcessContext`]: crate::application::ProcessContext
+//! [`ProcessContext::files`]: crate::application::ProcessContext::files
+//! [`ProcessContext::settings`]: crate::application::ProcessContext::settings
+//! [`ProcessContext::secrets`]: crate::application::ProcessContext::secrets
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -795,7 +795,7 @@ pub fn settings_at(root: &Path) -> Map<String, Value> {
 /// This app's secrets in the store the current host provides.
 #[must_use]
 pub fn secrets(app_id: &str) -> crate::secrets::SecretStore {
-    crate::host::current().secrets.store(app_id)
+    crate::process::current().secrets.store(app_id)
 }
 
 #[cfg(test)]

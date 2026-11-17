@@ -2335,17 +2335,18 @@ fn snapshot(compositor: &mut Compositor, path: &str) -> Result<(), (&'static str
 /// session with: what `provision_test_identity` answers on the shell's socket, in the same shape. A
 /// real identity is never replaced; a release build mints none.
 fn provision_test_identity() -> Json {
-    use tilo_identity_host::provisioning::{ProvisionOutcome, THROWAWAY_TEST_IDENTITY_NAME};
-    let store = match tilo_onboarding_host::identity_provisioning::DiskIdentityStore::from_env() {
+    use tilo_identity::provisioning::{ProvisionOutcome, THROWAWAY_TEST_IDENTITY_NAME};
+    let store = match tilo_onboarding_session::identity_provisioning::DiskIdentityStore::from_env()
+    {
         Ok(store) => store,
         Err(error) => return refusal("provision_failed", &format!("no identity store: {error}")),
     };
     let Some(identity_dir) = store.path().parent() else {
         return refusal("provision_failed", "the identity store has no directory");
     };
-    match tilo_onboarding_host::firstboot::ensure_throwaway_test_identity(
+    match tilo_onboarding_session::firstboot::ensure_throwaway_test_identity(
         identity_dir,
-        &tilo_onboarding_host::firstboot::collaboration_identity_paths(),
+        &tilo_onboarding_session::firstboot::collaboration_identity_paths(),
     ) {
         Ok(outcome) => json!({"answer": {
             "created": matches!(outcome, ProvisionOutcome::Created { .. }),

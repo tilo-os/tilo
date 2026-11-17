@@ -4,7 +4,7 @@
 //! setup or a restore: nothing here replaces an identity, and the shell takes the wait's place as
 //! soon as the clock admits the certificate.
 //! Nothing here polls. The wait is the identity host's policy clock
-//! (`tilo_identity_host::policy_change`): an absolute `CLOCK_REALTIME` timerfd armed at the instant
+//! (`tilo_identity::policy_change`): an absolute `CLOCK_REALTIME` timerfd armed at the instant
 //! the certificate becomes valid and cancelled by any step of the clock, plus inotify on the
 //! identity directories, so a clock that network time steps forward, or a certificate written anew,
 //! ends the wait at once. The identity is verified again on a worker, which wakes the session's
@@ -14,9 +14,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::task::Waker;
 
-use tilo_identity_host::policy_change;
-use tilo_onboarding_host::identity::IdentityProblem;
-use tilo_onboarding_host::view::OnboardingView;
+use tilo_identity::policy_change;
+use tilo_onboarding_session::identity::IdentityProblem;
+use tilo_onboarding_session::view::OnboardingView;
 use tilo_user_identity::{CertificateClockError, DeviceCertError};
 use ui::format::UnixSecs;
 use ui::icons::Icon;

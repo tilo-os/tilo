@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
-use ui::application::{AppComponent, HostContext, HostContextInputs, RestoreInput};
+use ui::application::{AppComponent, ProcessContext, ProcessContextInputs, RestoreInput};
 use ui::application_view::SavedInstanceView;
 use ui::automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use ui::launch::LaunchError;
@@ -23,7 +23,7 @@ const INSTANCE: u64 = 3;
 /// before its component is built.
 fn definition(workspace_resource: bool) -> ApplicationDefinition {
     fn no_component(
-        _: HostContext,
+        _: ProcessContext,
         _: LaunchTarget,
         _: RestoreInput,
     ) -> Result<AppComponent, LaunchError> {
@@ -316,9 +316,9 @@ tilo_test_env::scenario! {
                 )
                 .unwrap(),
             );
-            HostContext::prepare(
+            ProcessContext::prepare(
                 &definition,
-                ui::application::HostContextInputs {
+                ui::application::ProcessContextInputs {
                     records: store.clone(),
                     views,
                     device_id: "D".into(),
@@ -387,7 +387,7 @@ fn view_saved_by(app: &str, record: &DocumentCheckout) -> SavedInstanceView {
 /// launch makes before it builds anything.
 fn reaching_its_factory() -> ApplicationDefinition {
     fn factory_ran(
-        _: HostContext,
+        _: ProcessContext,
         _: LaunchTarget,
         _: RestoreInput,
     ) -> Result<AppComponent, LaunchError> {
@@ -413,7 +413,7 @@ fn launch_window(
     };
     let views = page_views(memory);
     let restore = saved_view(&views, INSTANCE, definition, &target, None).unwrap();
-    let inputs = HostContextInputs {
+    let inputs = ProcessContextInputs {
         records: store.clone(),
         views,
         device_id: VIEWS_DEVICE.into(),
@@ -424,7 +424,7 @@ fn launch_window(
         author: author(),
         action_context: tilo_actions::ActionContext::default(),
     };
-    let context = HostContext::prepare(definition, inputs, &target).unwrap();
+    let context = ProcessContext::prepare(definition, inputs, &target).unwrap();
     match definition.instantiate(context, target, restore) {
         Ok(_) => "built".to_owned(),
         Err(error) => error.to_string(),

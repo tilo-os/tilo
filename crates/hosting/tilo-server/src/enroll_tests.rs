@@ -26,10 +26,10 @@ tilo_test_env::scenario! {
         let root = temp.path().join("tilo");
         let identities = temp.path().join("identities");
         let paths = IdentityPaths::under(&root);
-        tilo_identity_host::provisioning::ensure_collaboration_identity(
+        tilo_identity::provisioning::ensure_collaboration_identity(
             &identities,
             &paths,
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         assert!(!paths.user_privkey.exists());
@@ -1141,7 +1141,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     reason = "one auditable scenario across the three devices"
 )]
 fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
-    use tilo_identity_host::certification_ceremony::{Gathering, Progress, Signer, check_proposal};
+    use tilo_identity::certification_ceremony::{Gathering, Progress, Signer, check_proposal};
 
     let seed = [31; 32];
     let root = ed25519_dalek::SigningKey::from_bytes(&seed);
@@ -1229,7 +1229,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
     let reply = Signer::default().approve(&key_holder, &ask, true, now);
     let Progress::Certified(approved) = gathering.answer(
         [1; 32],
-        tilo_identity_host::certification_ceremony::Answer {
+        tilo_identity::certification_ceremony::Answer {
             session: ask.session,
             reply,
         },

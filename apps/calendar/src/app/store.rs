@@ -409,7 +409,7 @@ pub(crate) fn window(cx: &ViewCx<Calendar>, mut app: CalendarApp) -> Element {
     }
     app.attach_framework(cx.dispatcher(), accounts, sample.is_some());
     if live {
-        app.notify_with(ui::host::current().notifications, cx.waker());
+        app.notify_with(ui::process::current().notifications, cx.waker());
         if let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>() {
             app.follow_person_accounts(accounts);
         }

@@ -6,7 +6,7 @@
 //!
 //! The toolkit's app framework (ui-core) builds its snapshot here and pages
 //! it, extending it with what only its widgets can say; an app host that
-//! publishes whole resource trees, as `tilolang-host` does, answers its
+//! publishes whole resource trees, as `tilolang-process` does, answers its
 //! connection's directory with a [`PublishedDirectory`] alone.
 mod effective;
 mod snapshot;

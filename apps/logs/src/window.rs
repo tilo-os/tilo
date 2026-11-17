@@ -1450,9 +1450,9 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
-        ui::host::scoped(&services, || {
+        ui::process::scoped(&services, || {
             app.start_effect(&JournalEffect::ExportFilteredJsonl)
                 .unwrap()
         });
@@ -1475,9 +1475,9 @@ mod tests {
         surface(&mut app, |viewer| {
             viewer.show_entries(sample_entries().into_iter().take(1).collect());
         });
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         recorder.respond_to_pick(PortalOutcome::Opened(std::env::temp_dir()));
-        ui::host::scoped(&services, || {
+        ui::process::scoped(&services, || {
             app.start_effect(&JournalEffect::ExportFilteredJsonl)
                 .unwrap()
         });

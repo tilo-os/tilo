@@ -6,7 +6,7 @@ publish.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "A written view as a widget: a view a person or an agent wrote in the app language, run in an instance of its own over what the workspace's apps publish and drawn through the UI host's half of a window, wherever an app places it."
+description = "A written view as a widget: a view a person or an agent wrote in the app language, run in an instance of its own over what the workspace's apps publish and drawn through the app window's half of a window, wherever an app places it."
 
 [dependencies]
 # The boundary an app places a written view through (`ui::written_view`), the toolkit the view's
@@ -15,7 +15,7 @@ ui = { package = "tilo-app", path = "../../sdk/tilo-app", default-features = fal
 # The instance the view runs in, and the packages the workspace's apps read as.
 tilolang-tilo = { path = "../tilolang-tilo" }
 # The window's half: the toolkit's widgets, built from the component patches the instance sends.
-tilo-ui-host = { version = "0.1.0", path = "../tilo-ui-host" }
+tilo-app-window = { version = "0.1.0", path = "../tilo-app-window" }
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }

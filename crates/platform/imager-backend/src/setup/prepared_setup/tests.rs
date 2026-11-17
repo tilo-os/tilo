@@ -1,7 +1,7 @@
 use super::*;
 use crate::setup::{portable_transfer::ExportReview, prepared_identity::PreparedIdentity};
 use std::{fs, os::unix::fs::PermissionsExt};
-use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_identity::provisioning::IdentityStorage;
 const PASSWORD: &[u8] = b"several unrelated installation words";
 fn private(path: &Path) {
     fs::create_dir(path).unwrap();

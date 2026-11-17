@@ -33,7 +33,7 @@ fn selected_website_session_preparation_is_separate_authenticated_ownership() {
         &root.path().join("identity"),
         "Ada",
         [20, 80, 140],
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     let password = "a sufficiently long session transport password";
@@ -127,7 +127,7 @@ fn excluded_parent_accounts_prepares_authenticated_media_without_reading_or_decl
         &root.path().join("identity"),
         "Ada",
         [20, 80, 140],
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     let password = "a sufficiently long parent exclusion password";

@@ -109,7 +109,7 @@ pub mod portable_storage;
 pub mod state;
 
 // The clock, wake routing and host inputs, under the paths the toolkit
-// names them by (`ui::time`, `ui::wake`, `ui::host`), without the toolkit's
+// names them by (`ui::time`, `ui::wake`, `ui::process`), without the toolkit's
 // host services.
 pub(crate) mod time {
     // The broker's tests stamp records with it.
@@ -127,7 +127,7 @@ pub(crate) use wake::WakeHandle;
 pub(crate) use wake::WakeScope;
 // The tests bound what the sender's storage allocates.
 
-pub(crate) mod host {
+pub(crate) mod process {
     pub use tilo_process::environment::{ContinuationMetadata, environment};
 }
 
@@ -350,7 +350,7 @@ impl SessionResource {
     }
 }
 
-pub use crate::host::ContinuationMetadata;
+pub use crate::process::ContinuationMetadata;
 /// The numbers a semantic checkpoint carries for the portable schemas a
 /// signed manifest can declare (`continuity.semantic_schema`). The tag says
 /// what the payload means, so a device that has not installed the app can
@@ -364,10 +364,10 @@ pub mod semantic_schema {
     pub const TEXT_POSITION_V1: u16 = 0x0105;
 }
 
-/// The launcher-only resume payload the host passed this window
-/// ([`crate::host::HostIdentity::continuity_resume`]).
+/// The launcher-only resume payload the process passed this window
+/// ([`crate::process::ProcessIdentity::continuity_resume`]).
 pub fn continuation_restore_env() -> Option<ContinuationMetadata> {
-    crate::host::environment()
+    crate::process::environment()
         .identity
         .continuity_resume
         .clone()
@@ -972,7 +972,7 @@ impl CollaborationManager {
 /// document routes obtain their separate window binding from original broker
 /// ownership; this environment value cannot authorize native private control.
 fn continuation_instance_env() -> Option<String> {
-    let environment = crate::host::environment();
+    let environment = crate::process::environment();
     let value = environment.identity.continuity_instance.as_deref()?.trim();
     (!value.is_empty() && value.len() <= 256 && !value.contains(['/', '\\']))
         .then(|| value.to_owned())
@@ -1870,7 +1870,7 @@ pub fn local_user_id() -> collab_types::MemberId {
 
 /// The OS account this process runs as, or `local` on a machine without one.
 fn local_account() -> String {
-    crate::host::environment()
+    crate::process::environment()
         .identity
         .account_name
         .clone()
@@ -1878,7 +1878,7 @@ fn local_account() -> String {
 }
 
 fn resolve_local_user_id() -> String {
-    let environment = crate::host::environment();
+    let environment = crate::process::environment();
     if let Some(v) = environment.identity.user_id.clone() {
         return v;
     }
@@ -1929,7 +1929,7 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
     // collaboration test does this).
     static FALLBACK_APP_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-    let environment = crate::host::environment();
+    let environment = crate::process::environment();
     let identity = &environment.identity;
     let app_id = identity
         .app_id

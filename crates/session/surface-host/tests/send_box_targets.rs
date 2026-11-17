@@ -11,13 +11,13 @@
 
 use tilo_session_core::surface::SurfaceHost as _;
 use tilo_session_core::surfaces::Published as _;
-use tilo_surface_host::{AppHost, Placement};
+use tilo_surface_host::{AppProcess, Placement};
 
 /// A session-hosted app window with no menu of its own, drawn on the desktop: the window carries
 /// the send-to box itself.
-fn window() -> AppHost {
+fn window() -> AppProcess {
     let content = ui::widget::Column::new().push(Box::new(ui::widget::Spacer::fixed(200.0)));
-    let mut host = AppHost::new(
+    let mut host = AppProcess::new(
         ui::App::new(ui::State::new(), Box::new(content)),
         Placement {
             origin: (0, 0),
@@ -33,7 +33,7 @@ fn window() -> AppHost {
 }
 
 /// The controls the surface publishes now, by name.
-fn controls(host: &mut AppHost) -> Vec<(String, Option<String>)> {
+fn controls(host: &mut AppProcess) -> Vec<(String, Option<String>)> {
     host.controls()
         .into_iter()
         .map(|control| (control.name, control.identity))

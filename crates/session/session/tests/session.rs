@@ -1843,10 +1843,10 @@ tilo_test_env::scenario! {
         std::fs::create_dir_all(&identity).expect("the identity's directory");
         let root = home.root().join("system");
         home.env().set("TILO_IDENTITY_ROOT", &root);
-        tilo_identity_host::provisioning::ensure_throwaway_test_identity(
+        tilo_identity::provisioning::ensure_throwaway_test_identity(
             &identity,
-            &tilo_identity_host::provisioning::collaboration_identity_paths(),
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            &tilo_identity::provisioning::collaboration_identity_paths(),
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("the throwaway identity");
         let mut session = crate::common::headless(Options {

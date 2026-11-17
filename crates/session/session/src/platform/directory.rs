@@ -287,7 +287,7 @@ mod tests {
                 "Pat",
                 "an unnamed identity leaves the session's name standing"
             );
-            let account = tilo_identity_host::provisioning::login_account_display_name();
+            let account = tilo_identity::provisioning::login_account_display_name();
             assert_eq!(
                 person_name(None, &key),
                 account,

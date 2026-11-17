@@ -49,9 +49,9 @@ When the runtime shrinks, both checks print the lower budget to commit.
 
 What the runtime may carry is a rule of its own. It holds the SDK and crates
 several apps share; never an engine only one or two apps use, an OS daemon or other OS-internal crate (the filesystem, the
-launcher, the app host, the install CLI, the peer transport) and nothing no
+launcher, the app process, the install CLI, the peer transport) and nothing no
 app reaches. An app that calls into such a crate links it itself and gets only
-the code it calls; the Store, for one, depends on `app-host` without its
+the code it calls; the Store, for one, depends on `app-process` without its
 default `service` feature, and Settings, Agent and Canvas depend on
 `tilo-model-gateway` without its: the daemon's provider clients, on-device
 model service and subject-model runtime (rten) stay in the gateway, and an
@@ -79,9 +79,9 @@ fuser: `libtilo_fuse_engine.so` for Imager's projection worker; the import
 from another browser's profile, browser-continuity's capture with the SQLite
 it reads Chromium's and Firefox's databases with:
 `libtilo_browser_import_engine.so` for Browser, with the
-website-session codec check; the app host's client, with
+website-session codec check; the app process's client, with
 its control wire, and the catalogue Store browses:
-`libtilo_app_host_engine.so` for Store; Mail's message codecs and SMTP
+`libtilo_app_process_engine.so` for Store; Mail's message codecs and SMTP
 client, mail-parser, mail-builder and lettre: `libtilo_mail_engine.so` for
 Mail; the archive codecs, tilo-archive with the 7z, xz and bzip2 decoders:
 `libtilo_archive_engine.so` for Files; Settings itself, its library with

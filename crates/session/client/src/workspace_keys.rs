@@ -32,7 +32,7 @@ use neighbour_wire::NeighbourMsg;
 #[cfg(target_os = "linux")]
 use tilo_broker_core::collab_core::{BrokerChannels, BrokerSealChecks};
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
-use tilo_identity_host::policy_change;
+use tilo_identity::policy_change;
 use tilo_lock::MutexRecover as _;
 use tilo_workspace_keys::{
     GovernancePark, GovernanceTransport, InboundGovernance, KeyDirectory, SharedKeys,

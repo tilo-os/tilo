@@ -106,7 +106,7 @@ where
     }
 
     /// Build with the exact installed domain before any constructor emission.
-    /// The supplied domain must be the owner obtained from HostContext/runner.
+    /// The supplied domain must be the owner obtained from ProcessContext/runner.
     pub fn from_document_in(
         domain: &crate::ControlDomain,
         project: impl FnMut(&AutoCommit, &ObjId) -> K + 'static,

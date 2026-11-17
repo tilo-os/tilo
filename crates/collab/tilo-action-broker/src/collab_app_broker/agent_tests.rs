@@ -354,11 +354,11 @@ impl Fixture {
         identity_env
             .set("XDG_CONFIG_HOME", directory.path().join("config"))
             .set("TILO_IDENTITY_ROOT", directory.path().join("identity"))
-            .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-        tilo_identity_host::provisioning::ensure_collaboration_identity(
+            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+        tilo_identity::provisioning::ensure_collaboration_identity(
             &directory.path().join("config/tilo/identity"),
             &tilo_user_identity::IdentityPaths::under(directory.path().join("identity")),
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("provision the host admission and terminal receipt signer");
         let owner =
@@ -432,7 +432,7 @@ impl Fixture {
             Some(native.clone()),
             None,
             Some(&config),
-            HostServices {
+            ProcessServices {
                 launcher,
                 workspace_grants: Some(native.clone()),
                 agents: Some(native.clone()),

@@ -1257,7 +1257,7 @@ fn install_runtime_package(
         {
             return Err(Error::AlreadyInstalled(checked.id().to_string()));
         }
-        // Publish the verified signed package through the catalogue and integrity records AppHost
+        // Publish the verified signed package through the catalogue and integrity records AppProcess
         // reads, reusing the blobs already fetched: a thin engine must not download its whole
         // payload a second time.
         let blobs = BlobDir(staging.join("blobs"));

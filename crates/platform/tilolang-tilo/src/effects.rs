@@ -18,7 +18,7 @@ use crate::publish::Caller;
 
 /// The operations the host offers an agent.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "tilolang.host")]
+#[effect(operation = "tilolang.process")]
 pub enum HostEffect {
     /// Run a block.
     ///

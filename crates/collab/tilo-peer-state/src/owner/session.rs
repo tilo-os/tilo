@@ -12,7 +12,7 @@ use crate::join::TransportHint;
 use crate::owner::{AppWrite, NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, took_in};
 use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
-use tilo_identity_host::identity_store::HostIdentity;
+use tilo_identity::identity_store::HostIdentity;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 /// An enrolled workspace to hold a link for.

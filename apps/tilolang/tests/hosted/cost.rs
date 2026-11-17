@@ -246,7 +246,7 @@ struct Rest {
 }
 
 /// The session's window on the frame clock the session's own host presents on
-/// ([`tilo_ui_host::AppWindow`] under `ui::headless::FrameHarness`): the key down, the text and
+/// ([`tilo_app_window::AppWindow`] under `ui::headless::FrameHarness`): the key down, the text and
 /// the key up of one keystroke reach one frame, as they do in a window whose host draws on the
 /// display's clock, instead of running a frame each.
 fn on_the_frame_clock(mut session: Session) -> Session {
@@ -1263,7 +1263,7 @@ fn kept_index(
     name: &str,
 ) -> std::path::PathBuf {
     let storage = kept_root(name);
-    let kept = TilolangHost::new(Some(storage.clone()), Arc::new(|| {}))
+    let kept = TilolangProcess::new(Some(storage.clone()), Arc::new(|| {}))
         .kept(TASKS)
         .expect("the app keeps what it keeps under the storage");
     let indexes = kept.indexes.expect("the app's indexes are on the disk");
@@ -1309,7 +1309,7 @@ fn show_rows(session: &mut Session) -> u64 {
         session.window.frame();
         let shows = session.hosted().view().is_some_and(|view| {
             view.lists().into_iter().any(|list| {
-                !list.starts_with(tilo_ui_host::shell::DETAIL)
+                !list.starts_with(tilo_app_window::shell::DETAIL)
                     && view
                         .rows_of(&list)
                         .is_some_and(|rows| !rows.borrow().rendered().is_empty())
@@ -1330,7 +1330,7 @@ fn show_rows(session: &mut Session) -> u64 {
     panic!(
         "the window never showed the workspace's rows: index ready {ready}, view {}, lists {:?}",
         view.is_some(),
-        view.map(tilo_ui_host::AppWindow::lists),
+        view.map(tilo_app_window::AppWindow::lists),
     );
 }
 
@@ -1835,7 +1835,7 @@ fn opened_title_field(session: &mut Session) -> Option<String> {
     let view = session.hosted().view()?;
     let mut found = None;
     for list in view.lists() {
-        if list.starts_with(tilo_ui_host::shell::DETAIL) {
+        if list.starts_with(tilo_app_window::shell::DETAIL) {
             continue;
         }
         let Some(rows) = view.rows_of(&list) else {

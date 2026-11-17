@@ -225,15 +225,15 @@ fn refuse_symlink(path: &Path) -> io::Result<()> {
 }
 
 /// Host location of one package's person directory: the same for every workspace it is launched into.
-pub fn host_person_dir(data_home: &Path, package_id: &str) -> PathBuf {
+pub fn local_person_dir(data_home: &Path, package_id: &str) -> PathBuf {
     data_home
         .join(PERSON_DIR)
         .join(sanitise_component(package_id))
 }
 
 /// Create the person directory this launch binds.
-pub fn prepare_host_person_dir(data_home: &Path, package_id: &str) -> io::Result<PathBuf> {
-    let dir = host_person_dir(data_home, package_id);
+pub fn prepare_local_person_dir(data_home: &Path, package_id: &str) -> io::Result<PathBuf> {
+    let dir = local_person_dir(data_home, package_id);
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }

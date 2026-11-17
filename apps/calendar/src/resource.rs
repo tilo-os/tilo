@@ -1381,7 +1381,7 @@ impl ResourceApp for CalendarShell {
         Some(&CATALOG)
     }
 
-    fn import_resource(context: &ui::application::HostContext) -> Result<(), String> {
+    fn import_resource(context: &ui::application::ProcessContext) -> Result<(), String> {
         crate::import_inbox::import(context)
     }
 

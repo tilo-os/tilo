@@ -154,8 +154,8 @@ fn consented_file_import_and_cancellation_use_the_framework_job_path() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("storage-report.json");
     std::fs::write(&path, REPORT).unwrap();
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
     app.effect(&crate::view::ChipEffect::ImportFile).unwrap();
@@ -463,8 +463,8 @@ fn consented_receipt_file_import_uses_the_existing_bounded_job() {
         receipt("checkpoint_tile_integer_contract", false).to_string(),
     )
     .unwrap();
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
     app.effect(&crate::view::ChipEffect::ImportFile).unwrap();

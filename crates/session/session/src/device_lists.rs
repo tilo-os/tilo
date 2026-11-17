@@ -412,7 +412,7 @@ pub(crate) struct DeviceLists {
     pub(crate) activities: Rc<crate::chrome::Activities>,
     /// The running applications' tray items, when their watcher serves: the bar shows them,
     /// and the person's clicks go back through it.
-    pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
+    pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
     /// The agents the person admitted at its MCP server: each works here as itself, and the bar
     /// shows it as its own presence.
     pub(crate) agent_sessions: std::sync::Arc<crate::agent_sessions::AgentSessions>,
@@ -439,7 +439,7 @@ pub(crate) struct Shared {
     pub(crate) activities: Rc<crate::chrome::Activities>,
     pub(crate) surfaces: Surfaces,
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
-    pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
+    pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
     pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
 }
@@ -833,9 +833,9 @@ impl DeviceLists {
             )));
         };
         let request = if item.item_is_menu {
-            tilo_tray_host::TrayRequest::ContextMenu { x: 0, y: 0 }
+            tilo_tray::TrayRequest::ContextMenu { x: 0, y: 0 }
         } else {
-            tilo_tray_host::TrayRequest::Activate { x: 0, y: 0 }
+            tilo_tray::TrayRequest::Activate { x: 0, y: 0 }
         };
         tray.request_or_else(key, request, |_| {})
             .map_err(ApiError::Failed)?;

@@ -1334,7 +1334,7 @@ enum ApiAsk {
     /// The packages the session runs itself, which a task's host loads to run programs against:
     /// each one's compiled module, its description embedded, the packages it uses first
     /// ([`task_hosts`] adds every installed app).
-    Apps(tilo_actions::remote::Completer<Vec<runtime_portal::tilolang_host::App>>),
+    Apps(tilo_actions::remote::Completer<Vec<runtime_portal::tilolang_process::App>>),
     /// The newest reading of the resource `resource` of the app `app`, one the session's own
     /// services publish (the device's sound, the session's windows, Settings' sections): what a
     /// task's program reads within the program it runs, answered on the loop's pass, where the
@@ -1861,7 +1861,7 @@ fn connect(
         return Ok(None);
     }
     let (device, certificate) =
-        match tilo_identity_host::broker::trusted_current_device(admitted.workspace) {
+        match tilo_identity::broker::trusted_current_device(admitted.workspace) {
             Ok(device) => device,
             Err(error) => {
                 tracing::warn!(
@@ -2459,8 +2459,8 @@ fn published_kind(services: &tilo_service::Services, resource: &str) -> Option<S
 /// programs read those records by, answered on the loop's pass, where the services are.
 fn session_packages(
     services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
-) -> Vec<runtime_portal::tilolang_host::App> {
-    use runtime_portal::tilolang_host::{App, Module};
+) -> Vec<runtime_portal::tilolang_process::App> {
+    use runtime_portal::tilolang_process::{App, Module};
     services
         .borrow()
         .documents()

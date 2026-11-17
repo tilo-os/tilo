@@ -1,7 +1,7 @@
 //! The native fallback: what a launcher passes through the process environment, read here
 //! and nowhere else in the toolkit.
 
-pub fn process_environment() -> super::HostEnvironment {
+pub fn process_environment() -> super::ProcessEnvironment {
     // Empty is unset: an explicit `""` is the shape an unset forwarded shell variable
     // produces, and taking it literally would put every such app in the same empty-id
     // room.
@@ -34,8 +34,8 @@ pub fn process_environment() -> super::HostEnvironment {
     let ui_set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
     let continuity_resume = text("TILO_CONTINUITY_RESUME_HEX")
         .and_then(|hex| super::decode_continuation(&hex, &text("TILO_CONTINUITY_RESUME_SCHEMA")?));
-    super::HostEnvironment {
-        identity: super::HostIdentity {
+    super::ProcessEnvironment {
+        identity: super::ProcessIdentity {
             app_id: text("TILO_PACKAGE_ID"),
             development_app_id: text("QUICK_APP_ID"),
             app_name: text("TILO_APP_NAME"),
@@ -47,7 +47,7 @@ pub fn process_environment() -> super::HostEnvironment {
             collab_service_configured: std::env::var_os("TILO_SVC_COLLAB_FD").is_some(),
             managed_agent_context: std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some(),
         },
-        paths: super::HostPaths {
+        paths: super::ProcessPaths {
             user_home: path("TILO_USER_HOME"),
             home: path("HOME"),
             config_home: path("XDG_CONFIG_HOME"),

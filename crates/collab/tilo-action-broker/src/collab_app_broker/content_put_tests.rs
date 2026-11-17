@@ -6,7 +6,7 @@
 use std::sync::Mutex;
 
 use super::*;
-use crate::services::HostServices;
+use crate::services::ProcessServices;
 use crate::test_support::{Grantee, Grants as _, KindSet, Role, WorkspaceId, WorkspaceTree};
 
 fn owner_id() -> String {
@@ -118,7 +118,7 @@ fn fixture() -> Fixture {
     tree.persist_path = Some(home.path().join("state.json"));
     let membership = tree.shared();
     let shelf = Arc::new(Mutex::new(Shelf::default()));
-    let services = HostServices {
+    let services = ProcessServices {
         content_store: Some(Arc::new(FakeStore(Arc::clone(&shelf)))),
         ..membership.services()
     };

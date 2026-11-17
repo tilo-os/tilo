@@ -87,7 +87,7 @@ pub(crate) trait RootApp {
         operation: &ui_core::floating_surface::DeviceShellOperation,
     ) -> Result<serde_json::Value, String>;
     fn request_device_shell(&mut self) -> bool;
-    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent>;
+    fn take_process_intent(&mut self) -> Option<ui_core::widget::AppProcessIntent>;
     fn take_save_retry(&mut self) -> bool;
     fn resource_save_status(&mut self, status: ResourceSaveStatus);
     fn record_refused(&mut self, refusal: &ui_core::resource::ResourceRefusal);
@@ -439,8 +439,8 @@ impl AppWidget for RootWidget {
         self.0.request_device_shell()
     }
 
-    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
-        self.0.take_host_intent()
+    fn take_process_intent(&mut self) -> Option<ui_core::widget::AppProcessIntent> {
+        self.0.take_process_intent()
     }
 
     fn take_save_retry(&mut self) -> bool {

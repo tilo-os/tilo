@@ -142,9 +142,9 @@ if tests tilo-agent-session; then
     fi
 fi
 
-# The app-cli and app-host trust tests execute the installer, which no package
+# The app-cli and app-process trust tests execute the installer, which no package
 # depends on. A run handed it has it where the build left it, beside the tests' own build.
-if tests app-cli app-host; then
+if tests app-cli app-process; then
     path=$(handed_bin tilo-install)
     [[ -n $path ]] || cargo build --locked -p install --bin tilo-install
 fi

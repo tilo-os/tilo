@@ -710,9 +710,9 @@ fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
         let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
         let before = bench.deck().slides[0].elements.len();
         let path = write_png(directory.path(), "insert.png", 12, 8);
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
-        ui::host::scoped(&services, || {
+        ui::process::scoped(&services, || {
             bench.app.harness().with_widget_mut::<SlidesApp, _>(|app| {
                 app.apply_hit(Hit::Insert(ElementKind::Image));
             })
@@ -754,9 +754,9 @@ fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
     {
         let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
         let before = bench.deck().slides[0].elements.len();
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         recorder.respond_to_pick(PortalOutcome::Cancelled);
-        ui::host::scoped(&services, || {
+        ui::process::scoped(&services, || {
             bench.app.harness().with_widget_mut::<SlidesApp, _>(|app| {
                 app.apply_hit(Hit::Insert(ElementKind::Image));
             })

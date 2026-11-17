@@ -101,7 +101,7 @@ tilo-fuse-engine = { path = "../../crates/runtime/engines/fuse", optional = true
 # toggles and fields dispatch.
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
-tilo-identity-host = { path = "../../crates/runtime/tilo-identity-host" }
+tilo-identity = { path = "../../crates/runtime/tilo-identity" }
 tilo-server-protocol = { path = "../../crates/hosting/tilo-server-protocol" }
 automerge.workspace = true
 cap-fs-ext = "3.4.6"

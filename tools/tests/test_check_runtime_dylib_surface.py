@@ -31,7 +31,7 @@ CLEAN = forest(
     "4serde v1.0.228",
     "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)",
     "0store v0.1.2 (/repo/apps/store)",
-    "1app-host v0.1.0 (/repo/crates/packaging/app-host)",
+    "1app-process v0.1.0 (/repo/crates/packaging/app-process)",
     "2serde v1.0.228 (*)",
     "1runtime-dylib v0.1.0 (/repo/crates/runtime/runtime-dylib) (*)",
     "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)",
@@ -117,7 +117,7 @@ class RuntimeSurfaceTests(unittest.TestCase):
 
     def test_the_store_catalogue_back_in_the_runtime_fails(self) -> None:
         # Store loads the app host's client and the catalogue from
-        # libtilo_app_host_engine.so; the runtime depending on the catalogue
+        # libtilo_app_process_engine.so; the runtime depending on the catalogue
         # again maps it into every app process.
         tree = CLEAN.replace(
             "4serde v1.0.228\n",
@@ -130,7 +130,7 @@ class RuntimeSurfaceTests(unittest.TestCase):
         found = checker.violations(tree, ["notes", "store"], TARGET)
         self.assertEqual(len(found), 1, found)
         self.assertIn("reaches app-catalogue", found[0])
-        self.assertIn("libtilo_app_host_engine.so", found[0])
+        self.assertIn("libtilo_app_process_engine.so", found[0])
 
     def test_account_credentials_or_the_zone_database_back_in_the_runtime_fails(self) -> None:
         # Mail and Settings load account credentials from

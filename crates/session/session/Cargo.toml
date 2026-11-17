@@ -88,7 +88,7 @@ tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-policy = { path = "../desktop-policy" }
 # This device's identity: the certificate it presents and the key it signs with, from the store its
 # host keeps them in.
-tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-identity = { path = "../../runtime/tilo-identity" }
 # The action broker's half every host runs: what a step is taken by, the step service, the route.
 tilo-broker-core = { path = "../../collab/broker-core" }
 tilo-desktop-surface = { path = "../desktop-surface" }
@@ -229,7 +229,7 @@ tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settin
 tilo-quick-settings = { path = "../quick-settings" }
 tilo-activities = { path = "../activities" }
 tilo-notification-banners = { path = "../notification-banners" }
-tilo-onboarding-host = { path = "../onboarding-host" }
+tilo-onboarding-session = { path = "../onboarding-session" }
 # What an entry's invitation is verified as before a workspace is joined: only
 # a grant signed for this person's key joins it.
 tilo-workspace-join = { path = "../../collab/workspace-join" }
@@ -302,7 +302,7 @@ tilolang-tilo = { path = "../../platform/tilolang-tilo" }
 tilolang-mail = { path = "../../platform/tilolang-mail", default-features = false }
 tilolang-youtube = { path = "../../platform/tilolang-youtube" }
 # The toolkit's words, which what a package the session runs publishes reads through.
-tilo-ui-host = { path = "../../platform/tilo-ui-host" }
+tilo-app-window = { path = "../../platform/tilo-app-window" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 # `tilolang check` and build as the session's own commands over a package in the person's
 # workspace: a style is written, checked and installed as any app is (`shell.md` §6).
@@ -351,7 +351,7 @@ tilo-mcp = { path = "../../runtime/tilo-mcp" }
 fs = { package = "tilo-fs", path = "../../system/fs", default-features = false, features = ["filesystem"] }
 # The host of an agent task's programs, which the server runs for each
 # connection that sends one, and the sealed memfd its modules come in.
-tilolang-host = { path = "../../platform/tilolang-host" }
+tilolang-process = { path = "../../platform/tilolang-process" }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 # The render service an app hands its frames to, started by this session as
 # a mode of its own binary.
@@ -412,7 +412,7 @@ tilo-bluetooth-agent = { path = "../bluetooth-agent" }
 # carrying the semantic tree the toolkit already builds. The tokio feature
 # keeps its D-Bus executor on the workspace's single async runtime.
 accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
-tilo-tray-host = { path = "../tray-host" }
+tilo-tray = { path = "../tray" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 # The login screens' comforts go to tilo-authd over its socket protocol.
 tilo-auth = { path = "../../system/tilo-auth", default-features = false }
@@ -498,7 +498,7 @@ threshold-identity = { path = "../../collab/threshold-identity" }
 tilo-audio-service = { path = "../audio-service" }
 tilo-onboarding = { path = "../onboarding" }
 # The prepared-setup and journal fixtures: what a device holds before setup runs.
-tilo-onboarding-host = { path = "../onboarding-host", features = ["test-support"] }
+tilo-onboarding-session = { path = "../onboarding-session", features = ["test-support"] }
 tilo-quick-settings = { path = "../quick-settings", features = ["test-support"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 # The sheets' apps mounted for a person, so a test presses a control of one

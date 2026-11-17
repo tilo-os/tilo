@@ -11,7 +11,7 @@ use collab_types::DocumentMutation;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_content::ContentStore;
 use ui::application::{
-    ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    ComponentRunnerInputs, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
 use ui::collaboration::document_content::{ContentLink, DocumentContent};
@@ -735,9 +735,9 @@ impl ReadSession {
             checkout,
             reveal: None,
         };
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "canonical-reader".into(),

@@ -4,7 +4,7 @@ use std::{cell::RefCell, path::Path, process::Command};
 use tilo_feedback::{Composer, Consent, DeliveryState, MemoryStore, Outbox};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::application::{
-    ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    ComponentRunnerInputs, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
@@ -176,9 +176,9 @@ fn canonical(profile: &Path) -> (ResourceStore, FrameHarness) {
         checkout,
         reveal: None,
     };
-    let context = HostContext::prepare(
+    let context = ProcessContext::prepare(
         chat::definition(),
-        HostContextInputs {
+        ProcessContextInputs {
             records: records.clone(),
             views,
             device_id: "device".into(),

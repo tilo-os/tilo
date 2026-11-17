@@ -12,7 +12,7 @@ use tilo_actions::remote::{
     PendingPoll, RemoteActionTarget, settings_resources,
 };
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_identity::provisioning::IdentityStorage;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
@@ -42,8 +42,8 @@ fn fixture() -> Fixture {
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("XDG_CONFIG_HOME", &xdg)
         .set("TILO_IDENTITY_ROOT", &system)
-        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &xdg.join("tilo/identity"),
         &IdentityPaths::under(&system),
         IdentityStorage::Files,

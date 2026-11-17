@@ -412,7 +412,7 @@ impl Fixture {
             &self.root.join(format!("identity-{label}")),
             "Native Fixture",
             [1, 2, 3],
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         let setup_root = self.root.join(format!("setup-{label}"));

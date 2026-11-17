@@ -1,6 +1,6 @@
 //! Original checked activation: actual Scene ink versus final focus and IME. TEST-only.
 use super::*;
-use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
+use crate::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
 use crate::application_test_support::{self as probe, ProbeHost};
 use crate::owner_wake::OwnerWakeQueue;
 use crate::view::{ViewContribution, capability::ViewState};
@@ -267,7 +267,7 @@ impl AppWidget for Owner {
 }
 thread_local! { static NEXT: RefCell<Option<(Seen, u64, &'static str)>> = const { RefCell::new(None) }; }
 fn factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {

@@ -542,7 +542,7 @@ fn prepared_setup(root: &Path, expected: Expectation, cancel: &AtomicBool) -> Pr
         &root.join("identity"),
         "Native system fixture",
         [1, 2, 3],
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     let setup = root.join("setup");

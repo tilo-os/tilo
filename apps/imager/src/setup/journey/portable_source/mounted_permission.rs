@@ -103,11 +103,11 @@ impl Controller {
             .take()
             .ok_or("installer-portable-source-failed")?;
         let cancel = self.cancel.clone();
-        let host = ui::host::current();
+        let host = ui::process::current();
         let (tx, rx) = mpsc::channel();
         self.phase = "checking";
         let handle = std::thread::spawn(move || {
-            let _scope = ui::host::enter(&host);
+            let _scope = ui::process::enter(&host);
             let result = roots.request(&location, &title, &accept, &cancel);
             let _ = tx.send((Some(roots), Reply::Requested(result)));
         });

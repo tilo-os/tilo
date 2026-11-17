@@ -3,7 +3,7 @@ use super::{
     CurrentDeviceDeclaration, CurrentDeviceReference, EnrolledDevice, TransportReceipt, unsupported,
 };
 use std::{io, path::Path, sync::Arc};
-use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_identity::provisioning::IdentityStorage;
 use zeroize::Zeroizing;
 
 enum Never {}

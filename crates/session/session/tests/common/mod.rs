@@ -734,10 +734,10 @@ pub fn device_in(home: &mut tilo_test_env::TestHome) -> std::path::PathBuf {
     home.env().set("TILO_IDENTITY_ROOT", &root);
     let secrets = home.state().join("secrets");
     home.env().set("TILO_SECRETS_DIR", &secrets);
-    tilo_identity_host::provisioning::ensure_throwaway_test_identity(
+    tilo_identity::provisioning::ensure_throwaway_test_identity(
         &identity,
-        &tilo_identity_host::provisioning::collaboration_identity_paths(),
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        &tilo_identity::provisioning::collaboration_identity_paths(),
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("the throwaway identity");
     home.state().to_path_buf()

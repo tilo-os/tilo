@@ -416,7 +416,7 @@ impl HostedWorkspace {
 fn assert_changed_ownership_refused(joined: &Joined, workspace: WorkspaceId, actor: &str) {
     let mut identity = joined.identity.clone();
     // In memory only: this probe compares what it holds, never a disk.
-    identity.identity_store = std::sync::Arc::new(tilo_identity_host::identity_store::Kept::new(
+    identity.identity_store = std::sync::Arc::new(tilo_identity::identity_store::Kept::new(
         identity.device_cert.clone(),
         std::sync::Arc::clone(&identity.signer),
     ));
@@ -431,7 +431,7 @@ fn assert_changed_ownership_refused(joined: &Joined, workspace: WorkspaceId, act
         identity.device_cert.clone(),
         std::sync::Arc::clone(&identity.signer),
         std::sync::Arc::new(
-            tilo_identity_host::identity_store::Kept::new(
+            tilo_identity::identity_store::Kept::new(
                 identity.device_cert.clone(),
                 std::sync::Arc::clone(&identity.signer),
             )
@@ -477,7 +477,7 @@ fn assert_changed_ownership_refused(joined: &Joined, workspace: WorkspaceId, act
     let mut renewed = probe.identity.device_cert.clone();
     renewed.device_label = "a reissued certificate".into();
     sign_device_cert(&mut renewed, &default_root).unwrap();
-    let kept = tilo_identity_host::identity_store::Kept::new(
+    let kept = tilo_identity::identity_store::Kept::new(
         probe.identity.device_cert.clone(),
         std::sync::Arc::clone(&probe.identity.signer),
     )
@@ -997,8 +997,7 @@ fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
         return;
     };
     let session = super::super::Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
-    let (_, device) =
-        tilo_identity_host::broker::trusted_current_device(session.workspace()).unwrap();
+    let (_, device) = tilo_identity::broker::trusted_current_device(session.workspace()).unwrap();
     let governor_root = profile.parent().unwrap().join("governor");
     std::fs::create_dir_all(&governor_root).unwrap();
     let governing = tilo_rt::app()

@@ -69,11 +69,11 @@ fn this_computer(
     let identities = home.config().join("tilo/identity");
     home.env()
         .set("TILO_IDENTITY_ROOT", root.path())
-        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &identities,
         &paths,
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("this computer's identity");
     let device =

@@ -186,11 +186,11 @@ fn install_and_file_effects_reach_the_picker_or_the_service() {
         }),
         Err("Opening portal files is unavailable for this Windows route.".to_owned())
     );
-    let (services, recorder) = ui::host::HostServices::recording();
+    let (services, recorder) = ui::process::ProcessServices::recording();
     for _ in 0..3 {
         recorder.respond_to_open_file(OpenFileOutcome::Cancelled);
     }
-    ui::host::scoped(&services, || {
+    ui::process::scoped(&services, || {
         app.perform_effect(&E::Install { path: None })
             .expect("an install without a path asks for one");
         app.perform_effect(&E::ImportIso { path: None })

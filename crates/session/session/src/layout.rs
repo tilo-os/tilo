@@ -2713,7 +2713,7 @@ mod tests {
         let theirs = Arc::clone(&hold);
         let engine = Arc::new(
             Engine::open(
-                tilo_identity_host::identity_store::HostIdentity::kept(
+                tilo_identity::identity_store::HostIdentity::kept(
                     cert.clone(),
                     HeldSigner { key, hold: theirs },
                 ),

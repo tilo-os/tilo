@@ -560,7 +560,7 @@ fn hosted_window(
         .connections
         .collaboration(app, workspace, instance, Some(launcher_pid))
         .ok_or_else(|| std::io::Error::other("the instance has no collaboration connection"))?;
-    let (window, host) = runtime_portal::tilolang_host::pair()?;
+    let (window, host) = runtime_portal::tilolang_process::pair()?;
     runtime_portal::windows::send_patch(&entry.ours, instance, &window)?;
     Ok(HostedWindow {
         app: app.to_owned(),

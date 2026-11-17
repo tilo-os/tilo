@@ -30,7 +30,7 @@ mod verified_installation;
 #[cfg(test)]
 pub(crate) use verified_installation::verified_launch_installation_against;
 pub(crate) use verified_installation::{verified_launch_installation, verified_launch_publisher};
-pub mod tilolang_host;
+pub mod tilolang_process;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -249,7 +249,7 @@ pub struct RunOptions {
     pub retained_files_host_path: Option<PathBuf>,
     /// Verified, selected browser data; projected read-only to Browser GUI only.
     pub browser_continuity_host_path: Option<PathBuf>,
-    /// Separate host action policy projection; never a sandbox capability grant.
+    /// Separate process action policy projection; never a sandbox capability grant.
     pub action_authority_host_path: Option<PathBuf>,
     /// Workspace this launch belongs to — the CRDT cluster id ([`crate::sandbox::WORKSPACE_ID_ENV`]).
     pub workspace_id: Option<String>,
@@ -270,7 +270,7 @@ pub struct RunOptions {
     pub headless_console: Option<u64>,
     /// A tilolang host runs this app's instance: its process is its window and keeps none of the app's
     /// data.
-    pub tilolang_hosted: bool,
+    pub tilolang_process: bool,
     /// The app's connector for one outside origin (`imap`), not a window: the session's instances of
     /// the app reach it over the socket the launcher hands it.
     pub tilolang_connector: Option<String>,
@@ -308,7 +308,7 @@ impl Default for RunOptions {
             gui_argv: Vec::new(),
             open_as_visitor: false,
             headless_console: None,
-            tilolang_hosted: false,
+            tilolang_process: false,
             tilolang_connector: None,
         }
     }
@@ -648,10 +648,10 @@ fn resolve_person_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<Path
         .clone()
         .or_else(crate::appdir::host_data_home)
         .ok_or_else(|| RunError::NoDataHome(manifest.package_id.clone()))?;
-    crate::appdir::prepare_host_person_dir(&data_home, &manifest.package_id).map_err(|source| {
+    crate::appdir::prepare_local_person_dir(&data_home, &manifest.package_id).map_err(|source| {
         RunError::AppDir {
             package: manifest.package_id.clone(),
-            path: crate::appdir::host_person_dir(&data_home, &manifest.package_id),
+            path: crate::appdir::local_person_dir(&data_home, &manifest.package_id),
             source,
         }
     })
@@ -3000,7 +3000,7 @@ fn prepare_launch_host(
                 Some(&services.binding().workspace),
                 &services.binding().app,
             )?,
-            crate::appdir::prepare_host_person_dir(services.data_home(), &services.binding().app)?,
+            crate::appdir::prepare_local_person_dir(services.data_home(), &services.binding().app)?,
         )
     } else {
         resolve_launch_dirs(manifest, opts)?
@@ -3167,7 +3167,7 @@ pub(crate) fn run_with_context(
         // A window whose instance a tilolang host runs holds none of the app's data: it gets no
         // collaboration connection (the host's instance has the app's own).
         let mut services = manifest.sandbox.services.clone();
-        if opts.tilolang_hosted || opts.tilolang_connector.is_some() {
+        if opts.tilolang_process || opts.tilolang_connector.is_some() {
             services.remove(crate::services::COLLAB_SERVICE);
         }
         let mut resolved = resolve_service_binds_for_launch(
@@ -3297,10 +3297,13 @@ pub(crate) fn run_with_context(
             Some((runtime_portal::process_binding::ENV.into(), "1".into())),
         )?;
     }
-    if opts.tilolang_hosted {
+    if opts.tilolang_process {
         splice_cli_setenv(
             &mut argv,
-            Some((runtime_portal::tilolang_host::HOSTED_ENV.into(), "1".into())),
+            Some((
+                runtime_portal::tilolang_process::HOSTED_ENV.into(),
+                "1".into(),
+            )),
         )?;
     }
     if let Some(origin) = &opts.tilolang_connector {

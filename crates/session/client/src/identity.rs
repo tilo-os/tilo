@@ -7,17 +7,17 @@
 
 use std::sync::Arc;
 
-use tilo_identity_host::identity_store::{HostIdentity, IdentityStore};
+use tilo_identity::identity_store::{HostIdentity, IdentityStore};
 
 /// This device's identity store, when this host holds an identity at all.
 #[must_use]
 pub fn identity_store() -> Option<Arc<dyn IdentityStore>> {
     #[cfg(target_os = "linux")]
     {
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
-        Some(Arc::new(
-            tilo_identity_host::identity_store::files::Files::new(paths),
-        ))
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
+        Some(Arc::new(tilo_identity::identity_store::files::Files::new(
+            paths,
+        )))
     }
     #[cfg(not(target_os = "linux"))]
     {

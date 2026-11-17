@@ -1023,9 +1023,9 @@ fn opml_portal_import_reports_honestly() {
     let work = ui::background::Pumped::new();
     let _work = work.background().enter();
     let import_with = |a: &FeedsApp, outcome: PortalOutcome| {
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         recorder.respond_to_pick(outcome);
-        ui::host::scoped(&services, || a.core_mut().request_import());
+        ui::process::scoped(&services, || a.core_mut().request_import());
         work.run_pending();
         let picks = recorder.pick_requests();
         assert_eq!(picks.len(), 1);

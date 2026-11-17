@@ -232,7 +232,7 @@ thread_local! {
 
 #[allow(clippy::needless_pass_by_value, reason = "factory contract")]
 fn bound_factory(
-    mut context: crate::application::HostContext,
+    mut context: crate::application::ProcessContext,
     target: crate::application::LaunchTarget,
     _: crate::application::RestoreInput,
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
@@ -419,9 +419,9 @@ tilo_test_env::scenario! {
             create: bound_factory,
         };
         let target = crate::application::LaunchTarget::New;
-        let context = crate::application::HostContext::prepare(
+        let context = crate::application::ProcessContext::prepare(
             &definition,
-            crate::application::HostContextInputs {
+            crate::application::ProcessContextInputs {
                 records: records.clone(),
                 views,
                 device_id: "D".into(),

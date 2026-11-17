@@ -425,7 +425,7 @@ impl<R: Resource> ResourceEnv<R> {
     }
 
     /// The service of type `T` the host that mounts the app in its own
-    /// process lent it ([`HostContext::lend`](ui_core::application::HostContext::lend)),
+    /// process lent it ([`ProcessContext::lend`](ui_core::application::ProcessContext::lend)),
     /// taken once: the shell's connection to the session's process
     /// supervisor for a terminal it hosts. `None` in the app's own process,
     /// and for a past version or a capture, which start nothing.

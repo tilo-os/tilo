@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use tilo_resource::{ActionDecl, Resource, SearchEntry};
 use ui_core::search::SearchQuery;
-use ui_core::widget::{AppHostIntent, AppModel, Decorator, Element, ModelPath, Widget};
+use ui_core::widget::{AppModel, AppProcessIntent, Decorator, Element, ModelPath, Widget};
 
 use super::effect::EffectStatus;
 use super::rows::LiveRow;
@@ -28,7 +28,7 @@ type Pending = Rc<dyn Fn(&str) -> bool>;
 /// handed (and nothing else); whether the row has any.
 type RowEdits = Rc<dyn Fn(&str, &mut dyn std::any::Any) -> bool>;
 type Statuses = Rc<dyn Fn() -> Vec<EffectStatus>>;
-type Intents = Rc<RefCell<dyn FnMut() -> Option<AppHostIntent>>>;
+type Intents = Rc<RefCell<dyn FnMut() -> Option<AppProcessIntent>>>;
 type Entries = Rc<dyn Fn() -> Vec<SearchEntry>>;
 type Unlocked = Rc<dyn Fn() -> Option<bool>>;
 type OnQuery = Rc<RefCell<dyn FnMut(&SearchQuery)>>;
@@ -193,9 +193,9 @@ impl<R: Resource> Publishes<R> {
     /// frame: a document chosen here to open in its own app, the platform
     /// search to show.
     #[must_use]
-    pub fn host_intents(
+    pub fn process_intents(
         mut self,
-        intents: impl FnMut() -> Option<AppHostIntent> + 'static,
+        intents: impl FnMut() -> Option<AppProcessIntent> + 'static,
     ) -> Self {
         self.sources.intents = Some(Rc::new(RefCell::new(intents)));
         self
@@ -352,7 +352,7 @@ impl SurfacePublication for Publishing {
     fn search_queries(&self) -> Option<SearchQueries> {
         Some(self.queries.clone())
     }
-    fn take_host_intent(&mut self) -> Option<AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<AppProcessIntent> {
         self.sources
             .intents
             .as_ref()

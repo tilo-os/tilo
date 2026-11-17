@@ -14,7 +14,7 @@ use std::cell::RefCell;
 
 use tilo_sheets::lock::{self, LockState, Shown};
 use ui::application::{
-    ApplicationDefinition, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
+    ApplicationDefinition, ComponentRunnerInputs, NativeProcess, PreparedComponentInputs,
 };
 use ui::launch::{LaunchArgs, LaunchError};
 
@@ -42,7 +42,7 @@ fn prepared(
     _args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let inputs = ComponentRunnerInputs::from_native_process();
-    let mut prepared = NativeProcessHost::prepare_window(definition, None, inputs)?;
+    let mut prepared = NativeProcess::prepare_window(definition, None, inputs)?;
     if let Some(state) = STATE.with(|slot| slot.borrow_mut().take()) {
         prepared.context.lend(state);
     }

@@ -99,8 +99,8 @@ impl WorkspaceTreeHandle {
     pub fn authority(&self) -> crate::services::WorkspaceAuthorityHandle {
         Arc::new(self.clone())
     }
-    pub fn services(&self) -> crate::services::HostServices {
-        crate::services::HostServices {
+    pub fn services(&self) -> crate::services::ProcessServices {
+        crate::services::ProcessServices {
             legacy_workspace: Some(Arc::new(self.clone())),
             // The workspaces' `chat.agent` records, as these fixtures keep
             // them: every agent a workspace grants anything works there,

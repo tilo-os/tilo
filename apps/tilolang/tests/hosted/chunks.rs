@@ -5,7 +5,7 @@
 use super::*;
 
 use super::cost::{number_of, own, seeded_tasks};
-use tilolang_host::testing::delivered;
+use tilolang_process::testing::delivered;
 use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
 
 /// Tasks enough to fill the first chunk the list's run is kept in and spill into a second.

@@ -27,12 +27,12 @@ pub fn intro_points() -> Vec<String> {
 
 #[must_use]
 pub fn host_desktop_intro_title() -> String {
-    t("onboarding-host-intro-title")
+    t("onboarding-identity-intro-title")
 }
 
 #[must_use]
 pub fn host_desktop_intro_body() -> String {
-    t("onboarding-host-intro-body")
+    t("onboarding-identity-intro-body")
 }
 
 /// Heading for the consequence screen — stated as a fact, not a warning to be

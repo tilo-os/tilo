@@ -549,9 +549,9 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
         crate::application_view::InstanceViewStore::new(root, DEVICE, &cluster.to_string())
             .unwrap(),
     );
-    let context = crate::application::HostContext::prepare_new_resource(
+    let context = crate::application::ProcessContext::prepare_new_resource(
         definition,
-        crate::application::HostContextInputs {
+        crate::application::ProcessContextInputs {
             records,
             views,
             device_id: DEVICE.into(),

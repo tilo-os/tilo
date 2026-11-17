@@ -574,10 +574,10 @@ fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
 fn this_computer(home: &mut tilo_test_env::TestHome) -> (tempfile::TempDir, String) {
     let root = tempfile::tempdir().expect("a directory for this computer's identity");
     let paths = tilo_user_identity::IdentityPaths::under(root.path());
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &home.config().join("tilo").join("identity"),
         &paths,
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("this computer's identity");
     home.env().set("TILO_IDENTITY_ROOT", root.path());

@@ -6,7 +6,7 @@ struct Picker {
     selected: PathBuf,
     cancel_first: bool,
 }
-impl ui::host::FilePicker for Picker {
+impl ui::process::FilePicker for Picker {
     fn pick(&self, request: ui::PickRequest) -> ui::PortalChannel {
         assert!(request.is_directory());
         let (sender, receiver) = mpsc::channel();
@@ -63,11 +63,11 @@ pub(super) fn pending_grant(
     selected: &Path,
     cancel: &AtomicBool,
 ) -> (HomeRootSet, MountedRootSelection) {
-    let services = ui::host::HostServices::null().with_files(Arc::new(Picker {
+    let services = ui::process::ProcessServices::null().with_files(Arc::new(Picker {
         selected: selected.into(),
         cancel_first: false,
     }));
-    let _host = ui::host::enter(&services);
+    let _host = ui::process::enter(&services);
     let mut roots = root_set(&locations, cancel);
     let id = roots.locations()[0].0.clone();
     let mut chooser = roots
@@ -176,11 +176,11 @@ pub(super) fn exercise_matching_platform_grants(
     );
     drop(other);
 
-    let services = ui::host::HostServices::null().with_files(Arc::new(Picker {
+    let services = ui::process::ProcessServices::null().with_files(Arc::new(Picker {
         selected: selected.into(),
         cancel_first: false,
     }));
-    let _host = ui::host::enter(&services);
+    let _host = ui::process::enter(&services);
     let mut sequential = root_set(&locations, cancel);
     let id = sequential.locations()[0].0.clone();
     let mut first = sequential
@@ -207,11 +207,11 @@ pub(super) fn exercise_matching_platform_grants(
             .is_err()
     );
 
-    let cancelled_services = ui::host::HostServices::null().with_files(Arc::new(Picker {
+    let cancelled_services = ui::process::ProcessServices::null().with_files(Arc::new(Picker {
         selected: selected.into(),
         cancel_first: true,
     }));
-    let _cancelled_host = ui::host::enter(&cancelled_services);
+    let _cancelled_host = ui::process::enter(&cancelled_services);
     let mut cancelled = root_set(&locations, cancel);
     let id = cancelled.locations()[0].0.clone();
     let mut chooser = cancelled

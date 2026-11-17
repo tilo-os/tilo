@@ -2,7 +2,7 @@
 """Keep the UI toolkit's clock behind ``ui::time``.
 
 The toolkit (``crates/sdk/ui-core``), its host services
-(``crates/sdk/tilo-host``) and the collab client under it
+(``crates/sdk/tilo-process-services``) and the collab client under it
 (``crates/collab/collaboration``) name their clock types through
 ``crate::time`` —
 defined once, in ``tilo-host``'s ``src/time.rs``, and re-exported by the
@@ -56,10 +56,10 @@ from rust_source import (  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 CRATES = (
     Path("crates/sdk/ui-core"),
-    Path("crates/sdk/tilo-host"),
+    Path("crates/sdk/tilo-process-services"),
     Path("crates/collab/collaboration"),
 )
-CLOCK_MODULE = Path("crates/sdk/tilo-host/src/time.rs")
+CLOCK_MODULE = Path("crates/sdk/tilo-process-services/src/time.rs")
 
 # Every Rust source of the tree: a crate that depends on the toolkit names the
 # clock module as `ui::time`, and reads it past the clock module wherever it sits.

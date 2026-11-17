@@ -163,7 +163,7 @@ impl ResourceApp for ContactsShell {
         Some(&crate::account_editor::CATALOG)
     }
 
-    fn import_resource(context: &ui::application::HostContext) -> Result<(), String> {
+    fn import_resource(context: &ui::application::ProcessContext) -> Result<(), String> {
         crate::import_inbox::import(context)
     }
 

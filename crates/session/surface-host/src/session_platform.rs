@@ -24,7 +24,7 @@ impl<L: Loads> Platform for OnSession<L> {
     }
 
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
-        tilo_ui_host::i18n::word(id, args, id)
+        tilo_app_window::i18n::word(id, args, id)
     }
 
     /// The time of day as the person reads a clock: the package's views run in the session,
@@ -35,14 +35,14 @@ impl<L: Loads> Platform for OnSession<L> {
 
     fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
         if window {
-            tilo_ui_host::i18n::add_catalogues(catalogues);
+            tilo_app_window::i18n::add_catalogues(catalogues);
         } else {
-            tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+            tilo_app_window::i18n::add_shared_catalogues(catalogues);
         }
     }
 
     fn words_revision(&self) -> u64 {
-        tilo_ui_host::i18n::revision()
+        tilo_app_window::i18n::revision()
     }
 
     fn now(&self) -> String {

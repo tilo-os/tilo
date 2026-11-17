@@ -3863,9 +3863,9 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
     }
 
     {
-        let services = ui::host::HostServices::null()
+        let services = ui::process::ProcessServices::null()
             .with_clipboard(std::sync::Arc::new(TestClipboard::default()));
-        let _host = ui::host::enter(&services);
+        let _host = ui::process::enter(&services);
         let mut state = crate::initialized_state();
         let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);

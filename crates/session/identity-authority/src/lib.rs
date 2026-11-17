@@ -37,13 +37,13 @@ pub fn device_certificate(
     workspace: &str,
     person: &str,
 ) -> Result<tilo_user_identity::DeviceCert, String> {
-    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
     // The certificate the workspace's selected identity presents for this
     // device: the one its apps join the workspace with and the one the
     // workspace admitted. The device owner's system-facing certificate is
     // issued separately for the same key, so a session's admission never
     // matches it.
-    let (_, certificate) = tilo_identity_host::broker::trusted_current_device(workspace)
+    let (_, certificate) = tilo_identity::broker::trusted_current_device(workspace)
         .map_err(|error| error.to_string())?;
     if tilo_action_broker::collab_app_broker::person_id_for_root(certificate.user_public_key)
         != person
@@ -52,14 +52,11 @@ pub fn device_certificate(
     }
     // A selected alternate workspace identity cannot borrow this device's
     // primary person. The certificate's fleet revocation is checked afresh.
-    tilo_identity_host::certificates::authorize(workspace, &certificate)?;
-    let registry = tilo_identity_host::registry::IdentityRegistryStore::from_env()
+    tilo_identity::certificates::authorize(workspace, &certificate)?;
+    let registry = tilo_identity::registry::IdentityRegistryStore::from_env()
         .map_err(|error| error.to_string())?;
-    if !tilo_identity_host::provisioning::active_identity_owns_device(
-        registry.identity_dir(),
-        &paths,
-    )
-    .map_err(|error| error.to_string())?
+    if !tilo_identity::provisioning::active_identity_owns_device(registry.identity_dir(), &paths)
+        .map_err(|error| error.to_string())?
     {
         return Err("native device identity is not currently claimed".into());
     }
@@ -88,7 +85,7 @@ pub enum Readiness {
 /// nothing is on its way there.
 #[must_use]
 pub fn device_readiness(workspace: &str, person: &str) -> Readiness {
-    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
     if tilo_user_identity::persist::load_device_key(&paths).is_err()
         || tilo_user_identity::persist::read_device_cert(&paths.device_cert).is_err()
     {
@@ -98,7 +95,7 @@ pub fn device_readiness(workspace: &str, person: &str) -> Readiness {
     // hands a decision the registry its worker last reconciled, so a read that lands before that
     // worker has the person's record is a wait, not a refusal — and the answer after it is the one
     // that counts.
-    let named = tilo_identity_host::registry::identity_for_workspace(workspace)
+    let named = tilo_identity::registry::identity_for_workspace(workspace)
         .is_ok_and(|named| named.is_some());
     match device_certificate(workspace, person) {
         Ok(certificate) => Readiness::Ready(certificate),
@@ -150,7 +147,7 @@ impl tilo_action_broker::services::LocalPersonServices for NativeLocalPerson {
                     }
                     // Woken by the identity landing, never by a clock: a wait nothing
                     // announces is a wait nothing ends, so there is no timeout either.
-                    tilo_identity_host::policy_change::wait_for_a_change(None);
+                    tilo_identity::policy_change::wait_for_a_change(None);
                 }
             }
         }
@@ -205,7 +202,7 @@ impl CertificateAuthority for NativeCertificates {
         workspace: uuid::Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        tilo_identity_host::certificates::authorize(&workspace.to_string(), certificate)
+        tilo_identity::certificates::authorize(&workspace.to_string(), certificate)
     }
 
     fn authorize_join(
@@ -213,7 +210,7 @@ impl CertificateAuthority for NativeCertificates {
         workspace: uuid::Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        tilo_identity_host::certificates::authorize_join(&workspace.to_string(), certificate)
+        tilo_identity::certificates::authorize_join(&workspace.to_string(), certificate)
     }
 }
 
@@ -263,14 +260,14 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_CONFIG_HOME", &config)
             .set("TILO_IDENTITY_ROOT", root.path().join("system"))
-            .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         let identity_dir = config.join("tilo/identity");
         let system = tilo_user_identity::IdentityPaths::under(root.path().join("system"));
         let certificate = provision.then(|| {
-            tilo_identity_host::provisioning::ensure_collaboration_identity(
+            tilo_identity::provisioning::ensure_collaboration_identity(
                 &identity_dir,
                 &system,
-                tilo_identity_host::provisioning::IdentityStorage::Files,
+                tilo_identity::provisioning::IdentityStorage::Files,
             )
             .expect("an identity for the login");
             tilo_user_identity::persist::read_device_cert(&system.device_cert)
@@ -356,7 +353,7 @@ mod tests {
                 .expect("the login writes the identity");
             std::io::Write::write_all(&mut file, &bytes).expect("the record is written");
         }
-        tilo_identity_host::policy_change::announce();
+        tilo_identity::policy_change::announce();
         let certificate = waiting.join().expect("the waiting action answers");
         let held = login.certificate.as_ref().expect("a provisioned login");
         assert_eq!(

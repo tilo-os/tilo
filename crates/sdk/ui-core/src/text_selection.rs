@@ -269,7 +269,7 @@ pub fn extend_span_drag<T: Ord + Copy>(
 }
 
 fn clipboard() -> std::sync::Arc<dyn crate::clipboard::ClipboardBackend> {
-    crate::host::current().clipboard
+    crate::process::current().clipboard
 }
 
 pub(crate) fn request_clipboard_paste() -> std::sync::mpsc::Receiver<Option<String>> {
@@ -482,8 +482,8 @@ mod tests {
 
     #[test]
     fn empty_clipboard_is_unavailable_but_whitespace_is_content() {
-        let (services, _) = crate::host::HostServices::recording();
-        let _host = crate::host::enter(&services);
+        let (services, _) = crate::process::ProcessServices::recording();
+        let _host = crate::process::enter(&services);
         clipboard_copy("");
         assert_eq!(clipboard_paste(), None);
         clipboard_copy(" \n");
@@ -492,9 +492,9 @@ mod tests {
 
     #[test]
     fn a_secret_copy_is_cleared_only_while_the_clipboard_still_holds_it() {
-        let (services, recorder) = crate::host::HostServices::recording();
+        let (services, recorder) = crate::process::ProcessServices::recording();
         let clipboard = services.clipboard.clone();
-        let _host = crate::host::enter(&services);
+        let _host = crate::process::enter(&services);
         assert_eq!(
             try_clipboard_copy_secret("hunter2", std::time::Duration::from_secs(3600)).outcome(),
             Some(true)
@@ -524,9 +524,9 @@ mod tests {
 
     #[test]
     fn a_secret_copy_is_refused_without_a_shared_clipboard_and_cleared_on_time() {
-        let services = crate::host::HostServices::null();
+        let services = crate::process::ProcessServices::null();
         {
-            let _host = crate::host::enter(&services);
+            let _host = crate::process::enter(&services);
             assert!(
                 try_clipboard_copy_secret("hunter2", std::time::Duration::ZERO).outcome()
                     == Some(false),
@@ -534,8 +534,8 @@ mod tests {
             );
             assert_eq!(clipboard_paste(), None);
         }
-        let (services, recorder) = crate::host::HostServices::recording();
-        let _host = crate::host::enter(&services);
+        let (services, recorder) = crate::process::ProcessServices::recording();
+        let _host = crate::process::enter(&services);
         assert_eq!(
             try_clipboard_copy_secret("hunter2", std::time::Duration::ZERO).outcome(),
             Some(true)

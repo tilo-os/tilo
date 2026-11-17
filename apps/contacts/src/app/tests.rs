@@ -182,12 +182,12 @@ fn selected_contact(app: &ContactsApp) -> Contact {
 /// A real host chooser kept open until the test supplies its destination.
 /// Recording's pre-answered picker would race the in-flight/no-write proof.
 struct DeferredPicker {
-    recorder: ui::host::HostRecorder,
+    recorder: ui::process::ProcessRecorder,
     answer: std::sync::Mutex<Option<std::sync::mpsc::Sender<ui::portal::PortalOutcome>>>,
 }
 
 impl DeferredPicker {
-    fn new(recorder: ui::host::HostRecorder) -> Self {
+    fn new(recorder: ui::process::ProcessRecorder) -> Self {
         Self {
             recorder,
             answer: std::sync::Mutex::new(None),
@@ -205,24 +205,24 @@ impl DeferredPicker {
     }
 }
 
-impl ui::host::FilePicker for DeferredPicker {
+impl ui::process::FilePicker for DeferredPicker {
     fn pick(&self, request: ui::portal::PickRequest) -> ui::portal::PortalChannel {
-        let _ = ui::host::FilePicker::pick(&self.recorder, request);
+        let _ = ui::process::FilePicker::pick(&self.recorder, request);
         let (sender, receiver) = std::sync::mpsc::channel();
         assert!(self.answer.lock().unwrap().replace(sender).is_none());
         receiver
     }
 
     fn pick_multiple(&self, request: ui::portal::PickRequest) -> ui::portal::MultiChannel {
-        ui::host::FilePicker::pick_multiple(&self.recorder, request)
+        ui::process::FilePicker::pick_multiple(&self.recorder, request)
     }
 
     fn open_file(&self, request: ui::portal::PickRequest) -> ui::portal::OpenFileChannel {
-        ui::host::FilePicker::open_file(&self.recorder, request)
+        ui::process::FilePicker::open_file(&self.recorder, request)
     }
 
     fn launch(&self, request: ui::portal::LaunchRequest) -> ui::portal::LaunchChannel {
-        ui::host::FilePicker::launch(&self.recorder, request)
+        ui::process::FilePicker::launch(&self.recorder, request)
     }
 }
 
@@ -686,8 +686,8 @@ fn the_contact_menu_runs_the_canonical_actions() {
 
 #[test]
 fn header_commands_favorite_delete_and_open_the_website() {
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let work = ui::background::Pumped::new();
     let _work = work.background().enter();
     let mut app = synced();
@@ -723,8 +723,8 @@ fn header_commands_favorite_delete_and_open_the_website() {
 
 #[test]
 fn a_contact_can_be_called_messaged_and_emailed() {
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let work = ui::background::Pumped::new();
     let _work = work.background().enter();
     let mut app = synced();
@@ -1666,8 +1666,8 @@ fn website_renders_and_opens_through_the_link_widget() {
         // confirm the contact's URL is what gets opened. A recording host
         // captures the URL instead of spawning the OS browser, so this exercises
         // the production click path hermetically — no xdg-open side effect.
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         // The link opens through background work; pump it so the open is seen.
         let work = ui::background::Pumped::new();
         let _work = work.background().enter();
@@ -2950,10 +2950,10 @@ fn vcf_export_writes_the_selected_book() {
             "Format",
             &ui::a11y::Action::SetValue("vCard 3.0, for older apps".into()),
         );
-        let (mut services, recorder) = ui::host::HostServices::recording();
+        let (mut services, recorder) = ui::process::ProcessServices::recording();
         let chooser = std::sync::Arc::new(DeferredPicker::new(recorder.clone()));
         services.files = chooser.clone();
-        let _host = ui::host::enter(&services);
+        let _host = ui::process::enter(&services);
         act_named(&mut h.app, "Export", &ui::a11y::Action::Activate);
         assert!(
             h.app.export.is_none(),
@@ -2990,9 +2990,9 @@ fn vcf_export_writes_the_selected_book() {
         let (dir, vcf) = scratch_export();
         let mut h = Harness::live(1280, 800);
         let total = h.app.store.filtered_sorted("", None, h.app.sort).len();
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(vcf.clone()));
-        let _host = ui::host::enter(&services);
+        let _host = ui::process::enter(&services);
         h.app
             .app
             .effect_confirmed(&crate::actions::ContactsEffect::ExportAllVcard)
@@ -3036,9 +3036,9 @@ fn scratch_book() -> (PathBuf, PathBuf) {
 }
 
 fn import_with(app: &mut Live, outcome: ui::portal::MultiOutcome) {
-    let (services, recorder) = ui::host::HostServices::recording();
+    let (services, recorder) = ui::process::ProcessServices::recording();
     recorder.respond_to_pick_multiple(outcome);
-    let result = ui::host::scoped(&services, || {
+    let result = ui::process::scoped(&services, || {
         app.app.effect(&crate::actions::ContactsEffect::ImportVcard)
     });
     let picks = recorder.pick_requests();
@@ -3072,10 +3072,10 @@ fn export_asks_a_format_and_writes_the_chosen_file() {
     assert!(matches!(app.dialog, Some((DialogKey::Export, _))));
     draft.format.set("3.0".into());
 
-    let (mut services, recorder) = ui::host::HostServices::recording();
+    let (mut services, recorder) = ui::process::ProcessServices::recording();
     let chooser = std::sync::Arc::new(DeferredPicker::new(recorder.clone()));
     services.files = chooser.clone();
-    let _host = ui::host::enter(&services);
+    let _host = ui::process::enter(&services);
     ask(&mut app, Request::Dialog(DialogChoice::Primary));
     assert!(app.export.is_none(), "choosing Export closes the dialog");
     assert!(app.portal_in_flight());
@@ -3291,8 +3291,8 @@ fn import_and_export_run_through_the_file_chooser() {
     {
         let mut app = Live::empty(1280, 800);
         let _running = super::files::begin_file_work(&app.file_work, FileWork::Import).unwrap();
-        let (services, _recorder) = ui::host::HostServices::recording();
-        let refused = ui::host::scoped(&services, || {
+        let (services, _recorder) = ui::process::ProcessServices::recording();
+        let refused = ui::process::scoped(&services, || {
             app.app.effect(&crate::actions::ContactsEffect::ImportVcard)
         });
         assert!(refused.is_err(), "one file operation runs at a time");

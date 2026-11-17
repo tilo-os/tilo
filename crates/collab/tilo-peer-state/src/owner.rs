@@ -81,7 +81,7 @@ use web_time::SystemTime;
 /// have changed. A page has none: it decides nothing for other processes.
 fn policy_changed() {
     #[cfg(not(target_arch = "wasm32"))]
-    tilo_identity_host::policy_change::announce();
+    tilo_identity::policy_change::announce();
 }
 
 /// Whether `hint` names this device, `device`, as the workspace's host: a workspace

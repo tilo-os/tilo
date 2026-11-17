@@ -42,7 +42,7 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
             });
             let rig = Rig::with_services(
                 &env,
-                HostServices {
+                ProcessServices {
                     launcher: Some(launcher.clone()),
                     ..env.membership.services()
                 },
@@ -247,7 +247,7 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                 }
                 let rig = Rig::with_services(
                     &env,
-                    HostServices {
+                    ProcessServices {
                         launcher: Some(launcher.clone()),
                         ..env.membership.services()
                     },
@@ -334,7 +334,7 @@ async fn installed_launch_rpc_rejects_a_noncanonical_package_root_before_host_ad
             });
             let rig = Rig::with_services(
                 &env,
-                HostServices {
+                ProcessServices {
                     launcher: Some(launcher.clone()),
                     ..env.membership.services()
                 },
@@ -372,7 +372,7 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                 });
                 let rig = Rig::with_services(
                     &env,
-                    HostServices {
+                    ProcessServices {
                         launcher: Some(launcher.clone()),
                         ..env.membership.services()
                     },
@@ -478,7 +478,7 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                 });
                 let rig = Rig::with_services(
                     &env,
-                    HostServices {
+                    ProcessServices {
                         local_person: Some(Arc::new(super::signed_worker::NativePerson(
                             env.authority.clone(),
                         ))),

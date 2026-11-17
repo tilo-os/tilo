@@ -511,7 +511,7 @@ impl LauncherServices for Launches {
         app: &str,
         workspace: &str,
     ) -> Result<Option<tilo_broker_core::services::WindowlessStart>, String> {
-        if tilo_app_launch::tilolang_hosts::runs_in_host(app) {
+        if tilo_app_launch::tilolang_processes::runs_in_process(app) {
             return Ok(None);
         }
         let Some(launch @ tilo_app_launch::Launch::Package { open: None, .. }) =

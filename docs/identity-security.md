@@ -12,7 +12,7 @@ root signature over the right 32 bytes is a device certificate or a revocation,
 so no application ever obtains one (`runtime_identity::broker::serve_metadata`).
 A store record whose key was never secured still fails the launch and names the
 Settings step that secures it.
-Application signatures come from the identity service (`tilo-identity-host`,
+Application signatures come from the identity service (`tilo-identity`,
 file descriptor 31), which signs with this device's enrolled key and only under
 a grant naming the app, workspace and action. Read-only workspace participation gets
 no broker descriptor; the identity-service connection is still attached when the

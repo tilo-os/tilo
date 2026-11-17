@@ -203,7 +203,7 @@ mod tests {
             &root.join("identity"),
             "Ada",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         let prepared = PreparedMedia::prepare_with_selections(

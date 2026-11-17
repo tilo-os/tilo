@@ -25,8 +25,8 @@ use std::time::Duration;
 use crate::platform::fabric::SharedLink;
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
-use tilo_identity_host::device_admin::DeviceKind;
-use tilo_identity_host::device_admin::{
+use tilo_identity::device_admin::DeviceKind;
+use tilo_identity::device_admin::{
     Approval, Candidate, ENROLL, KeyHolding, PersonPaths, approval_args, command_error,
     discover_command, node_id,
 };
@@ -262,7 +262,7 @@ pub(crate) struct Pairing {
 
 static SESSION: LazyLock<Pairing> = LazyLock::new(|| {
     Pairing::with_runner(Arc::new(run_bounded))
-        .holding(Arc::new(tilo_identity_host::device_admin::key_holding))
+        .holding(Arc::new(tilo_identity::device_admin::key_holding))
 });
 
 impl Pairing {
@@ -517,7 +517,7 @@ impl Admission {
             .fabric
             .as_ref()
             .ok_or_else(crate::certification::cannot_certify_here)?;
-        let (proposal, service) = tilo_identity_host::device_admin::proposed_certificate(
+        let (proposal, service) = tilo_identity::device_admin::proposed_certificate(
             person,
             &self.candidate,
             tilo_clock::unix_now_ns(),
@@ -533,7 +533,7 @@ impl Admission {
         runner(
             &HostCommand {
                 program: PathBuf::from(ENROLL),
-                args: tilo_identity_host::device_admin::approved_args(
+                args: tilo_identity::device_admin::approved_args(
                     &self.approval,
                     &self.paths,
                     file.path(),
@@ -560,11 +560,7 @@ pub(crate) fn approval_command(
 
 /// The device a finished discovery reports.
 fn discovered(finished: &Finished) -> Result<Candidate, String> {
-    tilo_identity_host::device_admin::discovered(
-        finished.success,
-        &finished.stdout,
-        &finished.stderr,
-    )
+    tilo_identity::device_admin::discovered(finished.success, &finished.stdout, &finished.stderr)
 }
 
 /// Run `command` under the bounded-command policy, polling for `stop`;
@@ -876,7 +872,7 @@ mod tests {
                 }
             );
             assert_eq!(recorded[1].program, PathBuf::from(PKEXEC), "{recorded:?}");
-            let ask = tilo_identity_host::device_admin::approval_args(&approval, &paths, &[]);
+            let ask = tilo_identity::device_admin::approval_args(&approval, &paths, &[]);
             assert_eq!(recorded[1].args, ask);
             assert_eq!(recorded[1].timeout, APPROVAL_TIMEOUT);
 

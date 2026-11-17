@@ -6,8 +6,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ui::host::HostServices;
 use ui::portal::{MultiOutcome, PortalOutcome};
+use ui::process::ProcessServices;
 use ui::tilo_actions::ResourceSpec;
 use ui::webview::{FileChooser, FileChooserMode, WebViewEngine as _};
 
@@ -90,8 +90,8 @@ fn said(resource: &ResourceSpec, into: &mut Vec<String>) {
 
 #[test]
 fn a_persons_chooser_asks_the_hosts_picker_and_the_page_gets_the_one_file_picked() {
-    let (services, recorder) = HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (engine, mut widget) = window(BrowsingMode::Normal);
     assert!(
         engine.accepts_file_choosers(),
@@ -142,8 +142,8 @@ fn a_persons_chooser_asks_the_hosts_picker_and_the_page_gets_the_one_file_picked
 
 #[test]
 fn several_files_and_a_folder_reach_the_page_as_they_were_picked() {
-    let (services, recorder) = HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (engine, mut widget) = window(BrowsingMode::Normal);
     let (folder, picked) = files(&["two.png", "one.png", "three.png"]);
     recorder.respond_to_pick_multiple(MultiOutcome::Selected(picked.clone()));
@@ -177,8 +177,8 @@ fn several_files_and_a_folder_reach_the_page_as_they_were_picked() {
 
 #[test]
 fn a_cancelled_or_failed_picker_cancels_the_pages_chooser() {
-    let (services, recorder) = HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (engine, mut widget) = window(BrowsingMode::Normal);
     // Nothing queued: the person closed the picker.
     asks(&engine, 7, FileChooserMode::One, &[]);
@@ -200,8 +200,8 @@ fn a_cancelled_or_failed_picker_cancels_the_pages_chooser() {
 
 #[test]
 fn what_no_picker_could_have_given_is_never_handed_to_the_page() {
-    let (services, recorder) = HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (engine, mut widget) = window(BrowsingMode::Normal);
     let (folder, picked) = files(&["passport.pdf"]);
     let missing = folder.path().join("missing.pdf");
@@ -239,8 +239,8 @@ fn what_no_picker_could_have_given_is_never_handed_to_the_page() {
 
 #[test]
 fn a_newer_chooser_supersedes_the_one_before_it() {
-    let (services, recorder) = HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (engine, mut widget) = window(BrowsingMode::Normal);
     let (_folder, picked) = files(&["first.pdf", "second.pdf"]);
     recorder.respond_to_pick(PortalOutcome::Opened(picked[0].clone()));
@@ -259,8 +259,8 @@ fn a_newer_chooser_supersedes_the_one_before_it() {
 
 #[test]
 fn a_chooser_whose_tab_closed_or_left_is_never_answered() {
-    let (services, recorder) = HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (engine, mut widget) = window(BrowsingMode::Normal);
     let (_folder, picked) = files(&["passport.pdf"]);
     recorder.respond_to_pick(PortalOutcome::Opened(picked[0].clone()));
@@ -288,8 +288,8 @@ fn a_chooser_whose_tab_closed_or_left_is_never_answered() {
 
 #[test]
 fn a_window_an_agent_operates_never_puts_a_picker_in_front_of_the_person() {
-    let (services, recorder) = HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (engine, mut widget) = window(BrowsingMode::Visitor);
     assert!(
         !engine.accepts_file_choosers(),

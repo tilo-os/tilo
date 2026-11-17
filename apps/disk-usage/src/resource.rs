@@ -293,9 +293,10 @@ mod tests {
     fn a_chosen_folder_is_analyzed() {
         let folder = scratch_folder("choose");
         let mut app = TestApp::<DiskUsageShell>::new().unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(folder.clone()));
-        let answer = ui::host::scoped(&services, || app.effect(&DiskUsageEffect::Choose)).unwrap();
+        let answer =
+            ui::process::scoped(&services, || app.effect(&DiskUsageEffect::Choose)).unwrap();
         let picks = recorder.pick_requests();
         assert_eq!(picks.len(), 1);
         assert!(picks[0].is_directory());

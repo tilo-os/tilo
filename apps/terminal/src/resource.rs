@@ -768,7 +768,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         TerminalWidget::request_device_shell(self)
     }
 
-    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<ui::widget::AppProcessIntent> {
         self.take_session_intent()
     }
 
@@ -863,7 +863,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
         crate::TerminalWidget::request_device_shell(self.terminal_mut())
     }
 
-    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<ui::widget::AppProcessIntent> {
         self.take_session_intent()
     }
     fn present(&mut self, state: &std::rc::Rc<Terminal>) {

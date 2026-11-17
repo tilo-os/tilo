@@ -105,7 +105,7 @@ pub fn take_requests() -> Vec<TabRequest> {
 /// The record instance the shell launched this process for, which is how it finds this
 /// app's own tab.
 pub fn launch_instance() -> Option<u64> {
-    crate::host::environment()
+    crate::process::environment()
         .identity
         .continuity_instance
         .as_deref()

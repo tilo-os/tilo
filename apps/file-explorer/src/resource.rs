@@ -414,7 +414,7 @@ impl FileExplorer {
             ));
         }
         if !cx.is_preview()
-            && ui::bound_dispatch::executing_host_device().as_deref() != Some(device.as_str())
+            && ui::bound_dispatch::executing_device().as_deref() != Some(device.as_str())
         {
             return Err(Refusal::new(
                 "Invoke Files on the receiving device to import mounted files",
@@ -457,7 +457,7 @@ impl FileExplorer {
         // Destination paths and their pinned identity belong to the executing
         // host. A caller naming another device cannot choose that host's folder.
         if !cx.is_preview()
-            && ui::bound_dispatch::executing_host_device().as_deref() != Some(device.as_str())
+            && ui::bound_dispatch::executing_device().as_deref() != Some(device.as_str())
         {
             return Err(Refusal::new(
                 "Invoke Files on the receiving device and choose the destination there; cloud import cannot target another device from this host",
@@ -998,7 +998,7 @@ fn reverting_changes(state: &FileExplorer, task: &FileTask) -> Result<Option<Vec
 /// Only fresh admission consults the immutable host identity. Historical
 /// structural replay never performs private-source admission or mints consent.
 fn private_source_invocation_permitted() -> bool {
-    ui::bound_dispatch::host_person_invocation_permitted()
+    ui::bound_dispatch::local_person_invocation_permitted()
 }
 
 fn validate_import_destination(destination: &ImportDestination) -> Result<(), Refusal> {
@@ -1178,7 +1178,7 @@ fn files_view(cx: &ViewCx<FileExplorer>, mut window: FileExplorerWidget) -> Elem
             .live_row(move |id| row.borrow().published_row(id).map(LiveRow::from_resource))
             .row_edits(move |row| edits.borrow().entry_declarations(row))
             .search_entries(move || entries.borrow().search_entries_shown())
-            .host_intents(move || intents.borrow_mut().take_host_intent()),
+            .process_intents(move || intents.borrow_mut().take_process_intent()),
         Box::new(window),
     )
 }
@@ -1294,7 +1294,7 @@ fn answer_effects(cx: &ViewCx<FileExplorer>, state: &Rc<std::cell::RefCell<Files
         let mut files = answer.borrow_mut();
         // Cloud accounts and transfer state belong to the local person, not
         // to every member allowed to edit the workspace's files.
-        if host_person_only(&effect) && !ui::bound_dispatch::host_person_invocation_permitted() {
+        if local_person_only(&effect) && !ui::bound_dispatch::local_person_invocation_permitted() {
             return Err("Only the host's person may access their private cloud accounts".into());
         }
         if let FilesEffect::HandOver { file } = &effect {
@@ -1418,7 +1418,7 @@ impl FilesState {
     }
 }
 
-fn host_person_only(effect: &FilesEffect) -> bool {
+fn local_person_only(effect: &FilesEffect) -> bool {
     matches!(
         effect,
         FilesEffect::BrowseCloud { .. }

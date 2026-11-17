@@ -214,7 +214,7 @@ state, a function or a view (`template.rs`).
 
 - Code compiles to wasm and runs sandboxed. Authority follows authorship: what code may do is
   the lesser of what the person may do and what its author is trusted with.
-- Views produce native components, drawn by the shared UI host (one renderer for every app),
+- Views produce native components, drawn by the shared app window (one renderer for every app),
   so an app costs a few megabytes, not a toolkit.
 - Changes are CRDT-backed and replay identically everywhere; resources with an outside
   origin follow that service's rules.
@@ -233,7 +233,7 @@ state, a function or a view (`template.rs`).
 | The agent experience | agent-ux.md |
 | The canvas: point at something and type | canvas.md |
 | One action system with native Tilo | action-system.md |
-| How apps render cheaply (UI host) | ui-host.md |
+| How apps render cheaply (app window) | app-window.md |
 | Components and custom widgets | components.md |
 | Workspace, windows, views | workspace-model.md |
 | Layout | layout.md |

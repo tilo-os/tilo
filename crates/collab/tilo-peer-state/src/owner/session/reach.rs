@@ -9,7 +9,7 @@ use crate::join_transport::{LocalJoinService, WorkspaceJoinClient};
 use collab_types::signer::DeviceSigner;
 use std::{sync::Arc, time::Duration};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
-use tilo_identity_host::identity_store::HostIdentity;
+use tilo_identity::identity_store::HostIdentity;
 
 /// This device's own workspace host, running in this process: a workspace placed on
 /// this device is linked through it, as an endpoint cannot dial itself.

@@ -459,8 +459,8 @@ tilo_test_env::scenario! {
         }
         let _settled = crate::motion::testing::settled();
         let clipboard = Arc::new(Delayed::default());
-        let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
-        let _host = crate::host::enter(&services);
+        let services = crate::process::ProcessServices::null().with_clipboard(clipboard.clone());
+        let _host = crate::process::enter(&services);
         let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = changes.clone();
         let mut input = TextInput::local()

@@ -276,7 +276,7 @@ fn a_real_prepared_package_reaches_a_new_identity_and_returns_a_verified_receipt
         &unrelated,
         "Unrelated person",
         [1, 2, 3],
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     assert_ne!(
@@ -367,7 +367,7 @@ tilo_test_env::scenario! {
             &identity,
             "Destination person",
             [4, 5, 6],
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         env.set("TILO_IDENTITY_ROOT", &system);

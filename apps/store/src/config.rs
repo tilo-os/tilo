@@ -24,7 +24,7 @@ pub use app_cli::config::{
 };
 
 pub fn repositories(
-    host: Option<&app_host::client::BlockingClient>,
+    host: Option<&app_process::client::BlockingClient>,
 ) -> Result<RegistriesFile, String> {
     let Some(host) = host else {
         return Ok(app_cli::config::load_registries_no_seed());
@@ -72,7 +72,7 @@ mod tests {
             assert_eq!(config_dir().as_deref(), Some(td.path()));
         }
 
-        // Case `without_an_app_host_nothing_is_written`.
+        // Case `without_an_app_process_nothing_is_written`.
         // The Store's own reading never seeds a list in its sandbox.
         {
             let td = TempDir::new().unwrap();

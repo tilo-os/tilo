@@ -83,7 +83,7 @@ fn read(file: &File) -> io::Result<Vec<u8>> {
 /// Seed is minted only by the actual authenticated encrypted enrolled transport.
 /// Exact retries compare the initial seed; later revocations use a separate file.
 pub(super) fn publish_namespace(
-    enrolled: &tilo_identity_host::enrolled_transport::AuthenticatedEnrolledDevice,
+    enrolled: &tilo_identity::enrolled_transport::AuthenticatedEnrolledDevice,
     namespace: &Path,
 ) -> io::Result<()> {
     root()?;
@@ -135,7 +135,7 @@ fn publish_material(
 /// identity-directory observer; the installed declaration supplies the person.
 pub fn publish_original_copy_owner(
     installed: &super::AuthenticatedInstalledOriginalCopy,
-    current: &tilo_identity_host::enrolled_transport::RootObservedCurrentDevice,
+    current: &tilo_identity::enrolled_transport::RootObservedCurrentDevice,
     peer: &runtime_portal::process_binding::ExecutingPeer,
 ) -> io::Result<()> {
     root()?;
@@ -182,7 +182,7 @@ pub fn publish_original_copy_owner(
 /// or source credential is inferred from a public certificate or request label.
 pub fn publish_retained_primary_owner(
     installed: &super::AuthenticatedInstalledRetained,
-    current: &tilo_identity_host::enrolled_transport::RootObservedCurrentDevice,
+    current: &tilo_identity::enrolled_transport::RootObservedCurrentDevice,
     peer: &runtime_portal::process_binding::ExecutingPeer,
 ) -> io::Result<()> {
     root()?;

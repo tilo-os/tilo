@@ -197,7 +197,7 @@ process and hosts it as a layer (`overlay_host/sheet_apps.rs`, `SheetHost`): the
 layer only places the app over the display it opens on and gives it the
 layer's input; the app draws, keeps its own keyboard model and publishes its
 own accessibility tree. What only the shell can do for it the shell lends the
-app as a sheet (`HostContext::lend`): plain data in (whether the sheet is up,
+app as a sheet (`ProcessContext::lend`): plain data in (whether the sheet is up,
 what this session offers) and requests out (what the person chose), which the
 shell carries out. A sheet's window is `WindowRole::Sheet`, so it stands on no
 ground of its own and the desktop shows around it. The power menu, the

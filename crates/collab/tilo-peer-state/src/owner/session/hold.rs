@@ -14,7 +14,7 @@ use std::{
     },
     time::Duration,
 };
-use tilo_identity_host::identity_store::HostIdentity;
+use tilo_identity::identity_store::HostIdentity;
 use tokio::sync::Notify;
 
 /// The first pause before dialling again; each failure doubles it.

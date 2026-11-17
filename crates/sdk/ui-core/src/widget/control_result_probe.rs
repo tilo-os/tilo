@@ -208,7 +208,7 @@ impl crate::widget::controls::ActionControls for Probe {
 }
 thread_local! { static NEXT: RefCell<Option<Probe>> = const { RefCell::new(None) }; }
 fn factory(
-    mut context: crate::application::HostContext,
+    mut context: crate::application::ProcessContext,
     _: crate::application::LaunchTarget,
     _: crate::application::RestoreInput,
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {

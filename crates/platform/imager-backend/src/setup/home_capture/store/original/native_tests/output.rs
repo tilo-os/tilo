@@ -18,7 +18,7 @@ use std::{
     fs,
     sync::{Arc, atomic::AtomicBool},
 };
-use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_identity::provisioning::IdentityStorage;
 use zeroize::Zeroizing;
 
 #[path = "output/candidate.rs"]

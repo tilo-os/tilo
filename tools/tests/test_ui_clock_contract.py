@@ -44,7 +44,7 @@ class UiClockContractTests(unittest.TestCase):
                     "time.rs": "pub use std::time::{Instant, SystemTime};\n",
                     "lib.rs": "use crate::time::Instant;\nuse std::time::Duration;\n",
                 },
-                crate_path="crates/sdk/tilo-host",
+                crate_path="crates/sdk/tilo-process-services",
             )
             self.assertEqual(contract.audit(root), [])
         with self.subTest(phase='the clock module lives in the host crate only'):
@@ -53,15 +53,15 @@ class UiClockContractTests(unittest.TestCase):
             self.assertEqual(paths, ["crates/sdk/ui-core/src/time.rs"])
         with self.subTest(phase='every toolkit crate is audited'):
             root = self.fixture({"a.rs": "use std::time::Instant;\n"})
-            host = root / "crates/sdk/tilo-host"
+            host = root / "crates/sdk/tilo-process-services"
             (host / "src").mkdir(parents=True)
             (host / "src/b.rs").write_text("use std::time::SystemTime;\n", encoding="utf-8")
             audited = sorted(Path(v.path).as_posix() for v in contract.audit(root))
             self.assertEqual(
                 audited,
                 [
-                    "crates/sdk/tilo-host/clippy.toml",
-                    "crates/sdk/tilo-host/src/b.rs",
+                    "crates/sdk/tilo-process-services/clippy.toml",
+                    "crates/sdk/tilo-process-services/src/b.rs",
                     "crates/sdk/ui-core/src/a.rs",
                 ],
             )

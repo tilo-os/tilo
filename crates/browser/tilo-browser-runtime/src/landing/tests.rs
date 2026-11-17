@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use durable_store::{DurableStore, MemoryStore, StorageKey};
-use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
 use ui::automerge::{AutoCommit, transaction::Transactable as _};
 use ui::headless::{HeadlessApp, fixture_runner_inputs};
 use ui::resource::{DocumentCheckout, DocumentId, ResourceOpenError, ResourceOwners};
@@ -81,9 +81,9 @@ fn settings_opened_on_a_record_the_host_holds_empty_shows_its_pane() {
 
     // The window builds Settings on it, as a new record, and opens the pane
     // the search result or the link named.
-    let context = HostContext::prepare_new_resource(
+    let context = ProcessContext::prepare_new_resource(
         definition,
-        HostContextInputs {
+        ProcessContextInputs {
             records: store,
             views: Rc::new(
                 ui::application_view::InstanceViewStore::with_store(

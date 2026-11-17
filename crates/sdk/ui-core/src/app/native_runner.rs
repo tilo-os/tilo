@@ -193,7 +193,7 @@ struct AppHandler {
     /// other closes alone ([`process_windows`]).
     closing: std::cell::Cell<bool>,
     /// The session started this app with no window
-    /// ([`crate::host::WINDOWLESS_ENV`]): it serves its actions and records
+    /// ([`crate::process::WINDOWLESS_ENV`]): it serves its actions and records
     /// and makes no window. The first window the shell asks of the process
     /// takes its place ([`process_windows`]).
     windowless: bool,
@@ -843,7 +843,7 @@ fn attach_loop_clipboard(event_loop: &ActiveEventLoop) {
     LOOP_CLIPBOARD.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.is_none() {
-            *slot = crate::host::native::attach_display(event_loop.owned_display_handle());
+            *slot = crate::process::native::attach_display(event_loop.owned_display_handle());
         }
     });
 }
@@ -3278,7 +3278,7 @@ impl AppHandler {
                 windows.push(("audience".to_owned(), audience.window.clone()));
             }
         }
-        let Some(session) = crate::host::environment().dev_session.clone() else {
+        let Some(session) = crate::process::environment().dev_session.clone() else {
             return;
         };
         let library = dev_reload_library(&session)
@@ -5081,13 +5081,13 @@ impl App {
             self.input.platform,
         ));
         tilo_startup_metrics::mark("run-presentation-prepared");
-        crate::host::native::install_default_if_unset(self.window.app_id.as_deref());
+        crate::process::native::install_default_if_unset(self.window.app_id.as_deref());
         // The event loop never waits on async work: anything that must is
         // spawned onto the app runtime and handed back through the wake scope.
         tilo_rt::mark_ui_thread();
         let mut event_loop_builder = EventLoop::<UserEvent>::with_user_event();
         #[cfg(target_os = "macos")]
-        if crate::host::environment().diagnostics.window_no_activate {
+        if crate::process::environment().diagnostics.window_no_activate {
             use winit::platform::macos::EventLoopBuilderExtMacOS;
             // Native scripted input does not need to take the user's keyboard.
             // Keep normal launches unchanged; this is an opt-in profiling mode.
@@ -5133,7 +5133,7 @@ impl App {
         // a process that said so before that is served more.
         let open = open.and_then(|open| process_windows::serve_link(&proxy).map(|()| open));
         let mut handler = self.into_handler(&proxy, native_scenario, setup);
-        handler.windowless = crate::host::environment().windowless;
+        handler.windowless = crate::process::environment().windowless;
         let mut handler = process_windows::ProcessWindows::new(handler, proxy, open);
         // Run on demand, so a window that gives its place to the next one
         // (`hand_over`) keeps the loop for that window to run on. On every
@@ -5289,7 +5289,7 @@ impl App {
             held_frame: None,
             still_animation: animation_schedule::StillAnimation::default(),
             dev_window_state: std::collections::HashMap::new(),
-            dev_loaded_library: crate::host::environment()
+            dev_loaded_library: crate::process::environment()
                 .dev_session
                 .as_deref()
                 .and_then(dev_reload_library),

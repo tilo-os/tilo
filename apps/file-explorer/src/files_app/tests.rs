@@ -2079,9 +2079,9 @@ mod command_path_tests {
                     document_id: record.into(),
                     version_id: selected,
                 });
-            let Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
+            let Some(ui::widget::AppProcessIntent::ShowWorkspaceActivity {
                 entry: Some(entry), ..
-            }) = w.state().take_host_intent()
+            }) = w.state().take_process_intent()
             else {
                 panic!("Files hands the selected version to Workspace Activity");
             };
@@ -4196,11 +4196,11 @@ mod command_path_tests {
                 version_id: selected,
             });
         assert!(w.state().collab_panel.is_none());
-        let Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
+        let Some(ui::widget::AppProcessIntent::ShowWorkspaceActivity {
             resource_id,
             version_id,
             entry,
-        }) = w.state().take_host_intent()
+        }) = w.state().take_process_intent()
         else {
             panic!("Files hands the selected immutable version to Workspace Activity");
         };
@@ -4867,7 +4867,7 @@ pub(super) fn with_owner_callback(callback: impl FnOnce() + 'static) {
     struct Probe<F>(RefCell<Option<F>>);
     impl<F: FnOnce() + 'static> ui::resources::PublishesResources for Probe<F> {
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<ui::tilo_actions::ResourceSpec> {
-            assert!(ui::bound_dispatch::host_person_invocation_permitted());
+            assert!(ui::bound_dispatch::local_person_invocation_permitted());
             self.0.borrow_mut().take().unwrap()();
             Vec::new()
         }

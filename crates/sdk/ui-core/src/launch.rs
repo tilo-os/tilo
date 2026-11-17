@@ -272,7 +272,7 @@ impl LaunchSpec {
     pub fn prepare_component(
         &self,
         args: &LaunchArgs,
-        context: crate::application::HostContext,
+        context: crate::application::ProcessContext,
         target: crate::application::LaunchTarget,
         restore: crate::application::RestoreInput,
     ) -> Result<crate::application::AppComponent, LaunchError> {
@@ -829,7 +829,7 @@ fn run_parsed(
     }
     // A process started with no window makes none until the shell asks for
     // one: nothing is drawn, so nothing is prepared to draw.
-    let shows = opens_native_window(&args) && !crate::host::environment().windowless;
+    let shows = opens_native_window(&args) && !crate::process::environment().windowless;
     // The font database is built on its own thread, so the app's first text
     // renderer finds the catalog verified and the fonts read. It starts
     // first: the renderer preparation below also opens the early window on
@@ -2228,7 +2228,8 @@ mod tests {
     #[serial_test::serial]
     fn native_initial_launch_component_host_reads_before_factory_on_same_worker() {
         use crate::application::{
-            HostContext, HostContextInputs, LaunchTarget, PreparedComponentInputs, RestoreInput,
+            LaunchTarget, PreparedComponentInputs, ProcessContext, ProcessContextInputs,
+            RestoreInput,
         };
         use crate::application_test_support as probe;
         static RECHECK: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>> =
@@ -2255,9 +2256,9 @@ mod tests {
                 checkout: want,
                 reveal: None,
             };
-            let context = HostContext::prepare(
+            let context = ProcessContext::prepare(
                 definition,
-                HostContextInputs {
+                ProcessContextInputs {
                     records,
                     views,
                     device_id: probe::DEVICE.into(),
@@ -2381,7 +2382,7 @@ mod tests {
     #[serial_test::serial]
     fn native_component_host_admits_a_new_record_before_its_factory_writes_it() {
         use crate::application::{
-            HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput,
+            LaunchTarget, PreparedComponentInputs, ProcessContext, RestoreInput,
         };
         use crate::application_test_support as probe;
         fn prepare(
@@ -2402,9 +2403,9 @@ mod tests {
             );
             // A fresh profile: the default record is only reserved here, and
             // the component factory writes its genesis after admission.
-            let context = HostContext::prepare_new_resource(
+            let context = ProcessContext::prepare_new_resource(
                 definition,
-                crate::application::HostContextInputs {
+                crate::application::ProcessContextInputs {
                     records,
                     views,
                     device_id: probe::DEVICE.into(),
@@ -2589,7 +2590,7 @@ mod tests {
 mod prepared_launch_tests {
     use super::*;
     use crate::application::{
-        HostContext, HostContextInputs, LaunchTarget, PreparedComponentInputs, RestoreInput,
+        LaunchTarget, PreparedComponentInputs, ProcessContext, ProcessContextInputs, RestoreInput,
     };
     use crate::application_test_support::*;
     use std::cell::Cell;
@@ -2632,9 +2633,9 @@ mod prepared_launch_tests {
             crate::application_view::InstanceViewStore::new(root, DEVICE, WORKSPACE)
                 .map_err(LaunchError::Restore)?,
         );
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: DEVICE.into(),

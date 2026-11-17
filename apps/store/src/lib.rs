@@ -7,7 +7,7 @@
 //!     hash of the `.tapp`, so the client can verify identity + integrity
 //!     before running `tilo-install`.
 //!   * **Legacy Flatpak apps** fetched from Flathub's public JSON API.
-//!     Actions cross the capability-scoped app-host service.
+//!     Actions cross the capability-scoped app-process service.
 //!
 //! The catalogue groups apps by the decision they invite (an update, already
 //! on the device, new) in a scrolling grid of cards, and a details page opens
@@ -29,7 +29,7 @@
 //!   * [`config`]          — the registries the user pulls apps from.
 //!   * [`sources`]         — merges the two feeds + installed state into
 //!     one [`StoreItem`] stream.
-//!   * [`actions`]         — dispatches Add / Install / Remove via app-host.
+//!   * [`actions`]         — dispatches Add / Install / Remove via app-process.
 //!   * [`worker`]          — the serialized catalogue and package worker.
 //!   * [`app`]             — the `StoreApp` window.
 //!   * [`bindings`]        — the surface's controls, bound to the resource.

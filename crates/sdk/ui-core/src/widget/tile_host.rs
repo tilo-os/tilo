@@ -517,9 +517,9 @@ impl TileHost {
         }
     }
 
-    pub fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
+    pub fn take_process_intent(&mut self) -> Option<crate::widget::AppProcessIntent> {
         match &mut self.content {
-            TileContent::App(root) => root.take_host_intent(),
+            TileContent::App(root) => root.take_process_intent(),
             _ => None,
         }
     }

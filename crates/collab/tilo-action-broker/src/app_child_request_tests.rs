@@ -440,7 +440,7 @@ async fn a_persons_read_does_not_make_their_edit_unasked() {
 async fn native_person_rig(env: &Environment) -> Rig {
     Rig::with_services(
         env,
-        HostServices {
+        ProcessServices {
             local_person: Some(Arc::new(super::signed_worker::NativePerson(
                 env.authority.clone(),
             ))),
@@ -495,7 +495,7 @@ async fn a_persons_first_action_is_answered_once_the_identity_names_them() {
             let env = Environment::new();
             let rig = Rig::with_services(
                 &env,
-                HostServices {
+                ProcessServices {
                     local_person: Some(Arc::new(Arriving {
                         host: env.authority.clone(),
                         named: std::sync::atomic::AtomicBool::new(false),

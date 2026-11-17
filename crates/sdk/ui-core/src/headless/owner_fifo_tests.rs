@@ -1,5 +1,5 @@
 use super::*;
-use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
+use crate::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
 use crate::application_test_support::{self as probe, ProbeHost};
 use crate::bound_dispatch::{BoundDispatchError, ComponentRequest};
 use crate::owner_wake::OwnerWakeQueue;
@@ -134,7 +134,7 @@ impl AppWidget for OwnerProbe {
 thread_local! { static ORDER: RefCell<Rc<RefCell<Vec<u64>>>> = RefCell::new(Rc::new(RefCell::new(Vec::new()))); }
 thread_local! { static NEXT: RefCell<Option<(Seen, u64, bool)>> = const { RefCell::new(None) }; }
 fn factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {

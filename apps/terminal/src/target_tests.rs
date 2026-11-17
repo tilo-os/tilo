@@ -61,7 +61,7 @@ tilo_test_env::scenario! {
                 .is_err()
         );
 
-        let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) = widget.take_session_intent()
+        let Some(ui::widget::AppProcessIntent::AllowHostShell { reply }) = widget.take_session_intent()
         else {
             panic!("the tab must ask the shell for the person's allow");
         };
@@ -116,7 +116,7 @@ tilo_test_env::scenario! {
     {
         let mut sessions = crate::sessions::Sessions::standalone();
         assert!(sessions.request_allow());
-        let ui::widget::AppHostIntent::AllowHostShell { reply } = sessions.take_intent().unwrap()
+        let ui::widget::AppProcessIntent::AllowHostShell { reply } = sessions.take_intent().unwrap()
         else {
             panic!("expected host shell permission");
         };
@@ -763,13 +763,13 @@ fn native_widget_exposes_the_permission_request_and_retries_after_the_answer() {
     let versions = app.versions().len();
     let intent = app
         .harness()
-        .take_host_intent()
+        .take_process_intent()
         .expect("the canonical native app adapter must see the request");
-    let ui::widget::AppHostIntent::AllowHostShell { reply } = intent else {
+    let ui::widget::AppProcessIntent::AllowHostShell { reply } = intent else {
         panic!("expected host permission");
     };
     assert!(
-        app.harness().take_host_intent().is_none(),
+        app.harness().take_process_intent().is_none(),
         "the host consumes the request once"
     );
     assert_eq!(
@@ -805,8 +805,8 @@ fn canonical_host_permission_refusal_does_not_open_or_retry_the_session() {
         widget.switch_target(&SessionTarget::Host, Requester::Person)
     })
     .unwrap();
-    let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) =
-        app.harness().take_host_intent()
+    let Some(ui::widget::AppProcessIntent::AllowHostShell { reply }) =
+        app.harness().take_process_intent()
     else {
         panic!("expected canonical host permission");
     };
@@ -818,7 +818,7 @@ fn canonical_host_permission_refusal_does_not_open_or_retry_the_session() {
         OpenState::Failed(_)
     ));
     assert!(on_tab(&mut app, |widget| widget.is_disconnected()));
-    assert!(app.harness().take_host_intent().is_none());
+    assert!(app.harness().take_process_intent().is_none());
     app.settle();
     assert_eq!(
         opened.borrow().len(),
@@ -843,8 +843,8 @@ fn a_refused_device_shell_is_not_where_the_next_session_opens() {
     })
     .unwrap();
     assert_eq!(recorded(&app), Some(SessionTarget::Host));
-    let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) =
-        app.harness().take_host_intent()
+    let Some(ui::widget::AppProcessIntent::AllowHostShell { reply }) =
+        app.harness().take_process_intent()
     else {
         panic!("expected the person to be asked");
     };
@@ -867,7 +867,7 @@ fn a_refused_device_shell_is_not_where_the_next_session_opens() {
         &[(SessionTarget::default_environment(), Requester::Person)]
     );
     assert!(
-        app.harness().take_host_intent().is_none(),
+        app.harness().take_process_intent().is_none(),
         "the next login asks nothing"
     );
 }
@@ -889,9 +889,9 @@ fn trusted_shell_selection_enters_normal_permission_without_agent_identity_relab
     );
     let intent = app
         .harness()
-        .take_host_intent()
+        .take_process_intent()
         .expect("ordinary host permission flow");
-    let ui::widget::AppHostIntent::AllowHostShell { reply } = intent else {
+    let ui::widget::AppProcessIntent::AllowHostShell { reply } = intent else {
         panic!("expected permission request");
     };
     reply.upgrade().unwrap().borrow_mut().answer = Some(false);
@@ -917,8 +917,8 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
     let mounted = mounted_device_shell_operation(&mut app, &O::Inspect);
     assert_eq!(mounted["target"]["kind"], "host");
     assert_eq!(mounted["lifecycle"], "awaiting_allow");
-    let ui::widget::AppHostIntent::AllowHostShell { reply } =
-        app.harness().take_host_intent().unwrap()
+    let ui::widget::AppProcessIntent::AllowHostShell { reply } =
+        app.harness().take_process_intent().unwrap()
     else {
         panic!("normal permission request");
     };

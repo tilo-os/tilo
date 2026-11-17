@@ -826,7 +826,7 @@ pub trait DisplayControlServices: Send + Sync {
 }
 
 #[derive(Clone, Default)]
-pub struct HostServices {
+pub struct ProcessServices {
     /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
     pub approved_checks: Option<Arc<dyn crate::collab_app_broker::ApprovedCheckServices>>,
     /// Read-only existing-resource discovery, absent unless the host can carry it.
@@ -920,7 +920,7 @@ pub struct HostServices {
     pub hosted_workspaces: Option<Arc<dyn HostedWorkspaces>>,
 }
 
-impl HostServices {
+impl ProcessServices {
     /// The names of these services, in the order the struct declares them: a field added
     /// above belongs here too, and a host's own test compares its decisions to this list.
     pub const NAMES: &[&str] = &[

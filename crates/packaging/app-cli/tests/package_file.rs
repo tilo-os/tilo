@@ -43,7 +43,7 @@ fn write_tapp(dir: &Path, version: &str) -> String {
 }
 
 #[test]
-fn a_package_file_installs_by_the_app_hosts_rule() {
+fn a_package_file_installs_by_the_app_process_rule() {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config");
     let cache = home.path().join("cache");

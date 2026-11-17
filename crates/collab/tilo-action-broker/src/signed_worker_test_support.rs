@@ -378,18 +378,18 @@ impl OriginalWorkspace {
         identity_env
             .set("XDG_CONFIG_HOME", fixture_root.path().join("config"))
             .set("TILO_IDENTITY_ROOT", fixture_root.path().join("identity"))
-            .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-        tilo_identity_host::provisioning::ensure_collaboration_identity(
+            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+        tilo_identity::provisioning::ensure_collaboration_identity(
             &fixture_root.path().join("config/tilo/identity"),
             &tilo_user_identity::IdentityPaths::under(fixture_root.path().join("identity")),
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("provision real host receipt signer");
         let (document_content, workspace) = document_content.unzip();
         let root = SigningKey::from_bytes(&[83; 32]);
         let key = SigningKey::from_bytes(&[84; 32]);
         let (key, cert, start) = if current_native {
-            let (key, cert) = tilo_identity_host::broker::trusted_current_device(
+            let (key, cert) = tilo_identity::broker::trusted_current_device(
                 &tilo_desktop_model::WorkspaceId::new().to_string(),
             )
             .expect("enrolled native device");

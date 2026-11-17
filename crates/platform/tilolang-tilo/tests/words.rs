@@ -21,19 +21,19 @@ struct Toolkit;
 
 impl Words for Toolkit {
     fn add(&self, catalogues: &[(String, String)]) {
-        tilo_ui_host::i18n::add_catalogues(catalogues);
+        tilo_app_window::i18n::add_catalogues(catalogues);
     }
 
     fn add_used(&self, catalogues: &[(String, String)]) {
-        tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+        tilo_app_window::i18n::add_shared_catalogues(catalogues);
     }
 
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
-        tilo_ui_host::i18n::word(key, args, source)
+        tilo_app_window::i18n::word(key, args, source)
     }
 
     fn revision(&self) -> u64 {
-        tilo_ui_host::i18n::revision()
+        tilo_app_window::i18n::revision()
     }
 }
 

@@ -92,10 +92,10 @@ fn open_preparation(app: &mut App, home: &Path) {
         "{belongings}"
     );
     assert_eq!(belongings["categories"][0], true, "{belongings}");
-    let services = ui::host::HostServices::null().with_files(std::sync::Arc::new(
+    let services = ui::process::ProcessServices::null().with_files(std::sync::Arc::new(
         RecognizedHomePicker(home.to_path_buf()),
     ));
-    let _picker = ui::host::enter(&services);
+    let _picker = ui::process::enter(&services);
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
     wait(app, |v| {
@@ -106,7 +106,7 @@ fn open_preparation(app: &mut App, home: &Path) {
     });
 }
 struct RecognizedHomePicker(PathBuf);
-impl ui::host::FilePicker for RecognizedHomePicker {
+impl ui::process::FilePicker for RecognizedHomePicker {
     fn pick(&self, request: ui::PickRequest) -> ui::PortalChannel {
         assert!(request.is_directory());
         assert_eq!(request.directory_hint(), Some(self.0.as_path()));

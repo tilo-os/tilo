@@ -703,7 +703,7 @@ fn a_grant_expiring_while_idle_is_enforced_at_its_expiry() {
     // Match the drainer's Notify: concurrent announcements leave one
     // pending wake, not a queue of already-reconciled epochs to pump again.
     let (woke, wakes) = std::sync::mpsc::sync_channel(1);
-    let watch = tilo_identity_host::policy_change::Watch::new(move || {
+    let watch = tilo_identity::policy_change::Watch::new(move || {
         let _ = woke.try_send(());
     });
     let parked = |owner: &SharedKeys| {
@@ -734,7 +734,7 @@ fn a_grant_expiring_while_idle_is_enforced_at_its_expiry() {
         // owner register the expiry and park.
         policy.until.lock().unwrap().insert(public(2), expiry);
         policy.allowed.lock().unwrap().remove(&public(2));
-        tilo_identity_host::policy_change::announce();
+        tilo_identity::policy_change::announce();
         parked(&owner);
         assert_eq!(
             policy.announce_at.lock().unwrap().last(),
@@ -747,7 +747,7 @@ fn a_grant_expiring_while_idle_is_enforced_at_its_expiry() {
 
     // Short of the expiry, a pass (another announcement) keeps the member.
     tilo_clock::testing::with_wall(at(expiry - 1), || {
-        tilo_identity_host::policy_change::announce();
+        tilo_identity::policy_change::announce();
         assert!(wakes.try_recv().is_ok(), "the armed watch woke");
         parked(&owner);
         let _ = laptop.pump_until_due(&laptop_endpoint);
@@ -761,7 +761,7 @@ fn a_grant_expiring_while_idle_is_enforced_at_its_expiry() {
     // re-check (at most a reconcile interval after the last) removes the
     // member.
     tilo_clock::testing::with_wall(at(expiry), || {
-        tilo_identity_host::policy_change::announce();
+        tilo_identity::policy_change::announce();
         assert!(wakes.try_recv().is_ok(), "the expiry woke the owner");
         tilo_test_env::wait_until("the member applied the removal", || {
             let _ = owner.pump_until_due(&owner_endpoint);
@@ -841,7 +841,7 @@ fn an_endpoint_hears_of_its_admission_and_removal() {
 #[test]
 fn a_request_waiting_for_keys_leaves_the_other_asks_answered() {
     use runtime_identity::wire::KeyAccess as Wire;
-    use tilo_identity_host::sources::GroupKeySource as _;
+    use tilo_identity::sources::GroupKeySource as _;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()

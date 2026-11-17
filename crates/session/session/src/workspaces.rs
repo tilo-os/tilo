@@ -171,7 +171,7 @@ pub(crate) struct Personal {
     kept_on_hosts: bool,
     /// What the files this device's fleet is read from looked like when the list was last said:
     /// a fleet that moved since — a device this device's root just certified — is said again.
-    pub(crate) fleet: Option<tilo_identity_host::device_fleet::FleetStamps>,
+    pub(crate) fleet: Option<tilo_identity::device_fleet::FleetStamps>,
     /// The workspaces whose host has not taken this device in yet that the person was told of:
     /// once each, not on every ask that times out.
     told_awaiting: BTreeSet<WorkspaceId>,

@@ -167,7 +167,7 @@ struct MountedFixture {
 fn mounted_fixture(author: &str) -> MountedFixture {
     use std::rc::Rc;
     use ui::application::{
-        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+        ComponentRunnerInputs, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
     };
     use ui::resource::{DocumentCheckout, ResourceOwners, ResourceType};
 
@@ -219,9 +219,9 @@ fn mounted_fixture(author: &str) -> MountedFixture {
             &ui::permissions::MemberId::person(author),
             ui::permissions::Role::Owner,
         ));
-    let context = HostContext::prepare(
+    let context = ProcessContext::prepare(
         crate::definition(),
-        HostContextInputs {
+        ProcessContextInputs {
             records: records.clone(),
             views,
             device_id: "device".into(),

@@ -47,7 +47,7 @@ tilo_automerge_isolate::test_worker!();
 /// app in the person's own workspace, and the broker admits it to there.
 pub struct SurfacePersonDocuments;
 
-impl tilo_identity_host::broker::PersonResourceTypes for SurfacePersonDocuments {
+impl tilo_identity::broker::PersonResourceTypes for SurfacePersonDocuments {
     fn person_resource_types(&self, app_id: &str) -> Vec<String> {
         ui::app_surface::person_resource_types(app_id)
     }

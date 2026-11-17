@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 use settings_sections::network_usage::{ConnectionKind, Reading};
-use tilo_identity_host::broker::{
+use tilo_identity::broker::{
     GroupKeySource, IdentityBrokerHandle, PersonResourceTypes, WorkspaceMembership,
 };
 use tilo_portal::PortalCaller;
@@ -174,7 +174,7 @@ pub(crate) const TABLE: &[Row] = &[
     Row {
         name: launcher::services::APP_HOST_SERVICE,
         reach: Reach::Launcher,
-        owner: Owner::Elsewhere("tilo-app-host"),
+        owner: Owner::Elsewhere("tilo-app-process"),
     },
     Row {
         name: launcher::services::USH_SERVICE,
@@ -326,8 +326,7 @@ fn identity(
     let path = launcher::services::socket_for(launcher::services::IDENTITY_SERVICE);
     let membership = shell as Arc<dyn WorkspaceMembership>;
     let keys = Arc::new(keys) as Arc<dyn GroupKeySource>;
-    match tilo_identity_host::broker::spawn(path, membership, keys, Arc::new(InstalledApps::read()))
-    {
+    match tilo_identity::broker::spawn(path, membership, keys, Arc::new(InstalledApps::read())) {
         Ok(handle) => {
             tracing::info!("serving app identity to the apps the launcher starts");
             Some(handle)

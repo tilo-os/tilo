@@ -45,7 +45,7 @@ impl AppBrokerState {
                 sample = Some((workspace, actor));
             }
             // The shell's publications, the identity store and the device fleet all announce.
-            tilo_identity_host::policy_change::wait_for_a_change(Some(slice));
+            tilo_identity::policy_change::wait_for_a_change(Some(slice));
         }
         sample
     }

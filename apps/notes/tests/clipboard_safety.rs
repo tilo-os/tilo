@@ -83,8 +83,8 @@ fn cut(app: &mut TestApp<notes::NotesShell>, route: &str) {
 
 fn refused_cut(route: &str) {
     let clipboard = Arc::new(Clipboard::default());
-    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-    let _host = ui::host::enter(&services);
+    let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::process::enter(&services);
     let (mut app, page) = app();
     let blocks = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     app.invoke_child::<notes::PagePart>(
@@ -172,8 +172,8 @@ fn refused_table_context_menu_cut_preserves_cell_selection_and_history() {
         action::{AttrVal, RegionKind},
     };
     let clipboard = Arc::new(Clipboard::default());
-    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-    let _host = ui::host::enter(&services);
+    let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::process::enter(&services);
     let (mut app, page) = app();
     let id =
         crate::framework_support::notes_doc(&app, |doc| read::page_blocks(doc, page)[0].id.clone());
@@ -231,8 +231,8 @@ fn refused_table_context_menu_cut_preserves_cell_selection_and_history() {
 
 fn refused_image_cut(route: &str) {
     let clipboard = Arc::new(Clipboard::default());
-    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-    let _host = ui::host::enter(&services);
+    let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::process::enter(&services);
     let (mut app, page, source) = image_app();
     let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     let versions = crate::framework_support::versions(&app).len();
@@ -325,8 +325,8 @@ fn image_app() -> (TestApp<notes::NotesShell>, notes::PageId, &'static str) {
 
 fn image_replacement(route: &str) {
     let clipboard = Arc::new(Clipboard::default());
-    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-    let _host = ui::host::enter(&services);
+    let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::process::enter(&services);
     let (mut app, page, source) = image_app();
     let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     let assets_before = notes::read::images(&crate::framework_support::parts(&app));
@@ -401,8 +401,8 @@ fn keyboard_image_paste_replaces_the_preview_in_one_action() {
 #[test]
 fn invalid_image_paste_preserves_selected_source_and_history_then_retries() {
     let clipboard = Arc::new(Clipboard::default());
-    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-    let _host = ui::host::enter(&services);
+    let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::process::enter(&services);
     let (mut app, page, _) = image_app();
     let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     let versions = crate::framework_support::versions(&app).len();
@@ -435,8 +435,8 @@ fn invalid_image_paste_preserves_selected_source_and_history_then_retries() {
 #[test]
 fn image_paste_replaces_a_marked_unicode_range_and_restores_it_in_one_undo() {
     let clipboard = Arc::new(Clipboard::default());
-    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-    let _host = ui::host::enter(&services);
+    let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::process::enter(&services);
     let (mut app, page) = app();
     let blocks = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     app.invoke_child::<notes::PagePart>(
@@ -505,8 +505,8 @@ fn image_paste_replaces_a_marked_unicode_range_and_restores_it_in_one_undo() {
 #[test]
 fn image_paste_into_a_fresh_empty_note_is_undoable() {
     let clipboard = Arc::new(Clipboard::default());
-    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-    let _host = ui::host::enter(&services);
+    let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::process::enter(&services);
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
     app.invoke_child::<notes::PagePart>(
@@ -534,8 +534,8 @@ fn image_paste_into_a_fresh_empty_note_is_undoable() {
 #[test]
 fn image_paste_excludes_a_column_zero_endpoint_and_preserves_peer_text_through_undo() {
     let clipboard = Arc::new(Clipboard::default());
-    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-    let _host = ui::host::enter(&services);
+    let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::process::enter(&services);
     let (mut app, page) = app();
     let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     let (part, mut peer) = crate::framework_support::peer_part(&app, page);
@@ -586,8 +586,8 @@ fn image_paste_excludes_a_column_zero_endpoint_and_preserves_peer_text_through_u
 #[test]
 fn image_paste_refuses_during_composition_and_for_viewers() {
     let clipboard = Arc::new(Clipboard::default());
-    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-    let _host = ui::host::enter(&services);
+    let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::process::enter(&services);
     let (mut app, page) = app();
     let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     let versions = crate::framework_support::versions(&app).len();
@@ -629,8 +629,8 @@ fn image_paste_refuses_during_composition_and_for_viewers() {
 fn image_paste_replaces_empty_rows_and_selected_separators_without_touching_the_next_id() {
     for empty in [false, true] {
         let clipboard = Arc::new(Clipboard::default());
-        let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-        let _host = ui::host::enter(&services);
+        let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+        let _host = ui::process::enter(&services);
         let (mut app, page) = app();
         if empty {
             let id = crate::framework_support::notes_doc(&app, |doc| {
@@ -688,8 +688,8 @@ fn unavailable_image_paste_keeps_preview_source_protected_then_accepts_text() {
     for text in [None, Some(String::new())] {
         let clipboard = Arc::new(Clipboard::default());
         *clipboard.text.lock().unwrap() = text;
-        let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-        let _host = ui::host::enter(&services);
+        let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+        let _host = ui::process::enter(&services);
         let (mut app, page, _) = image_app();
         let before =
             crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));

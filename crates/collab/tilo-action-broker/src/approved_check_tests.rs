@@ -61,7 +61,7 @@ async fn progress_native_connection(
     );
     let (state, bridge) = AppBrokerState::test_state(
         Some(workspace.membership.authority()),
-        HostServices {
+        ProcessServices {
             launcher: Some(Arc::new(ProgressFixtureLaunch {
                 app: workspace.route.app_id.clone(),
                 workspace: workspace.route.cluster_id.clone(),
@@ -798,7 +798,7 @@ async fn approved_check_native_target_requires_live_launcher_connection() {
             PeerPublisher::disabled(),
             Some(workspace.membership.authority()),
             None, None,
-            HostServices {
+            ProcessServices {
                     launcher: Some(Arc::new(ExactFixtureLaunch { pid: std::process::id(), app: workspace.route.app_id.clone(), workspace: workspace.route.cluster_id.clone() })),
                 ..Default::default()
             },

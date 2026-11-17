@@ -13,7 +13,8 @@ use tilo_actions::remote::{ResourceAddress, ResourceCopy};
 use super::*;
 use crate::collab_app_broker::person_id_for_root;
 use crate::services::{
-    DocumentBytes, DocumentChangeServices, HostServices, LocalPersonServices, NativeDocumentReads,
+    DocumentBytes, DocumentChangeServices, LocalPersonServices, NativeDocumentReads,
+    ProcessServices,
 };
 use crate::test_support::{Grantee, Grants as _, KindSet, TreePath, WorkspaceId, WorkspaceTree};
 
@@ -195,7 +196,7 @@ fn fixture_with(owner: Owner) -> Fixture {
     *owner.own_people.lock().unwrap() = vec![person.clone(), ANOTHER_MEMBER.repeat(32)];
     let owner = Arc::new(owner);
     let origin = Arc::new(Origin::default());
-    let services = HostServices {
+    let services = ProcessServices {
         resource_changes: Some(Arc::clone(&origin) as Arc<dyn DocumentChangeServices>),
         committed_documents: Some(Arc::clone(&owner) as Arc<dyn NativeDocumentReads>),
         local_person: Some(Arc::new(Person(certificate))),

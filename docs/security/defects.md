@@ -848,7 +848,7 @@ from signing locally. Held by
 (a heartbeat's hello is what admits a device, and its revocation removes it),
 `crates/collab/tilo-peer-state/src/direct.rs::a_revocation_refuses_only_the_device_its_own_root_certified`,
 `crates/collab/tilo-peer-state/src/admission_tests.rs::a_banned_person_cannot_redeem_an_invitation_until_unbanned`,
-and `crates/runtime/tilo-identity-host/src/broker.rs::tests::identity_service_wire_is_pinned` with
+and `crates/runtime/tilo-identity/src/broker.rs::tests::identity_service_wire_is_pinned` with
 `::privileged_moderation_signing_requires_the_selected_trusted_device`.
 
 

@@ -754,11 +754,11 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
 fn expired_throwaway_identity(
     home: &mut tilo_test_env::TestHome,
 ) -> (String, tilo_user_identity::IdentityPaths) {
-    use tilo_identity_host::provisioning::IdentityStorage;
+    use tilo_identity::provisioning::IdentityStorage;
     let system = home.root().join("system");
     let paths = tilo_user_identity::IdentityPaths::under(&system);
     let identity_dir = home.config().join("tilo").join("identity");
-    tilo_identity_host::provisioning::ensure_throwaway_test_identity(
+    tilo_identity::provisioning::ensure_throwaway_test_identity(
         &identity_dir,
         &paths,
         IdentityStorage::Files,

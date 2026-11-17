@@ -44,14 +44,14 @@ impl Member {
     /// The member who opens the project: the demo project, as the
     /// plain capture stages it.
     fn opening() -> Self {
-        ui::host::install_default(ui::host::HostServices::recording().0);
+        ui::process::install_default(ui::process::ProcessServices::recording().0);
         Self::focused(TestApp::<VideoEditor>::capture(None).expect("the project opens"))
     }
 
     /// A member who joins and is handed the project, the way a late
     /// joiner is answered with the document.
     fn joining(from: &Member) -> Self {
-        ui::host::install_default(ui::host::HostServices::recording().0);
+        ui::process::install_default(ui::process::ProcessServices::recording().0);
         let mut app = TestApp::<VideoEditor>::new().expect("the editor opens");
         app.merge_peer(&mut from.app.peer_document())
             .expect("the handed-over document");

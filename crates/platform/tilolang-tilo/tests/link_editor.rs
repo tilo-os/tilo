@@ -110,7 +110,7 @@ fn notes(replica: &Replica, meta: &tilolang_runtime::Meta, root: &ResourceRef) -
 }
 
 /// The node of `kind` at or under `node`.
-fn find<'a>(node: &'a tilo_ui_host::UiNode, kind: &str) -> Option<&'a tilo_ui_host::UiNode> {
+fn find<'a>(node: &'a tilo_app_window::UiNode, kind: &str) -> Option<&'a tilo_app_window::UiNode> {
     if node.kind == kind {
         return Some(node);
     }
@@ -118,12 +118,12 @@ fn find<'a>(node: &'a tilo_ui_host::UiNode, kind: &str) -> Option<&'a tilo_ui_ho
 }
 
 /// What the notes the editor offers read as, in the order the view names them.
-fn offered(editor: &tilo_ui_host::UiNode) -> Vec<(String, String)> {
+fn offered(editor: &tilo_app_window::UiNode) -> Vec<(String, String)> {
     match editor.props.get("links") {
-        Some(tilo_ui_host::Value::List(items)) => items
+        Some(tilo_app_window::Value::List(items)) => items
             .iter()
             .map(|item| match item {
-                tilo_ui_host::Value::Link { reference, title } => {
+                tilo_app_window::Value::Link { reference, title } => {
                     (reference.clone(), title.clone())
                 }
                 other => panic!("a link, not {other:?}"),
@@ -144,7 +144,7 @@ impl NameHost for Names {
 
 /// The view of the note `note`, and the tree the window receives of it: its `[[` picker closed,
 /// as a note opens.
-fn window(replica: &Replica, note: &str) -> (ViewInstance, tilo_ui_host::UiNode) {
+fn window(replica: &Replica, note: &str) -> (ViewInstance, tilo_app_window::UiNode) {
     let view = note_view(replica, note);
     let tree = rendered(replica, &view);
     (view, tree)
@@ -152,7 +152,7 @@ fn window(replica: &Replica, note: &str) -> (ViewInstance, tilo_ui_host::UiNode)
 
 /// The view of the note `note`, its `[[` picker opened with `query` typed into it, and the tree
 /// the window receives of it then.
-fn picking(replica: &Replica, note: &str, query: &str) -> (ViewInstance, tilo_ui_host::UiNode) {
+fn picking(replica: &Replica, note: &str, query: &str) -> (ViewInstance, tilo_app_window::UiNode) {
     let mut view = note_view(replica, note);
     let key = editor_key(&rendered(replica, &view));
     view.fire_with(&key, "links_open", Some(&Value::Bool(true)))
@@ -186,7 +186,7 @@ fn note_view(replica: &Replica, note: &str) -> ViewInstance {
 }
 
 /// The key of the note's editor in `tree`.
-fn editor_key(tree: &tilo_ui_host::UiNode) -> String {
+fn editor_key(tree: &tilo_app_window::UiNode) -> String {
     find(tree, "ui.BlockEditor")
         .expect("the note's body is the editor")
         .key
@@ -194,7 +194,7 @@ fn editor_key(tree: &tilo_ui_host::UiNode) -> String {
 }
 
 /// The tree the window receives of `view`.
-fn rendered(replica: &Replica, view: &ViewInstance) -> tilo_ui_host::UiNode {
+fn rendered(replica: &Replica, view: &ViewInstance) -> tilo_app_window::UiNode {
     let names = Names;
     let convert = tilolang_tilo::instance::wire::Convert {
         names: &names,
@@ -410,7 +410,7 @@ fn live(
     note: &str,
 ) -> (
     std::rc::Rc<std::cell::RefCell<ViewInstance>>,
-    tilo_ui_host::UiNode,
+    tilo_app_window::UiNode,
 ) {
     let package = replica.host.package(APP).unwrap();
     let ty = package
@@ -441,7 +441,7 @@ fn embed_of(
 ) -> Option<(String, String)> {
     let values = tilolang_tilo::instance::shown_values(&replica.host, &Names, view);
     let rich = values.iter().find_map(|(_, value)| match value {
-        tilo_ui_host::Value::Rich(rich) => Some(rich),
+        tilo_app_window::Value::Rich(rich) => Some(rich),
         _ => None,
     })?;
     let embed = rich
@@ -572,7 +572,7 @@ fn projecting(
     title: &str,
 ) -> (
     std::rc::Rc<std::cell::RefCell<ViewInstance>>,
-    tilo_ui_host::UiNode,
+    tilo_app_window::UiNode,
     String,
 ) {
     let (view, tree) = live(replica, note);

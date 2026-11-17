@@ -1658,10 +1658,10 @@ impl DesktopSurface {
             let group_id = group.id;
             if let Some(host) = group.active_host_mut() {
                 for _ in 0..MAX_HOST_INTENTS {
-                    let Some(intent) = host.take_host_intent() else {
+                    let Some(intent) = host.take_process_intent() else {
                         break;
                     };
-                    if let ui::widget::AppHostIntent::OpenSearch(request) = intent {
+                    if let ui::widget::AppProcessIntent::OpenSearch(request) = intent {
                         search_in = Some((group_id, request));
                     }
                 }

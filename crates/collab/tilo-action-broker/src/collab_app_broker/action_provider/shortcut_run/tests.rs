@@ -7,7 +7,7 @@ use super::*;
 use crate::collab_app_broker::InvocationOwner;
 use crate::collab_app_broker::invocation_journal::{InvocationJournal, InvocationKey};
 use crate::services::{
-    HostServices, LocalPersonServices, ShortcutLibraryRequest, ShortcutLibraryServices,
+    LocalPersonServices, ProcessServices, ShortcutLibraryRequest, ShortcutLibraryServices,
 };
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 
@@ -89,11 +89,11 @@ impl Fixture {
         environment
             .set("XDG_CONFIG_HOME", scratch.path().join("config"))
             .set("TILO_IDENTITY_ROOT", scratch.path().join("identity"))
-            .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-        tilo_identity_host::provisioning::ensure_collaboration_identity(
+            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+        tilo_identity::provisioning::ensure_collaboration_identity(
             &scratch.path().join("config/tilo/identity"),
             &tilo_user_identity::IdentityPaths::under(scratch.path().join("identity")),
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         let owner =
@@ -176,7 +176,7 @@ impl Fixture {
         tree.workspaces.push(workspace);
         let (state, _bridge) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            HostServices {
+            ProcessServices {
                 shortcut_library: Some(Arc::new(Library(tokio::runtime::Handle::current()))),
                 local_person: Some(person.clone()),
                 native_certificates: Some(person),

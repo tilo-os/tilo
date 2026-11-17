@@ -339,7 +339,7 @@ impl ProcessMonitor {
                 checked.stop();
                 // Launcher ownership ended: held committed-read waits re-check
                 // it now rather than on a clock.
-                tilo_identity_host::policy_change::announce();
+                tilo_identity::policy_change::announce();
                 if let Some(state) = state.upgrade() {
                     if let Some(service) = state.services.native_media.as_ref() {
                         service.disconnect(peer);

@@ -11,7 +11,7 @@ struct CopyOwner {
     anchor: Arc<dyn RootInstalledPersonAnchor>,
     person: [u8; 32],
     device: [u8; 32],
-    observed: Option<tilo_identity_host::enrolled_transport::RootObservedCurrentDevice>,
+    observed: Option<tilo_identity::enrolled_transport::RootObservedCurrentDevice>,
     revoked: AtomicBool,
 }
 impl launcher::owned_service::ServiceAuthority for CopyOwner {
@@ -95,11 +95,10 @@ impl ReviewedInstalledOriginalCopy {
                 (device_public_key, None)
             }
             IdentityKind::SingleDeviceBackup => {
-                let current =
-                    tilo_identity_host::enrolled_transport::RootObservedCurrentDevice::review(
-                        directory,
-                        proof.peer.uid(),
-                    )?;
+                let current = tilo_identity::enrolled_transport::RootObservedCurrentDevice::review(
+                    directory,
+                    proof.peer.uid(),
+                )?;
                 crate::setup::prepared_setup::publish_original_copy_owner(
                     &installed,
                     &current,

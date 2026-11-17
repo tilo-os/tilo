@@ -460,7 +460,7 @@ impl Conversations {
     /// sessions.
     ///
     /// A pass that read different turns than the one before announces them
-    /// ([`tilo_identity_host::policy_change::announce`]): the broker re-reads the turns when that
+    /// ([`tilo_identity::policy_change::announce`]): the broker re-reads the turns when that
     /// changes, not on a clock, so a new turn — the person typing an ask into a conversation Chat
     /// had no message in — is only handed to its agent because this says it exists. Nothing is
     /// announced while the turns are the ones already read.
@@ -473,7 +473,7 @@ impl Conversations {
             })
             .collect();
         if self.sessions.asked(read) {
-            tilo_identity_host::policy_change::announce();
+            tilo_identity::policy_change::announce();
         }
     }
 

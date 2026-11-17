@@ -731,7 +731,7 @@ impl ActorState {
         let local = route.local;
         // The host is reachable again: a certificate renewal that failed
         // meanwhile tries again.
-        tilo_identity_host::provisioning::RENEWAL_CAUSES.changed();
+        tilo_identity::provisioning::RENEWAL_CAUSES.changed();
         // An earlier link of the workspace, with whichever holder, is let go.
         self.native_links.remove(&ws);
         let scope_host = scope.host().host.device_public_key;

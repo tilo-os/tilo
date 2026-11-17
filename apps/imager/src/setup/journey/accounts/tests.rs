@@ -2328,7 +2328,7 @@ fn source_home_checkpoint_requires_current_acknowledged_operation_and_keeps_gene
             &pending.identity_directory(),
             "Chosen person",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity::provisioning::IdentityStorage::for_session(),
         )
         .unwrap(),
     );

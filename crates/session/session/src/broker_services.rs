@@ -1,4 +1,4 @@
-//! Every service between this session and the app broker's [`HostServices`],
+//! Every service between this session and the app broker's [`ProcessServices`],
 //! decided.
 //!
 //! The broker answers an app's call from the services its host hands it, and
@@ -10,7 +10,7 @@
 //! So this session names every service: served ([`BrokerService::served`]), served where
 //! this run has what it carries ([`BrokerService::when`] — no device fabric, no
 //! workspace engine, no content), or not served at all and why
-//! ([`BrokerService::unserved`]). The conversion to [`HostServices`] names every field
+//! ([`BrokerService::unserved`]). The conversion to [`ProcessServices`] names every field
 //! of it without a default, so a service added to the broker does not compile
 //! here until the session decides about it.
 
@@ -19,10 +19,10 @@ use std::sync::Arc;
 
 use tilo_action_broker::services::{
     AppConsents, ApplicationServices, AudioOutputServices, BrowserServiceSessionServices,
-    DisplayControlServices, DriveServices, FileClipboardServices, HostServices, LauncherServices,
-    NearbyTransferServices, PublishedResources, RealtimeServices, ShortcutLibraryServices,
-    SpeakerServices, WifiContinuityServices, WorkspaceControlServices, WorkspaceGrants,
-    WorkspaceMemberships,
+    DisplayControlServices, DriveServices, FileClipboardServices, LauncherServices,
+    NearbyTransferServices, ProcessServices, PublishedResources, RealtimeServices,
+    ShortcutLibraryServices, SpeakerServices, WifiContinuityServices, WorkspaceControlServices,
+    WorkspaceGrants, WorkspaceMemberships,
 };
 use tilo_broker_core::services::{
     ContentStoreServices, DocumentChangeServices, DocumentIndexChanges, KeyboardShortcutServices,
@@ -85,7 +85,7 @@ macro_rules! service_field {
 }
 
 /// This session's decision for each of the broker's services, in the order the broker's
-/// [`HostServices`] names them: what it serves, and for what it serves nothing, the reason it was
+/// [`ProcessServices`] names them: what it serves, and for what it serves nothing, the reason it was
 /// left out. One list, because the decision, the conversion and the reasons are the same service.
 macro_rules! broker_services {
     ($( $(#[$meta:meta])* $field:ident: $ty:ty $(=> $default:tt)? ),* $(,)?) => {
@@ -95,8 +95,8 @@ macro_rules! broker_services {
 
         impl BrokerServices {
             /// What the broker's APIs read: every service, as this session decided it.
-            pub(crate) fn into_host_services(self) -> HostServices {
-                HostServices { $( $field: service_field!(self.$field $(, $default)?) ),* }
+            pub(crate) fn into_host_services(self) -> ProcessServices {
+                ProcessServices { $( $field: service_field!(self.$field $(, $default)?) ),* }
             }
 
             /// Each service's name, and why it is not served (`None` when it is).

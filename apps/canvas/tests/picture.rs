@@ -429,8 +429,8 @@ fn a_chosen_picture_is_placed_in_the_frame_its_answer_arrives_in() {
         json!({"marks": [{"id": "old", "shape": {"kind": "rect", "x": 0, "y": 0, "width": 9, "height": 9}}]}),
     )
     .unwrap();
-    let (services, recorder) = ui::host::HostServices::recording();
-    ui::host::scoped(&services, || {
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    ui::process::scoped(&services, || {
         let work = ui::background::Pumped::new();
         let _work = work.background().enter();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path.clone()));

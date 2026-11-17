@@ -1921,8 +1921,8 @@ fn secret_touch_typing_never_adapts_the_touch_model() {
 
 #[test]
 fn semantic_toolbar_edits_the_focused_field_and_hides_without_stale_contacts() {
-    let (services, _) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, _) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     ui::clipboard_copy("literal clipboard");
     let mut osk = OskWidget::new();
     lay_out(&mut osk, 720.0, 360.0);

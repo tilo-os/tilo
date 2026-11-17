@@ -105,7 +105,7 @@ impl AppPipelineCache {
         if !crate::pipeline_seed::supported(device) {
             return None;
         }
-        let dir = crate::host::environment().paths.cache_dir()?;
+        let dir = crate::process::environment().paths.cache_dir()?;
         Self::open_in(
             device,
             &dir.join("tilo").join("pipelines"),
@@ -202,7 +202,7 @@ pub(crate) mod first_frame_backdrop {
 
     fn dir() -> Option<PathBuf> {
         Some(
-            crate::host::environment()
+            crate::process::environment()
                 .paths
                 .cache_dir()?
                 .join("tilo")

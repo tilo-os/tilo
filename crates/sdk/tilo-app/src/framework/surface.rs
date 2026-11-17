@@ -213,7 +213,7 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
 
     /// A pending device-local request for the hosting shell, consumed once.
     /// The host answers it through its permission flow; this callback lends no document.
-    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<ui_core::widget::AppProcessIntent> {
         None
     }
 
@@ -384,7 +384,7 @@ pub(crate) trait SurfacePublication {
     fn search_queries(&self) -> Option<super::publishing::SearchQueries> {
         None
     }
-    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent>;
+    fn take_process_intent(&mut self) -> Option<ui_core::widget::AppProcessIntent>;
 }
 
 /// What a surface receives when attached.
@@ -1008,8 +1008,8 @@ impl SurfacePublication for HostedSurface {
     fn request_device_shell(&mut self) -> bool {
         self.host.request_device_shell()
     }
-    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
-        self.host.take_host_intent()
+    fn take_process_intent(&mut self) -> Option<ui_core::widget::AppProcessIntent> {
+        self.host.take_process_intent()
     }
 }
 
@@ -1033,8 +1033,8 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
         self.surface.request_device_shell()
     }
 
-    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
-        self.surface.take_host_intent()
+    fn take_process_intent(&mut self) -> Option<ui_core::widget::AppProcessIntent> {
+        self.surface.take_process_intent()
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {

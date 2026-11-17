@@ -594,7 +594,7 @@ impl ExtensionController {
                     return false;
                 }
                 crate::extension_notices::announce(
-                    &*ui::host::current().notifications,
+                    &*ui::process::current().notifications,
                     engine,
                     name.as_deref().unwrap_or_default(),
                     &id,

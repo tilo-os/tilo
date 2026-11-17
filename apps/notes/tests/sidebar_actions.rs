@@ -359,8 +359,8 @@ fn sidebar_delete_and_duplicate_submit_the_notebooks_verbs() {
 #[test]
 fn sidebar_copy_link_asks_the_notebooks_own_effect() {
     eprintln!("phase menu_copy_link_asks_the_notebooks_own_effect");
-    let (services, _recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, _recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (mut app, welcome, _one, _two) = seeded();
 
     let title = shown(&app).get(welcome).unwrap().title.clone();

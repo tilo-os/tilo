@@ -31,7 +31,7 @@ impl tracing::Subscriber for KeyboardReadBridgeProbe {
 #[tokio::test(flavor = "current_thread")]
 async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_approval() {
     use std::{os::fd::IntoRawFd, os::unix::fs::PermissionsExt as _};
-    use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+    use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
     use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
     use ui::portable_storage::{PortableStorage, StorageKey};
     use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
@@ -120,9 +120,9 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_appr
             let permissions = ui::permissions::SharedPermissions::new(
                 ui::permissions::PermissionContext::permissive(),
             );
-            let context = HostContext::prepare(
+            let context = ProcessContext::prepare(
                 definition,
-                HostContextInputs {
+                ProcessContextInputs {
                     records: records.clone(),
                     views,
                     device_id: "device".into(),

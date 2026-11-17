@@ -1929,17 +1929,17 @@ def audit(
     # this invariant spanning its focused implementation modules so moving
     # action/resource code out of app.rs cannot disable the audit.
     if root.resolve() == ROOT.resolve():
-        app_host_path = root / "crates" / "sdk" / "ui-core" / "src" / "app.rs"
-        app_action_path = app_host_path.parent / "app" / "actions.rs"
-        app_host = code_only(app_host_path.read_text(encoding="utf-8"))
+        app_process_path = root / "crates" / "sdk" / "ui-core" / "src" / "app.rs"
+        app_action_path = app_process_path.parent / "app" / "actions.rs"
+        app_process = code_only(app_process_path.read_text(encoding="utf-8"))
         if app_action_path.is_file():
-            app_host += "\n" + code_only(app_action_path.read_text(encoding="utf-8"))
+            app_process += "\n" + code_only(app_action_path.read_text(encoding="utf-8"))
         if not FRAMEWORK_RESOURCE_SEARCH_BUILD.search(
-            app_host
-        ) or not FRAMEWORK_RESOURCE_SEARCH_INSTALL.search(app_host):
+            app_process
+        ) or not FRAMEWORK_RESOURCE_SEARCH_INSTALL.search(app_process):
             violations.append(
                 Violation(
-                    app_host_path,
+                    app_process_path,
                     1,
                     "app host must install bounded canonical search for every live resource tree",
                 )

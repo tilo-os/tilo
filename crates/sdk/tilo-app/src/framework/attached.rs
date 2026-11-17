@@ -26,7 +26,7 @@ use std::rc::Rc;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_actions::{ActionEnvelope, ActionOutput, ActionTransport};
 use ui_core::application::{
-    ApplicationDefinition, ComponentRunnerInputs, HostContextInputs, LaunchTarget, RestoreInput,
+    ApplicationDefinition, ComponentRunnerInputs, LaunchTarget, ProcessContextInputs, RestoreInput,
 };
 use ui_core::application_view::InstanceViewStore;
 use ui_core::collaboration::DocumentMutation;
@@ -266,7 +266,7 @@ impl AttachedView {
     /// asks nothing and founds nothing. With those still awaited, and whether the app
     /// keeps any. Another app's are not handed to this view at all.
     fn lent(
-        context: &mut ui_core::application::HostContext,
+        context: &mut ui_core::application::ProcessContext,
         lends: Option<tilo_content::ContentStore>,
         definition: &'static ApplicationDefinition,
         store: &ResourceStore,
@@ -344,9 +344,9 @@ impl AttachedView {
             checkout: checkout.clone(),
             reveal: None,
         };
-        let mut context = ui_core::application::HostContext::prepare(
+        let mut context = ui_core::application::ProcessContext::prepare(
             definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: records.clone(),
                 views,
                 device_id: DEVICE.into(),

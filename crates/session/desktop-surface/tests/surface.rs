@@ -2063,10 +2063,10 @@ fn result_names(chrome: &ui::headless::FrameHarness) -> Vec<String> {
 /// draws no frame of its own while a source works, so nothing on a clock asks the sources again.
 #[test]
 fn an_answer_asks_for_the_frame_that_shows_it() {
-    let (services, _recorder) = ui::host::HostServices::recording();
+    let (services, _recorder) = ui::process::ProcessServices::recording();
     let pumped = ui::rt::background::Pumped::new();
     let _background = pumped.background().enter();
-    ui::host::scoped(&services, || {
+    ui::process::scoped(&services, || {
         let (mut shell, handle, _) = mount();
         let mut chrome = chrome_at(&handle, (1200, 800));
         handle.open_search(Scope::Workspace, Some("notes".into()));
@@ -2131,10 +2131,10 @@ fn an_answer_asks_for_the_frame_that_shows_it() {
 /// opens addresses (a new tab of the browser the web desktop runs in).
 #[test]
 fn search_works_out_sums_and_conversions_and_searches_the_web() {
-    let (services, recorder) = ui::host::HostServices::recording();
+    let (services, recorder) = ui::process::ProcessServices::recording();
     let pumped = ui::rt::background::Pumped::new();
     let _background = pumped.background().enter();
-    ui::host::scoped(&services, || {
+    ui::process::scoped(&services, || {
         let (mut driver, handle, _) = mount();
         let mut chrome = chrome_at(&handle, (1200, 800));
         handle.open_search(Scope::Workspace, Some("12*7".into()));

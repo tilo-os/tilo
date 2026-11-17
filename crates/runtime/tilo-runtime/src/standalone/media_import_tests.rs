@@ -29,12 +29,12 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
         result.update,
         tilo_actions::InvocationUpdate::Succeeded { .. }
     ));
-    let selected = tilo_identity_host::registry::identity_for_workspace(session.workspace())
+    let selected = tilo_identity::registry::identity_for_workspace(session.workspace())
         .unwrap()
         .unwrap();
     let (_, certificate) =
-        tilo_identity_host::broker::trusted_current_device(session.workspace()).unwrap();
-    tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+        tilo_identity::broker::trusted_current_device(session.workspace()).unwrap();
+    tilo_identity::device_fleet::DeviceFleetStore::from_env()
         .unwrap()
         .revoke(
             &selected.id,
@@ -208,7 +208,7 @@ fn refuse_scoped_imports(
             ..asked.clone()
         },
     );
-    let selected = tilo_identity_host::registry::identity_for_workspace(workspace)
+    let selected = tilo_identity::registry::identity_for_workspace(workspace)
         .unwrap()
         .unwrap();
     refused(

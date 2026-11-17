@@ -63,7 +63,7 @@ export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}
 # profile, features and wrapper differ), and each build spends minutes on a few
 # large crates (tilo-ui, the session) with most cores idle: one after another, the
 # job used a third of its cores. So the thin build runs beside the host and
-# tilolang-host builds, under one jobserver holding the job's cores: together they never
+# tilolang-process builds, under one jobserver holding the job's cores: together they never
 # run more compilers (or take more memory) than one build of that width would.
 jobs=${CARGO_BUILD_JOBS:-$(nproc)}
 mkdir -p "$target"
@@ -101,7 +101,7 @@ host_profile=nested
 # (`tilo-runtime-mcp --connect`), so a check that drives the session as an
 # admitted agent runs against the staged build without building its own.
 host_bins=(tilo-session tilo-runtime-mcp tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
-           tilo-model-gateway tilo-ush tilo-control tilolang-host tilolang nested-session-bus
+           tilo-model-gateway tilo-ush tilo-control tilolang-process tilolang nested-session-bus
            tilo-quick-settings)
 build_host() {
     local args
@@ -160,12 +160,12 @@ build_surfaces() {
 # codegen units and no LTO its linked names alone are 19 MB of the 67 MB file, and nothing that
 # reads the bundle reads them; the session's other programs keep theirs, which their crash logs
 # do read.
-build_tilolang_host() {
+build_tilolang_process() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
     cargo build --locked --timings "${args[@]}" \
-        --config "profile.$host_profile.package.tilolang-host.strip=\"symbols\"" \
-        -p tilolang-host --bin tilolang-host
+        --config "profile.$host_profile.package.tilolang-process.strip=\"symbols\"" \
+        -p tilolang-process --bin tilolang-process
 }
 # The `tilolang` CLI authors run against the session (`tilolang dev --session`), in
 # a build of its own for the same reason: its toolkit features stay out of the
@@ -269,7 +269,7 @@ build_host_then_tilolang() {
     build_host 2>&1 | label host || return 1
     local seal
     seal_env_runtime 2>&1 | label seal & seal=$!
-    build_tilolang_host 2>&1 | label tilolang-host || { wait "$seal"; return 1; }
+    build_tilolang_process 2>&1 | label tilolang-process || { wait "$seal"; return 1; }
     build_tilolang_cli 2>&1 | label tilolang || { wait "$seal"; return 1; }
     wait "$seal"
 }

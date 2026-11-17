@@ -1,6 +1,6 @@
 //! A renewed device certificate in the workspaces this device joined. A
 //! certificate that expires is renewed by its person's root before it runs
-//! out (`tilo_identity_host`); the device proves its membership again with
+//! out (`tilo_identity`); the device proves its membership again with
 //! the renewed one, the workspace's governor puts it in place of the one the
 //! workspace held, and the workspace's record here follows. The device stays the same
 //! member, with its role and everything it wrote.

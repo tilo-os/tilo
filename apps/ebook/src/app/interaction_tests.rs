@@ -3247,8 +3247,8 @@ fn importing_and_removing_books_keeps_one_identity() {
         let workspace = tempfile::NamedTempFile::new().unwrap();
         let _workspace = workspace_env(workspace.path());
 
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let mut app = ui::framework::testing::TestApp::<crate::EbookShell>::new().unwrap();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
         app.effect(&crate::resource::BooksEffect::OpenBook).unwrap();

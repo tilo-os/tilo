@@ -4,7 +4,7 @@
 //! a group's key holders let read were re-checked once a second, forever, so an
 //! expiring grant or certificate was enforced within a second. Now a re-check
 //! runs when one of its inputs announces a change
-//! ([`tilo_identity_host::policy_change`]) or when the earliest expiry the
+//! ([`tilo_identity::policy_change`]) or when the earliest expiry the
 //! last check read comes due, which [`PolicySchedule::checked`]'s caller
 //! registers with [`announce_at`]. Nothing runs
 //! while neither happens.
@@ -97,14 +97,14 @@ pub const fn wall_instant(policy_at_ns: u64, policy_now_ns: u64, wall_now_ns: u6
 }
 
 /// Have the process's policy clock announce a change when the wall clock
-/// reaches `unix_ns` ([`tilo_identity_host::policy_change::wake_at`]).
+/// reaches `unix_ns` ([`tilo_identity::policy_change::wake_at`]).
 pub fn announce_at(unix_ns: u64) {
     #[cfg(any(test, feature = "test-support"))]
     ANNOUNCE_AT
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push(unix_ns);
-    tilo_identity_host::policy_change::wake_at(unix_ns);
+    tilo_identity::policy_change::wake_at(unix_ns);
 }
 
 /// Every instant [`announce_at`] was asked for in this process, in order:

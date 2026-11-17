@@ -105,7 +105,7 @@ not rolled back by disconnect/revocation.
 
 Native launcher-bound clients and browser host-injected clients share this
 service core. Chat's standalone bootstrap installs `Models::from_launcher()`;
-component mounts capture `HostContext::models()` independently. Agent consumes
+component mounts capture `ProcessContext::models()` independently. Agent consumes
 the portable stream and publishes negotiated, authenticated task presentation,
 so Chat readers need no provider connection. The explicit Chat assistant controls
 use a separate prose-only capability; Agent's action-capable loop uses the

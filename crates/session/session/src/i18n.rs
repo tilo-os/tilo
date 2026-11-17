@@ -57,7 +57,7 @@ pub(crate) struct SeededWords;
 #[cfg(target_os = "linux")]
 fn share(catalogues: &[(String, String)]) {
     ensure();
-    tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+    tilo_app_window::i18n::add_shared_catalogues(catalogues);
 }
 
 #[cfg(target_os = "linux")]
@@ -72,7 +72,7 @@ impl tilolang_tilo::runtime::Words for SeededWords {
 
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
         ensure();
-        tilo_ui_host::i18n::word(key, args, source)
+        tilo_app_window::i18n::word(key, args, source)
     }
 
     fn revision(&self) -> u64 {

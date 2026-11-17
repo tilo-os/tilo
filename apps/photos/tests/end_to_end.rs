@@ -598,8 +598,8 @@ tilo_test_env::scenario! {
     phase copy_puts_the_edited_pixels_on_the_clipboard;
     {
         let recorder = Arc::new(RecordingClipboard::default());
-        let services = ui::host::HostServices::null().with_clipboard(recorder.clone());
-        let _host = ui::host::enter(&services);
+        let services = ui::process::ProcessServices::null().with_clipboard(recorder.clone());
+        let _host = ui::process::enter(&services);
 
         {
             let mut empty = Harness::new(900.0, 600.0);

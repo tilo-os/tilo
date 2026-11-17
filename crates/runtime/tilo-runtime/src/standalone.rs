@@ -49,14 +49,14 @@ use tilo_action_broker::{
     collab_core::BrokerChannels,
     collab_history::CollabHistoryStore,
     collab_outbound::PeerPublisher,
-    services::{HostServices, LauncherServices, LegacyWorkspaceProjection, WorkspaceAuthority},
+    services::{LauncherServices, LegacyWorkspaceProjection, ProcessServices, WorkspaceAuthority},
 };
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending,
 };
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity_host::{
+use tilo_identity::{
     broker::{IdentityBrokerHandle, WorkspaceMembership},
     provisioning::IdentityStorage,
 };
@@ -291,12 +291,12 @@ fn open_profile_workspace(
     stage: &mut dyn FnMut(&str),
 ) -> io::Result<(
     ProfileWorkspace,
-    tilo_identity_host::registry::IdentityProfile,
+    tilo_identity::registry::IdentityProfile,
     String,
 )> {
     stage("loading the workspace");
     let workspace = ProfileWorkspace::open(root)?;
-    let identity = tilo_identity_host::registry::identity_for_workspace(&workspace.workspace())?
+    let identity = tilo_identity::registry::identity_for_workspace(&workspace.workspace())?
         .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
     let actor = identity.person_id();
     stage("saving the workspace");
@@ -377,7 +377,7 @@ fn start_broker(
 fn broker_services(
     parts: BrokerParts<'_>,
     policy_time: tilo_action_broker::policy_clock::PolicyTime,
-) -> io::Result<HostServices> {
+) -> io::Result<ProcessServices> {
     let document_content = joined::document_content(parts.joined, &parts.root.join(BLOB_SOCKET));
     // Where this workspace's offloadable actions may run instead of here: the
     // other devices of the invoking workspace answer an offer round over the
@@ -395,7 +395,7 @@ fn broker_services(
                     Arc::clone(&document_content),
                 )
             });
-    Ok(HostServices {
+    Ok(ProcessServices {
         native_certificates: Some(Arc::new(Certificates {
             workspace: parts.workspace_id.to_owned(),
             device: parts.device,
@@ -418,7 +418,7 @@ fn broker_services(
         group_keys: Some(parts.keys.clone()),
         action_offload,
         personal: Some(parts.personal),
-        ..HostServices::default()
+        ..ProcessServices::default()
     })
 }
 
@@ -988,7 +988,7 @@ impl tilo_action_broker::certificate_authority::CertificateAuthority for Certifi
         tilo_user_identity::verify_device_cert_at(cert, now).map_err(|error| error.to_string())?;
         // This store check is conservative: known revocations are refused even
         // before their effective instant. It never extends a credential lease.
-        tilo_identity_host::certificates::authorize(&workspace.to_string(), cert)
+        tilo_identity::certificates::authorize(&workspace.to_string(), cert)
     }
 
     fn authorize(
@@ -996,7 +996,7 @@ impl tilo_action_broker::certificate_authority::CertificateAuthority for Certifi
         workspace: uuid::Uuid,
         cert: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        tilo_identity_host::certificates::authorize(&workspace.to_string(), cert)
+        tilo_identity::certificates::authorize(&workspace.to_string(), cert)
     }
     fn authorize_join(
         &self,
@@ -1009,7 +1009,7 @@ impl tilo_action_broker::certificate_authority::CertificateAuthority for Certifi
             .map_err(|error| error.to_string())?;
         tilo_user_identity::verify_device_cert_at(cert, now).map_err(|error| error.to_string())?;
         self.check_registered_ownership(workspace)?;
-        tilo_identity_host::certificates::authorize_join(&workspace.to_string(), cert)
+        tilo_identity::certificates::authorize_join(&workspace.to_string(), cert)
     }
     fn governs(&self, workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
         uuid::Uuid::parse_str(&self.workspace) == Ok(workspace)
@@ -1038,7 +1038,7 @@ fn serve_device_grants(root: &Path, apps: &apps::Apps) {
 /// in, the identity this device acts as, and the workspace this runtime runs.
 struct PersonalServing<'a> {
     root: &'a Path,
-    identity: &'a tilo_identity_host::registry::IdentityProfile,
+    identity: &'a tilo_identity::registry::IdentityProfile,
     /// The workspace this runtime runs, by its id.
     workspace_id: &'a str,
     joined: &'a Joined,
@@ -1082,7 +1082,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         take_work,
         host,
     } = serving;
-    let (key, device) = tilo_identity_host::broker::trusted_current_device(workspace_id)?;
+    let (key, device) = tilo_identity::broker::trusted_current_device(workspace_id)?;
     let state = root.join("state");
     let sync = PersonalSync::new(
         tilo_action_broker::personal::open(
@@ -1158,8 +1158,8 @@ fn channels(root: &Path) -> BrokerChannels {
 /// start; answers its device key.
 fn provision_device(storage: IdentityStorage) -> io::Result<[u8; 32]> {
     let identity_dir = runtime_identity::identity_dir_from_env()?;
-    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
-    tilo_identity_host::provisioning::ensure_foreign_collaboration_identity(
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
+    tilo_identity::provisioning::ensure_foreign_collaboration_identity(
         &identity_dir,
         &paths,
         storage,
@@ -1182,13 +1182,13 @@ fn admit_device(owner_uid: u32, stage: &mut dyn FnMut(&str)) -> io::Result<[u8; 
     }
     stage("verifying the existing collaboration identity");
     let identity_dir = runtime_identity::identity_dir_from_env()?;
-    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
-    tilo_identity_host::provisioning::verify_collaboration_identity(
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
+    tilo_identity::provisioning::verify_collaboration_identity(
         &identity_dir,
         &paths,
         tilo_clock::unix_now_ns(),
     )?;
-    if !tilo_identity_host::provisioning::active_identity_owns_device(&identity_dir, &paths)? {
+    if !tilo_identity::provisioning::active_identity_owns_device(&identity_dir, &paths)? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "native admission identity does not own this device",
@@ -1334,7 +1334,7 @@ fn place_own_workspace(
     Arc<crate::key_sessions::KeySessions>,
 )> {
     let workspace_id = workspace.workspace();
-    let (key, cert) = tilo_identity_host::broker::trusted_current_device(&workspace_id)?;
+    let (key, cert) = tilo_identity::broker::trusted_current_device(&workspace_id)?;
     let workspace_id = WorkspaceId::parse(&workspace_id)
         .ok_or_else(|| io::Error::other("invalid runtime workspace"))?;
     let key_sessions = crate::key_sessions::KeySessions::new();
@@ -1425,7 +1425,7 @@ fn joined_workspaces_and_keys(
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
     listen: Option<u16>,
 ) -> io::Result<(Arc<Joined>, workspace_keys::KeyService)> {
-    let ownership = tilo_identity_host::broker::trusted_current_device(workspace)?;
+    let ownership = tilo_identity::broker::trusted_current_device(workspace)?;
     let channels = Arc::clone(&broker.0);
     let joined = joined_workspaces(
         profile,
@@ -1457,11 +1457,11 @@ fn joined_workspaces(
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
     listen: Option<u16>,
 ) -> io::Result<Arc<Joined>> {
-    let ownership = tilo_identity_host::identity_store::HostIdentity::held(
+    let ownership = tilo_identity::identity_store::HostIdentity::held(
         cert,
         key.clone(),
-        std::sync::Arc::new(tilo_identity_host::identity_store::files::Files::new(
-            tilo_identity_host::provisioning::collaboration_identity_paths(),
+        std::sync::Arc::new(tilo_identity::identity_store::files::Files::new(
+            tilo_identity::provisioning::collaboration_identity_paths(),
         )),
     );
     let endpoint = listen_endpoint(&key, listen)?;
@@ -1519,15 +1519,15 @@ fn listen_endpoint(
 fn identity_service(
     socket: PathBuf,
     workspaces: Arc<dyn WorkspaceMembership>,
-    keys: Arc<dyn tilo_identity_host::broker::GroupKeySource>,
+    keys: Arc<dyn tilo_identity::broker::GroupKeySource>,
     apps: &Arc<apps::Apps>,
     dev: bool,
-) -> io::Result<tilo_identity_host::broker::IdentityBrokerHandle> {
+) -> io::Result<tilo_identity::broker::IdentityBrokerHandle> {
     let person = AttachedSurfaces {
         apps: Arc::clone(apps),
         dev,
     };
-    tilo_identity_host::broker::spawn(socket, workspaces, keys, Arc::new(person))
+    tilo_identity::broker::spawn(socket, workspaces, keys, Arc::new(person))
 }
 
 /// The person-record kinds of the surfaces this runtime holds. Started with
@@ -1541,7 +1541,7 @@ struct AttachedSurfaces {
     dev: bool,
 }
 
-impl tilo_identity_host::broker::PersonResourceTypes for AttachedSurfaces {
+impl tilo_identity::broker::PersonResourceTypes for AttachedSurfaces {
     fn person_resource_types(&self, app_id: &str) -> Vec<String> {
         ui::app_surface::person_resource_types(app_id)
     }

@@ -3,7 +3,7 @@
 //! [`crate::shell_tabs`]), which knows the asking app by its process. Apps a host mounts in its own
 //! process (the shell's Terminal tabs) share that process and its thread, so they cannot use those:
 //! the host lends each of them the window it shows it in, a [`HostedWindow`] (through
-//! [`HostContext::lend`](crate::application::HostContext::lend)).
+//! [`ProcessContext::lend`](crate::application::ProcessContext::lend)).
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};

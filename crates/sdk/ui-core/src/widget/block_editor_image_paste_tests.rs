@@ -32,8 +32,8 @@ fn screenshot() -> crate::clipboard::ClipboardImage {
 #[test]
 fn ctrl_v_hands_a_copied_image_to_the_host() {
     fn in_prose_the_image_goes_to_the_host_and_the_text_stays() {
-        let (services, recorder) = crate::host::HostServices::recording();
-        let _host = crate::host::enter(&services);
+        let (services, recorder) = crate::process::ProcessServices::recording();
+        let _host = crate::process::enter(&services);
         recorder.copy_image_elsewhere(screenshot());
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![Block::paragraph("caption")]);
@@ -46,8 +46,8 @@ fn ctrl_v_hands_a_copied_image_to_the_host() {
     }
 
     fn a_semantic_paste_does_the_same() {
-        let (services, recorder) = crate::host::HostServices::recording();
-        let _host = crate::host::enter(&services);
+        let (services, recorder) = crate::process::ProcessServices::recording();
+        let _host = crate::process::enter(&services);
         recorder.copy_image_elsewhere(screenshot());
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![Block::paragraph("caption")]);
@@ -57,8 +57,8 @@ fn ctrl_v_hands_a_copied_image_to_the_host() {
     }
 
     fn code_takes_text_not_images() {
-        let (services, recorder) = crate::host::HostServices::recording();
-        let _host = crate::host::enter(&services);
+        let (services, recorder) = crate::process::ProcessServices::recording();
+        let _host = crate::process::enter(&services);
         recorder.copy_image_elsewhere(screenshot());
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![Block::code_block(None, "x = 1")]);
@@ -69,8 +69,8 @@ fn ctrl_v_hands_a_copied_image_to_the_host() {
     }
 
     fn copied_text_pastes_as_text() {
-        let (services, recorder) = crate::host::HostServices::recording();
-        let _host = crate::host::enter(&services);
+        let (services, recorder) = crate::process::ProcessServices::recording();
+        let _host = crate::process::enter(&services);
         recorder.copy_image_elsewhere(screenshot());
         crate::clipboard_copy(" more");
         let mut editor = BlockEditor::new();

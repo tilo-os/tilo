@@ -7,7 +7,7 @@
 
 use std::rc::Rc;
 
-use ui::application::HostContext;
+use ui::application::ProcessContext;
 use ui::framework::Chain;
 
 use crate::model::Contact;
@@ -17,7 +17,7 @@ use crate::resource::Contacts;
 const INBOX: &str = "personal-data-incoming/contacts";
 const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 
-pub(crate) fn import(context: &HostContext) -> Result<(), String> {
+pub(crate) fn import(context: &ProcessContext) -> Result<(), String> {
     let files = context.files();
     let data = files.data().map_err(|error| error.to_string())?;
     let Ok(inbox) = tilo_files::VPath::new(INBOX) else {

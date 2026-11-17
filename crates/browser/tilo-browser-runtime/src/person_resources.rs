@@ -65,7 +65,7 @@ pub(crate) fn of(
 /// # Errors
 /// Rejects an invalid app id.
 pub(crate) fn provide(
-    context: &mut ui::application::HostContext,
+    context: &mut ui::application::ProcessContext,
     store: &Rc<dyn DurableStore>,
 ) -> Result<(), String> {
     if context.is_private() {
@@ -103,7 +103,7 @@ fn store_all<T: ?Sized>(store: &Rc<T>) -> Vec<String> {
 mod tests {
     use super::*;
     use ui::application::{
-        AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget,
+        AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
         RestoreInput,
     };
     use ui::application_view::InstanceViewStore;
@@ -151,7 +151,7 @@ mod tests {
     }
 
     fn unused(
-        _: HostContext,
+        _: ProcessContext,
         _: LaunchTarget,
         _: RestoreInput,
     ) -> Result<AppComponent, ui::launch::LaunchError> {
@@ -176,15 +176,15 @@ mod tests {
         });
 
     /// A window of the page's desktop, prepared as the desktop prepares it.
-    fn window(store: &Rc<dyn DurableStore>, instance: u64) -> HostContext {
+    fn window(store: &Rc<dyn DurableStore>, instance: u64) -> ProcessContext {
         let records = ResourceOwners::with_store(Rc::clone(store))
             .open(APP, WORKSPACE)
             .unwrap();
         let views =
             Rc::new(InstanceViewStore::with_store(Rc::clone(store), "D", WORKSPACE).unwrap());
-        HostContext::prepare(
+        ProcessContext::prepare(
             &CHAT,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "D".into(),

@@ -23,7 +23,7 @@ impl super::Session {
     /// the app's, in the reader's language.
     pub(super) fn field_key(&mut self, field: &str) -> String {
         let field = self.field_id(field);
-        let editing = |node: &tilo_ui_host::UiNode| {
+        let editing = |node: &tilo_app_window::UiNode| {
             node.binding
                 .as_ref()
                 .and_then(|binding| binding.field())
@@ -37,7 +37,7 @@ impl super::Session {
                 .unwrap_or_else(|| panic!("the window edits no {field:?}"))
                 .key
                 .clone();
-            return format!("{}{}", tilo_ui_host::shell::DETAIL, key);
+            return format!("{}{}", tilo_app_window::shell::DETAIL, key);
         }
         let root = view.root_tree().expect("the window's view");
         let mut page = Vec::new();
@@ -69,7 +69,7 @@ impl super::Session {
     }
 
     /// What the field that edits `field` of what the window shows holds.
-    pub(super) fn field_value(&mut self, field: &str) -> Option<tilo_ui_host::Value> {
+    pub(super) fn field_value(&mut self, field: &str) -> Option<tilo_app_window::Value> {
         let id = self.field_key(field);
         self.hosted().view()?.bound_value(&id)
     }
@@ -446,11 +446,11 @@ fn today() -> String {
 /// The document the card `title` on a window shows, as an argument names a resource: the place of
 /// another app's the card stands for, by the id and type the window publishes it with.
 fn card_document(session: &mut super::Session, title: &str) -> serde_json::Value {
-    fn walk(node: &tilo_ui_host::UiNode, title: &str, found: &mut Option<serde_json::Value>) {
+    fn walk(node: &tilo_app_window::UiNode, title: &str, found: &mut Option<serde_json::Value>) {
         if found.is_none()
-            && node.kind == tilo_ui_host::adapter::kind("Card")
-            && node.props.get("title") == Some(&tilo_ui_host::Value::text(title))
-            && let Some(tilo_ui_host::Value::Ref(record)) = node.props.get("item")
+            && node.kind == tilo_app_window::adapter::kind("Card")
+            && node.props.get("title") == Some(&tilo_app_window::Value::text(title))
+            && let Some(tilo_app_window::Value::Ref(record)) = node.props.get("item")
         {
             // The catalogue's reference to it, as any caller of the app's api gives a document.
             let (app, ty) = record
@@ -485,7 +485,7 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
     let mut session = super::Session::open(super::FIELDBOX, "ada", super::Window::live);
     assert_eq!(
         session.field_value("done"),
-        Some(tilo_ui_host::Value::Bool(false)),
+        Some(tilo_app_window::Value::Bool(false)),
         "the page starts with the box unmarked"
     );
     let shown = session.controls();
@@ -522,7 +522,7 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
     session.settle();
     assert_eq!(
         session.field_value("done"),
-        Some(tilo_ui_host::Value::Bool(true)),
+        Some(tilo_app_window::Value::Bool(true)),
         "the press marked the field the box edits"
     );
     let answered = session.invoke_doing(&done.encode(), &serde_json::json!({}));
@@ -535,7 +535,7 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
     );
     assert_eq!(
         session.field_value("done"),
-        Some(tilo_ui_host::Value::Bool(false)),
+        Some(tilo_app_window::Value::Bool(false)),
         "and its press marked the field the other way"
     );
 
@@ -571,7 +571,7 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
     session.settle();
     assert_eq!(
         session.field_value("checked"),
-        Some(tilo_ui_host::Value::Bool(true)),
+        Some(tilo_app_window::Value::Bool(true)),
         "the press marked the task's field"
     );
 }
@@ -676,7 +676,7 @@ impl super::Session {
 /// refuses one before it reaches the workspace.
 mod access {
     use collaboration::RouteSpec;
-    use tilolang_host::hosted::Spec;
+    use tilolang_process::hosted::Spec;
     use ui::permissions::policy::{MemberAccess, Role, WorkspacePolicy};
 
     use super::super::{Session, TASKS, Window, find, task_in_document};
@@ -702,12 +702,12 @@ mod access {
     }
 
     /// The window bar's New task button, as the window draws it.
-    fn new_task_button(session: &mut Session) -> tilo_ui_host::UiNode {
+    fn new_task_button(session: &mut Session) -> tilo_app_window::UiNode {
         let view = session.hosted().view().expect("the window is connected");
         let tree = view.root_tree().expect("the window has a tree");
         find(&tree, &|node| {
             node.kind == "ui.Button"
-                && node.props.get("label") == Some(&tilo_ui_host::Value::text("New task"))
+                && node.props.get("label") == Some(&tilo_app_window::Value::text("New task"))
         })
         .expect("the bar holds New task")
         .clone()
@@ -723,12 +723,12 @@ mod access {
         let button = new_task_button(&mut session);
         assert_eq!(
             button.props.get("enabled"),
-            Some(&tilo_ui_host::Value::Int(0)),
+            Some(&tilo_app_window::Value::Int(0)),
             "a viewer's New task is disabled: {button:?}"
         );
         assert_eq!(
             button.props.get("description"),
-            Some(&tilo_ui_host::Value::text(
+            Some(&tilo_app_window::Value::text(
                 "That change is not allowed here."
             )),
             "and it says why"
@@ -760,7 +760,7 @@ mod access {
         let button = new_task_button(&mut session);
         assert_ne!(
             button.props.get("enabled"),
-            Some(&tilo_ui_host::Value::Int(0)),
+            Some(&tilo_app_window::Value::Int(0)),
             "an editor's New task is offered in the window already open: {button:?}"
         );
         let answered = session.invoke_doing(

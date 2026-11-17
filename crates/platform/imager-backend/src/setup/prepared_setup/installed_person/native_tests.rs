@@ -3,7 +3,7 @@ use super::*;
 use ed25519_dalek::Signer as _;
 use std::os::unix::process::CommandExt as _;
 use std::os::{fd::AsRawFd, unix::fs::PermissionsExt};
-use tilo_identity_host::{
+use tilo_identity::{
     device_fleet::DeviceFleet,
     enrolled_transport::{AuthenticatedEnrolledDevice, EnrolledDevice},
 };

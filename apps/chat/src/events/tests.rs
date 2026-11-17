@@ -2735,7 +2735,7 @@ struct PathlessHost {
 /// A file the host wrote: its name and bytes.
 type Written = (String, Vec<u8>);
 
-impl ui::host::FilePicker for PathlessHost {
+impl ui::process::FilePicker for PathlessHost {
     fn pick(&self, _: ui::portal::PickRequest) -> ui::portal::PortalChannel {
         answered(ui::portal::PortalOutcome::Failed("no paths".into()))
     }
@@ -2774,8 +2774,8 @@ fn answered<T>(outcome: T) -> std::sync::mpsc::Receiver<T> {
 fn an_attachment_is_saved_where_a_pathless_host_keeps_it() {
     use crate::testing::MountedChat as _;
     let host = std::sync::Arc::new(PathlessHost::default());
-    let services = ui::host::HostServices::null().with_files(host.clone());
-    let _host = ui::host::enter(&services);
+    let services = ui::process::ProcessServices::null().with_files(host.clone());
+    let _host = ui::process::enter(&services);
     let mut window = ui::framework::testing::TestApp::<crate::ChatShell>::new().unwrap();
     window
         .call_on(

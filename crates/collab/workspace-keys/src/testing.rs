@@ -91,7 +91,7 @@ pub struct Policy {
 /// [`KeyDirectory::policy_epoch`].
 #[derive(Clone)]
 pub enum Announcements {
-    /// [`tilo_identity_host::policy_change`]'s, as production reports.
+    /// [`tilo_identity::policy_change`]'s, as production reports.
     Process,
     /// The test's own, bumped by hand.
     Own(Arc<std::sync::atomic::AtomicU64>),
@@ -137,7 +137,7 @@ impl KeyDirectory for Directory {
     fn policy_epoch(&self) -> Option<u64> {
         match &*self.policy.announces.lock().unwrap() {
             None => None,
-            Some(Announcements::Process) => Some(tilo_identity_host::policy_change::epoch()),
+            Some(Announcements::Process) => Some(tilo_identity::policy_change::epoch()),
             Some(Announcements::Own(epoch)) => Some(epoch.load(Ordering::SeqCst)),
         }
     }

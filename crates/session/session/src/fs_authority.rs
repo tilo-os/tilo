@@ -116,7 +116,7 @@ fn push_with_device(
 pub(crate) fn device_key() -> Option<[u8; 32]> {
     static KEY: OnceLock<Option<[u8; 32]>> = OnceLock::new();
     *KEY.get_or_init(|| {
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
         tilo_user_identity::persist::read_device_key(&paths.device_privkey)
             .ok()
             .map(|key| key.verifying_key().to_bytes())

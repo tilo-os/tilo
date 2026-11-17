@@ -16,8 +16,8 @@ fn a_chosen_markdown_file_becomes_a_shown_note() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("Project brief.md");
     std::fs::write(&file, "# Scope\n\n- Fast\n").unwrap();
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = notes();
 
     recorder.respond_to_pick(PortalOutcome::Opened(file));
@@ -48,8 +48,8 @@ fn a_cancelled_or_unreadable_choice_adds_no_note() {
         "a".repeat(notes::notebook::MAX_MARKDOWN_IMPORT_BYTES + 1),
     )
     .unwrap();
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = notes();
 
     recorder.respond_to_pick(PortalOutcome::Cancelled);
@@ -73,8 +73,8 @@ fn an_inserted_image_leaves_and_returns_inside_its_exported_note() {
     let image = dir.path().join("photo.png");
     std::fs::write(&image, IMAGE).unwrap();
     let exported = dir.path().join("guide.md");
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (mut app, page) = with_note("Guide", "Intro");
     let asset = format!("asset:{}", blake3::hash(IMAGE).to_hex());
 
@@ -129,8 +129,8 @@ fn a_chosen_file_that_is_no_image_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let text = dir.path().join("notes.png");
     std::fs::write(&text, "not an image").unwrap();
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (mut app, page) = with_note("Guide", "Intro");
 
     recorder.respond_to_pick(PortalOutcome::Opened(text));
@@ -146,8 +146,8 @@ fn a_chosen_file_that_is_no_image_is_refused() {
 
 #[test]
 fn copying_a_note_link_copies_its_current_title() {
-    let (services, _recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, _recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (mut app, page) = with_note("Welcome", "Hello");
 
     app.effect_on(

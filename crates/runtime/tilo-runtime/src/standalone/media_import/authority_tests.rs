@@ -57,11 +57,11 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
         ..invocation
     };
     let (host, permit) = service.prepare(&invocation).unwrap();
-    let selected = tilo_identity_host::registry::identity_for_workspace(workspace)
+    let selected = tilo_identity::registry::identity_for_workspace(workspace)
         .unwrap()
         .unwrap();
-    let (_, cert) = tilo_identity_host::broker::trusted_current_device(workspace).unwrap();
-    tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+    let (_, cert) = tilo_identity::broker::trusted_current_device(workspace).unwrap();
+    tilo_identity::device_fleet::DeviceFleetStore::from_env()
         .unwrap()
         .revoke(
             &selected.id,
@@ -79,7 +79,7 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
 #[test]
 fn owner_revision_ignores_effect_updates_but_not_ownership() {
     struct Membership(Workspace);
-    impl tilo_identity_host::broker::WorkspaceMembership for Membership {
+    impl tilo_identity::broker::WorkspaceMembership for Membership {
         fn with_workspace(&self, workspace: &WorkspaceId, read: &mut dyn FnMut(&Workspace)) {
             if &self.0.id() == workspace {
                 read(&self.0);

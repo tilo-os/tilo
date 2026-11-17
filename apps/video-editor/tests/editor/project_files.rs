@@ -5,9 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use ui::host::{HostRecorder, HostServices};
 use ui::portal::PortalOutcome;
 use ui::prelude::*;
+use ui::process::{ProcessRecorder, ProcessServices};
 use video_editor::actions::VideoEditorEffect;
 use video_editor::model::{Clip, MediaItem, MediaKind, Track};
 use video_editor::resource::load_project;
@@ -16,9 +16,13 @@ use video_editor::{Project, VideoEditor};
 
 /// The demo project (seven clips, nothing saved), and the chooser that
 /// answers it.
-fn editor() -> (HeadlessApp<VideoEditor>, HostRecorder, ui::host::HostScope) {
-    let (services, recorder) = HostServices::recording();
-    let guard = ui::host::enter(&services);
+fn editor() -> (
+    HeadlessApp<VideoEditor>,
+    ProcessRecorder,
+    ui::process::ProcessScope,
+) {
+    let (services, recorder) = ProcessServices::recording();
+    let guard = ui::process::enter(&services);
     let mut app = HeadlessApp::<VideoEditor>::new().unwrap();
     app.invoke_confirmed(Invoke::edit(&load_project(&sample_project())).unwrap())
         .unwrap();
@@ -70,7 +74,7 @@ fn edit(app: &mut HeadlessApp<VideoEditor>) {
     keys(app, &[], "m");
 }
 
-fn chooser_titles(recorder: &HostRecorder) -> Vec<String> {
+fn chooser_titles(recorder: &ProcessRecorder) -> Vec<String> {
     recorder
         .pick_requests()
         .iter()

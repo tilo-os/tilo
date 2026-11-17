@@ -9,7 +9,7 @@
 //! Nothing here is reached from an app binary's own modes: those use
 //! [`super::headless`], so a release app carries none of this module.
 
-use ui_core::application::{ApplicationHost, ComponentRunnerInputs};
+use ui_core::application::{ApplicationOwner, ComponentRunnerInputs};
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{MemberId, Role};
@@ -146,7 +146,7 @@ pub fn drive_live_window_writing_after<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::App) -> T,
 ) -> Result<T, LaunchError> {
     let profile = profile_directory().map_err(operation)?;
-    let host = ApplicationHost::with_store(
+    let host = ApplicationOwner::with_store(
         std::rc::Rc::new(app_state::FsStore::with_debounce(
             profile.path().join("state"),
             debounce,
@@ -168,7 +168,7 @@ pub fn drive_live_window_writing_after<A: ResourceApp, T>(
 /// action past the history budget keeps its large parts there rather than
 /// being refused.
 fn live_window<A: ResourceApp>(
-    mut host: ApplicationHost,
+    mut host: ApplicationOwner,
     directory: &std::path::Path,
 ) -> Result<ui_core::App, LaunchError> {
     let (component, _, inputs) = live_window_component::<A>(&mut host, directory)?;
@@ -179,7 +179,7 @@ fn live_window<A: ResourceApp>(
 /// shows through: the component, the content store it was lent and what the
 /// host hands a window's runtime.
 fn live_window_component<A: ResourceApp>(
-    host: &mut ApplicationHost,
+    host: &mut ApplicationOwner,
     directory: &std::path::Path,
 ) -> Result<
     (
@@ -210,7 +210,7 @@ pub fn live_window_in_workspace<A: ResourceApp>(
     workspace: &str,
 ) -> Result<(FrameHarness, tilo_content::ContentStore), LaunchError> {
     let profile = profile_directory().map_err(operation)?;
-    let mut host = ApplicationHost::new(
+    let mut host = ApplicationOwner::new(
         profile.path().join("state"),
         "test-device".into(),
         workspace,
@@ -259,7 +259,7 @@ pub fn drive_live_embedded<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::app::EmbeddedApp) -> T,
 ) -> Result<T, LaunchError> {
     let profile = profile_directory().map_err(operation)?;
-    let host = ApplicationHost::new(
+    let host = ApplicationOwner::new(
         profile.path().join("state"),
         "test-device".into(),
         TEST_WORKSPACE,

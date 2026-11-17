@@ -43,7 +43,7 @@ tilo-vm-protocol = { path = "../tilo-vm-protocol" }
 onboarding-walk = { path = "../../session/onboarding-walk" }
 console-control = { path = "../../session/console-control" }
 tilo-actions = { path = "../../collab/actions" }
-tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 uuid.workspace = true
 zeroize.workspace = true

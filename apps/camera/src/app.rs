@@ -4906,8 +4906,8 @@ mod tests {
                 symbology: "QR Code".into(),
                 corners: [(0.0, 0.0); 4],
             });
-            let (services, recorder) = ui::host::HostServices::recording();
-            ui::host::scoped(&services, || {
+            let (services, recorder) = ui::process::ProcessServices::recording();
+            ui::process::scoped(&services, || {
                 app.apply(Action::Scan(0), &mut Edits::lend(&mut doc), &root); // "Connect"
             });
             assert_eq!(app.toast.as_deref(), Some("Wi-Fi password copied"));
@@ -4957,8 +4957,8 @@ mod tests {
             unix_now_i64()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
 
         let payload = "https://example.test/scanned-from-a-saved-photo";

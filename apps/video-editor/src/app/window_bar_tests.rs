@@ -11,7 +11,7 @@ use crate::app::VideoEditorApp;
 use crate::model::{Project, TrackKind};
 
 fn sample(w: f64) -> VideoEditorApp {
-    ui::host::install_default(ui::host::HostServices::recording().0);
+    ui::process::install_default(ui::process::ProcessServices::recording().0);
     let doc = crate::seed::sample_document();
     let mut app = VideoEditorApp::new();
     app.actions = Some(ui::framework::testing::dispatcher::<Project>(
@@ -30,7 +30,7 @@ fn bar_action(app: &VideoEditorApp, name: &str) -> ui::window_toolbar::ToolbarAc
 
 /// The editor on the sample project, opened as a person opens it.
 fn opened() -> TestApp<crate::VideoEditor> {
-    ui::host::install_default(ui::host::HostServices::recording().0);
+    ui::process::install_default(ui::process::ProcessServices::recording().0);
     let mut app = TestApp::<crate::VideoEditor>::new().expect("the editor opens");
     app.invoke_confirmed(
         ui::tilo_resource::Invoke::edit(&crate::resource::load_project(
@@ -263,8 +263,8 @@ fn a_refused_imports_choose_media_opens_the_chooser() {
         std::fs::create_dir_all(&dir).unwrap();
         let bad = dir.join("not-a-video.mp4");
         std::fs::write(&bad, b"<!DOCTYPE html><html><body>nope</body></html>").unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let mut app = opened();
         app.harness().present_in_window_bar();
         app.surface_mut::<VideoEditorApp>()
@@ -438,8 +438,8 @@ fn the_empty_timelines_import_media_stands_in_for_a_hidden_media_pane() {
     assert!(!timeline_offers_a_button(&mut wide), "shown again, it goes");
 
     for (width, semantic) in [(1280, false), (1280, true), (420, false), (420, true)] {
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let mut app = blank_at(width);
         if app
             .with_surface::<VideoEditorApp, _>(|editor| editor.media_pane_shown())

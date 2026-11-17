@@ -234,7 +234,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **`open(r)` on the platform, for now.** Until the workspace window model lands, the host app
   shows the opened window as the next column of its shell, through the default view of `r`'s
   type: beside the root's list, or in place of the root's content with Back; a narrow window
-  pushes it (`tilolang_tilo::instance` opens it, `tilo_ui_host::window` composes it). Opening never creates a second window for a
+  pushes it (`tilolang_tilo::instance` opens it, `tilo_app_window::window` composes it). Opening never creates a second window for a
   resource: there are no windows yet.
 - **Roots.** The host opens `roots[0]` of a package through its default view, over the
   per-workspace resource of that type (`tilolang_tilo::host::Package::main`), replacing the old
@@ -294,7 +294,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   appear; one in a card shows its preview. What the workspace publishes (`Publications`) and what
   search finds (`SearchIndex`) are kept by the live window and updated from the store's
   changes, read off the frame the first time.
-- **Patches outside a list apply to single widgets.** The reconciler (`tilo_ui_host::
+- **Patches outside a list apply to single widgets.** The reconciler (`tilo_app_window::
   reconcile`) updates a widget in place where it can take the change (a text, a heading, an
   image, a holder, a button's enabled state, an input keeps its own) and reconciles a
   container's children by key through the toolkit's slot operations: `Arranged` (`replace`,

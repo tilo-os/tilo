@@ -344,7 +344,7 @@ pub(super) async fn join_route(
     #[cfg(feature = "audio")]
     if spec.document.is_none()
         && member_kind == "person"
-        && crate::host::environment()
+        && crate::process::environment()
             .identity
             .collab_service_configured
     {

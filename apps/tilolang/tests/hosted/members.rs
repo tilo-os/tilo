@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::interaction::{composer, send_button};
-use tilolang_host::testing::Bus;
+use tilolang_process::testing::Bus;
 use ui::headless::FrameHarness;
 use ui::permissions::policy::{self, Grantee, Role};
 use ui::tilo_actions::MemberId;

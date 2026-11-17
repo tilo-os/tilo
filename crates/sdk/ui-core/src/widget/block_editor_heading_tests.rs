@@ -88,8 +88,8 @@ tilo_test_env::scenario! {
 
     phase the_format_menu_makes_a_line_a_heading_and_body_text_again;
     {
-        let (services, _recorder) = crate::host::HostServices::recording();
-        let _host = crate::host::enter(&services);
+        let (services, _recorder) = crate::process::ProcessServices::recording();
+        let _host = crate::process::enter(&services);
         let mut doc = AutoCommit::new();
         let mut editor = editing(&["Plan"]);
         editor.blocks[0]

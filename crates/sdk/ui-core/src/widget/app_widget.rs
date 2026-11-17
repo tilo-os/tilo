@@ -6,7 +6,7 @@ use crate::widget::{AppKind, Widget};
 use std::cell::RefCell;
 use std::rc::Weak;
 
-/// The person's answer to [`AppHostIntent::AllowHostShell`]: `None` until they choose, then whether
+/// The person's answer to [`AppProcessIntent::AllowHostShell`]: `None` until they choose, then whether
 /// the device's own shell was allowed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HostShellAllow {
@@ -15,7 +15,7 @@ pub struct HostShellAllow {
 
 /// A typed, device-local request from app content to shell chrome.
 #[derive(Debug, Clone)]
-pub enum AppHostIntent {
+pub enum AppProcessIntent {
     ShowWorkspaceActivity {
         resource_id: String,
         version_id: Option<[u8; 16]>,
@@ -33,7 +33,7 @@ pub enum AppHostIntent {
     },
 }
 
-impl PartialEq for AppHostIntent {
+impl PartialEq for AppProcessIntent {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (
@@ -163,12 +163,12 @@ pub trait AppWidget: Widget {
     }
 
     /// Drain a one-shot request for shell-owned chrome.
-    fn take_host_intent(&mut self) -> Option<AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<AppProcessIntent> {
         None
     }
 
     /// The component to show in this one's place, built now: what a root shown before its record
-    /// ([`crate::application::HostContext::resource_opening`]) answers once the record is had.
+    /// ([`crate::application::ProcessContext::resource_opening`]) answers once the record is had.
     fn take_component_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
         None
     }
@@ -231,7 +231,7 @@ pub struct WindowPublication {
 }
 
 mod component_adapter {
-    use super::{AppHostIntent, AppWidget, IconDescriptor, Widget};
+    use super::{AppProcessIntent, AppWidget, IconDescriptor, Widget};
     use crate::application::AppComponent;
     use crate::widget::DrawChild;
     use crate::widget::{
@@ -2091,13 +2091,13 @@ mod component_adapter {
             self.in_root_mut(AppWidget::request_device_shell)
                 .unwrap_or_default()
         }
-        fn take_host_intent(&mut self) -> Option<AppHostIntent> {
+        fn take_process_intent(&mut self) -> Option<AppProcessIntent> {
             let binding = self.component.callback_binding();
             let _entry = binding.enter().ok()?;
             if let Some(request) = binding.take_search_request() {
-                return Some(AppHostIntent::OpenSearch(request));
+                return Some(AppProcessIntent::OpenSearch(request));
             }
-            self.component.root.as_deref_mut()?.take_host_intent()
+            self.component.root.as_deref_mut()?.take_process_intent()
         }
     }
 }

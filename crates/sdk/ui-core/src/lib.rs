@@ -389,9 +389,9 @@ pub mod widget;
 pub mod window_icon;
 
 #[doc(inline)]
-pub use tilo_host::{
-    background, capture, clipboard, env, host, jpeg, location, models, mpris, notify, png, portal,
-    secrets, shell_choosers, time, wake,
+pub use tilo_process_services::{
+    background, capture, clipboard, env, jpeg, location, models, mpris, notify, png, portal,
+    process, secrets, shell_choosers, time, wake,
 };
 
 /// The AccessKit types the bridge and [`headless::FrameHarness`] hand back, re-exported so an app crate

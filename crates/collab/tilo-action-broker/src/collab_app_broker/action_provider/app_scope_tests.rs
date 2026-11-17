@@ -13,7 +13,7 @@ use super::super::{
 };
 use crate::collab_broker::CrdtRoute;
 use crate::services::{
-    HostServices, KeyboardShortcutServices, LauncherServices, ShortcutLibraryRequest,
+    KeyboardShortcutServices, LauncherServices, ProcessServices, ShortcutLibraryRequest,
     ShortcutLibraryServices, WorkspaceGovernanceServices,
 };
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
@@ -216,7 +216,7 @@ fn fixture(keys: Vec<CatalogueRow>) -> Fixture {
     let launcher = Arc::new(Launcher::default());
     let (state, _bridge_rx) = AppBrokerState::test_state(
         Some(tree.shared().authority()),
-        HostServices {
+        ProcessServices {
             launcher: Some(launcher.clone()),
             workspace_governance: Some(governance.clone()),
             shortcut_library: Some(Arc::new(Library)),
@@ -506,7 +506,7 @@ fn directory_fixture(app_id: &str) -> DirectoryFixture {
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let (state, bridge_rx) =
-        AppBrokerState::test_state(Some(tree.shared().authority()), HostServices::default());
+        AppBrokerState::test_state(Some(tree.shared().authority()), ProcessServices::default());
     let asked = Rc::new(Asked::default());
     let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
     let provider = 47;

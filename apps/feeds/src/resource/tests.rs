@@ -1166,8 +1166,8 @@ fn exporting_opml_writes_the_subscriptions_where_the_person_chose() {
     let directory = std::env::temp_dir().join(format!("feeds-export-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     let path = directory.join("Subscriptions Grün 🌍.opml");
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = sample_app();
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path.clone()));
     app.effect(&FeedsEffect::ExportOpml).unwrap();

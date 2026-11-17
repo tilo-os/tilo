@@ -2,7 +2,7 @@
 //! an app places it (`ui::written_view`).
 //!
 //! The view runs in an instance of its own ([`tilolang_tilo::instance`]) and is drawn by the UI
-//! host's half of a window ([`tilo_ui_host::AppWindow`]) as a part: the toolkit's own widgets,
+//! host's half of a window ([`tilo_app_window::AppWindow`]) as a part: the toolkit's own widgets,
 //! built from the component patches the instance sends. The instance holds no record. What the
 //! view names are the workspace's apps, each read as the package its published surface declares
 //! ([`apps`]) and loaded as an app this runtime does not run:

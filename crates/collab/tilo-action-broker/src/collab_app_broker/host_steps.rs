@@ -11,14 +11,14 @@
 use std::sync::Arc;
 
 use super::AppBrokerState;
-use crate::services::{HostServices, HostStepOutcome, HostStepRequest, HostStepServices};
+use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices, ProcessServices};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvokeRequest, Pending, Reservation,
 };
 
 /// The installed host-step service that answers under `provider`, if any.
 pub(super) fn for_provider(
-    services: &HostServices,
+    services: &ProcessServices,
     provider: &str,
 ) -> Option<Arc<dyn HostStepServices>> {
     services
@@ -330,7 +330,7 @@ pub(crate) mod signed_test_support {
         AppBrokerState, BrokerChannels, DurableInvocation, FanoutState, InvocationKey,
         PeerPublisher, person_id_for_root, published_invocation::InvocationCaller,
     };
-    use crate::services::HostServices;
+    use crate::services::ProcessServices;
     use crate::test_support::{Workspace, WorkspaceTree};
     use ed25519_dalek::Signer as _;
     use std::sync::{
@@ -423,17 +423,17 @@ pub(crate) mod signed_test_support {
             self.policy_origin.invalidate();
         }
 
-        pub fn new(services: HostServices) -> Self {
+        pub fn new(services: ProcessServices) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let mut environment = tilo_test_env::ScopedEnv::new();
             environment
                 .set("XDG_CONFIG_HOME", directory.path().join("config"))
                 .set("TILO_IDENTITY_ROOT", directory.path().join("identity"))
-                .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-            tilo_identity_host::provisioning::ensure_collaboration_identity(
+                .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+            tilo_identity::provisioning::ensure_collaboration_identity(
                 &directory.path().join("config/tilo/identity"),
                 &tilo_user_identity::IdentityPaths::under(directory.path().join("identity")),
-                tilo_identity_host::provisioning::IdentityStorage::Files,
+                tilo_identity::provisioning::IdentityStorage::Files,
             )
             .expect("provision the production receipt signer");
             let mut workspace = Workspace::new(
@@ -443,7 +443,7 @@ pub(crate) mod signed_test_support {
             );
             let workspace_id = workspace.id().to_string();
             let (key, certificate) =
-                tilo_identity_host::broker::trusted_current_device(&workspace_id).unwrap();
+                tilo_identity::broker::trusted_current_device(&workspace_id).unwrap();
             let owner = Arc::new(
                 tilo_peer_state::owner::open_file(&directory.path().join("native.json")).unwrap(),
             );
@@ -521,18 +521,18 @@ pub(crate) mod signed_test_support {
             }
         }
 
-        pub fn new_certified(services: HostServices) -> Self {
+        pub fn new_certified(services: ProcessServices) -> Self {
             Self::certified(services, false)
         }
 
-        pub fn new_certified_foreign(services: HostServices) -> Self {
+        pub fn new_certified_foreign(services: ProcessServices) -> Self {
             Self::certified(services, true)
         }
 
-        fn certified(services: HostServices, foreign: bool) -> Self {
+        fn certified(services: ProcessServices, foreign: bool) -> Self {
             let mut fixture = Self::new(services);
             let (key, certificate) =
-                tilo_identity_host::broker::trusted_current_device(&fixture.workspace).unwrap();
+                tilo_identity::broker::trusted_current_device(&fixture.workspace).unwrap();
             let presentation = runtime_collab::CertifiedJoinIdentity {
                 workspace_id: fixture.workspace.clone(),
                 device_certificate: serde_json::to_vec(&certificate).unwrap(),
@@ -809,7 +809,7 @@ mod identity_admin_tests {
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            crate::services::HostServices {
+            crate::services::ProcessServices {
                 host_steps: vec![host],
                 ..Default::default()
             },
@@ -853,7 +853,7 @@ mod identity_admin_tests {
             tree.workspaces.push(workspace);
             let (state, _bridge_rx) = AppBrokerState::test_state(
                 Some(tree.shared().authority()),
-                crate::services::HostServices {
+                crate::services::ProcessServices {
                     host_steps: vec![host.clone()],
                     local_person: Some(Arc::new(NoDevice)),
                     ..Default::default()
@@ -923,7 +923,7 @@ mod identity_admin_tests {
                 for foreign in [false, true] {
                     let host = Arc::new(PairingHost::default());
                     let identity = Arc::new(Host::default());
-                    let services = crate::services::HostServices {
+                    let services = crate::services::ProcessServices {
                         host_steps: vec![if pairing {
                             host.clone() as Arc<dyn HostStepServices>
                         } else {
@@ -996,7 +996,7 @@ mod identity_admin_tests {
         phase device_pairing_uses_the_same_signed_admission_and_terminal_path;
         {
             let host = Arc::new(PairingHost::default());
-            let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
+            let f = super::signed_test_support::Fixture::new(crate::services::ProcessServices {
                 host_steps: vec![host.clone()],
                 ..Default::default()
             });
@@ -1037,7 +1037,7 @@ mod identity_admin_tests {
                     "time",
                 ] {
                     let host = Arc::new(Host::default());
-                    let services = crate::services::HostServices {
+                    let services = crate::services::ProcessServices {
                         host_steps: vec![host.clone()],
                         ..Default::default()
                     };
@@ -1182,7 +1182,7 @@ mod identity_admin_tests {
         phase identity_admin_signs_before_start_and_retains_the_original_uuid;
         {
             let host = Arc::new(Host::default());
-            let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
+            let f = super::signed_test_support::Fixture::new(crate::services::ProcessServices {
                 host_steps: vec![host.clone()],
                 ..Default::default()
             });
@@ -1222,7 +1222,7 @@ mod identity_admin_tests {
         {
             for dropped in [false, true] {
                 let host = Arc::new(Host::default());
-                let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
+                let f = super::signed_test_support::Fixture::new(crate::services::ProcessServices {
                     host_steps: vec![host.clone()],
                     ..Default::default()
                 });
@@ -1266,7 +1266,7 @@ mod identity_admin_tests {
         {
             for admission_failure in [false, true] {
                 let host = Arc::new(Host::default());
-                let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
+                let f = super::signed_test_support::Fixture::new(crate::services::ProcessServices {
                     host_steps: vec![host.clone()],
                     ..Default::default()
                 });
@@ -1300,7 +1300,7 @@ mod identity_admin_tests {
         {
             for revoked in [false, true] {
                 let host = Arc::new(Host::default());
-                let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
+                let f = super::signed_test_support::Fixture::new(crate::services::ProcessServices {
                     host_steps: vec![host.clone()],
                     ..Default::default()
                 });
@@ -1310,7 +1310,7 @@ mod identity_admin_tests {
                         .store(true, std::sync::atomic::Ordering::SeqCst);
                 } else {
                     std::fs::remove_file(
-                        tilo_identity_host::provisioning::collaboration_identity_paths().device_privkey,
+                        tilo_identity::provisioning::collaboration_identity_paths().device_privkey,
                     )
                     .unwrap();
                 }
@@ -1619,7 +1619,7 @@ mod settings_documents_tests {
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            crate::services::HostServices {
+            crate::services::ProcessServices {
                 host_steps: vec![host.clone()],
                 ..Default::default()
             },

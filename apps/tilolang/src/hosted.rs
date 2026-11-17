@@ -5,7 +5,7 @@
 //! app's instance runs in the tilolang host of its workspace and author, on the app's own
 //! connection, and sends this window component patches over a patch connection the session
 //! hands it over its window link (`ui::window_link::take_patch`). The window shows them through
-//! the UI host's half (`tilo_ui_host::AppWindow`) and sends back what the person did. Its own
+//! the app window's half (`tilo_app_window::AppWindow`) and sends back what the person did. Its own
 //! launch identity stays for its surface and accessibility.
 //!
 //! Without a session (`tilolang dev`, a capture), there is no host to run the instance: the
@@ -18,12 +18,12 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
+use tilo_app_window::AppWindow;
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
-use tilo_ui_host::AppWindow;
-use tilolang_host::TilolangHost;
-use tilolang_host::hosted::{Hosted, Kept, Spec};
-use tilolang_host::phrases::Phrases;
+use tilolang_process::TilolangProcess;
+use tilolang_process::hosted::{Hosted, Kept, Spec};
+use tilolang_process::phrases::Phrases;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::document::{DocumentError, InstanceDocument};
 use ui::widget::DrawChild;
@@ -244,8 +244,8 @@ pub fn start(
     phrases: &Rc<Phrases>,
     storage: Option<std::path::PathBuf>,
     wake: tilolang_tilo::background::Waker,
-) -> Result<(TilolangHost, Channel), StartError> {
-    let mut host = TilolangHost::new(storage, Arc::clone(&wake));
+) -> Result<(TilolangProcess, Channel), StartError> {
+    let mut host = TilolangProcess::new(storage, Arc::clone(&wake));
     let kept = host.kept(&spec.app)?;
     let record = record(&kept)?;
     let (ours, theirs) = Channel::pair()?;
@@ -280,7 +280,7 @@ const STAGE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The host a window runs in its own process ([`start`]), and what wakes it.
 struct InProcess {
-    host: TilolangHost,
+    host: TilolangProcess,
     /// The app the instance runs.
     app: String,
     woken: Arc<Woken>,
@@ -505,7 +505,7 @@ impl HostedWindow {
         }
     }
 
-    /// The window's half of the UI host, once its patch connection arrived.
+    /// The window's half of the app window, once its patch connection arrived.
     #[must_use]
     pub fn view(&self) -> Option<&AppWindow> {
         self.connected.as_ref().map(|connected| &connected.view)
@@ -622,10 +622,10 @@ impl ui::undo::LocalUndo for HostedWindow {
 
 /// A change mark in the window asks the shell to show the task run that made the change.
 impl ui::component_lifecycle::HostIntents for HostedWindow {
-    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<ui::widget::AppProcessIntent> {
         let connected = self.connected.as_mut()?;
         let run = connected.view.take_shown_run()?;
-        Some(ui::widget::AppHostIntent::ShowTaskRun { group: run })
+        Some(ui::widget::AppProcessIntent::ShowTaskRun { group: run })
     }
 }
 
@@ -645,18 +645,18 @@ impl ui::component_lifecycle::HearsElsewhere for HostedWindow {
 /// opened.
 impl ui::component_lifecycle::WindowTitle for HostedWindow {
     fn window_title(&self) -> Option<&str> {
-        self.view().and_then(tilo_ui_host::AppWindow::title)
+        self.view().and_then(tilo_app_window::AppWindow::title)
     }
 }
 
-/// The window stands for what it shows (the UI host's window, or the loading state before it)
+/// The window stands for what it shows (the app window's window, or the loading state before it)
 /// in the layout and in every walk of the widgets: it adds no node of its own.
 impl ui::widget::Decorator for HostedWindow {
     type Inner = dyn Widget;
 
-    // What the window itself answers, and everything else the widget it shows: the UI host's
+    // What the window itself answers, and everything else the widget it shows: the app window's
     // window publishes the app's actions for the command palette and does the one the person
-    // chooses ([`tilo_ui_host::catalogue`]), so a request for either reaches it through here.
+    // chooses ([`tilo_app_window::catalogue`]), so a request for either reaches it through here.
     ui::provides!(
         dyn ui::component_lifecycle::WindowActivation,
         dyn ui::component_lifecycle::WindowTitle,
@@ -675,7 +675,7 @@ impl ui::widget::Decorator for HostedWindow {
     }
 
     fn name(&self) -> &'static str {
-        "TilolangHostedWindow"
+        "TilolangProcessedWindow"
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

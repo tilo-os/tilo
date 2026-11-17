@@ -461,7 +461,7 @@ fn an_apps_index_is_not_one_of_its_records() {
     // records at the empty route, where Files keeps its own record.
     fn per_window(app: &'static str) -> ui::application::ApplicationDefinition {
         fn no_component(
-            _: ui::application::HostContext,
+            _: ui::application::ProcessContext,
             _: ui::application::LaunchTarget,
             _: ui::application::RestoreInput,
         ) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {

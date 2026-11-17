@@ -31,7 +31,7 @@ async fn installed_launch_requires_signed_admission_and_durable_terminal() {
                 });
                 let rig = Rig::with_services(
                     &env,
-                    HostServices {
+                    ProcessServices {
                         launcher: Some(launcher.clone()),
                         ..env.membership.services()
                     },

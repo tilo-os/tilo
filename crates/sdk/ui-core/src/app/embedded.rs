@@ -87,7 +87,7 @@ pub struct EmbeddedApp {
     /// The app has not run since `deadline` was asked for.
     deadline_known: Cell<bool>,
     /// The app ran since its host last found it with no intent for the host
-    /// ([`AppWidget::take_host_intent`]): only an app that runs raises one.
+    /// ([`AppWidget::take_process_intent`]): only an app that runs raises one.
     intents_owed: Cell<bool>,
     /// Tells this app's damage hints from every other source's.
     source: u64,
@@ -1110,7 +1110,7 @@ impl AppWidget for EmbeddedApp {
     }
     /// Its host asks on every pump; the app is reached only when it ran
     /// since it last had none, and only taking one runs it.
-    fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<crate::widget::AppProcessIntent> {
         if !self.intents_owed.get() {
             return None;
         }
@@ -1119,7 +1119,7 @@ impl AppWidget for EmbeddedApp {
             .root_widget
             .as_any_mut()
             .and_then(|root| root.downcast_mut::<crate::widget::BoundAppWidget>())
-            .and_then(AppWidget::take_host_intent);
+            .and_then(AppWidget::take_process_intent);
         if intent.is_some() {
             self.runs();
             self.app.mark_semantic_tree_stale();
@@ -1931,7 +1931,7 @@ mod wake_deadline_tests {
             // Its host asks for its intents on every pump: an app that did not
             // run since it had none is not reached, so nothing it holds moved.
             for _ in 0..10 {
-                assert!(AppWidget::take_host_intent(&mut tile).is_none());
+                assert!(AppWidget::take_process_intent(&mut tile).is_none());
                 assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
             }
             assert_eq!(asks.get(), settled, "asking for intents ran the app");

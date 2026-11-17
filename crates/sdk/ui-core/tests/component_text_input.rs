@@ -2,7 +2,7 @@
 //! and keyboard platform events through `send_host_event`, text through IME
 //! commits.
 
-use tilo_ui::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
+use tilo_ui::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::launch::LaunchError;
 use tilo_ui::ui_graph::{UiDocument, UiDocumentExt as _, UiNode, UiTextRole, UiTextSource};
@@ -113,7 +113,7 @@ impl Widget for Page {
     reason = "a component factory takes its inputs by value"
 )]
 fn create(
-    mut context: HostContext,
+    mut context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
@@ -234,7 +234,7 @@ const CREATE_AMBIGUOUS_LOCUS: tilo_ui::application::ComponentFactory =
     |context, target, _| locus_component(context, &target, 2);
 
 fn locus_component(
-    context: HostContext,
+    context: ProcessContext,
     target: &LaunchTarget,
     count: usize,
 ) -> Result<AppComponent, LaunchError> {
@@ -248,7 +248,7 @@ const CREATE_HIDDEN_SCROLL_LOCUS: tilo_ui::application::ComponentFactory =
     |context, target, _| locus_component_with_scroll(context, &target, 1, Some(140.0));
 
 fn locus_component_with_scroll(
-    mut context: HostContext,
+    mut context: ProcessContext,
     target: &LaunchTarget,
     count: usize,
     scroll_gap: Option<f32>,

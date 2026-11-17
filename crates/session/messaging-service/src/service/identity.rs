@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use accounts::{AccessDecision, AccessRequest, CredentialBroker, CredentialOwner, CredentialScope};
-use tilo_identity_host::identity_store::HostIdentity;
+use tilo_identity::identity_store::HostIdentity;
 use tilo_messaging::SendError;
 use tilo_messaging_protocol::journal::Owner;
 
@@ -30,7 +30,7 @@ impl Ownership {
     /// # Errors
     /// The device key or the person's certificate cannot be read.
     pub(crate) fn load(actor: &str, device: &str) -> Result<Self, String> {
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
         let key =
             tilo_user_identity::persist::load_device_key(&paths).map_err(|e| e.to_string())?;
         let mut person = [0; 32];
@@ -42,7 +42,7 @@ impl Ownership {
             HostIdentity::held(
                 cert,
                 key,
-                std::sync::Arc::new(tilo_identity_host::identity_store::files::Files::new(paths)),
+                std::sync::Arc::new(tilo_identity::identity_store::files::Files::new(paths)),
             ),
             actor,
             device,

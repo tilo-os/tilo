@@ -100,7 +100,7 @@ fn framing(error: wire_frame::FrameError) -> io::Error {
     io::Error::new(kind, error)
 }
 
-/// The app side: one connection to the host's `app-host` service. The type
+/// The app side: one connection to the host's `app-process` service. The type
 /// exists on every target so callers need no target selection; where the
 /// launcher hands no service sockets (off unix), `from_service` finds none.
 pub struct Client(Connection);
@@ -179,7 +179,7 @@ impl Client {
     }
 }
 
-pub const SERVICE: &str = "app-host";
+pub const SERVICE: &str = "app-process";
 
 #[cfg(test)]
 mod tests {

@@ -997,7 +997,7 @@ pub fn spawn_with_services(
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
     config: Option<&crate::NativePeerBrokerConfig>,
-    services: crate::services::HostServices,
+    services: crate::services::ProcessServices,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
 ) -> std::io::Result<BrokerHandle> {
@@ -1028,7 +1028,7 @@ pub fn spawn_with_test_services(
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
     config: Option<&crate::NativePeerBrokerConfig>,
-    services: crate::services::HostServices,
+    services: crate::services::ProcessServices,
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
@@ -1053,7 +1053,7 @@ fn spawn_inner(
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
     config: Option<&crate::NativePeerBrokerConfig>,
-    services: crate::services::HostServices,
+    services: crate::services::ProcessServices,
     harness: HarnessAdmission,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
@@ -1100,7 +1100,7 @@ pub fn spawn_native_peer(
         membership,
         publisher,
         config,
-        crate::services::HostServices::default(),
+        crate::services::ProcessServices::default(),
     )
 }
 /// [`spawn_native_peer`] with explicit host services.
@@ -1113,7 +1113,7 @@ pub fn spawn_native_peer_with_services(
     membership: crate::services::WorkspaceAuthorityHandle,
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
     config: crate::NativePeerBrokerConfig,
-    services: crate::services::HostServices,
+    services: crate::services::ProcessServices,
 ) -> std::io::Result<BrokerHandle> {
     if !publisher.is_wired() {
         return Err(std::io::Error::other(

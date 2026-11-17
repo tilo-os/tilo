@@ -407,7 +407,7 @@ pub(crate) fn install(
     )?;
     runtime_identity::set_active_identity(identity_dir, &document_id)
         .map_err(|_| invalid("The joined identity could not be selected"))?;
-    let store = tilo_identity_host::device_fleet::DeviceFleetStore::at(identity_dir, paths);
+    let store = tilo_identity::device_fleet::DeviceFleetStore::at(identity_dir, paths);
     for known in fleet.certificates {
         store
             .remember_certificate(&fleet.identity_id, known)

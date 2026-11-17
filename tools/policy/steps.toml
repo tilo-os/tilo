@@ -201,9 +201,9 @@ label = "Dev overrides stay out of production images, and every documented contr
 run = "python3 tools/policy/check_dev_overrides_contract.py"
 
 [[step]]
-name = "ui-host-inputs-contract"
-label = "UI host-inputs contract"
-run = "python3 tools/policy/check_ui_host_inputs_contract.py"
+name = "app-window-inputs-contract"
+label = "app window-inputs contract"
+run = "python3 tools/policy/check_app_window_inputs_contract.py"
 
 [[step]]
 name = "ui-clock-contract"

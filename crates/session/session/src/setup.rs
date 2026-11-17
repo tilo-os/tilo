@@ -1,9 +1,9 @@
 //! What stands over everything before the session is used: the first-use ceremony
-//! ([`tilo_onboarding_host::view::OnboardingView`]) on a layer covering the outputs, above the
+//! ([`tilo_onboarding_session::view::OnboardingView`]) on a layer covering the outputs, above the
 //! desktop and every window, taking the keyboard until the person finished it, or the wait for the
 //! clock to admit this device's certificate, which goes away by itself. Its actions are the setup
 //! app's, through its API; what setup needs of the session it reads through
-//! [`tilo_onboarding_host::host::SessionHost`].
+//! [`tilo_onboarding_session::services::SessionServices`].
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -15,7 +15,7 @@ use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_session_core::surface::HostKey;
 use tilo_session_core::surface::{HostLayer, Scroll, SurfaceHost};
 
-use tilo_onboarding_host::view::OnboardingView;
+use tilo_onboarding_session::view::OnboardingView;
 use tilo_session_core::surfaces::{Published, through_api};
 use ui::device_local_api::SharedApi;
 use ui::host_operation::ResourceOperationStart;
@@ -36,7 +36,7 @@ static LENT: Lent = Lent {
     browser: Mutex::new(None),
 };
 
-impl tilo_onboarding_host::host::SessionHost for Lent {
+impl tilo_onboarding_session::services::SessionServices for Lent {
     fn loop_waker(&self) -> Waker {
         self.waker
             .lock()
@@ -65,7 +65,7 @@ impl tilo_onboarding_host::host::SessionHost for Lent {
 pub(crate) fn lend(waker: Waker, person: &str) {
     *LENT.waker.lock().unwrap_or_else(PoisonError::into_inner) = Some(waker);
     person.clone_into(&mut LENT.person.lock().unwrap_or_else(PoisonError::into_inner));
-    tilo_onboarding_host::host::install(&LENT);
+    tilo_onboarding_session::services::install(&LENT);
 }
 
 /// The verified browser projection a carried-over setup brought, which the browser starts with.

@@ -1172,7 +1172,7 @@ pub(crate) mod tests {
 
     pub(crate) fn hosted(viewport: (u32, u32), scenario: Option<&str>) -> Hosted {
         struct Store(std::sync::Arc<dyn ui::secrets::SecretBackend>);
-        impl ui::host::SecretsProvider for Store {
+        impl ui::process::SecretsProvider for Store {
             fn store(&self, app_id: &str) -> ui::secrets::SecretStore {
                 ui::secrets::SecretStore::with_backend(app_id, std::sync::Arc::clone(&self.0))
             }
@@ -1186,9 +1186,9 @@ pub(crate) mod tests {
         for account in accounts.iter().skip(missing) {
             seeds.put(account.id, &account.secret);
         }
-        let mut services = ui::host::current();
+        let mut services = ui::process::current();
         services.secrets = std::sync::Arc::new(Store(backend));
-        let _host = ui::host::enter(&services);
+        let _host = ui::process::enter(&services);
         let mut app = Hosted::new().unwrap();
         for account in &accounts {
             let add = app.state().add(account).unwrap();
@@ -1656,8 +1656,8 @@ pub(crate) mod tests {
 
     #[test]
     fn add_panel_clicks_drive_cards_chips_fill_cancel_and_save() {
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let mut app = opened((1280, 900));
         click(&mut app, "totp-scan");
         assert_eq!(

@@ -491,13 +491,11 @@ impl Shared {
             return;
         };
         let request = match request {
-            AppTrayRequest::Activate { x, y } => tilo_tray_host::TrayRequest::Activate { x, y },
+            AppTrayRequest::Activate { x, y } => tilo_tray::TrayRequest::Activate { x, y },
             AppTrayRequest::SecondaryActivate { x, y } => {
-                tilo_tray_host::TrayRequest::SecondaryActivate { x, y }
+                tilo_tray::TrayRequest::SecondaryActivate { x, y }
             }
-            AppTrayRequest::ContextMenu { x, y } => {
-                tilo_tray_host::TrayRequest::ContextMenu { x, y }
-            }
+            AppTrayRequest::ContextMenu { x, y } => tilo_tray::TrayRequest::ContextMenu { x, y },
         };
         let named = key.to_owned();
         let refused = tray.request_or_else(key, request, move |error| {

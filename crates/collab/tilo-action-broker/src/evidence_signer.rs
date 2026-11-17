@@ -11,8 +11,8 @@ use std::sync::LazyLock;
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use parking_lot::Mutex;
-use tilo_identity_host::join_proof::{CurrentDeviceStamp, current_device_stamp};
-use tilo_identity_host::registry::IdentityRegistryStore;
+use tilo_identity::join_proof::{CurrentDeviceStamp, current_device_stamp};
+use tilo_identity::registry::IdentityRegistryStore;
 use tilo_user_identity::DeviceCert;
 
 /// One-shot fault injection. Admission signs on a blocking thread, so a test
@@ -68,7 +68,7 @@ impl SignerCache {
         now: u64,
     ) -> Result<(DeviceCert, [u8; 64]), String> {
         let registry = IdentityRegistryStore::from_env().map_err(|error| error.to_string())?;
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
         let cache_key = CacheKey {
             workspace: workspace.to_owned(),
             identity_dir: registry.identity_dir().to_path_buf(),
@@ -95,7 +95,7 @@ impl SignerCache {
         {
             self.loads = self.loads.saturating_add(1);
         }
-        let (key, certificate) = tilo_identity_host::broker::trusted_current_device(workspace)
+        let (key, certificate) = tilo_identity::broker::trusted_current_device(workspace)
             .map_err(|error| error.to_string())?;
         let signed = sign_entry(&key, &certificate, bytes, now)?;
         let after = current_device_stamp(workspace);
@@ -138,8 +138,8 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use tilo_identity_host::device_fleet::DeviceFleetStore;
-    use tilo_identity_host::provisioning::{self, IdentityStorage};
+    use tilo_identity::device_fleet::DeviceFleetStore;
+    use tilo_identity::provisioning::{self, IdentityStorage};
     use tilo_user_identity::{IdentityPaths, RevocationReason};
 
     use super::*;
@@ -147,7 +147,7 @@ mod tests {
     struct Fixture {
         identity_dir: PathBuf,
         paths: IdentityPaths,
-        profile: tilo_identity_host::registry::IdentityProfile,
+        profile: tilo_identity::registry::IdentityProfile,
         workspace: String,
         _env: tilo_test_env::ScopedEnv,
         _root: tempfile::TempDir,
@@ -171,7 +171,7 @@ mod tests {
             )
             .expect("provision");
             let workspace = uuid::Uuid::new_v4().to_string();
-            let profile = tilo_identity_host::registry::identity_for_workspace(&workspace)
+            let profile = tilo_identity::registry::identity_for_workspace(&workspace)
                 .expect("registry")
                 .expect("selected identity");
             let fixture = Self {
@@ -332,7 +332,7 @@ mod tests {
             std::fs::remove_file(&fixture.profile.record_path).expect("remove identity record");
             store.save(&registry).expect("remove identity");
             assert!(
-                tilo_identity_host::registry::identity_for_workspace(&fixture.workspace)
+                tilo_identity::registry::identity_for_workspace(&fixture.workspace)
                     .expect("a read")
                     .is_none()
             );
@@ -371,7 +371,7 @@ mod tests {
         {
             let fixture = Fixture::new();
             let (key, mut cert) =
-                tilo_identity_host::broker::trusted_current_device(&fixture.workspace).expect("device");
+                tilo_identity::broker::trusted_current_device(&fixture.workspace).expect("device");
             drop(key);
             let expiry = cert.issued_at_ns.saturating_add(60_000_000_000);
             cert.expires_at_ns = Some(expiry);

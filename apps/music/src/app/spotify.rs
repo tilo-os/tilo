@@ -1201,7 +1201,7 @@ mod tests {
     tilo_test_env::scenario! {
         /// What the person does to a Spotify account leaves the app as one host intent; the
         /// document and the provider's state stay as they were.
-        fn spotify_edits_leave_as_host_intents_and_never_as_document_edits;
+        fn spotify_edits_leave_as_process_intents_and_never_as_document_edits;
 
         phase spotify_artist_follow_is_a_host_effect_and_provider_confirmation_only;
         {
@@ -1339,7 +1339,7 @@ mod tests {
             );
         }
 
-        phase spotify_creation_prompt_cancel_and_reopen_emit_one_host_intent;
+        phase spotify_creation_prompt_cancel_and_reopen_emit_one_process_intent;
         {
             use ui::tilo_resource::Effect as _;
             let mut app = Music::without_profile();

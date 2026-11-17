@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use runtime_collab::CollabClient;
-use tilo_identity_host::provisioning::FILE_SECRETS_ENV;
+use tilo_identity::provisioning::FILE_SECRETS_ENV;
 use tilo_service::LoopWake;
 use tilo_session::{AppSocket, Launches, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
@@ -91,7 +91,7 @@ impl Personal {
     /// person admitted, so this machine's session answers it as one of theirs.
     pub fn second(&self, label: &str) -> Other {
         let other = Other::new(&self.person, label);
-        tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+        tilo_identity::device_fleet::DeviceFleetStore::from_env()
             .expect("this machine's device fleet")
             .remember_certificate(&hex::encode(other.cert.user_public_key), other.cert.clone())
             .expect("the person's other device is enrolled on this machine");

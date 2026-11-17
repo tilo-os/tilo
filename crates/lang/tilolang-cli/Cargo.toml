@@ -18,7 +18,7 @@ name = "tilolang_cli"
 path = "src/lib.rs"
 
 # The command's integration tests: one binary, its files included as modules by `tests/it.rs` (a
-# file per binary linked the command, the toolkit and the UI host once each).
+# file per binary linked the command, the toolkit and the app window once each).
 [[test]]
 name = "it"
 path = "tests/it.rs"
@@ -54,8 +54,8 @@ tilo-api = { path = "../../hosting/tilo-api" }
 tilo-paths.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
-# The UI host's half of a window and the patch protocol to it: what `layout-check` lays out.
-tilo-ui-host = { path = "../../platform/tilo-ui-host" }
+# The app window's half of a window and the patch protocol to it: what `layout-check` lays out.
+tilo-app-window = { path = "../../platform/tilo-app-window" }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 
 [dev-dependencies]

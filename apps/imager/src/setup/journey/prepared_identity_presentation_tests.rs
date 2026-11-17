@@ -1,10 +1,10 @@
 use std::sync::Arc;
-use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_identity::provisioning::IdentityStorage;
 
 /// The workspace this device has open, owned by the person it signs as: what an
 /// app asking its identity service asks in.
 struct OpenWorkspace(tilo_desktop_model::Workspace);
-impl tilo_identity_host::broker::WorkspaceMembership for OpenWorkspace {
+impl tilo_identity::broker::WorkspaceMembership for OpenWorkspace {
     fn with_workspace(
         &self,
         workspace: &tilo_desktop_model::WorkspaceId,
@@ -38,7 +38,7 @@ fn negotiated_real_broker_photo_reaches_default_shared_avatar_paint() {
         .set(runtime_identity::FILE_SECRETS_ENV, "1");
     let identity = config.join("tilo/identity");
     let paths = tilo_user_identity::IdentityPaths::under(system);
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &identity,
         &paths,
         IdentityStorage::Files,
@@ -56,13 +56,13 @@ fn negotiated_real_broker_photo_reaches_default_shared_avatar_paint() {
     let workspace = tilo_desktop_model::WorkspaceId::new();
     let mut open = tilo_desktop_model::Workspace::new(workspace, "Home");
     open.policy.owner = Some(
-        tilo_identity_host::registry::identity_for_workspace(&workspace.to_string())
+        tilo_identity::registry::identity_for_workspace(&workspace.to_string())
             .unwrap()
             .expect("this device has the person it signs as")
             .person_id(),
     );
     let socket = temp.path().join("identity.sock");
-    let _broker = tilo_identity_host::broker::spawn(
+    let _broker = tilo_identity::broker::spawn(
         socket.clone(),
         Arc::new(OpenWorkspace(open)),
         Arc::new(()),

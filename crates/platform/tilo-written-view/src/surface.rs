@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use serde_json::{Map, Value as Json, json};
 use tilo_actions::{Actor, MemberId};
+use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local;
-use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::RootView;
 use tilolang_tilo::instance::wire::resource;
 use tilolang_tilo::instance::{Config, Instance, Mode};
@@ -36,7 +36,7 @@ pub(crate) fn shown(view: &WrittenView, workspace: Box<dyn Workspace>) -> Shown 
         Ok(surface) => Box::new(surface),
         Err(why) => {
             tracing::error!(why, "a written view did not open");
-            Box::new(ui::widget::EmptyState::new(tilo_ui_host::i18n::t(
+            Box::new(ui::widget::EmptyState::new(tilo_app_window::i18n::t(
                 "tilolang-open-failed",
             )))
         }
@@ -82,7 +82,7 @@ impl Surface {
     ) -> Result<Self, String> {
         let wrapper = wrapper::get()?;
         let apps = apps::named(&view.source, &view.reads);
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let wake = ui::wake::WakeHandle::new();
         state.woken_by(wake.clone());
         let failed = Rc::new(RefCell::new(None));
@@ -495,7 +495,7 @@ impl Surface {
     }
 }
 
-/// The surface stands for the UI host's window in the layout and in every walk of the widgets.
+/// The surface stands for the app window's window in the layout and in every walk of the widgets.
 impl ui::widget::Decorator for Surface {
     type Inner = dyn Widget;
 

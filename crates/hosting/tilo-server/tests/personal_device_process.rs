@@ -366,10 +366,10 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
     std::fs::create_dir_all(&recipient_identities).unwrap();
 
     let approver_paths = IdentityPaths::under(&approver_root);
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &approver_identities,
         &approver_paths,
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     assert!(!approver_paths.user_privkey.exists());

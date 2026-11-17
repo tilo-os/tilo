@@ -201,8 +201,8 @@ fn delayed_address_paste_survives_layout() {
         }
     }
     let clipboard = Arc::new(Delayed::default());
-    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-    let _host = ui::host::enter(&services);
+    let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::process::enter(&services);
     let mut widget = BrowserWidget::with_engine(TestEngine::new(), true);
     let (tree, node) = super::tests::layout_keeping_tree(&mut widget, 900.0, 700.0, &Theme::dark());
     assert!(widget.focus_address_input());

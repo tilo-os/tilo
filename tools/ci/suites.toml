@@ -885,23 +885,23 @@ readers = [
 ]
 
 [[cargo]]
-package = "tilolang-host"
-# The host compiles built-in packages and embeds the UI host's catalogues and the toolkit's (the
+package = "tilolang-process"
+# The host compiles built-in packages and embeds the app window's catalogues and the toolkit's (the
 # words its dates and clocks are written in), and its task's tests hold native apps' packages from
 # their surfaces, as a session hands them.
 inputs = [
   "apps/tl/",
   "apps/chat/",
   "apps/tasks/",
-  "crates/platform/tilo-ui-host/locales/",
+  "crates/platform/tilo-app-window/locales/",
   "crates/sdk/ui-core/locales/",
 ]
 readers = [
-  "crates/platform/tilolang-host/examples/host_cost.rs",
-  "crates/platform/tilolang-host/src/task.rs",
-  "crates/platform/tilolang-host/src/phrases.rs",
-  "crates/platform/tilolang-host/tests/host.rs",
-  "crates/platform/tilolang-host/tests/own_resources.rs",
+  "crates/platform/tilolang-process/examples/process_cost.rs",
+  "crates/platform/tilolang-process/src/task.rs",
+  "crates/platform/tilolang-process/src/phrases.rs",
+  "crates/platform/tilolang-process/tests/process.rs",
+  "crates/platform/tilolang-process/tests/own_resources.rs",
 ]
 
 
@@ -1222,7 +1222,7 @@ readers = [
 [[cargo]]
 package = "app-cli"
 # The canonical downloader proves its staging path against the installed host unit.
-inputs = ["crates/packaging/app-host/systemd/tilo-app-host.service"]
+inputs = ["crates/packaging/app-process/systemd/tilo-app-process.service"]
 readers = ["crates/packaging/app-cli/src/install.rs"]
 
 [[cargo]]
@@ -2177,7 +2177,7 @@ reason = "requires native Flatpak, GPG and bubblewrap user namespaces; the diges
 [[cargo]]
 package = "install"
 # Real signed runtime installation is checked against its broker service grants.
-inputs = ["crates/packaging/app-host/systemd/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-app-host.service"]
+inputs = ["crates/packaging/app-process/systemd/tilo-app-process.service", "os/usr/lib/systemd/user/tilo-app-process.service"]
 readers = ["crates/packaging/install/tests/runtime_package.rs"]
 
 [[unrequired]]

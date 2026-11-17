@@ -353,11 +353,11 @@ pub(crate) fn window(cx: &ViewCx<Settings>, mut app: SettingsApp) -> Element {
             .live_rows(move || crate::effects::rows(&rows))
             .live_row(move |id| crate::effects::row(&row, id))
             .live_row_pending(move |id| crate::effects::row_pending(&pending, id))
-            .host_intents(move || {
+            .process_intents(move || {
                 intents
                     .areas()
                     .iter()
-                    .find_map(crate::area::PaneArea::take_host_intent)
+                    .find_map(crate::area::PaneArea::take_process_intent)
             }),
         content,
     )

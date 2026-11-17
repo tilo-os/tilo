@@ -144,13 +144,13 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["wayland_socket", "open", "open_uri"])]
         service: bool,
         /// A tilolang app whose instance a tilolang host runs: the process is its window alone, with no
-        /// collaboration connection (`RunOptions::tilolang_hosted`).
+        /// collaboration connection (`RunOptions::tilolang_process`).
         #[arg(long, conflicts_with = "service")]
-        tilolang_hosted: bool,
+        tilolang_process: bool,
         /// A tilolang app's connector for the origin named (`imap`), not a window: the process the
         /// session runs for an app whose types hold an outside service's resources, with the socket its
         /// instances attach over (`RunOptions::tilolang_connector`).
-        #[arg(long, conflicts_with_all = ["service", "tilolang_hosted", "wayland_socket", "open", "open_uri"])]
+        #[arg(long, conflicts_with_all = ["service", "tilolang_process", "wayland_socket", "open", "open_uri"])]
         tilolang_connector: Option<String>,
         /// Trusted service argv, forwarded verbatim after the entrypoint.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -231,9 +231,9 @@ enum Cmd {
     },
     /// Run a tilolang host: the launch kind that runs one author's tilolang apps in one workspace as
     /// instances, in a sandbox holding only the verified tilolang runtime and the Tilo runtime it runs
-    /// on, its storage and its socket (`launcher::run::tilolang_host`).
-    #[command(name = "tilolang-host", hide = true)]
-    TilolangHost {
+    /// on, its storage and its socket (`launcher::run::tilolang_process`).
+    #[command(name = "tilolang-process", hide = true)]
+    TilolangProcess {
         /// The tilolang runtime, `tilolang/<version>`.
         #[arg(long)]
         runtime: String,
@@ -241,7 +241,7 @@ enum Cmd {
         /// host's binary runs on.
         #[arg(long)]
         app_runtime: String,
-        /// The storage of the host's workspace and author.
+        /// The storage of the process's workspace and author.
         #[arg(long)]
         storage: PathBuf,
     },
@@ -425,26 +425,26 @@ fn dispatch_command(
             runtime_root,
             user: false,
         } => runtime_resident(Path::new(&registry), &runtime_root),
-        Cmd::TilolangHost {
+        Cmd::TilolangProcess {
             runtime,
             app_runtime,
             storage,
-        } => tilolang_host(runtime, app_runtime, storage),
+        } => tilolang_process(runtime, app_runtime, storage),
     }
 }
 
 /// Run the tilolang host the session started, on the socket it handed over at descriptor 3.
-fn tilolang_host(runtime: String, app_runtime: String, storage: PathBuf) -> ExitCode {
-    use launcher::run::tilolang_host::{HostLaunch, SOCKET_CHILD_FD, run_tilolang_host};
+fn tilolang_process(runtime: String, app_runtime: String, storage: PathBuf) -> ExitCode {
+    use launcher::run::tilolang_process::{ProcessLaunch, SOCKET_CHILD_FD, run_tilolang_process};
     // SAFETY: the session hands the socket at this descriptor and nothing else owns it in this process.
     let socket =
         unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(SOCKET_CHILD_FD) };
-    let launch = HostLaunch {
+    let launch = ProcessLaunch {
         runtime,
         app_runtime,
         storage,
     };
-    match run_tilolang_host(&launch, socket, &launcher::run::RunOptions::default()) {
+    match run_tilolang_process(&launch, socket, &launcher::run::RunOptions::default()) {
         Ok(status) => ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1)),
         Err(error) => {
             eprintln!("tilo-launcher: the tilolang host did not start: {error}");
@@ -478,7 +478,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         open_as_visitor,
         headless_console,
         service,
-        tilolang_hosted,
+        tilolang_process,
         tilolang_connector,
         rest,
     } = command
@@ -510,7 +510,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         open_as_visitor,
         headless_console,
         service,
-        tilolang_hosted,
+        tilolang_process,
         tilolang_connector,
         rest,
     })
@@ -735,7 +735,7 @@ struct RunCliArgs {
     open_as_visitor: bool,
     headless_console: Option<u64>,
     service: bool,
-    tilolang_hosted: bool,
+    tilolang_process: bool,
     tilolang_connector: Option<String>,
     rest: Vec<String>,
 }
@@ -786,7 +786,7 @@ fn run_gui_command(
         open_uri: args.open_uri,
         open_as_visitor: args.open_as_visitor,
         headless_console: args.headless_console,
-        tilolang_hosted: args.tilolang_hosted,
+        tilolang_process: args.tilolang_process,
         tilolang_connector: args.tilolang_connector,
     };
     // Held from before the package is verified until the app exits, so an update meanwhile leaves the
@@ -1266,7 +1266,7 @@ fn run_installed(
         gui_argv: Vec::new(),
         open_as_visitor: false,
         headless_console: None,
-        tilolang_hosted: false,
+        tilolang_process: false,
         tilolang_connector: None,
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {

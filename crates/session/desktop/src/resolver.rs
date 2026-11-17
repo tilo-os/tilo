@@ -1,7 +1,7 @@
 //! Exact application identity and checked mounting. Hosts supply admitted records/services.
 use tilo_desktop_model::{Tab, WorkspaceId};
 use ui::application::{
-    AppComponent, ApplicationCatalog, ApplicationDefinition, HostContext, LaunchTarget,
+    AppComponent, ApplicationCatalog, ApplicationDefinition, LaunchTarget, ProcessContext,
     RestoreInput,
 };
 use ui::launch::LaunchError;
@@ -86,7 +86,7 @@ pub trait ComponentContextSource {
         definition: &'static ApplicationDefinition,
         request: &TileRequest<'_>,
         target: &LaunchTarget,
-    ) -> Result<(HostContext, RestoreInput), LaunchError>;
+    ) -> Result<(ProcessContext, RestoreInput), LaunchError>;
 }
 pub struct ApplicationCatalogTileResolver<H> {
     pub catalog: ApplicationCatalog,

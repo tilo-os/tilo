@@ -7,8 +7,8 @@
 
 use crate::collab_app_broker::AppBrokerState;
 use crate::collab_app_broker::host_steps::signed_test_support::Fixture;
-use crate::services::{HostServices, OwnDeviceActions, OwnDeviceOutcome};
 use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
+use crate::services::{OwnDeviceActions, OwnDeviceOutcome, ProcessServices};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tilo_actions::remote::identity_admin;
@@ -151,11 +151,11 @@ fn request() -> InvokeRequest {
     }
 }
 
-fn services(own_device: Option<Arc<dyn OwnDeviceActions>>) -> HostServices {
-    HostServices {
+fn services(own_device: Option<Arc<dyn OwnDeviceActions>>) -> ProcessServices {
+    ProcessServices {
         host_steps: vec![Arc::new(Steps) as Arc<dyn HostStepServices>],
         own_device,
-        ..HostServices::default()
+        ..ProcessServices::default()
     }
 }
 
@@ -274,13 +274,13 @@ tilo_test_env::scenario! {
 
     phase an_unreachable_own_device_confirms_nothing;
     {
-        let fixture = Fixture::new_certified_foreign(HostServices {
+        let fixture = Fixture::new_certified_foreign(ProcessServices {
             own_device: Some(
                 Arc::new(OwnDevices::unreachable(ActionCallError::Unavailable {
                     reason: "no device of theirs is reachable in this workspace".into(),
                 })) as Arc<dyn OwnDeviceActions>,
             ),
-            ..HostServices::default()
+            ..ProcessServices::default()
         });
         assert!(matches!(
             fixture

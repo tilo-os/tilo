@@ -13,7 +13,7 @@ mod native;
 #[cfg(unix)]
 pub use native::PreparedIdentity;
 #[cfg(unix)]
-pub use tilo_identity_host::enrolled_transport::{
+pub use tilo_identity::enrolled_transport::{
     CurrentDeviceDeclaration, CurrentDeviceReference, EnrolledDevice, TransportReceipt,
 };
 #[cfg(not(unix))]
@@ -23,14 +23,14 @@ mod unavailable;
 pub use unavailable::PreparedIdentity;
 
 /// Provider selection remains a backend decision.
-pub fn storage_for_session() -> tilo_identity_host::provisioning::IdentityStorage {
+pub fn storage_for_session() -> tilo_identity::provisioning::IdentityStorage {
     #[cfg(unix)]
     {
-        tilo_identity_host::provisioning::IdentityStorage::for_session()
+        tilo_identity::provisioning::IdentityStorage::for_session()
     }
     #[cfg(not(unix))]
     {
-        tilo_identity_host::provisioning::IdentityStorage::Platform
+        tilo_identity::provisioning::IdentityStorage::Platform
     }
 }
 

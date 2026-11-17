@@ -1,7 +1,7 @@
 //! Unsupported providers refuse before creating files or adopting public claims.
 use super::*;
 use std::path::Path;
-use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_identity::provisioning::IdentityStorage;
 use zeroize::Zeroizing;
 
 fn refused<T>(result: std::io::Result<T>) {

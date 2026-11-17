@@ -25,7 +25,8 @@ use tilo_lock::MutexRecover as _;
 use tilo_session_client::remote::SessionActions;
 use tilo_session_core::layout::{LayoutDocument, Store};
 use ui::application::{
-    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
+    RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
 use ui::automerge::AutoCommit;
@@ -1057,7 +1058,7 @@ impl Tiles {
         (instance, embedded): (TabId, bool),
         restore: RestoreInput,
     ) -> Result<AppComponent, Unbuilt> {
-        let inputs = HostContextInputs {
+        let inputs = ProcessContextInputs {
             records: store,
             views: Rc::clone(&self.inputs.views),
             device_id: self.inputs.device.clone(),
@@ -1067,8 +1068,8 @@ impl Tiles {
             action_context: tilo_actions::ActionContext::default(),
         };
         let mut context = match named_new {
-            Some(id) => HostContext::prepare_new_resource(definition, inputs, id),
-            None => HostContext::prepare(definition, inputs, &target),
+            Some(id) => ProcessContext::prepare_new_resource(definition, inputs, id),
+            None => ProcessContext::prepare(definition, inputs, &target),
         }
         .map_err(Unbuilt::of)?;
         context.provide_models(self.inputs.models.clone());

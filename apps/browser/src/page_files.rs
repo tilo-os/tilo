@@ -267,8 +267,8 @@ mod tests {
 
     #[test]
     fn a_restarted_engine_is_asked_again_and_the_old_ones_chooser_goes() {
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let folder = tempfile::tempdir().unwrap();
         let file = folder.path().join("scan.pdf");
         std::fs::write(&file, b"%PDF-1.4").unwrap();

@@ -194,7 +194,7 @@ where they run.
 
 A dev-mode swap installs a package exactly as any install does: verified by
 `tilo-install`, its old version kept while it runs. Then the session hands the new
-module to the tilolang host that runs the app's instances. Nothing else can.
+module to the tilolang process that runs the app's instances. Nothing else can.
 
 - **Development sessions only.** The session follows reinstalls only when two things
   hold:
@@ -214,7 +214,7 @@ module to the tilolang host that runs the app's instances. Nothing else can.
 
 The windows, their sandboxes and grants stay as they were launched. The only thing
 that changes is which verified module the host interprets. The code is in
-`crates/session/app-launch/src/tilolang_hosts.rs` and `crates/platform/tilolang-host`.
+`crates/session/app-launch/src/tilolang_processes.rs` and `crates/platform/tilolang-process`.
 
 On the desktop there is no session to hand anything over: the tool runs the app itself and
 publishes into a directory of its own, private to the person, which the app reads

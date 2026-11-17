@@ -26,7 +26,7 @@ use tilo_clock::time::SystemTime;
 
 use tilo_action_policy::WorkspacePolicy;
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity_host::identity_store::HostIdentity;
+use tilo_identity::identity_store::HostIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::join::Role;

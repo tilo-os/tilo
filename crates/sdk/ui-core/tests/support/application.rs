@@ -4,7 +4,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use tilo_ui::TextRole;
 use tilo_ui::application::{
-    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
+    RestoreInput,
 };
 use tilo_ui::application_view::InstanceViewStore;
 use tilo_ui::launch::LaunchError;
@@ -28,7 +29,7 @@ thread_local! {
     static LOCAL: RefCell<Option<LocalState<String>>> = const { RefCell::new(None) };
     static PANIC_ON_DROP: Cell<bool> = const { Cell::new(false) };
     static DROP_CLOSED: Cell<bool> = const { Cell::new(false) };
-    static FOREIGN_CONTEXT: RefCell<Option<HostContext>> = const { RefCell::new(None) };
+    static FOREIGN_CONTEXT: RefCell<Option<ProcessContext>> = const { RefCell::new(None) };
     static OPERATIONS: RefCell<Vec<Rc<RefCell<Vec<String>>>>> = const { RefCell::new(vec![]) };
     static PROVIDERS: RefCell<Option<Rc<RefCell<ProviderObservations>>>> = const { RefCell::new(None) };
     static PRESENTATION: RefCell<Option<Rc<RefCell<PresentationObservations>>>> = const { RefCell::new(None) };
@@ -353,7 +354,7 @@ impl ProbeHost {
         definition: &ApplicationDefinition,
         instance: u64,
         target: &LaunchTarget,
-    ) -> Result<HostContext, LaunchError> {
+    ) -> Result<ProcessContext, LaunchError> {
         self.prepare_with_permissions(definition, instance, target, permissions())
     }
     pub fn prepare_with_permissions(
@@ -362,10 +363,10 @@ impl ProbeHost {
         instance: u64,
         target: &LaunchTarget,
         permissions: SharedPermissions,
-    ) -> Result<HostContext, LaunchError> {
-        HostContext::prepare(
+    ) -> Result<ProcessContext, LaunchError> {
+        ProcessContext::prepare(
             definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: self.records.clone(),
                 views: self.views.clone(),
                 device_id: DEVICE.into(),
@@ -410,7 +411,7 @@ pub fn body(records: &ResourceStore, checkout: &DocumentCheckout) -> String {
     clippy::panic_in_result_fn,
     reason = "test assertions verify the once-only initializer contract"
 )]
-fn initialize(context: &mut HostContext, target: &LaunchTarget) -> Result<(), LaunchError> {
+fn initialize(context: &mut ProcessContext, target: &LaunchTarget) -> Result<(), LaunchError> {
     HANDLES.with_borrow_mut(|v| v.push(context.wake_handle()));
     if matches!(target, LaunchTarget::New) {
         context
@@ -440,7 +441,7 @@ fn initialize(context: &mut HostContext, target: &LaunchTarget) -> Result<(), La
     reason = "ComponentFactory has an owned target signature"
 )]
 pub fn probe_factory(
-    context: HostContext,
+    context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
@@ -452,7 +453,7 @@ pub fn probe_factory(
     reason = "ComponentFactory owned signature"
 )]
 pub fn action_probe_factory(
-    context: HostContext,
+    context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
@@ -462,7 +463,7 @@ pub fn operation_observations() -> Vec<Rc<RefCell<Vec<String>>>> {
     OPERATIONS.with_borrow(Clone::clone)
 }
 fn build_probe(
-    mut context: HostContext,
+    mut context: ProcessContext,
     target: &LaunchTarget,
     operational: bool,
 ) -> Result<AppComponent, LaunchError> {
@@ -509,7 +510,7 @@ fn build_probe(
     reason = "ComponentFactory has an owned target signature"
 )]
 pub fn fail_after_initialization(
-    mut context: HostContext,
+    mut context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
@@ -521,7 +522,7 @@ pub fn fail_after_initialization(
     reason = "ComponentFactory requires Result even when the test deliberately omits initialization"
 )]
 pub fn omit_initialization(
-    context: HostContext,
+    context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
@@ -896,7 +897,7 @@ impl AppWidget for ProbeRoot {
     reason = "test assertion verifies a factory cannot mount before validation"
 )]
 pub fn attempt_premature_mount(
-    context: HostContext,
+    context: ProcessContext,
     target: LaunchTarget,
     restore: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
@@ -913,7 +914,7 @@ pub fn attempt_premature_mount(
     reason = "ComponentFactory has an owned target signature"
 )]
 pub fn invalid_contribution(
-    mut context: HostContext,
+    mut context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
@@ -949,7 +950,7 @@ impl Drop for ProbeRoot {
     reason = "ComponentFactory has an owned target signature"
 )]
 pub fn restore_breaks_contribution(
-    mut context: HostContext,
+    mut context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
@@ -971,11 +972,11 @@ pub fn restore_breaks_contribution(
     ))
 }
 
-pub fn set_foreign_context(context: HostContext) {
+pub fn set_foreign_context(context: ProcessContext) {
     FOREIGN_CONTEXT.with_borrow_mut(|slot| *slot = Some(context));
 }
 pub fn foreign_component(
-    mut context: HostContext,
+    mut context: ProcessContext,
     target: LaunchTarget,
     restore: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
@@ -985,7 +986,7 @@ pub fn foreign_component(
     probe_factory(foreign, target, restore)
 }
 pub fn initializer_failure(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {

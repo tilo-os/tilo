@@ -64,7 +64,7 @@ DENIED = {
     "tilo-fs": "the FUSE filesystem daemon",
     "fuser": "the FUSE filesystem daemon's kernel binding",
     "launcher": "the sandbox launcher",
-    "app-host": "the app host daemon (apps use its client side)",
+    "app-process": "the app host daemon (apps use its client side)",
     "app-cli": "the install and registry CLI",
     "app-registry": "the registry client edges behind the installer",
     "install": "the package installer (tilo-install)",
@@ -147,8 +147,8 @@ ENGINES = {
     "browser-continuity": "the import from another browser's profile, which Browser loads from "
                           "libtilo_browser_import_engine.so (the runtime keeps "
                           "browser-continuity-core)",
-    "tilo-app-host-engine": "the app host client's engine library (libtilo_app_host_engine.so)",
-    "app-catalogue": "the Store's catalogue, which Store loads from libtilo_app_host_engine.so",
+    "tilo-app-process-engine": "the app host client's engine library (libtilo_app_process_engine.so)",
+    "app-catalogue": "the Store's catalogue, which Store loads from libtilo_app_process_engine.so",
     "tilo-mail-engine": "Mail's engine library (libtilo_mail_engine.so)",
     "mail-parser": "Mail's message reader, which Mail loads from libtilo_mail_engine.so",
     "mail-builder": "Mail's message writer, which Mail loads from libtilo_mail_engine.so",

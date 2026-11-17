@@ -69,8 +69,8 @@ fn cancel_action_closes_preparing_export_and_retry_resources_only_failed_copy() 
         }
         closed
     });
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
     files.state().cloud_fixture_consent = true;
     files.state().startup_accounts = Some(vec![crate::remote_accounts::RemoteAccount {

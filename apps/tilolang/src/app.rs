@@ -187,8 +187,8 @@ fn in_process(
             None
         }
     };
-    let route = tilolang_host::route_of(&bundle.meta, workspace_id, me);
-    let spec = tilolang_host::hosted::Spec::new(bundle.meta.app.clone(), workspace, 1, me);
+    let route = tilolang_process::route_of(&bundle.meta, workspace_id, me);
+    let spec = tilolang_process::hosted::Spec::new(bundle.meta.app.clone(), workspace, 1, me);
     let kind = tilolang_tilo::meta::MetaExt::resource_type(&bundle.meta);
     let person = me.to_owned();
     crate::hosted::HostedWindow::in_process(

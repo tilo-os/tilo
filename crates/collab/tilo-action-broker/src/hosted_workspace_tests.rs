@@ -113,7 +113,7 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
             let membership = base.membership.as_ref().unwrap().clone();
             let workspace = base.cluster_id.clone();
             drop(base);
-            let services = HostServices {
+            let services = ProcessServices {
                 hosted_workspaces: Some(Arc::new(HostedElsewhere {
                     workspace,
                     provider: Arc::clone(&provider),

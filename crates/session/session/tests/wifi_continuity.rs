@@ -19,7 +19,7 @@ use runtime_collab::{
     CollabClient, PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
 };
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
+use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_service::LoopWake;
 use tilo_session::{AppSocket, Launches, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
@@ -57,7 +57,7 @@ fn person() -> Person {
         .set("HOME", home.path());
     let personal = xdg.join("tilo/identity");
     let paths = IdentityPaths::under(&system);
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,
         &paths,
         IdentityStorage::Files,

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use serde_json::Value;
-use ui::application::HostContext;
+use ui::application::ProcessContext;
 use ui::framework::Chain;
 use ui::tilo_resource::{Id, Invoke, NonBlank, Origin};
 
@@ -24,7 +24,7 @@ const VERSION: u64 = 1;
 const MAX_ENTRY_BYTES: usize = 16 * 1024 * 1024;
 const ISSUE_KIND: &str = "tasks.issues.issues";
 
-pub(crate) fn import(context: &HostContext) -> Result<(), String> {
+pub(crate) fn import(context: &ProcessContext) -> Result<(), String> {
     let files = context.files();
     let data = files.data().map_err(|error| error.to_string())?;
     let Ok(inbox) = tilo_files::VPath::new(INBOX) else {

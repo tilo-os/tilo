@@ -65,7 +65,7 @@ allowed = [
 rules = ["R1", "W1", "W2", "W3"]
 crates = [
     "crates/sdk/ui-core",
-    "crates/sdk/tilo-host",
+    "crates/sdk/tilo-process-services",
     "crates/sdk/tilo-app",
     "crates/system/settings-store",
     "crates/system/app-state",

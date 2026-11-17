@@ -1499,7 +1499,7 @@ impl ClocksApp {
 
     fn notifier(&mut self) -> std::sync::Arc<dyn ui::notify::Notifier> {
         self.notifications
-            .get_or_insert_with(|| ui::host::current().notifications)
+            .get_or_insert_with(|| ui::process::current().notifications)
             .clone()
     }
 

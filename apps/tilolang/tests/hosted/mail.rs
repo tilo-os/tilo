@@ -474,7 +474,7 @@ impl Session {
         );
         let mut rows = Vec::new();
         for list in view.lists() {
-            if !list.starts_with(tilo_ui_host::shell::DETAIL) {
+            if !list.starts_with(tilo_app_window::shell::DETAIL) {
                 continue;
             }
             let shown = view.rows_of(&list).expect("the list's rows");

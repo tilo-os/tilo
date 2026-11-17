@@ -159,7 +159,7 @@ fn markup_and_page_edits_persist_across_save_and_reopen() {
 
 struct KeptSaves(std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>);
 
-impl ui::host::FilePicker for KeptSaves {
+impl ui::process::FilePicker for KeptSaves {
     fn pick(&self, _: ui::portal::PickRequest) -> ui::portal::PortalChannel {
         let (tx, rx) = std::sync::mpsc::channel();
         let _ = tx.send(ui::portal::PortalOutcome::Failed("no paths here".into()));
@@ -198,10 +198,10 @@ impl ui::host::FilePicker for KeptSaves {
 #[serial(pdfium)]
 fn save_to_a_destination_without_a_path_hands_the_host_the_pdf() {
     let written = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let services = ui::host::HostServices::null().with_files(std::sync::Arc::new(KeptSaves(
+    let services = ui::process::ProcessServices::null().with_files(std::sync::Arc::new(KeptSaves(
         std::sync::Arc::clone(&written),
     )));
-    let _host = ui::host::enter(&services);
+    let _host = ui::process::enter(&services);
     let mut reader = launched(std::path::Path::new(SAMPLE_PDF));
     reader
         .effect(&PdfEffect::SaveAs)

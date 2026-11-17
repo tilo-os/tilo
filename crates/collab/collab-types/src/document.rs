@@ -156,7 +156,7 @@ impl DocumentId {
     /// The document a fresh window (`instance`, the launcher's tab id) of an
     /// app that keeps a document per window opens when nothing names another
     /// one. Window `0` is [`Self::workspace_default`], what a launch outside the
-    /// launcher opens. See `NativeProcessHost` for which apps get one.
+    /// launcher opens. See `NativeProcess` for which apps get one.
     pub fn window_default(instance: u64) -> Self {
         Self::derived("default", &Self::for_tab(instance))
     }

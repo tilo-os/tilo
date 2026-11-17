@@ -72,7 +72,7 @@ fn rig() -> Rig {
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let actor = hex::encode(certificate.user_public_key);
     let ownership = Ownership::with_host(
-        tilo_identity_host::identity_store::HostIdentity::kept(certificate, device),
+        tilo_identity::identity_store::HostIdentity::kept(certificate, device),
         &actor,
         "device",
     )

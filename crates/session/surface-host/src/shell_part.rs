@@ -1,7 +1,7 @@
 //! A part of a tilolang shell, covering one output, drawn under the windows.
 //!
 //! A shell package's views run in a tilolang instance (`tilolang_tilo::instance`), exactly as
-//! an app's do, and draw through the same UI host half (`tilo_ui_host::AppWindow`, here as
+//! an app's do, and draw through the same app window half (`tilo_app_window::AppWindow`, here as
 //! a [`AppWindow::part`]: the view as it is, no window shell). The toolkit lays that widget tree
 //! out and the CPU rasterizes it, as [`WidgetHost`] does for every widget tree the session
 //! shows; the compositor gets the buffer as a layer. Nothing here renders on its own.
@@ -25,8 +25,8 @@ use serde_json::Value as Json;
 use tilo_session_core::surface::{CursorIcon, HostKey, KeyClaim};
 use tilo_session_core::surface::{HostIme, HostLayer, HostTextInput, SurfaceHost};
 
+use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local::pair;
-use tilo_ui_host::AppWindow;
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode};
@@ -962,7 +962,7 @@ impl ShellPart {
             size: (1, 1),
             scale,
         };
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let (app_end, window_end) = pair();
         let mut instance = Instance::new(
             Config {

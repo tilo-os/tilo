@@ -307,7 +307,7 @@ mod invitation_request_tests {
             });
             let (state, _bridge) = AppBrokerState::test_state(
                 Some(tree.shared().authority()),
-                crate::services::HostServices {
+                crate::services::ProcessServices {
                     host_steps: vec![shell.clone()],
                     ..Default::default()
                 },

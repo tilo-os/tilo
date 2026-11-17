@@ -295,7 +295,7 @@ class RepositoryTests(unittest.TestCase):
         )
         self.assertEqual(
             names,
-            ["app-host", "app-keeper", "messaging", "package", "peer", "runtime", "shell-ui", "vm"],
+            ["app-keeper", "app-process", "messaging", "package", "peer", "runtime", "shell-ui", "vm"],
         )
 
 

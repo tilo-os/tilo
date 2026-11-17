@@ -23,7 +23,7 @@ service = [
     "dep:launcher",
     "dep:package-store",
     "dep:tilo-messaging-protocol",
-    "dep:tilo-identity-host",
+    "dep:tilo-identity",
     "dep:collab-types",
     "dep:tilo-server-protocol",
     "dep:tilo-files",
@@ -62,7 +62,7 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 launcher = { path = "../../packaging/launcher", optional = true }
 package-store = { path = "../../packaging/package-store", features = ["store"], optional = true }
 tilo-messaging-protocol = { path = "../../system/messaging-protocol", default-features = false, features = ["signal-broker", "whatsapp-sdk", "sms-dbus"], optional = true }
-tilo-identity-host = { path = "../../runtime/tilo-identity-host", optional = true }
+tilo-identity = { path = "../../runtime/tilo-identity", optional = true }
 collab-types = { path = "../../collab/collab-types", optional = true }
 tilo-server-protocol = { path = "../../hosting/tilo-server-protocol", optional = true }
 tilo-files = { path = "../../platform/tilo-files", optional = true }

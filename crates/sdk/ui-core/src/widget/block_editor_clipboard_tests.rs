@@ -56,8 +56,8 @@ tilo_test_env::scenario! {
     phase copy_and_paste_carry_formatting;
     {
         fn ctrl_c_offers_the_selection_as_html_and_as_words() {
-            let (services, recorder) = crate::host::HostServices::recording();
-            let _host = crate::host::enter(&services);
+            let (services, recorder) = crate::process::ProcessServices::recording();
+            let _host = crate::process::enter(&services);
             let mut editor = editing(&[
                 BlockContent::paragraph("", "Plan").with_kind(BlockKind::Heading(1)),
                 para("make it bold", vec![MarkSpan::new(8..12, Mark::Bold)]),
@@ -80,8 +80,8 @@ tilo_test_env::scenario! {
         }
 
         fn ctrl_v_brings_in_headings_lists_and_marks() {
-            let (services, _recorder) = crate::host::HostServices::recording();
-            let _host = crate::host::enter(&services);
+            let (services, _recorder) = crate::process::ProcessServices::recording();
+            let _host = crate::process::enter(&services);
             assert!(crate::clipboard_copy_rich_accepted(
                 "<h2>Agenda</h2><p>Be <b>brief</b></p><ol><li>one</li></ol>",
                 "Agenda\nBe brief\none",
@@ -105,8 +105,8 @@ tilo_test_env::scenario! {
         }
 
         fn a_paste_inside_words_joins_them_at_both_ends() {
-            let (services, _recorder) = crate::host::HostServices::recording();
-            let _host = crate::host::enter(&services);
+            let (services, _recorder) = crate::process::ProcessServices::recording();
+            let _host = crate::process::enter(&services);
             assert!(crate::clipboard_copy_rich_accepted("<i>very</i> ", "very "));
             let mut editor = editing(&[BlockContent::paragraph("", "a good day")]);
             editor.focus_block(0, CursorPlacement::Byte(2));
@@ -123,8 +123,8 @@ tilo_test_env::scenario! {
         }
 
         fn ctrl_shift_v_pastes_the_words_alone() {
-            let (services, _recorder) = crate::host::HostServices::recording();
-            let _host = crate::host::enter(&services);
+            let (services, _recorder) = crate::process::ProcessServices::recording();
+            let _host = crate::process::enter(&services);
             assert!(crate::clipboard_copy_rich_accepted(
                 "<h1><b>Loud</b></h1>",
                 "Loud"
@@ -145,8 +145,8 @@ tilo_test_env::scenario! {
         }
 
         fn code_takes_the_words_not_the_formatting() {
-            let (services, _recorder) = crate::host::HostServices::recording();
-            let _host = crate::host::enter(&services);
+            let (services, _recorder) = crate::process::ProcessServices::recording();
+            let _host = crate::process::enter(&services);
             assert!(crate::clipboard_copy_rich_accepted(
                 "<h1>x = <b>1</b></h1>",
                 "x = 1"
@@ -164,8 +164,8 @@ tilo_test_env::scenario! {
         }
 
         fn plain_words_still_paste_as_words() {
-            let (services, _recorder) = crate::host::HostServices::recording();
-            let _host = crate::host::enter(&services);
+            let (services, _recorder) = crate::process::ProcessServices::recording();
+            let _host = crate::process::enter(&services);
             crate::clipboard_copy("<b>not html</b>");
             let mut editor = editing(&[BlockContent::paragraph("", "")]);
             editor.focus_block(0, CursorPlacement::End);
@@ -178,8 +178,8 @@ tilo_test_env::scenario! {
         }
 
         fn a_cut_copies_formatting_then_removes_the_words() {
-            let (services, recorder) = crate::host::HostServices::recording();
-            let _host = crate::host::enter(&services);
+            let (services, recorder) = crate::process::ProcessServices::recording();
+            let _host = crate::process::enter(&services);
             let mut editor = editing(&[para("keep cut", vec![MarkSpan::new(5..8, Mark::Italic)])]);
             editor.select_document_range(at(0, 4), at(0, 8));
             let mut doc = AutoCommit::new();
@@ -197,8 +197,8 @@ tilo_test_env::scenario! {
         }
 
         fn the_copy_round_trips_into_another_editor() {
-            let (services, _recorder) = crate::host::HostServices::recording();
-            let _host = crate::host::enter(&services);
+            let (services, _recorder) = crate::process::ProcessServices::recording();
+            let _host = crate::process::enter(&services);
             let source = [
                 BlockContent::paragraph("", "done").with_kind(BlockKind::Checklist {
                     indent: 0,
@@ -245,8 +245,8 @@ tilo_test_env::scenario! {
             }
             node.children.iter().find_map(|child| find(child, key))
         }
-        let (services, recorder) = crate::host::HostServices::recording();
-        let _host = crate::host::enter(&services);
+        let (services, recorder) = crate::process::ProcessServices::recording();
+        let _host = crate::process::enter(&services);
         let mut editor = editing(&[para("copy me", vec![MarkSpan::new(0..4, Mark::Bold)])]);
         editor.blocks[0]
             .line

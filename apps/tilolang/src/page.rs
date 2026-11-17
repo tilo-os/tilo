@@ -5,7 +5,7 @@
 //! from the address its payload is served at ([`install_package`], `installTilolangPackage` to
 //! the page), which registers the app with the page's runtime under the package's own id, and
 //! the window runs the package's instance itself ([`PageWindow`]), over a workspace record the
-//! page keeps in memory, sending the UI host's half of the window ([`AppWindow`]) the same
+//! page keeps in memory, sending the app window's half of the window ([`AppWindow`]) the same
 //! component patches a host sends over its socket.
 
 // A page runs on one thread: what it awaits never moves to another.
@@ -18,8 +18,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local;
-use tilo_ui_host::AppWindow;
 use tilolang_tilo::bundle::{Bundle, IDS_FILE, IMPORTS_DIR, WASM_FILE};
 use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::memory::MemoryDocument;
@@ -139,9 +139,9 @@ impl Platform for PagePlatform {
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
         let args: Vec<(&str, ui::i18n::ArgValue)> = args
             .iter()
-            .map(|(name, value)| (name.as_str(), tilo_ui_host::i18n::value_of(value)))
+            .map(|(name, value)| (name.as_str(), tilo_app_window::i18n::value_of(value)))
             .collect();
-        tilo_ui_host::i18n::t_args(id, &args)
+        tilo_app_window::i18n::t_args(id, &args)
     }
 
     /// The package's words, and the one language its window speaks: the person's when the
@@ -150,7 +150,7 @@ impl Platform for PagePlatform {
         if window {
             ui::i18n::speak_window_language(catalogues);
         } else {
-            tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+            tilo_app_window::i18n::add_shared_catalogues(catalogues);
         }
     }
 
@@ -167,7 +167,7 @@ impl Platform for PagePlatform {
     }
 
     fn shown(&self, kind: &str, value: &str) -> String {
-        tilo_ui_host::date::shown_text(kind, value)
+        tilo_app_window::date::shown_text(kind, value)
     }
 
     fn clock(&self, hour: u32, minute: u32) -> String {
@@ -301,14 +301,14 @@ impl ui::component_lifecycle::WindowActivation for PageWindow {
     }
 }
 
-/// The window is named by what it shows, as the UI host's window names it.
+/// The window is named by what it shows, as the app window's window names it.
 impl ui::component_lifecycle::WindowTitle for PageWindow {
     fn window_title(&self) -> Option<&str> {
         self.view.title()
     }
 }
 
-/// The window stands for the UI host's window in the layout and in every walk of the widgets.
+/// The window stands for the app window's window in the layout and in every walk of the widgets.
 impl ui::widget::Decorator for PageWindow {
     type Inner = dyn Widget;
 

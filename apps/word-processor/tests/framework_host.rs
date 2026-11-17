@@ -957,8 +957,8 @@ fn peer_note(doc: &mut ui::tilo_resource::Doc, note: &str) {
 fn save_as_asks_where_without_a_confirmation_first() {
     let directory = tempfile::tempdir().unwrap();
     let chosen = directory.path().join("Letter.docx");
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = open();
     app.harness().type_text("Dear reader");
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(chosen.clone()));

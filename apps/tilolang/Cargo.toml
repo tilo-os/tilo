@@ -31,8 +31,8 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
-# The UI host's half of the window, and the patch protocol between it and the instance.
-tilo-ui-host = { path = "../../crates/platform/tilo-ui-host" }
+# The app window's half of the window, and the patch protocol between it and the instance.
+tilo-app-window = { path = "../../crates/platform/tilo-app-window" }
 tilo-render-protocol = { path = "../../crates/platform/tilo-render-protocol" }
 tilo-automerge.workspace = true
 serde_json.workspace = true
@@ -49,7 +49,7 @@ tilo-content = { path = "../../crates/system/content" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # A hosted app's window against the tilolang host running its instance (`tests/hosted.rs`),
 # whose tests play the broker over the host's own fake (`testing`).
-tilolang-host = { path = "../../crates/platform/tilolang-host", features = ["test-support"] }
+tilolang-process = { path = "../../crates/platform/tilolang-process", features = ["test-support"] }
 collaboration = { version = "0.1.0", path = "../../crates/collab/collaboration", features = ["test-support", "broker-transport", "native"] }
 collab-types = { version = "0.1.0", path = "../../crates/collab/collab-types" }
 # A later build as a development session hands it over the host's socket.
@@ -62,7 +62,7 @@ workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Without a session, a window runs its instance in a tilolang host in its own process.
-tilolang-host = { path = "../../crates/platform/tilolang-host" }
+tilolang-process = { path = "../../crates/platform/tilolang-process" }
 uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

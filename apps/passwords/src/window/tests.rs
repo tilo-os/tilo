@@ -96,13 +96,13 @@ impl ui::clipboard::ClipboardBackend for TestClipboard {
     }
 }
 
-fn clipboard_fixture(accepts: bool) -> ui::host::HostScope {
+fn clipboard_fixture(accepts: bool) -> ui::process::ProcessScope {
     let services =
-        ui::host::HostServices::null().with_clipboard(std::sync::Arc::new(TestClipboard {
+        ui::process::ProcessServices::null().with_clipboard(std::sync::Arc::new(TestClipboard {
             accepts,
             text: std::sync::Mutex::new(Some("existing clipboard".into())),
         }));
-    ui::host::enter(&services)
+    ui::process::enter(&services)
 }
 
 tilo_test_env::scenario! {
@@ -789,7 +789,7 @@ fn import_and_restore_flows_round_trip_through_portals() {
             .unwrap();
         drop(selected);
         let mut app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         for expected_conflicts in [0, 1] {
             recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
                 ui::portal::OpenedFile::new(
@@ -797,7 +797,7 @@ fn import_and_restore_flows_round_trip_through_portals() {
                     "passwords.csv",
                 ),
             ));
-            ui::host::scoped(&services, || request(&mut app, Request::Import));
+            ui::process::scoped(&services, || request(&mut app, Request::Import));
             tilo_test_env::wait_until("the import preview", || {
                 app.core_mut().poll_transfers();
                 app.core().dialog.is_some()
@@ -828,7 +828,7 @@ fn import_and_restore_flows_round_trip_through_portals() {
             crate::transfer::export_encrypted_backup(&[item], "a memorable backup password")
                 .unwrap();
         std::fs::write(&backup_path, backup.as_slice()).unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         let mut restored =
             PasswordsWindow::new(crate::PasswordsModel::open_in(&base.join("restored")));
         recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
@@ -837,7 +837,7 @@ fn import_and_restore_flows_round_trip_through_portals() {
                 "portable-vault.tilopw",
             ),
         ));
-        ui::host::scoped(&services, || {
+        ui::process::scoped(&services, || {
             request(&mut restored, Request::Restore);
         });
         assert_eq!(

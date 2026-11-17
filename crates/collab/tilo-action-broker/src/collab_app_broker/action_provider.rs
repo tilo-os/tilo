@@ -3261,7 +3261,7 @@ impl AppBrokerState {
     /// as well; a wake that finds the roster as it was costs one read.
     pub fn policy_changed(&self) -> Pending<()> {
         let (woken, mut wakes) = tokio::sync::mpsc::channel::<()>(1);
-        let watch = tilo_identity_host::policy_change::Watch::new(move || {
+        let watch = tilo_identity::policy_change::Watch::new(move || {
             let _ = woken.try_send(());
         });
         // Armed before it is handed out, so a change made between the caller's read and this
@@ -3269,7 +3269,7 @@ impl AppBrokerState {
         let seen = watch.arm();
         let (changed, change) = pending();
         let wait = async move {
-            if tilo_identity_host::policy_change::epoch() == seen {
+            if tilo_identity::policy_change::epoch() == seen {
                 tokio::select! {
                     _ = wakes.recv() => {}
                     () = tilo_rt::sleep(CHANGE_SAFETY_INTERVAL) => {}
@@ -3494,7 +3494,7 @@ mod app_close_tests {
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            crate::services::HostServices {
+            crate::services::ProcessServices {
                 launcher: Some(launcher),
                 ..Default::default()
             },

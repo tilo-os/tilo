@@ -45,7 +45,7 @@ Retries require a new reply and run id. Presentation replay never dispatches a
 tool. Action-capable task conversations keep Task Center's authenticated queue,
 direction and stop controls; their receipts distinguish acceptance from execution.
 The separately injected, prose-only assistant has lifecycle controls described in
-[HOST_MODELS.md](HOST_MODELS.md); those do not control a collaborating Agent's
+[PROCESS_MODELS.md](PROCESS_MODELS.md); those do not control a collaborating Agent's
 run. Review completed and unconfirmed tool outcomes before directing a task to
 continue. Prose continuation never resubmits an action-bearing prompt.
 

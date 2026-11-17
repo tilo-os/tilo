@@ -251,7 +251,7 @@ pub trait KeyDirectory: collab_types::signer::MaybeSendSync {
         workspace: WorkspaceId,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>>;
-    /// The [`tilo_identity_host::policy_change`] epoch (or a test's own) when
+    /// The [`tilo_identity::policy_change`] epoch (or a test's own) when
     /// every write to what [`Self::allowed_devices`] reads is announced and
     /// its expiries can be timed: groups then re-check on announcements and
     /// at [`Self::next_policy_change`]. `None` (the default) keeps the
@@ -270,7 +270,7 @@ pub trait KeyDirectory: collab_types::signer::MaybeSendSync {
     /// Announce a policy change when the wall clock reaches `at` (seconds
     /// since the Unix epoch), an instant [`Self::next_policy_change`] named.
     fn announce_at(&self, at: u64) {
-        tilo_identity_host::policy_change::wake_at(at.saturating_mul(1_000_000_000));
+        tilo_identity::policy_change::wake_at(at.saturating_mul(1_000_000_000));
     }
     /// Whether this device created `workspace` and so founds its group. Every
     /// other device waits for the genesis and joins by Welcome.
@@ -1917,7 +1917,7 @@ impl SharedKeys {
     ///
     /// A device taking part in no group never arms it, and so sleeps
     /// through every announcement.
-    pub fn arm_policy_watch(&self, watch: &tilo_identity_host::policy_change::Watch) -> bool {
+    pub fn arm_policy_watch(&self, watch: &tilo_identity::policy_change::Watch) -> bool {
         let Ok(service) = self.inner.lock() else {
             return true;
         };
@@ -2139,12 +2139,12 @@ fn not_ready(wait: Duration) -> String {
 
 /// The identity service's route keys, from this host's key service once
 /// one runs.
-impl tilo_identity_host::sources::GroupKeySource for KeyProvider {
+impl tilo_identity::sources::GroupKeySource for KeyProvider {
     fn access(
         &self,
         workspace: WorkspaceId,
         known_generation: u64,
-    ) -> Option<Result<tilo_identity_host::sources::GroupKeys, String>> {
+    ) -> Option<Result<tilo_identity::sources::GroupKeys, String>> {
         use runtime_identity::wire::KeyAccess as Wire;
         let groups = self.get()?;
         let (access, generation) = groups.access(workspace);

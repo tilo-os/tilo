@@ -886,7 +886,7 @@ fn guided_existing_backup_migrates_this_home_without_creating_another_identity()
         &root.join("donor"),
         "Existing Ada",
         [25, 80, 120],
-        tilo_identity_host::provisioning::IdentityStorage::for_session(),
+        tilo_identity::provisioning::IdentityStorage::for_session(),
     )
     .unwrap();
     let backup = root.join("original.sealed");

@@ -153,8 +153,8 @@ mod tests {
             drop(model);
 
             let clipboard = std::sync::Arc::new(Clipboard::default());
-            let _host = ui::host::enter(
-                &ui::host::HostServices::null().with_clipboard(std::sync::Arc::clone(&clipboard) as _),
+            let _host = ui::process::enter(
+                &ui::process::ProcessServices::null().with_clipboard(std::sync::Arc::clone(&clipboard) as _),
             );
             let mut app = TestApp::<PasswordsShell>::new().unwrap();
             let row_id = item_resource_id(&id.0);
@@ -507,8 +507,8 @@ mod tests {
         model.save_item(&mut login).unwrap();
         drop(model);
         let out = tempfile::tempdir().unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let mut app = TestApp::<PasswordsShell>::new().unwrap();
         let ask = |app: &mut TestApp<PasswordsShell>, request: Request| {
             app.surface::<PasswordsWindow, _>(|window| {

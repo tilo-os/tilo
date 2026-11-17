@@ -24,7 +24,7 @@ use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply, CollabClient,
 };
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
+use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
 use tilo_service::LoopWake;
@@ -115,7 +115,7 @@ fn fixture(keyring: Keyring) -> Fixture {
     }
     let personal = xdg.join("tilo/identity");
     let paths = IdentityPaths::under(&system);
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,
         &paths,
         IdentityStorage::Files,
@@ -127,8 +127,8 @@ fn fixture(keyring: Keyring) -> Fixture {
     // The person's other device, enrolled as a pairing enrolls one.
     let now = tilo_clock::unix_now_ns();
     let fleet =
-        tilo_identity_host::device_fleet::DeviceFleetStore::from_env().expect("the device fleet");
-    let profile = tilo_identity_host::registry::identity_for_workspace(WORKSPACE)
+        tilo_identity::device_fleet::DeviceFleetStore::from_env().expect("the device fleet");
+    let profile = tilo_identity::registry::identity_for_workspace(WORKSPACE)
         .expect("the identity registry")
         .expect("the workspace is answered by this device's person");
     let token = fleet

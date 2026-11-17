@@ -203,7 +203,7 @@ crate::testing::test_app_widget!(
 );
 
 fn owned_declared_directory_factory(
-    mut context: crate::application::HostContext,
+    mut context: crate::application::ProcessContext,
     _: crate::application::LaunchTarget,
     _: crate::application::RestoreInput,
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
@@ -411,7 +411,7 @@ tilo_test_env::scenario! {
     phase hosted_directory_known_actual_owner_noop_keeps_revision_and_current_counter;
     {
         use crate::application::{
-            ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+            ApplicationDefinition, ProcessContext, ProcessContextInputs, LaunchTarget, RestoreInput,
         };
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
@@ -439,9 +439,9 @@ tilo_test_env::scenario! {
             opens_before_resource: false,
             create: owned_declared_directory_factory,
         };
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "D".into(),

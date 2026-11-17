@@ -352,7 +352,7 @@ fn setup(root: &Path, expected: Expectation) -> PreparedSetupReview {
         &root.join("identity"),
         "Ada",
         [1, 2, 3],
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     let directory = root.join("prepared");

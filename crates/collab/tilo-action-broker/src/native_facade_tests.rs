@@ -57,7 +57,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_ownership(
             };
             let rig = Rig::with_services(
                 &env,
-                HostServices {
+                ProcessServices {
                     local_person: Some(Arc::new(super::signed_worker::NativePerson(
                         env.authority.clone(),
                     ))),
@@ -276,7 +276,7 @@ async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_ot
             let governance = Arc::new(NativeFacadeGovernance::default());
             let rig = Rig::with_services(
                 &env,
-                HostServices {
+                ProcessServices {
                     local_person: Some(Arc::new(super::signed_worker::NativePerson(
                         env.authority.clone(),
                     ))),

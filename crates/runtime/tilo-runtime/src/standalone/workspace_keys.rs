@@ -27,7 +27,7 @@ use tilo_action_broker::{
     },
 };
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_identity::provisioning::IdentityStorage;
 
 /// Sealed group state, and where a Linux profile keeps the key that seals
 /// it (owner-only).

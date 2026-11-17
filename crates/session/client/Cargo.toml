@@ -82,7 +82,7 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 uuid.workspace = true
 # This device's identity: the certificate it presents and the key it signs with, from the store
 # its host keeps them in.
-tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-identity = { path = "../../runtime/tilo-identity" }
 # The endpoint every device dials: presence names a publisher and where it is reached with it.
 iroh-base.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }

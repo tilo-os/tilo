@@ -356,7 +356,7 @@ impl MailApp {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(waker.clone());
         // New mail is said through the host's notifications; a click on one
         // opens its message here.
-        self.notifier = Some(ui::host::current().notifications);
+        self.notifier = Some(ui::process::current().notifications);
         let activations = Arc::clone(&self.activations);
         ui::notify::set_activation_handler(NOTIFICATION_SCHEME, move |uri| {
             if let Some(id) = uri

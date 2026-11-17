@@ -1,6 +1,6 @@
 //! Where a host's offloadable actions run: the action API's route
 //! ([`tilo_actions::offload::ActionOffload`]) a host hands its broker as
-//! `HostServices::action_offload`.
+//! `ProcessServices::action_offload`.
 //!
 //! Every host installs the offer round ([`offer_offload`], [`offer_route`]):
 //! it asks the other devices of the invoking workspace whether they would run

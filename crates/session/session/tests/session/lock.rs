@@ -358,7 +358,7 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
     let reading = session.read(LOCK).expect("the session publishes the lock");
     assert_eq!(
         reading["person"],
-        tilo_identity_host::provisioning::login_account_display_name(),
+        tilo_identity::provisioning::login_account_display_name(),
         "it says whose session this is, as their own avatar on the bar names them, never the \
          account the password is checked against"
     );
@@ -462,7 +462,7 @@ fn the_lock_shows_its_prompt_from_the_first_frame_after_it_locks() {
     let reading = session.read(LOCK).expect("the session publishes the lock");
     assert_eq!(
         reading["person"],
-        tilo_identity_host::provisioning::login_account_display_name(),
+        tilo_identity::provisioning::login_account_display_name(),
         "the first frame names the person whose session it is"
     );
 }

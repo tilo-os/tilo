@@ -7002,7 +7002,7 @@ mod tests {
             &root.join("donor"),
             "Existing Ada",
             [25, 80, 120],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity::provisioning::IdentityStorage::for_session(),
         )
         .unwrap();
         let expected_photo =

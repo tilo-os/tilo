@@ -479,7 +479,7 @@ use crate::support::application::{ProbeHost, definition};
 use automerge::{AutoCommit, ObjId, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use tilo_ui::application::{
-    AppComponent, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    AppComponent, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
 };
 use tilo_ui::host_operation::{poll_resource_operation, start_operation};
 use tilo_ui::local_state::LocalState;
@@ -970,14 +970,14 @@ impl AppWidget for Root {
             invoke: Box::new(|_, _| LEGACY_INVOKED.set(true)),
         }]
     }
-    fn take_host_intent(&mut self) -> Option<tilo_ui::widget::AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<tilo_ui::widget::AppProcessIntent> {
         self.mark("host-intent");
         None
     }
 }
 #[allow(clippy::needless_pass_by_value, reason = "fixed factory signature")]
 fn factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
@@ -1381,7 +1381,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                     );
                 }
                 Callback::HostIntent => {
-                    tile.take_host_intent();
+                    tile.take_process_intent();
                 }
             }
             let captures = CAPTURES.with_borrow_mut(std::mem::take);
@@ -1425,9 +1425,9 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
         let host = ProbeHost::new();
         let definition = definition(factory);
         let permissions = crate::support::application::permissions();
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: host.records.clone(),
                 views: host.views,
                 device_id: "D".into(),
@@ -1684,7 +1684,7 @@ thread_local! {
     reason = "fixed component factory contract"
 )]
 fn nested_factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
@@ -1923,7 +1923,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
 }
 
 fn factory_then_error(
-    context: HostContext,
+    context: ProcessContext,
     target: LaunchTarget,
     restore: RestoreInput,
 ) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
@@ -1937,7 +1937,7 @@ fn factory_then_error(
     reason = "fixture deliberately unwinds after installing its guarded component owner"
 )]
 fn factory_then_unwind(
-    context: HostContext,
+    context: ProcessContext,
     target: LaunchTarget,
     restore: RestoreInput,
 ) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
@@ -2066,7 +2066,7 @@ fn controlled_driver(
 }
 
 fn fill_factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, tilo_ui::launch::LaunchError> {

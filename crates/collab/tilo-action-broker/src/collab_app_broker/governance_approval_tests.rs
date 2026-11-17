@@ -2,7 +2,7 @@
 //! replacement approval, and never turns that approval into delegated ownership.
 use super::super::ActionDirectoryRoot;
 use super::*;
-use crate::services::{HostServices, WorkspaceGovernanceRequest, WorkspaceGovernanceServices};
+use crate::services::{ProcessServices, WorkspaceGovernanceRequest, WorkspaceGovernanceServices};
 use crate::test_support::{Grants as _, KindSet, Workspace, WorkspaceId, WorkspaceTree};
 use std::sync::Mutex;
 use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
@@ -85,7 +85,7 @@ fn broker_with_tree(
     });
     let (state, _) = AppBrokerState::test_state(
         Some(tree.authority()),
-        HostServices {
+        ProcessServices {
             workspace_governance: Some(service.clone()),
             ..Default::default()
         },

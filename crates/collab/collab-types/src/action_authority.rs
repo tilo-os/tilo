@@ -94,7 +94,7 @@ impl AppActionAuthorityProjection {
             !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
         };
         if self.schema_version != SCHEMA_VERSION {
-            return Err("invalid host action policy projection: another schema");
+            return Err("invalid process action policy projection: another schema");
         }
         if !valid_name(&self.workspace)
             || !valid_name(&self.app_id)
@@ -105,22 +105,26 @@ impl AppActionAuthorityProjection {
                 .as_deref()
                 .is_some_and(|owner| !valid_name(owner))
         {
-            return Err("invalid host action policy projection: a malformed name");
+            return Err("invalid process action policy projection: a malformed name");
         }
         if self.policy.workspace != self.workspace {
-            return Err("invalid host action policy projection: the policy is another workspace's");
+            return Err(
+                "invalid process action policy projection: the policy is another workspace's",
+            );
         }
         if self.policy.grants.len() > MAX_GRANTS {
-            return Err("invalid host action policy projection: too many grants");
+            return Err("invalid process action policy projection: too many grants");
         }
         let app = self.policy.node().app(&self.app_id);
         for grant in &self.policy.grants {
             if !grant.node.overlaps(&app) {
-                return Err("invalid host action policy projection: a grant reaches past the app");
+                return Err(
+                    "invalid process action policy projection: a grant reaches past the app",
+                );
             }
             if grant.node.workspace_id() != Some(self.workspace.as_str()) {
                 return Err(
-                    "invalid host action policy projection: a grant is another workspace's",
+                    "invalid process action policy projection: a grant is another workspace's",
                 );
             }
         }
