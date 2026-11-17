@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   deviceLabel, forInvites, INVITE_TTL_MS, newInvite, openInvites, PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_UNANSWERED,
-  PAIRING_USED, pairingFailure, pairSecret, parsePairSecret, whenRequested,
+  PAIRING_SAME_PERSON, PAIRING_USED, pairingFailure, pairSecret, parsePairSecret, whenRequested,
 } from './pairing.mjs';
 
 const USER = 'ab'.repeat(32);
@@ -91,6 +91,9 @@ test('the host’s refusals of a pairing are said as what to do next', () => {
   assert.equal(PAIRING_UNANSWERED, 'No device of yours approved this one in time. Make a new link on your other device, then approve this device there.');
   assert.equal(PAIRING_DECLINED, 'Your other device declined. Make a new link to try again.');
   assert.equal(pairingFailure(new TypeError('Failed to fetch')), null);
+  // This browser's own refusal, by its code: a link for the person it already is.
+  assert.equal(pairingFailure(Object.assign(new Error('refused here'), {code: 'same-person'})), PAIRING_SAME_PERSON);
+  assert.equal(PAIRING_SAME_PERSON, 'This browser is already signed in as you, so nothing was paired. Open the link on the device you want to add.');
 });
 
 test('a pairing the host refuses for the device’s clock says so, never that the link expired', () => {

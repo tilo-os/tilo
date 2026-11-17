@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, defaultDisplayName, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, knownWorkspaces, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStanding, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
+import {PAIRING_SAME_PERSON} from './pairing.mjs';
 
 const identity = key => ({kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(key), userPublicKey: key.toString(16).padStart(2, '0').repeat(32), sign: async () => new Uint8Array(64)});
 
@@ -953,4 +954,34 @@ test('the workspace an entry admits into: the one its listing names, else the on
   assert.equal(entryWorkspace({host: {origin: 'https://h.example'}, admission: 'https://h.example/peer/v1/directory/w2/'}), 'w2');
   assert.equal(entryWorkspace({admission: 'https://h.example/peer/v1/admission'}), null);
   assert.equal(entryWorkspace(null), null);
+});
+
+test('a browser is not paired to the person it already is: the link is refused in plain words and nothing changes', async () => {
+  // A pairing link opened in the browser that made it. Its new tab asked the
+  // host, the first tab approved, and the browser was kept as a device paired
+  // to its own person: from then on it left the root it holds unused, and
+  // offered to pair no further device.
+  const person = identity(0x22);
+  const joined = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person.userPublicKey};
+  const {calls, options, store} = harness({person, membership: joined});
+  const before = store.get(KEY);
+  const link = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person.userPublicKey, invite: '0f'.repeat(16), listed: commons,
+    memberships: options.memberships, onPairingCode: () => assert.fail('no code is shown: no host was asked'),
+    pair: async pairing => { calls.paired.push(pairing); return {workspace: 'WORKSPACE'}; }};
+  const refused = await pairViaHost({...link, holds: person.userPublicKey}).then(() => null, error => error);
+  assert.equal(store.get(KEY), before, 'what this browser keeps of the host is as it was: it is not marked paired');
+  assert.deepEqual(calls.paired, [], 'the host is asked nothing, so the link is not spent and nobody is asked to approve');
+  assert.equal(refused?.name, 'HostAdmissionError');
+  assert.equal(refused?.code, 'same-person');
+  assert.equal(refused?.message, PAIRING_SAME_PERSON);
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), joined);
+
+  // The same link in a browser that holds another person, or none, pairs it.
+  for (const holds of [identity(0x44).userPublicKey, null]) {
+    store.delete(KEY);
+    calls.paired.length = 0;
+    await pairViaHost({...link, holds, onPairingCode: () => {}});
+    assert.equal(calls.paired.length, 1, String(holds));
+    assert.equal(keptMembership(commons, {getItem: key => store.get(key)}).paired, true, String(holds));
+  }
 });

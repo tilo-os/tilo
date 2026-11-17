@@ -28,6 +28,11 @@ export const PAIRING_DECLINED = 'Your other device declined. Make a new link to 
  * (`CERTIFICATION_CLOCK_ALLOWANCE_NS`, tilo-user-identity). The link is not
  * spent: it works once the clock is right. */
 export const PAIRING_CLOCK = 'The clock of this device and the clock of your workspace’s host differ by more than a minute. Check the date and time on this device, then open the link again.';
+/** Said in a browser that opens a pairing link for the person it already
+ * is (`pairViaHost`, workspaces.mjs): a link opened in the browser that
+ * made it. No host was asked, so the link still works on the device it was
+ * made for. */
+export const PAIRING_SAME_PERSON = 'This browser is already signed in as you, so nothing was paired. Open the link on the device you want to add.';
 
 const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 
@@ -133,9 +138,12 @@ export function whenRequested(requestedAtMs, {now = Date.now(), locale} = {}) {
 }
 
 /** What to tell the new device when pairing failed with `error`, or `null`
- * when it is not the host's answer to the pairing (a network failure). Each
- * of the host's refusals is said as what happened, never as another. */
+ * when it is neither the host's answer to the pairing nor this browser's
+ * own (a network failure). Each refusal is said as what happened, never as
+ * another. */
 export function pairingFailure(error) {
+  // This browser's own answer, before any host was asked.
+  if (error?.code === 'same-person') return PAIRING_SAME_PERSON;
   const text = String(error?.message ?? error ?? '');
   if (/declined/i.test(text)) return PAIRING_DECLINED;
   if (/used already/i.test(text)) return PAIRING_USED;

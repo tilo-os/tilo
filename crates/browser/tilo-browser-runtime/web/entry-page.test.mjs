@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost} from './workspaces.mjs';
 import {AdmissionError} from './admission.mjs';
-import {PAIRING_CLOCK} from './pairing.mjs';
+import {PAIRING_CLOCK, PAIRING_SAME_PERSON} from './pairing.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
 const USER = 'aa'.repeat(32);
@@ -27,9 +27,11 @@ class Element {
 // Run the real page wiring and workspace actions. Replace only the booted
 // WASM/GPU peer, arrival animation, and root custody with fixtures. `pair`
 // stands for the runtime certifying this tab's device key through the host
-// (`pairDevice`, peer.mjs): what the host answers a new device.
+// (`pairDevice`, peer.mjs): what the host answers a new device. `identity` is
+// the person this tab has open, and `kept` the one this browser keeps
+// whether or not a tab opened them (`keptIdentity`).
 async function fixture({boot, remembered = [], own = false, search = '', session = {}, local = {}, member = null, entry = null, scope = null,
-  pair = async () => { throw new Error('this fixture pairs no device'); }} = {}) {
+  pair = async () => { throw new Error('this fixture pairs no device'); }, identity = {userPublicKey: USER}, kept = null} = {}) {
   const values = new Map(Object.entries(local));
   let assigned = null;
   const stored = new Map(Object.entries(session));
@@ -97,7 +99,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       return JSON.stringify({entered: JSON.parse(list).map(entry => entry.origin === origin && entry.workspace === workspace && !entry.name ? {...entry, name} : entry), unchoose: []});
     },
   });
-  globalThis.__entryPageFixture = {page, runtime, mounted: [], prepared, identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
+  globalThis.__entryPageFixture = {page, runtime, mounted: [], prepared, identity, kept, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
     joinViaHost, pair,
     boot: async options => {
       diagnostics = options.diagnostics;
@@ -119,7 +121,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     .replace(/import \{([^}]*)\bstartArrival, ([^}]*)\} from '.\/arrival.mjs';/, "import {$1$2} from './arrival.mjs';\nconst startArrival = () => {};")
     .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
-    .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;')
+    .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, keptIdentity, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;\nconst keptIdentity = async () => globalThis.__entryPageFixture.kept;')
     .replace('hostToReconnect, joinGranted, joinViaHost,', 'hostToReconnect, joinGranted,')
     .replace('identityProfile, inspectInvitation, joinWorkspace, openInvitation,', 'identityProfile, inspectInvitation, openInvitation,')
     .replace('return await pairViaHost({origin,', 'return await pairViaHost({pair: (...args) => globalThis.__entryPageFixture.pair(...args), origin,')
@@ -619,17 +621,18 @@ test('a person already set up keeps the workspace a link into the site’s own h
 
 /** A person whose root is on another device: whom a pairing link names. */
 const ELSEWHERE = 'bb'.repeat(32);
-/** A page that opened a pairing link for `ELSEWHERE` into the workspace `current`. */
-const pairingBoot = async ({deps}) => {
+/** A page that opened a pairing link for `person` into the workspace `current`. */
+const pairingBoot = person => async ({deps}, page) => {
   deps.onScope({scope: {kind: 'workspace', host: ORIGIN, workspace: 'current'}, entry: {base: 'https://web.example/', home: null}});
-  return deps.pairDevice({origin: ORIGIN, workspace: 'current', userPublicKey: ELSEWHERE, invite: '0f'.repeat(16), listed: null});
+  await deps.pairDevice({origin: ORIGIN, workspace: 'current', userPublicKey: person, invite: '0f'.repeat(16), listed: null});
+  return page;
 };
 
 test('a new device the host turns away for its clock is told so, not that its link expired', async () => {
   // What a host answered a device whose clock ran ahead of its own, by 20 ms
   // or by an hour: the page read "expired" in it and blamed the link, which
   // nothing had happened to.
-  const {failure, screen} = await fixture({boot: pairingBoot,
+  const {failure, screen} = await fixture({boot: pairingBoot(ELSEWHERE),
     pair: async () => { throw new Error('certification request is expired or not yet valid'); }});
   assert.equal(failure?.code, 'pairing');
   assert.equal(document.documentElement.dataset.entry, 'refused');
@@ -652,4 +655,24 @@ test('a device that came in by pairing is set up: it stays in its workspace and 
   assert.notEqual(at(), 'https://web.example/');
   assert.equal(JSON.parse(localStorage.getItem('tilo-setup'))?.step, 'done',
     'and the bare site, opened later, shows it no first screen either');
+});
+
+test('a pairing link opened in the browser that made it says this browser is that person already, and asks no host', async () => {
+  // The new tab asked the host, the tab that made the link approved, and the
+  // browser was kept as a device paired to its own person: its search then
+  // offered "Pair a new device" no more. A new tab has not opened the person
+  // (`identity`), so the browser is asked whom it keeps (`kept`); a tab that
+  // has opened them knows.
+  const joined = {[ORIGIN]: {origin: ORIGIN, workspace: 'current', userPublicKey: USER}};
+  for (const who of [{identity: null, kept: {rootPublicKey: USER}}, {identity: {userPublicKey: USER}, kept: null}]) {
+    const asked = [];
+    const {failure, screen} = await fixture({...who, boot: pairingBoot(USER), local: {'tilo-host-memberships': JSON.stringify(joined)},
+      pair: async options => { asked.push(options); return {workspace: 'current'}; }});
+    assert.deepEqual(asked, [], 'the host is asked nothing: the link is not spent, and no tab asks to approve');
+    assert.deepEqual(JSON.parse(localStorage.getItem('tilo-host-memberships')), joined,
+      'the browser is kept as its own person, not as a device paired to them');
+    assert.equal(failure?.code, 'pairing');
+    assert.equal(document.documentElement.dataset.entry, 'refused');
+    assert.equal(screen['arrival-failure-body'].textContent, PAIRING_SAME_PERSON);
+  }
 });

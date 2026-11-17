@@ -32,7 +32,7 @@ import {firstRun, MCP_URL, openFirstRun, openSignIn, readSetup, setupDone, setup
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
-import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
+import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, keptIdentity, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
 import {followConnection} from './connection-status.mjs';
 import {domFailureView, failureCause, failureDetails, failureScreen, namedOrigin, unanswered} from './failure-screen.mjs';
@@ -1153,10 +1153,14 @@ export async function startEntryPage({mode}) {
       displayName = chosenDisplayName(userPublicKey) ?? defaultDisplayName(userPublicKey);
       let waiting = () => {};
       try {
-        return await pairViaHost({origin, workspace, userPublicKey, invite, listed, runtime, displayName,
+        // The person this browser already is, where it keeps one: the one
+        // this tab opened, else the one it keeps (a tab that opens a link
+        // has opened nobody yet). It is told so, never paired to them.
+        const holds = currentIdentity()?.userPublicKey ?? (await keptIdentity().catch(() => null))?.rootPublicKey ?? null;
+        return await pairViaHost({origin, workspace, userPublicKey, invite, listed, runtime, displayName, holds,
           label: deviceLabel(), onPairingCode: code => { waiting(); waiting = pairingWait(code); }});
       } catch (error) {
-        // The host's answer, said as what to do next; anything else as any failure.
+        // The host's answer, or this browser's own, said as what to do next; anything else as any failure.
         const said = pairingFailure(error);
         if (said) throw new AdmissionError('pairing', said);
         throw error;

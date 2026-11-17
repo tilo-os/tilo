@@ -59,6 +59,7 @@ import {AdmissionError} from './admission.mjs';
 import {connectPeer, fitDisplayName, identityProfile, joinWorkspace, pairDevice, renewDevice, withCustody} from './peer.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {originOf} from './entered-workspaces.mjs';
+import {PAIRING_SAME_PERSON} from './pairing.mjs';
 import {backoffDelay} from './reconnect.mjs';
 import {hostUnreachable} from './session-refusal.mjs';
 
@@ -777,15 +778,24 @@ export async function joinViaHost({
  * lets people in through its entry (`workspace.admission`), the new device
  * joins the person's workspace there as theirs. The host is remembered as
  * joined, paired, for the next visit (`joinViaHost`).
+ *
+ * A browser is never paired to the person it already is. `holds` is the
+ * person whose root this browser keeps (hex, or `null`): a pairing link that
+ * names them, opened in the browser that made it, is refused here
+ * (`same-person`) before the host is asked anything. The link is not spent,
+ * nobody is asked to approve, and nothing kept changes. Paired, the browser
+ * would be remembered as a device whose root is elsewhere and leave the root
+ * it holds unused: it could let no further device in.
  */
 export async function pairViaHost({
   origin, workspace, userPublicKey, listed = null, label = 'Browser', displayName = defaultDisplayName(userPublicKey),
-  memberships = globalThis.localStorage, fetch = globalThis.fetch, pair = pairDevice, ...connectOptions
+  memberships = globalThis.localStorage, fetch = globalThis.fetch, pair = pairDevice, holds = null, ...connectOptions
 }) {
   if (!/^[0-9a-f]{64}$/.test(userPublicKey ?? '')) throw new HostAdmissionError('invalid', 'This pairing link names no person');
   if (connectOptions.invite != null && !/^[0-9a-f]{32}$/.test(connectOptions.invite)) {
     throw new HostAdmissionError('invalid', 'This pairing link is damaged');
   }
+  if (holds && holds === userPublicKey) throw new HostAdmissionError('same-person', PAIRING_SAME_PERSON);
   const entry = listed?.admission ?? undefined;
   const peer = await pair({...connectOptions, origin, workspace, userPublicKey, label, displayName, fetch, entry,
     profile: identityProfile({userPublicKey}, origin)}).catch(error => { throw entryRefused(error); });
