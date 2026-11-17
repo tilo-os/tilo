@@ -2,9 +2,12 @@
 //! written where the person chooses, a copy or an export, and the window's
 //! record of the file it shows.
 
+use std::sync::mpsc::TryRecvError;
+
 use tilo_resource::Resource;
 use ui_core::portal::{
-    ContentsOutcome, DestinationOutcome, PickRequest, PortalOutcome, SaveDestination, SaveOutcome,
+    ContentsOutcome, DestinationOutcome, PickRequest, PortalOutcome, SaveChannel, SaveDestination,
+    SaveOutcome,
 };
 
 use super::{CHOOSER_GONE, ChosenFile, EffectAnswer, EffectCx, Effected};
@@ -83,17 +86,15 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         bytes: Vec<u8>,
         then: impl FnOnce(&mut H, bool, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
-        self.choose_destination(request, move |host, chosen, cx| {
-            let Some(destination) = chosen else {
-                return then(host, false, cx);
-            };
-            Ok(
-                cx.write_destination(&destination, bytes, move |host, written, cx| {
-                    written?;
-                    then(host, true, cx)
-                }),
-            )
-        })
+        self.wait_on(
+            saving_copy(request, bytes),
+            move |host, outcome, cx| match outcome {
+                Some(SaveOutcome::Saved) => then(host, true, cx),
+                Some(SaveOutcome::Cancelled) => then(host, false, cx),
+                Some(SaveOutcome::Failed(reason)) => Err(reason),
+                None => Err(CHOOSER_GONE.into()),
+            },
+        )
     }
 
     /// Ask the person where to save with the host's chooser (`request` is
@@ -224,6 +225,34 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             self.show_file(path);
         }
     }
+}
+
+/// What [`EffectCx::save_file`] waits for, outside the app's generic code: the chosen place, then
+/// its write. `Cancelled` only when the person chose no place.
+#[inline(never)]
+fn saving_copy(
+    request: PickRequest,
+    bytes: Vec<u8>,
+) -> Box<dyn FnMut() -> Result<SaveOutcome, TryRecvError>> {
+    let chosen = request.send_save_destination();
+    let mut bytes = Some(bytes);
+    let mut written: Option<SaveChannel> = None;
+    Box::new(move || {
+        let written = match &written {
+            Some(written) => written,
+            None => match chosen.try_recv()? {
+                DestinationOutcome::Chosen(place) => {
+                    written.insert(place.write(bytes.take().unwrap_or_default()))
+                }
+                DestinationOutcome::Cancelled => return Ok(SaveOutcome::Cancelled),
+                DestinationOutcome::Failed(reason) => return Ok(SaveOutcome::Failed(told(reason))),
+            },
+        };
+        written.try_recv().map(|outcome| match outcome {
+            SaveOutcome::Cancelled => SaveOutcome::Failed("the save was cancelled".into()),
+            outcome => outcome,
+        })
+    })
 }
 
 /// Tell the person on the window's bar why the chooser or its write failed: the host words the

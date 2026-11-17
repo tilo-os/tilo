@@ -94,7 +94,7 @@ x86_64 = 4849664
 aarch64 = 4128768
 
 [apps."so.tilo.chat"]
-x86_64 = 4521984
+x86_64 = 4456448
 aarch64 = 3145728
 
 [apps."so.tilo.chip-design"]
