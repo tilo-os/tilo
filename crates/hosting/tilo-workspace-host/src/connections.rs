@@ -60,6 +60,10 @@ const NOT_KEPT: &str = "That connection is not kept here";
 /// What an agent is told of a command it may not call by itself.
 pub(crate) const ASKS_FIRST: &str =
     "That command asks your person first, and asking them is not offered here yet";
+/// What a call its person allowed is refused with where the service defines
+/// the command otherwise than when they were asked.
+pub(crate) const DEFINED_ANEW: &str = "The service defines that command otherwise than when your person was asked. Nothing was called, and they are asked again when it is called next";
+const NO_SUCH_COMMAND: &str = "That connection offers no such command";
 const SAID_IT_FAILED: &str = "The service said the command failed";
 const CALL_NOT_TAKEN: &str = "The service did not take the call as it was made";
 /// The most arguments one call carries, as JSON.
@@ -72,6 +76,13 @@ pub(crate) enum Calling<'a> {
     Person,
     /// An agent acting for them, by the name they know it under.
     Agent(&'a str),
+    /// An agent acting for them whose call its person allowed, that once
+    /// or for good: the call of a command as `digest` names its definition.
+    Allowed {
+        by: &'a str,
+        leave: Leave,
+        digest: &'a str,
+    },
 }
 
 impl Calling<'_> {
@@ -79,9 +90,109 @@ impl Calling<'_> {
     const fn by(&self) -> &str {
         match self {
             Self::Person => "",
-            Self::Agent(name) => name,
+            Self::Agent(name) | Self::Allowed { by: name, .. } => name,
         }
     }
+
+    /// By what leave it calls `command`; none where it does not call it by
+    /// itself. What its person allowed is the command as they were shown
+    /// it: one defined otherwise since is not it.
+    fn leave_for(&self, command: &kept::KeptCommand) -> Option<Leave> {
+        match self {
+            Self::Person => Some(Leave::Person),
+            Self::Agent(_) if !command.asks() => Some(Leave::ReadOnly),
+            Self::Allowed { leave, digest, .. } if command.digest == *digest => Some(*leave),
+            Self::Agent(_) | Self::Allowed { .. } => None,
+        }
+    }
+
+    /// What a call it has no leave for is refused with.
+    const fn unasked(&self) -> &'static str {
+        match self {
+            Self::Allowed { .. } => DEFINED_ANEW,
+            Self::Person | Self::Agent(_) => ASKS_FIRST,
+        }
+    }
+}
+
+/// One command of a kept connection, as whoever decides a call of it reads
+/// it.
+pub(crate) struct Callable {
+    /// The connection's address, as kept.
+    pub(crate) address: String,
+    /// The site that address names: the system's word for the service.
+    pub(crate) site: String,
+    /// The name the service gives itself. The service's own word.
+    pub(crate) name: String,
+    /// Whether an agent asks its person before it calls the command.
+    pub(crate) asks: bool,
+    /// What names the command's definition as the service last listed it.
+    pub(crate) digest: String,
+}
+
+/// The command `command` of the connection `id` names under `root`.
+pub(crate) fn callable(
+    root: &Path,
+    reach: &Reach,
+    id: &str,
+    command: &str,
+) -> Result<Callable, String> {
+    let kept = kept_one(root, id)?;
+    let found = kept
+        .commands
+        .iter()
+        .find(|kept| kept.name == command)
+        .ok_or(NO_SUCH_COMMAND)?;
+    Ok(Callable {
+        site: site(reach, &kept.address)?,
+        asks: found.asks(),
+        digest: found.digest.clone(),
+        address: kept.address,
+        name: kept.name,
+    })
+}
+
+/// The site `address` names, where this server calls it: what the system
+/// calls a service by, whatever the service calls itself.
+pub(crate) fn site(reach: &Reach, address: &str) -> Result<String, String> {
+    Address::parse(address, reach.destinations)
+        .map(|address| address::site_of(address.url()))
+        .map_err(|not| not.words().to_owned())
+}
+
+/// Whether the service of `kept` still defines `command` as `digest` names
+/// it, read from the service before a call its person allowed is sent: they
+/// allowed what they were shown. A command defined otherwise now is kept as
+/// changed and is not called.
+async fn defined_as(
+    root: &Path,
+    reach: &Reach,
+    (kept, address): (&Kept, &Address),
+    (command, digest): (&str, &str),
+    by: &str,
+) -> Result<(), (Ended, &'static str)> {
+    let read = match ask(root, reach, (kept, address), by, &Asking::Commands).await {
+        Ok(Answer::Commands(read)) => read,
+        Ok(Answer::Called(_)) => return Err((Ended::Failed, CALL_NOT_TAKEN)),
+        Err(problem) => return Err((Ended::Failed, why(&problem).words())),
+    };
+    if read
+        .offered
+        .iter()
+        .any(|offered| offered.name == command && offered.digest == digest)
+    {
+        return Ok(());
+    }
+    let now = tilo_clock::unix_now_ms();
+    let said = kept::update(root, &kept.id, |kept| {
+        kept.unusable = read.unusable;
+        kept.commands = kept::commands(read.offered, &kept.commands, false);
+        kept.commands_read_ms = now;
+    });
+    if let Err(error) = said {
+        tracing::warn!(%error, "what a service lists now could not be kept with its connection");
+    }
+    Err((Ended::Refused, DEFINED_ANEW))
 }
 
 /// Whether the server asks one more service for the person at `root` now.
@@ -466,7 +577,9 @@ pub(crate) fn uses(root: &Path, id: &str) -> Result<Uses, String> {
 ///
 /// The person calls any command their connection offers. An agent calls one
 /// the service marks as only reading and defines as its person last saw it;
-/// any other it does not call by itself. The call is written down before it
+/// any other it does not call by itself, and calls where its person allowed
+/// that call ([`Calling::Allowed`]) while the service still defines the
+/// command as they were shown it. The call is written down before it
 /// is sent, with who called and by what leave, and how it ended after; its
 /// arguments go to the service exactly as given, and neither they nor the
 /// answer are kept.
@@ -482,17 +595,13 @@ pub(crate) async fn call(
         .commands
         .iter()
         .find(|command| command.name == call.command)
-        .ok_or("That connection offers no such command")?;
-    let leave = match calling {
-        Calling::Person => Some(Leave::Person),
-        Calling::Agent(_) if !command.asks() => Some(Leave::ReadOnly),
-        Calling::Agent(_) => None,
-    };
+        .ok_or(NO_SUCH_COMMAND)?;
+    let leave = calling.leave_for(command);
     let fits = serde_json::to_vec(&call.arguments)
         .is_ok_and(|arguments| arguments.len() <= MAX_ARGUMENT_BYTES);
     let address = Address::parse(&kept.address, reach.destinations);
     let refused = match (leave, fits, &address) {
-        (None, _, _) => Some(ASKS_FIRST),
+        (None, _, _) => Some(calling.unasked()),
         (_, false, _) => Some("Those arguments are larger than one call carries"),
         (_, _, Err(_)) => Some(Why::NotCalled.words()),
         _ => None,
@@ -514,6 +623,13 @@ pub(crate) async fn call(
         return Err(refused.unwrap_or(NOT_KEPT).to_owned());
     };
     paced(root)?;
+    if let Calling::Allowed { digest, by, .. } = calling
+        && let Err((ended, why)) =
+            defined_as(root, reach, (&kept, &address), (&call.command, digest), by).await
+    {
+        kept::end_use(root, id, nth, ended, Some(why)).map_err(|error| unavailable(&error))?;
+        return Err(why.to_owned());
+    }
     let signed_in = kept
         .signs_in
         .as_ref()

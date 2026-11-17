@@ -8,6 +8,11 @@
 //! gives it reach it did not have. Another member, their agent, a bot and an
 //! app are told what a caller asking for something that does not exist is
 //! told, before the request is read.
+//!
+//! An agent whose turn this server carries out itself, with no device of its
+//! person's on, is answered by an entry of its own ([`for_turn`]): there a
+//! command that changes something asks its person, and a connection is
+//! proposed to them.
 
 use serde_json::Value;
 use tilo_actions::remote::person_connections::{
@@ -21,6 +26,8 @@ use tilo_actions::{ActionKind, ActionParam, ParamType};
 use super::{Asked, Publisher, Verb};
 use crate::connections::{self, Calling, Reach};
 use crate::workspaces::Workspaces;
+
+mod for_turn;
 
 /// A person's connections, as their server publishes them.
 pub(super) const CONNECTIONS: Publisher = Publisher {
