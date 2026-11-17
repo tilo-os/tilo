@@ -8,7 +8,10 @@
 //! (only on a yes does it go on) and a count (only every so many times), and
 //! the instruction its person's assistant is then handed. It keeps a note
 //! between its runs: what it is for, how its person wants it done, and what
-//! the last run left for the next.
+//! the last run left for the next. It may say how its result is told to its
+//! person ([`SetUp::told_as`]): as a brief, which reaches them as a reminder
+//! does, or as news, which reaches them only where their own rule calls it
+//! important.
 //!
 //! The person sets one up, or their assistant does it for them: these
 //! actions are the same for both, and are answered only for the person the
@@ -22,6 +25,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::person_telling::Kind;
 use super::{ActionAddress, RemoteActionTarget};
 
 /// The provider that answers a person's events under.
@@ -78,6 +82,11 @@ pub struct SetUp {
     pub every: Option<u64>,
     /// What the person's assistant is told to do when it goes on.
     pub instruction: String,
+    /// How its result is told to its person: `reminder`, `brief` or `news`,
+    /// the kinds a thing told has ([`Kind`]) but a question. Left out, a
+    /// moment is a reminder and everything else is news.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub told_as: Option<String>,
     /// What the event is for, in its person's words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
@@ -108,6 +117,10 @@ pub struct Change {
     pub every: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<String>,
+    /// How its result is told, as [`SetUp::told_as`]; empty takes the word
+    /// away, and it is told as an event that says nothing is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub told_as: Option<String>,
     /// The note's parts, each taking the place of what was there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
@@ -200,6 +213,11 @@ pub struct EventView {
     pub count: u64,
     /// What the person's assistant is told.
     pub instruction: String,
+    /// How its result is told, where its person or their assistant said.
+    /// Left out, a moment is told as a reminder and everything else as
+    /// news.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub told_as: Option<Kind>,
     /// Its note, every part present: `instruction`, `style`, `guidance`,
     /// `accepted`, `rejected` and `kept`.
     pub note: Value,

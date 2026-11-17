@@ -58,6 +58,9 @@ const ASK_AGENT: &str = "ask-agent";
 const IN: &str = "channel";
 /// What a turn is said to be started by: a moment its person asked for.
 pub const REMINDER: &str = "reminder";
+/// What a turn is said to be started by: an event whose result its person
+/// is told as a brief.
+pub const BRIEF: &str = "brief";
 /// What a turn is said to be started by: something that happened, or a
 /// time that comes round.
 pub const EVENT: &str = "event";
@@ -82,7 +85,7 @@ pub fn host_steps(workspaces: Workspaces) -> Arc<dyn Steps> {
 pub struct Starter {
     /// What its person calls it.
     pub name: String,
-    /// What it is: [`REMINDER`] or [`EVENT`].
+    /// What it is: [`REMINDER`], [`BRIEF`] or [`EVENT`].
     pub kind: &'static str,
 }
 
