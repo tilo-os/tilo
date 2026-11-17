@@ -1290,8 +1290,10 @@ impl WeakPermissions {
 pub struct LivePermissions(SharedPermissions);
 
 impl LivePermissions {
-    /// Follow the context the host shares with its components.
-    pub(crate) fn shared(context: SharedPermissions) -> Self {
+    /// Follow the context the host shares with its components: what a host that is no app window
+    /// (a page's own sheet) opens a record with, decided as the host's windows are.
+    #[must_use]
+    pub fn shared(context: SharedPermissions) -> Self {
         Self(context)
     }
 

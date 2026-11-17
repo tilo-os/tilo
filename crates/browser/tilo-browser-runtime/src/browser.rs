@@ -1539,7 +1539,7 @@ fn present_desktop(
         (surface, &handle, &generation),
         &shared,
         &persistence,
-        (&here, &session),
+        (&here, &session, (&owners, &opening_permissions)),
     )?;
     let asks = session_asks::Asks::new(config.peer);
     let mentions = mention_notices::over(
@@ -1630,9 +1630,10 @@ fn desktop_shell(
     ),
     shared: &crate::desktop::Shared,
     persistence: &crate::desktop::Persistence,
-    (here, session): (
+    (here, session, (owners, permissions)): (
         &tilo_desktop::here::Here,
         &Arc<tilo_desktop_surface::session::DesktopSession>,
+        (&ui::record::RecordOwners, &SharedPermissions),
     ),
 ) -> Result<crate::shell::BrowserShell, JsValue> {
     let authorship = crate::shell::Authorship {
@@ -1655,6 +1656,14 @@ fn desktop_shell(
             session: Arc::clone(session),
             caller: tilo_actions::remote::Caller::local_person(config.author())
                 .in_workspace(config.workspace.clone()),
+            records: config.peer.map(|_| {
+                crate::workspace_settings::PageRecords::in_page(
+                    (owners, shared, permissions),
+                    handle,
+                    &config.workspace,
+                    config.author(),
+                )
+            }),
             wake: Arc::new(move || {
                 let _ = wake.send_event(id);
             }),

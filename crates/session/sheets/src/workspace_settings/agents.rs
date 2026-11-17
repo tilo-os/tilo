@@ -193,6 +193,9 @@ pub struct Agents {
     pub retire_label: String,
     /// What the tab says with neither agents nor bots: title and detail.
     pub empty: (String, String),
+    /// Whether the tab shows the workspace's bots: a host that finds no bot to add (a page)
+    /// leaves them to the computers that do.
+    pub offers_bots: bool,
     pub bots_header: String,
     /// What a bot is, in one line, so it is no second unexplained concept.
     pub bots_help: String,
@@ -242,7 +245,9 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
                     .collect(),
             )));
         }
-        groups.push(bots(agents, parts));
+        if agents.offers_bots {
+            groups.push(bots(agents, parts));
+        }
     }
     if let Some(note) = &agents.footnote {
         groups.push(caption(note));
@@ -317,7 +322,8 @@ fn new_agent(agents: &Agents, parts: &Parts) -> Element {
         .nested()
         .trailing(Box::new(colours));
 
-    // Its model: one of this device's Settings, or its keeper's default.
+    // Its model: one of this device's Settings, or its keeper's default. Where this device offers
+    // none (a page, whose agents run on the workspace's server) there is nothing to choose.
     let offered: Vec<(String, String)> = agents
         .models
         .iter()
@@ -355,15 +361,12 @@ fn new_agent(agents: &Agents, parts: &Parts) -> Element {
                 .on_effect(move || typed.add_agent()),
         ));
 
-    Box::new(Section::titled(
-        agents.add.clone(),
-        vec![
-            Box::new(name) as Element,
-            Box::new(colour),
-            Box::new(model),
-            Box::new(answers),
-        ],
-    ))
+    let mut rows: Vec<Element> = vec![Box::new(name), Box::new(colour)];
+    if !agents.models.is_empty() {
+        rows.push(Box::new(model));
+    }
+    rows.push(Box::new(answers));
+    Box::new(Section::titled(agents.add.clone(), rows))
 }
 
 /// The twelve people colours as swatches, the one at `chosen` marked.
@@ -536,8 +539,7 @@ fn reviewed(review: &AgentReview, parts: &Parts) -> Element {
                 }
             })
             .role(ButtonRole::Destructive)
-            .control_size(ControlSize::Small)
-            .with_enabled(review.editable),
+            .control_size(ControlSize::Small),
         ));
     }
     groups.push(Box::new(head));
@@ -830,6 +832,7 @@ pub(super) fn sample() -> Agents {
             "No agents yet".to_owned(),
             "Add an agent to have it work here.".to_owned(),
         ),
+        offers_bots: true,
         bots_header: "Bots".to_owned(),
         bots_help: "Bots run small programs here on their own: on a schedule, when something changes, or as a bridge to a service like Discord.".to_owned(),
         add_bot: "Add a bot".to_owned(),

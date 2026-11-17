@@ -598,6 +598,8 @@ pub struct ChromeSources {
     pub caller: tilo_actions::remote::Caller,
     /// The page's notifications, whose unread ones the bell counts.
     pub notifications: tilo_desktop_surface::DesktopNotifications,
+    /// Where the workspace's settings read its agents; none on a page that shows no workspace.
+    pub records: Option<crate::workspace_settings::PageRecords>,
     pub wake: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -689,6 +691,7 @@ impl BrowserShell {
         let offers_layout = offers.layout;
         let peer = sources.peer;
         let shared = sources.shared.clone();
+        let records = sources.records.clone();
         let wake = Arc::clone(&sources.wake);
         let session = Arc::clone(&sources.session);
         let caller = sources.caller.clone();
@@ -735,9 +738,7 @@ impl BrowserShell {
             peer,
             &chrome.wake,
         ));
-        let workspace_settings = crate::over_page::OverPage::new(
-            crate::over_page::LazySheet::workspace_settings(shared, Rc::clone(&chrome.here), peer),
-        );
+        let workspace_settings = workspace_settings_sheet(shared, &chrome, peer, records);
         let (hints, top, guide) = hints_and_guide(top);
         let invitable = Rc::new(Cell::new(false));
         let (people, mut layers) = mount_people(
@@ -1832,6 +1833,22 @@ impl BrowserShell {
             }
         }
     }
+}
+
+/// The workspace's settings over the page: who is in the workspace, from its host, and its
+/// agents, from the page's `records`.
+fn workspace_settings_sheet(
+    shared: crate::desktop::Shared,
+    chrome: &PageChrome,
+    peer: Option<u32>,
+    records: Option<crate::workspace_settings::PageRecords>,
+) -> crate::over_page::OverPage<crate::over_page::LazySheet> {
+    crate::over_page::OverPage::new(crate::over_page::LazySheet::workspace_settings(
+        shared,
+        Rc::clone(&chrome.here),
+        peer,
+        records,
+    ))
 }
 
 /// What the shell asks of the page when what it queued waits for the host's next pass — the card a

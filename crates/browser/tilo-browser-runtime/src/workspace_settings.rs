@@ -1,22 +1,31 @@
-//! The workspace settings in a page: the session's own sheet, on its People tab, over the page.
-//! Who is in the workspace and what each may do is what the workspace's host answers, and a role
-//! changed or a person removed is asked of it; the tab is built from the members as the session's
-//! shell builds it from its own ([`tilo_session::workspace_people`]).
+//! The workspace settings in a page: the session's own sheet, on its People and Agents tabs, over
+//! the page. Who is in the workspace and what each may do is what the workspace's host answers, and
+//! a role changed or a person removed is asked of it; the tab is built from the members as the
+//! session's shell builds it from its own ([`tilo_session::workspace_people`]). The workspace's
+//! agents are Chat's record of them, read and changed in the records the page's windows keep, as
+//! the workspace lets this page's person ([`tilo_session::workspace_settings::PageAgents`]).
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_desktop::here::Here;
 use tilo_desktop::workspace_settings::people::{Member as Row, content_of};
+use tilo_desktop_model::UserId;
+use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::i18n::t;
 use tilo_relay_protocol::workspaces::{
     Member, Role, Workspace, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_session::workspace_people;
+use tilo_session::workspace_settings::{AgentsHost, PageAgents};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::workspace_settings::{self as sheet, WorkspaceSettingsEffect};
+
+use ui::permissions::{LivePermissions, SharedPermissions};
+use ui::record::workspace::WorkspaceRecords;
 
 use crate::host_asks::{HostAsks, Reply, refused};
 use crate::over_page::{OverSheet, PageSheet};
@@ -24,13 +33,79 @@ use crate::over_page::{OverSheet, PageSheet};
 /// Why nothing was asked: a page with no workspace host has nobody to list.
 const NO_HOST: &str = "this page is in no workspace";
 
+/// Where the page reads the workspace's agents: the records of the workspace it shows, as its
+/// windows open them, what the workspace lets its person do, and whether it lets them administer
+/// it, as the workspace's host last answered.
+#[derive(Clone)]
+pub(crate) struct PageRecords {
+    pub records: WorkspaceRecords,
+    pub permissions: SharedPermissions,
+    pub administers: Arc<AtomicBool>,
+    /// The shell the page shows, and its person.
+    pub handle: DesktopHandle,
+    pub person: UserId,
+}
+
+impl PageRecords {
+    /// The records of `workspace` that `owners` keep beside the page's windows' (`shared`), opened
+    /// as its person `author`, as `permissions` let them, over the shell `handle` shows.
+    pub(crate) fn in_page(
+        (owners, shared, permissions): (
+            &ui::record::RecordOwners,
+            &crate::desktop::Shared,
+            &SharedPermissions,
+        ),
+        handle: &DesktopHandle,
+        workspace: &str,
+        author: String,
+    ) -> Self {
+        Self {
+            records: crate::workspace_records::in_page(
+                owners,
+                &shared.stores,
+                workspace,
+                author.clone(),
+                true,
+            ),
+            permissions: permissions.clone(),
+            administers: Arc::clone(&shared.administers),
+            handle: handle.clone(),
+            person: author,
+        }
+    }
+}
+
+impl AgentsHost for PageRecords {
+    /// The page shows one workspace: its records are the ones it keeps.
+    fn open(
+        &self,
+        _workspace: &tilo_desktop_model::Workspace,
+        _person: &UserId,
+    ) -> (WorkspaceRecords, Option<LivePermissions>) {
+        (
+            self.records.clone(),
+            Some(LivePermissions::shared(self.permissions.clone())),
+        )
+    }
+
+    fn manages(&self, _workspace: &tilo_desktop_model::Workspace, _person: &UserId) -> bool {
+        self.administers.load(Ordering::Relaxed)
+    }
+
+    /// The workspace's grants are its host's: a page asks it for changes.
+    fn writes_grants(&self) -> bool {
+        false
+    }
+}
+
 /// The page's workspace settings, as the sheets' code makes it (`crate::over_page::SHEETS`).
 pub(crate) fn make(
     shared: crate::desktop::Shared,
     here: Here,
     peer: Option<u32>,
+    records: Option<PageRecords>,
 ) -> Box<dyn PageSheet> {
-    Box::new(PageWorkspaceSettings::new(shared, here, peer))
+    Box::new(PageWorkspaceSettings::new(shared, here, peer, records))
 }
 
 struct PageWorkspaceSettings {
@@ -51,11 +126,34 @@ struct PageWorkspaceSettings {
     asked_for: Option<BTreeSet<String>>,
     /// What the built sheet shows, and the revision of what it keeps to itself.
     built: Option<(sheet::Settings, u64)>,
+    /// The workspace's agents, on a page in a workspace.
+    agents: Option<PageAgents>,
+    /// The tab the person is on.
+    tab: Cell<sheet::Tab>,
 }
 
 impl PageWorkspaceSettings {
-    fn new(shared: crate::desktop::Shared, here: Here, peer: Option<u32>) -> Self {
+    fn new(
+        shared: crate::desktop::Shared,
+        here: Here,
+        peer: Option<u32>,
+        records: Option<PageRecords>,
+    ) -> Self {
+        let agents = records.map(|records| {
+            let woken = Arc::clone(&shared.woken);
+            PageAgents::new(
+                records.handle.clone(),
+                records.person.clone(),
+                Rc::new(records) as Rc<dyn AgentsHost>,
+                Arc::new(move || {
+                    woken.store(true, Ordering::Release);
+                    crate::browser::wake_desktops();
+                }),
+            )
+        });
         Self {
+            agents,
+            tab: Cell::new(sheet::Tab::People),
             state: sheet::WorkspaceSettingsState::default(),
             asks: HostAsks::new(peer, NO_HOST, Arc::clone(&shared.woken)),
             peer,
@@ -129,7 +227,19 @@ impl PageWorkspaceSettings {
         let asked = self.state.take_asked();
         let changed = !asked.is_empty();
         for effect in asked {
+            if self
+                .agents
+                .as_ref()
+                .is_some_and(|agents| agents.ask(&self.state, &effect))
+            {
+                continue;
+            }
             match effect {
+                WorkspaceSettingsEffect::ShowTab { tab } => {
+                    if let Some(tab) = sheet::Tab::from_key(&tab) {
+                        self.tab.set(tab);
+                    }
+                }
                 WorkspaceSettingsEffect::SetRole { member, role } => {
                     let (Some(user_public_key), Some(role)) = (
                         person(&member),
@@ -155,8 +265,8 @@ impl PageWorkspaceSettings {
                     });
                 }
                 WorkspaceSettingsEffect::DismissNotice => self.state.dismiss_notice(),
-                // The sheet closes itself; a page shows the People tab alone, and nothing else
-                // the sheet could ask is drawn on it.
+                // The sheet closes itself; a page shows the People and Agents tabs alone, and
+                // nothing else the sheet could ask is drawn on it.
                 _ => {}
             }
         }
@@ -201,6 +311,13 @@ impl PageWorkspaceSettings {
             workspace_people::tab(content_of(&rows, &viewer, role == Some(Role::Owner)));
         // What the workspace did is the session's to show; a page offers only the decision.
         people.remove_decision.review.clear();
+        let mut tabs = vec![sheet::Tab::People];
+        if self.agents.is_some() {
+            tabs.push(sheet::Tab::Agents);
+        }
+        let tab = Some(self.tab.get())
+            .filter(|tab| tabs.contains(tab))
+            .unwrap_or(sheet::Tab::People);
         sheet::Settings {
             title: t("workspace-settings-title"),
             name: tilo_desktop_surface::names::workspace(
@@ -208,9 +325,15 @@ impl PageWorkspaceSettings {
             ),
             role: workspace_people::role_line(role),
             close: t("workspace-settings-close"),
-            tabs: vec![workspace_people::tab_label(sheet::Tab::People)],
-            tab: sheet::Tab::People,
+            tabs: tabs.into_iter().map(workspace_people::tab_label).collect(),
+            tab,
             people,
+            agents: self
+                .agents
+                .as_ref()
+                .filter(|_| tab == sheet::Tab::Agents)
+                .map(PageAgents::pane)
+                .unwrap_or_default(),
             notice: self.state.notice(),
             ..sheet::Settings::default()
         }

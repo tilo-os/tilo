@@ -431,8 +431,7 @@ mod workspace_delete;
 #[cfg(target_os = "linux")]
 mod workspace_nodes;
 pub mod workspace_people;
-#[cfg(target_os = "linux")]
-mod workspace_settings;
+pub mod workspace_settings;
 #[cfg(target_os = "linux")]
 mod workspaces;
 
