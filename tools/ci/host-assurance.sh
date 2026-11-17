@@ -71,7 +71,11 @@ printf 'FROM localhost/tilo-host:ci\nRUN echo %s > /usr/lib/tilo/host-assurance-
 podman build -q -t "$update_ref" -f "$work/update/Containerfile" "$work/update" >/dev/null
 podman save --format oci-archive -o "$work/update.tar" "$update_ref"
 rm -f "$work/update.raw"
-truncate -s 768M "$work/update.raw"
+# The disk holds the whole archive the machine stages, so size it from the
+# archive: a fixed number here would fail as a full filesystem on whichever
+# image grew past it, and name nothing that said why.
+archive_mib=$(( ($(stat -c %s "$work/update.tar") + 1048575) / 1048576 ))
+truncate -s "$(( archive_mib + 256 ))M" "$work/update.raw"
 mkfs.ext4 -q -F -L tiloupdate "$work/update.raw"
 mkdir -p "$work/mnt"
 mount -o loop "$work/update.raw" "$work/mnt"
