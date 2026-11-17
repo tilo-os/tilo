@@ -17,12 +17,17 @@ use std::path::Path;
 /// These tests mount a real FUSE filesystem. A machine that cannot (a test sandbox without
 /// `/dev/fuse` or the helper that mounts it) leaves them out; the real-fuse check requires
 /// them, and fails rather than skips when the capability is missing there.
-fn require_fuse() {
-    tilo_test_env::require_capability!(
-        Fuse,
-        crate::fuse_session::mountable(Path::new("/dev/fuse"), std::env::var_os("PATH").as_deref()),
-        "requires /dev/fuse and fusermount3"
-    );
+macro_rules! require_fuse {
+    () => {
+        tilo_test_env::require_capability!(
+            Fuse,
+            crate::fuse_session::mountable(
+                Path::new("/dev/fuse"),
+                std::env::var_os("PATH").as_deref()
+            ),
+            "requires /dev/fuse and fusermount3"
+        );
+    };
 }
 
 /// A filesystem over an empty namespace, with the runtime its endpoint runs on, built as the
@@ -73,7 +78,7 @@ fn unmount(session: fuser::BackgroundSession, at: &Path) {
 /// name be made again the moment it is gone.
 #[test]
 fn a_name_removed_can_be_made_again_at_once() {
-    require_fuse();
+    require_fuse!();
     let tmp = tempfile::tempdir().unwrap();
     let at = tmp.path().join("mnt");
     std::fs::create_dir(&at).unwrap();
@@ -99,7 +104,7 @@ fn a_name_removed_can_be_made_again_at_once() {
 /// made: the mount answers like any filesystem, however often a name is made and taken.
 #[test]
 fn a_name_can_be_made_and_taken_again_and_again() {
-    require_fuse();
+    require_fuse!();
     let tmp = tempfile::tempdir().unwrap();
     let at = tmp.path().join("mnt");
     std::fs::create_dir(&at).unwrap();
@@ -130,7 +135,7 @@ fn a_name_can_be_made_and_taken_again_and_again() {
 /// reports nothing left.
 #[test]
 fn a_tree_removed_takes_every_name_with_it() {
-    require_fuse();
+    require_fuse!();
     let tmp = tempfile::tempdir().unwrap();
     let at = tmp.path().join("mnt");
     std::fs::create_dir(&at).unwrap();
