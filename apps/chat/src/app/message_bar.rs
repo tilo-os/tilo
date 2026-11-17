@@ -108,25 +108,19 @@ impl ChatApp {
         let over = self.hovered_message.clone().or_else(|| {
             let targets = self.semantic_hits();
             let (_, hit, ..) = targets.get(self.keyboard_target?)?;
-            message_of(hit).cloned()
+            hit.message().cloned()
         })?;
         (self.editing.as_ref() != Some(&over) && self.message(&over).is_some()).then_some(over)
     }
 
-    /// The message whose row is under `point`, or whose bar is.
+    /// The message whose row, or bar, is under `point`.
     pub(crate) fn message_under(&self, point: Point) -> Option<Id> {
-        let on_bar = self.hits.iter().rev().find_map(|(rect, hit)| match hit {
-            Hit::MessageBar { msg, .. } | Hit::MessageMore { msg } if rect.contains(point) => {
-                Some(msg.clone())
-            }
-            _ => None,
-        });
-        on_bar.or_else(|| {
-            self.message_rows
-                .iter()
-                .find(|(rect, _)| rect.contains(point))
-                .map(|(_, id)| id.clone())
-        })
+        self.hits
+            .iter()
+            .rev()
+            .filter(|(rect, _)| rect.contains(point))
+            .find_map(|(_, hit)| hit.message().filter(|id| self.message(id).is_some()))
+            .cloned()
     }
 
     /// What the bar over `msg` offers, in order: with Shift held, the
@@ -223,7 +217,7 @@ impl ChatApp {
                 kind: "chat.workspace.messages".to_owned(),
                 label,
             });
-        if let Some(rect) = self.message_rect(msg.as_str()) {
+        if let Some(rect) = super::painted_row(&self.hits, msg.as_str()) {
             about = about.within(rect);
         }
         let mut menu = self.context_menu(MenuTarget::Message(msg), anchor, items);
@@ -258,12 +252,7 @@ impl ChatApp {
             theme,
         } = paint;
         let over = self.bar_message();
-        let row = over.as_ref().and_then(|msg| {
-            self.message_rows
-                .iter()
-                .find(|(_, id)| id == msg)
-                .map(|(rect, _)| *rect)
-        });
+        let row = over.as_ref().and_then(|msg| super::painted_row(hits, msg));
         let (Some(msg), Some(row)) = (over, row) else {
             self.message_bar.follow(None, theme);
             return;
@@ -351,17 +340,5 @@ impl ChatApp {
         self.semantic_hits()
             .get(index)
             .is_some_and(|(_, target, ..)| target.semantic_id() == hit.semantic_id())
-    }
-}
-
-/// The message `hit` belongs to, for one in a message's row.
-fn message_of(hit: &Hit) -> Option<&Id> {
-    match hit {
-        Hit::Reaction { msg, .. }
-        | Hit::AddReaction { msg, .. }
-        | Hit::MessageBar { msg, .. }
-        | Hit::MessageMore { msg }
-        | Hit::OpenThread(msg) => Some(msg),
-        _ => None,
     }
 }

@@ -130,11 +130,7 @@ fn painted_at(window: &mut Window, text: &str) -> Option<f64> {
                 .iter()
                 .find(|message| message.text == text)?
                 .id;
-            surface
-                .message_rows
-                .iter()
-                .find(|(_, row)| row == id)
-                .map(|(rect, _)| rect.y0)
+            crate::app::painted_row(&surface.hits, id).map(|rect| rect.y0)
         })
         .flatten()
 }

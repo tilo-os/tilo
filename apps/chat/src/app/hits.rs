@@ -168,6 +168,30 @@ pub(crate) enum Hit {
 }
 
 impl Hit {
+    /// The message whose row holds this control: a press on any part of a
+    /// message is about that message.
+    pub(crate) fn message(&self) -> Option<&Id> {
+        match self {
+            Hit::Reaction { msg, .. }
+            | Hit::AddReaction { msg, .. }
+            | Hit::EditHistory { msg, .. }
+            | Hit::MessageMenu { msg }
+            | Hit::MessageBar { msg, .. }
+            | Hit::MessageMore { msg }
+            | Hit::Attachment { msg, .. }
+            | Hit::OpenResource { msg, .. }
+            | Hit::OpenThread(msg)
+            | Hit::ReplayRecording(msg)
+            | Hit::OpenShare(msg)
+            | Hit::StopShare(msg)
+            | Hit::SwitchShare(msg, _)
+            | Hit::AgentReasoning(msg)
+            | Hit::AgentWork(msg)
+            | Hit::ShowPerson { place: msg, .. } => Some(msg),
+            _ => None,
+        }
+    }
+
     pub(crate) fn semantic_id(&self) -> String {
         match self {
             Self::Channel(id) => format!("chat.channel:{id}"),

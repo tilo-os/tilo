@@ -732,30 +732,24 @@ impl ChatApp {
     }
 
     /// Right-click opens a context menu for the message under the cursor,
-    /// else for the workspace. The sidebar's rows ask for theirs through the
-    /// shell ([`crate::sidebar`]).
+    /// whichever part of its row it is on, else for the workspace. The
+    /// sidebar's rows ask for theirs through the shell ([`crate::sidebar`]).
     fn on_right_click(&mut self, hit: Hit) {
-        let menu = match hit {
-            Hit::CallMember(id) => {
-                self.open_member_menu(id);
-                return;
-            }
-            // A message, its bar or the chip of what it shares: the message's whole menu.
-            Hit::MessageMenu { msg }
-            | Hit::MessageBar { msg, .. }
-            | Hit::MessageMore { msg }
-            | Hit::OpenResource { msg, .. } => {
-                self.open_message_menu(msg, self.last_mouse);
-                return;
-            }
-            _ if self.keeps_layout() => Some(self.context_menu(
+        if let Hit::CallMember(id) = hit {
+            self.open_member_menu(id);
+            return;
+        }
+        if let Some(msg) = hit.message().filter(|msg| self.message(msg).is_some()) {
+            self.open_message_menu(msg.clone(), self.last_mouse);
+            return;
+        }
+        self.menu = self.keeps_layout().then(|| {
+            self.context_menu(
                 MenuTarget::Workspace,
                 self.last_mouse,
                 MenuAction::for_workspace().to_vec(),
-            )),
-            _ => None,
-        };
-        self.menu = menu;
+            )
+        });
     }
 
     /// How loud someone else in the call plays here: silenced, or at one of

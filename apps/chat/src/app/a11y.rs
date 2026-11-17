@@ -75,7 +75,7 @@ impl ChatApp {
                     .with_hashed_key((&message.id, "message"));
                 // A painted message is read and picked where it is drawn,
                 // not over the whole conversation.
-                if let Some(rect) = self.message_rect(&message.id) {
+                if let Some(rect) = super::painted_row(&self.hits, &message.id) {
                     node = node.with_bounds(rect);
                 }
                 if let Some(parts) = self.painted_messages.get(&message.id) {

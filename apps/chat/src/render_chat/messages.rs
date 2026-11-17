@@ -168,7 +168,6 @@ impl ChatApp {
         // Only what stands in view is painted; a row keeps its scene for
         // the frames it stays there ([`crate::timeline`]).
         self.begin_timeline_paint(theme, tf, column);
-        self.message_rows.clear();
         self.message_bar.lifted = self.bar_message();
         if reads_back {
             y = self.draw_earlier_at(PaintCtx::new(scene, tf, tr, theme), column, y, earlier_h);
@@ -800,8 +799,13 @@ impl ChatApp {
                 theme,
             );
         }
+        // Right-click anywhere on a message's row opens its menu: editing
+        // your own, reporting anyone else's, removing it as a moderator.
+        // Recorded first, so the row's own controls win in their places.
+        if !rm.editing {
+            ChatApp::push_hit(hits, row, Hit::MessageMenu { msg: m.id.clone() });
+        }
         *y += rm.top_gap;
-        let content_top = *y;
 
         if rm.show_header {
             self.draw_row_header(
@@ -846,17 +850,6 @@ impl ChatApp {
         let folds = (!rm.editing)
             .then(|| self.draw_row_work(PaintCtx::new(scene, tf, tr, theme), &m, rm, column, y))
             .flatten();
-        // Right-click a message (header + body) opens its menu: editing
-        // your own, reporting anyone else's, removing it as a moderator.
-        // Recorded before the reaction / thread hits so those still win in
-        // their own sub-regions.
-        if !rm.editing {
-            ChatApp::push_hit(
-                hits,
-                Rect::new(area.x0, content_top, area.x1, *y),
-                Hit::MessageMenu { msg: m.id.clone() },
-            );
-        }
         // Above the row's menu: a press on what the agent did opens the list.
         if let Some(area) = folds {
             Self::push_hit(hits, area, Hit::AgentWork(m.id.clone()));

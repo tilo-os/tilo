@@ -189,9 +189,6 @@ pub struct ChatApp {
     pub(crate) asked_delete: Option<(ui::tilo_resource::Id, Option<u64>, Id)>,
     /// The message the pointer is over, which shows its action bar.
     pub(crate) hovered_message: Option<Id>,
-    /// Where each message row was painted this frame, whole: what the
-    /// pointer is over when it is over a message.
-    pub(crate) message_rows: Vec<(Rect, Id)>,
     /// The action bar's arrival: which message it is over, and its fade.
     pub(crate) message_bar: crate::app::message_bar::BarMotion,
     /// The last message posted from the main composer, by channel: put back
@@ -694,7 +691,6 @@ impl ChatApp {
             deleted: std::cell::RefCell::default(),
             asked_delete: None,
             hovered_message: None,
-            message_rows: Vec::new(),
             message_bar: crate::app::message_bar::BarMotion::default(),
             last_post: None,
             channel_sheet: None,
@@ -1257,14 +1253,6 @@ impl ChatApp {
         } else {
             reactions.react(emoji)
         }
-    }
-
-    /// Where a message's header and body were last painted, if they were.
-    fn message_rect(&self, id: &str) -> Option<Rect> {
-        self.hits.iter().find_map(|(rect, hit)| match hit {
-            Hit::MessageMenu { msg } if msg.as_str() == id => Some(*rect),
-            _ => None,
-        })
     }
 
     // --- model lookups ----------------------------------------------------
@@ -2825,3 +2813,11 @@ pub(crate) use menus::{ContextMenu, MenuAction, MenuTarget};
 pub use window::ChatWindow;
 pub(crate) use window::SharedChat;
 pub(crate) use workspace::ChannelRows;
+
+/// Where message `id`'s row stands among `hits`: its right-click target.
+pub(crate) fn painted_row(hits: &[(Rect, Hit)], id: &str) -> Option<Rect> {
+    hits.iter().find_map(|(rect, hit)| match hit {
+        Hit::MessageMenu { msg } if msg.as_str() == id => Some(*rect),
+        _ => None,
+    })
+}

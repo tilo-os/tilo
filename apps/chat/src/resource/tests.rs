@@ -1228,3 +1228,40 @@ fn search_finds_an_agents_conversation_by_the_name_its_record_keeps() {
         "the record keeps no row of a conversation a send opened"
     );
 }
+
+/// A right click anywhere on a message, in a window as narrow as a floating
+/// card, opens that message's menu: on its text, on what it carries (a
+/// picture, a reaction, its author) and in the air at its foot, also for a
+/// message scrolled half out of view. Never the workspace's.
+#[test]
+fn a_right_click_anywhere_on_a_message_opens_its_menu() {
+    let mut app = TestApp::<ChatShell>::capture(Some("channels")).unwrap();
+    app.harness().resize((320, 476)).unwrap();
+    app.settle();
+    let hits = app.chat().hits.clone();
+    let presses: Vec<_> = hits
+        .iter()
+        .filter_map(|(rect, hit)| Some((*rect, hit.message()?.clone())))
+        .flat_map(|(rect, msg)| {
+            let foot = vello::kurbo::Point::new(rect.x0 + 2.0, rect.y1 - 1.0);
+            [(rect.center(), msg.clone()), (foot, msg)]
+        })
+        .collect();
+    assert!(
+        presses.len() > 8,
+        "the card shows messages with parts: {hits:?}"
+    );
+    for (at, msg) in presses {
+        app.chat().menu = None;
+        right_click(
+            &mut app,
+            vello::kurbo::Rect::from_origin_size(at, (0.0, 0.0)),
+        );
+        let target = app.chat().menu.as_ref().map(|menu| menu.target.clone());
+        assert_eq!(
+            target,
+            Some(crate::app::MenuTarget::Message(msg)),
+            "at {at:?}"
+        );
+    }
+}

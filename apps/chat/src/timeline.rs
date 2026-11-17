@@ -564,19 +564,6 @@ impl ChatApp {
             return;
         };
         self.timeline.get_mut().shown.push(m.id.clone());
-        // Where the row stands whole, kept or drawn: what the pointer is
-        // over when it is over this message ([`Self::message_under`]).
-        let inset = f64::from(theme.tokens.spacing.s2);
-        let row = Rect::new(
-            column.area.x0 + inset,
-            *y,
-            column.area.x1 - inset,
-            *y + height,
-        )
-        .intersect(column.area);
-        if !rm.editing && row.height() > 0.0 {
-            self.message_rows.push((row, m.id.clone()));
-        }
         if m.share.is_none() && rm.resource_h > 0.0 {
             self.note_shown_attachments(&m);
         }

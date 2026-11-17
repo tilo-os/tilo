@@ -1207,12 +1207,7 @@ tilo_test_env::scenario! {
         let id = send_own(&mut app, &mut doc, "hover over me");
         app.message_bar.settle_for_visual_review();
         render_frame(&mut app, 1440.0, 900.0);
-        let row = app
-            .message_rows
-            .iter()
-            .find(|(_, row)| *row == id)
-            .map(|(rect, _)| *rect)
-            .expect("the message is painted");
+        let row = crate::app::painted_row(&app.hits, &id).expect("the message is painted");
         let mut handled = false;
         app.dispatch_event(
             &ui::synthetic_input::cursor_moved(row.center().x, row.center().y),
