@@ -10,6 +10,8 @@ public struct ShellSettings: Equatable, Sendable {
     public static let siteKey = "TiloSite"
     /// The key of the app, in the defaults and in `Info.plist`.
     public static let appKey = "TiloApp"
+    /// The key of "show the whole desktop", in the defaults and in `Info.plist`.
+    public static let desktopKey = "TiloDesktop"
     /// The site a build that names none opens.
     public static let productionSite = "https://tilo.sh"
     /// The app a build that names none shows: Chat, until the Assistant is in the page.
@@ -30,8 +32,12 @@ public struct ShellSettings: Equatable, Sendable {
     public let site: URL
     /// The id of the app the shell shows.
     public let app: String
+    /// Whether the whole desktop is shown, with the app in front, in place of the app alone.
+    /// A page that shows one app draws no live windows inside a conversation yet; the
+    /// desktop does.
+    public let desktop: Bool
 
-    public init(site: String, app: String = ShellSettings.defaultApp) throws(Refusal) {
+    public init(site: String, app: String = ShellSettings.defaultApp, desktop: Bool = false) throws(Refusal) {
         let written = site.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let parts = URLComponents(string: written), let scheme = parts.scheme?.lowercased(),
               let host = parts.host?.lowercased(), !host.isEmpty,
@@ -49,6 +55,7 @@ public struct ShellSettings: Equatable, Sendable {
         guard let url = origin.url else { throw .notAnAddress }
         self.site = url
         self.app = app
+        self.desktop = desktop
     }
 
     /// The settings a launch runs with: what the person or the command line chose, else what
@@ -60,8 +67,10 @@ public struct ShellSettings: Equatable, Sendable {
             [defaults.string(forKey: key), info?[key] as? String].compactMap(\.self).first { !$0.isEmpty }
         }
         do {
+            let desktop = defaults.object(forKey: desktopKey) == nil
+                ? info?[desktopKey] as? Bool ?? false : defaults.bool(forKey: desktopKey)
             return .success(try ShellSettings(site: named(siteKey) ?? productionSite,
-                                              app: named(appKey) ?? defaultApp))
+                                              app: named(appKey) ?? defaultApp, desktop: desktop))
         } catch {
             return .failure(error)
         }
@@ -78,6 +87,9 @@ public struct ShellSettings: Equatable, Sendable {
         if let app = given[appKey] as? String, (try? ShellSettings(site: productionSite, app: app)) != nil {
             defaults.set(app, forKey: appKey)
         }
+        if given[desktopKey] != nil {
+            defaults.set(defaults.bool(forKey: desktopKey), forKey: desktopKey)
+        }
     }
 
     /// The site's origin as text, the way a page's `location.origin` reads.
@@ -85,10 +97,11 @@ public struct ShellSettings: Equatable, Sendable {
         site.absoluteString.hasSuffix("/") ? String(site.absoluteString.dropLast()) : site.absoluteString
     }
 
-    /// The link the shell opens: the app alone, in the person's own workspace.
+    /// The link the shell opens: the app in the person's own workspace, alone or in front on
+    /// the desktop.
     public var start: URL {
-        // The link grammar's `entry "app/" "#" route`, with the route `/me/<app>`.
-        URL(string: "\(origin)/app/#/me/\(app)") ?? site
+        // The link grammar's `entry ["app/"] "#" route`, with the route `/me/<app>`.
+        URL(string: "\(origin)/\(desktop ? "" : "app/")#/me/\(app)") ?? site
     }
 
     /// Whether `host` is this computer, as the link grammar reads it: `localhost`, a name

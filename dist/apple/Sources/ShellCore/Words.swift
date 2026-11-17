@@ -17,7 +17,7 @@ public enum Words: String, CaseIterable, Sendable {
     case dictationUnavailable = "dictation-unavailable", dictationNotAllowed = "dictation-not-allowed"
     case wordsWaiting = "words-waiting"
     case writeReply = "write-reply", replyButton = "reply-button", replyPlaceholder = "reply-placeholder"
-    case siteLabel = "site-label", siteHelp = "site-help", useSite = "use-site"
+    case siteLabel = "site-label", siteHelp = "site-help", useSite = "use-site", showDesktop = "show-desktop"
     case notificationsLabel = "notifications-label", openNotificationSettings = "open-notification-settings"
     case shareAdded = "share-added", shareNothing = "share-nothing", shareFailed = "share-failed", done
     case wayInMac = "way-in-mac", wayInPhone = "way-in-phone", pasteLink = "paste-link", scanCode = "scan-code"
@@ -67,6 +67,7 @@ public enum Words: String, CaseIterable, Sendable {
         case .siteLabel: "Tilo site"
         case .siteHelp: "The address of the Tilo site this app opens."
         case .useSite: "Use this site"
+        case .showDesktop: "Show the whole desktop"
         case .notificationsLabel: "Notifications"
         case .openNotificationSettings: "Open notification settings"
         case .shareAdded: "Added to your message"

@@ -33,6 +33,9 @@ final class SettingsTests: XCTestCase {
                        "http://tilo.localhost:24120/app/#/me/so.tilo.chat")
         XCTAssertEqual(try ShellSettings(site: "https://tilo.sh", app: "so.tilo.assistant").start.absoluteString,
                        "https://tilo.sh/app/#/me/so.tilo.assistant")
+        // The whole desktop with the app in front, where live windows in a conversation are drawn.
+        XCTAssertEqual(try ShellSettings(site: "https://tilo.sh", desktop: true).start.absoluteString,
+                       "https://tilo.sh/#/me/so.tilo.chat")
         for app in ["Chat", "so", "so.tilo/chat", "so.tilo.chat?x", ""] {
             XCTAssertThrowsError(try ShellSettings(site: "https://tilo.sh", app: app), app) {
                 XCTAssertEqual($0 as? ShellSettings.Refusal, .notAnApp, app)
@@ -57,6 +60,11 @@ final class SettingsTests: XCTestCase {
         // An empty choice is no choice.
         defaults.set("", forKey: ShellSettings.siteKey)
         XCTAssertEqual(try ShellSettings.load(defaults: defaults, info: build).get().origin, "https://staging.example")
+        // The desktop is the person's choice too, over the build's.
+        XCTAssertFalse(try ShellSettings.load(defaults: defaults, info: build).get().desktop)
+        XCTAssertTrue(try ShellSettings.load(defaults: defaults, info: [ShellSettings.desktopKey: true]).get().desktop)
+        defaults.set(false, forKey: ShellSettings.desktopKey)
+        XCTAssertFalse(try ShellSettings.load(defaults: defaults, info: [ShellSettings.desktopKey: true]).get().desktop)
     }
 }
 
@@ -70,11 +78,13 @@ final class KeptArgumentTests: XCTestCase {
             defaults.removePersistentDomain(forName: name)
         }
         let kept = { defaults.persistentDomain(forName: name) ?? [:] }
-        defaults.setVolatileDomain([ShellSettings.siteKey: "https://Stack.example:8443/", ShellSettings.appKey: "so.tilo.assistant"],
+        defaults.setVolatileDomain([ShellSettings.siteKey: "https://Stack.example:8443/", ShellSettings.appKey: "so.tilo.assistant",
+                                    ShellSettings.desktopKey: "YES"],
                                    forName: UserDefaults.argumentDomain)
         ShellSettings.keepArguments(in: defaults)
         XCTAssertEqual(kept()[ShellSettings.siteKey] as? String, "https://stack.example:8443")
         XCTAssertEqual(kept()[ShellSettings.appKey] as? String, "so.tilo.assistant")
+        XCTAssertEqual(kept()[ShellSettings.desktopKey] as? Bool, true)
         defaults.setVolatileDomain([ShellSettings.siteKey: "http://192.168.1.4:24120", ShellSettings.appKey: "Chat"],
                                    forName: UserDefaults.argumentDomain)
         ShellSettings.keepArguments(in: defaults)

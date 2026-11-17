@@ -32,8 +32,9 @@ flow (an invitation, a pairing link, its sign-in); nothing hands a native identi
 While the site keeps a device out, a bar under the page offers the way in: paste the link, or
 on a phone scan the code, that "Pair a new device" shows on a device where the person is
 signed in. The page says where it stands at the door on its root element
-(`data-entry`), and the bar goes when it is in. A link is also opened from the File menu on
-the Mac, from a long press on the phone's icon, or by sharing it to the app.
+(`data-entry`); the bar goes when it is in, and a person who came in by such a link is taken
+back to the app. A link is also opened from the File menu on the Mac, from a long press on
+the phone's icon, or by sharing it to the app.
 
 **One site.** The app shows the origin its settings name and nothing else
 (`SitePolicy.swift`). Any other address goes to the system's browser. The script below runs in
@@ -72,6 +73,11 @@ next field the person presses, and never go into a password field.
 **When there is no page**, the app says what is wrong and offers the one thing to do: try
 again, or change the site. The site is a setting (the Mac app's Settings, the phone's page in
 the system's Settings), and `-TiloSite <origin>` on the command line is kept from then on.
+
+**One app, or the desktop.** The app opens the link to one app, alone. A page that shows one
+app draws no live windows inside a conversation yet; the desktop does. Until it does,
+"Show the whole desktop" in the settings (`TiloDesktop`) opens the desktop with the app in
+front instead.
 
 ## What the page and the host still owe
 

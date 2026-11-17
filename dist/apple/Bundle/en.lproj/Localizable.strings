@@ -42,6 +42,7 @@
 "site-label" = "Tilo site";
 "site-help" = "The address of the Tilo site this app opens.";
 "use-site" = "Use this site";
+"show-desktop" = "Show the whole desktop";
 "notifications-label" = "Notifications";
 "open-notification-settings" = "Open notification settings";
 "share-added" = "Added to your message";
