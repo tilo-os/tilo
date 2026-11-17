@@ -80,6 +80,10 @@ const FORWARDED: &[&str] = &[
     // scope every app's capability, and a session started from a build under test serves its
     // own, because the image's daemon speaks another build's wire.
     "TILO_FS_BLOB_SOCKET",
+    // What this session reaches of the machine (`tilo_paths::machine`): a session that runs
+    // inside another desktop passes it on, so the launcher binds its launches to that desktop's
+    // daemons not at all, and the programs it starts read the same answer.
+    "TILO_MACHINE",
     "XDG_DATA_HOME",
     "XDG_CONFIG_HOME",
     "XDG_CACHE_HOME",

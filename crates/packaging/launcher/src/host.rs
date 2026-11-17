@@ -78,9 +78,12 @@ pub fn make_runnable(path: &Path) -> Result<(), HostError> {
 pub fn spawn(launch: &HostLaunch) -> Result<ExitStatus, HostError> {
     crate::chromium_frame::prepare(launch);
     // A launcher already inside an app's cgroup (an app running a program of its own) stays in it and
-    // asks the manager for nothing.
+    // asks the manager for nothing, and neither does one whose session owns no machine: the manager
+    // it would ask is the desktop's around it, and its scopes are that desktop's to end.
     let busctl = Path::new(scope::BUSCTL);
-    let ask_manager = busctl.is_file() && !crate::app_cgroup::current_is_app_cgroup();
+    let ask_manager = busctl.is_file()
+        && !crate::app_cgroup::current_is_app_cgroup()
+        && tilo_paths::machine::owns_the_machine();
     spawn_with(launch, ask_manager.then_some(busctl), scope::JOIN_TIMEOUT)
 }
 

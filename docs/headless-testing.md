@@ -37,6 +37,12 @@ TILO_ADMIN_CONTROL=/run/user/1000/tilo-session/admin-control.sock
 
 A session that runs as a real login — its environment already names the Tilo desktop — also exports `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP=tilo:GNOME`, `XDG_SESSION_DESKTOP=tilo` and `XDG_SESSION_TYPE=wayland` to the systemd user manager and D-Bus activation, so a service those start finds the display (`crates/session/session/src/env.rs`). A nested session exports nothing, and a harness beside a live desktop clears `XDG_CURRENT_DESKTOP` before starting one (`real_apps.ScriptedSession` does), so a test session never repoints that desktop's user manager at its own socket.
 
+## A session that owns no machine
+
+A session started beside a live desktop must also leave the machine's own services alone: the VPN kill switch's root helper, `NetworkManager`, `BlueZ`, logind and UPower, and the system bus the desktop's daemons answer on. `TILO_MACHINE=hosted` is where that is declared, once, for the whole tree (`crates/platform/tilo-paths/src/machine.rs`): every service that acts on the machine reads it, so the session builds no client for those daemons and follows none of them. `dist/dev/nested-session.sh` sets it; a harness that starts its own session beside a live desktop sets it too, and every process the session starts inherits it.
+
+A session that says nothing owns the machine it was started on, which is what a login is; only a session that must keep away from the machine has to say so. A headless session a script starts without it is treated as owning the machine, and would reach the host's daemons — which is why every example here sets it beside a live desktop.
+
 ## Layer 1: a session with no display
 
 The same binary and the same code paths as a login; the backend paints into a wgpu off-screen texture. Nothing appears on your desktop, and no `DISPLAY` or `WAYLAND_DISPLAY` is needed.

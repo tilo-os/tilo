@@ -49,18 +49,27 @@ impl Reach {
     /// names, and exports nothing.
     #[must_use]
     pub fn new(backend: Backend, buses: Buses) -> Self {
-        match backend {
-            Backend::Nested => Self {
+        // A session built without a machine named owns the one it draws on.
+        Self::of(backend, buses, true)
+    }
+
+    /// [`new`](Self::new) for a session told whether it owns the machine
+    /// ([`tilo_paths::machine`]): a session that runs inside another desktop owns no machine, so it
+    /// reaches none of that desktop's buses either, however it draws.
+    #[must_use]
+    pub fn of(backend: Backend, buses: Buses, owns_the_machine: bool) -> Self {
+        if matches!(backend, Backend::Nested) || !owns_the_machine {
+            return Self {
                 buses: Buses {
                     session: named(buses.session),
                     system: named(buses.system),
                 },
                 export_displays: false,
-            },
-            Backend::Drm | Backend::Headless => Self {
-                buses,
-                export_displays: true,
-            },
+            };
+        }
+        Self {
+            buses,
+            export_displays: true,
         }
     }
 
@@ -138,6 +147,27 @@ mod tests {
                 assert_eq!(reach.session_bus(), None);
                 assert!(reach.export_displays);
             }
+        }
+
+        phase a_session_that_owns_no_machine_reaches_none_of_its_buses_or_displays;
+        {
+            // A headless session told it is hosted (TILO_MACHINE=hosted, a test run beside a live
+            // desktop) draws without a display and reaches none of the machine's daemons: the
+            // desktop around it is the one that owns them.
+            let hosted = Reach::of(Backend::Headless, default_buses(), false);
+            assert_eq!(
+                hosted.buses,
+                Buses {
+                    session: Bus::None,
+                    system: Bus::None
+                }
+            );
+            assert!(!hosted.export_displays);
+            // A session that owns the machine is unaffected by the switch, drawing on a tty or
+            // without a display.
+            let owned = Reach::of(Backend::Headless, default_buses(), true);
+            assert_eq!(owned.buses, default_buses());
+            assert!(owned.export_displays);
         }
 
         phase the_backends_are_the_ones_the_flag_names;

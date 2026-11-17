@@ -11,11 +11,13 @@ mod app;
 mod caps;
 mod location;
 pub mod login;
+pub mod machine;
 pub mod session;
 
 pub use app::{AppPaths, DEFAULT_PROFILE, default_profile, set_default_profile};
 pub use caps::{Availability, Feature, Unsupported, availability, available};
 pub use location::{InvalidVPath, Location, VPath, VirtualRoot};
+pub use machine::Reach;
 
 /// Where a Tilo Linux session mounts the collaborative workspace, and the
 /// root every member's documents name workspace files under, whatever
