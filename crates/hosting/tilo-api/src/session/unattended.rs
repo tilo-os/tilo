@@ -149,11 +149,16 @@ impl Session {
             wait_ms: Some(ANSWERING_MS),
             appearance: None,
         };
+        // As the person the server's device is certified for, as every
+        // other ask of its host is: never a person named after the program.
+        let person = tilo_actions::policy::PersonId::from_root(
+            self.connection.device.cert().user_public_key,
+        );
         let receipt = self
             .connection
             .device
             .actions(id)
-            .invoke(&Caller::local_person("tilo api"), request)
+            .invoke(&Caller::local_person(person), request)
             .await
             .ok_or_else(|| failed("unavailable", "the workspace did not answer", "try again"))?
             .map_err(|error| refusal(&error.to_string()))?;

@@ -81,9 +81,12 @@ fn arguments_of(
 /// confined to the workspace it runs in.
 fn caller_of(request: &HostStepRequest<'_>) -> Caller {
     let member = request.actor.member();
-    let caller = match member.agent_id() {
-        Some(agent) => Caller::local_agent(agent),
-        None => Caller::local_person(member.id()),
+    // A bot's installation id may carry a `:` of its own: it is software, so
+    // it reaches the activity as itself, never through a person's id.
+    let caller = match member {
+        tilo_actions::policy::MemberId::Agent(agent) => Caller::local_agent(agent.as_str()),
+        tilo_actions::policy::MemberId::Bot(bot) => Caller::local_bot(bot.as_str()),
+        tilo_actions::policy::MemberId::Person(person) => Caller::local_person(person.clone()),
     };
     caller.in_workspace(request.workspace)
 }

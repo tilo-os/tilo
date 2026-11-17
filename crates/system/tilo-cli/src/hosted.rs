@@ -1334,12 +1334,14 @@ fn members_text(listed: &Value) -> String {
         } else {
             text(invitation, "role")
         };
-        let _ = write!(
-            said,
-            "\n  {what} invitation {}, {}",
-            text(invitation, "status"),
-            text(invitation, "id")
-        );
+        // Who it is for, when the inviter named them, and its id, which
+        // cancelling it takes.
+        let named = text(invitation, "invitee_name");
+        let _ = write!(said, "\n  {what} invitation");
+        if !named.is_empty() {
+            let _ = write!(said, " for {named}");
+        }
+        let _ = write!(said, ", {}", text(invitation, "invite"));
     }
     said
 }
