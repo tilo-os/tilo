@@ -168,13 +168,8 @@ fn receipt(
 }
 
 /// Every run of the workspace `caller` is listed.
-<<<<<<<< HEAD:crates/agent/agent-session/tests/workspace_actions/runs_read.rs
-fn runs(
-    actions: &tilo_agent_session::WorkspaceActions,
-========
 fn invocations(
-    actions: &tilo_agent_participant::WorkspaceActions,
->>>>>>>> 125c08298a6 (refactor(collab): call one shortcut execution an invocation and a terminal run a command):crates/agent/agent-session/tests/workspace_actions/invocations_read.rs
+    actions: &tilo_agent_session::WorkspaceActions,
     workspace: WorkspaceId,
     caller: &Caller,
 ) -> serde_json::Value {
