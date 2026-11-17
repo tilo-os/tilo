@@ -50,6 +50,11 @@ pub enum FetchedBody {
         #[serde(skip_serializing_if = "Option::is_none")]
         title: Option<String>,
         text: String,
+        /// Why `text` is not what the page shows a person, where a read
+        /// without a browser cannot see that. Told to the reader by whoever
+        /// answers the read, never sent on with the text.
+        #[serde(skip)]
+        needs_browser: Option<readable::NeedsBrowser>,
     },
     /// Anything else (a PDF, an image, an archive), whole, as the server
     /// sent it. Never interpreted here: the caller stores it as content.
@@ -74,6 +79,16 @@ impl FetchedPage {
     pub fn title(&self) -> Option<&str> {
         match &self.body {
             FetchedBody::Text { title, .. } => title.as_deref(),
+            FetchedBody::Binary { .. } => None,
+        }
+    }
+
+    /// Why the page's text is not what it shows a person, where a read
+    /// without a browser cannot see that.
+    #[must_use]
+    pub fn needs_browser(&self) -> Option<readable::NeedsBrowser> {
+        match &self.body {
+            FetchedBody::Text { needs_browser, .. } => *needs_browser,
             FetchedBody::Binary { .. } => None,
         }
     }
@@ -264,15 +279,18 @@ async fn fetch_from(
             FetchedBody::Text {
                 title: page.title,
                 text: page.text,
+                needs_browser: page.needs_browser,
             }
         }
         Kind::Json => FetchedBody::Text {
             title: None,
             text: pretty_json(&bytes, truncated),
+            needs_browser: None,
         },
         Kind::Text => FetchedBody::Text {
             title: None,
             text: String::from_utf8_lossy(&bytes).trim().to_owned(),
+            needs_browser: None,
         },
     };
     Ok(FetchedPage {
