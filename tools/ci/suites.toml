@@ -952,6 +952,16 @@ inputs = ["crates/platform/tilo-web-search/tests/fixtures/"]
 readers = ["crates/agent/agent-web-tools/src/lib.rs"]
 
 [[cargo]]
+package = "calendar"
+# Its tests of what it writes to a calendar server start the server the
+# holder's own tests start, from its source, so both writers are judged by
+# one reading of the standard's tables.
+inputs = [
+  "crates/hosting/tilo-workspace-host/src/workspaces/person_settings/calendars/fake_caldav.rs",
+]
+readers = ["apps/calendar/src/lib.rs"]
+
+[[cargo]]
 package = "mail"
 # The engine test mirrors the end mark the mail writes.
 inputs = ["apps/browser/chromium/tests/resize_frames.py"]

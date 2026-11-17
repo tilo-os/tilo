@@ -293,10 +293,31 @@ impl AuthorisedClient {
         url: &'a str,
         precondition: Precondition<'a>,
     ) -> net::DavFuture<'a, Result<DavResponse, String>> {
+        self.delete_saying(url, &[], precondition)
+    }
+
+    /// [`net::DavClient::delete_saying`], for this account's server only.
+    pub fn delete_saying<'a>(
+        &'a self,
+        url: &'a str,
+        headers: &'a [(&'a str, &'a str)],
+        precondition: Precondition<'a>,
+    ) -> net::DavFuture<'a, Result<DavResponse, String>> {
         Box::pin(async move {
             let url = self.binding.check(url)?;
             self.client
-                .delete(url.as_str(), precondition)
+                .delete_saying(url.as_str(), headers, precondition)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// What the server holds at `url`, for this account's server only.
+    pub fn get<'a>(&'a self, url: &'a str) -> net::DavFuture<'a, Result<DavResponse, String>> {
+        Box::pin(async move {
+            let url = self.binding.check(url)?;
+            self.client
+                .get(url.as_str())
                 .await
                 .map_err(|error| error.to_string())
         })

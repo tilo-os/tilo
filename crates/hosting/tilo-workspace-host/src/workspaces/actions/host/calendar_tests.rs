@@ -1723,3 +1723,88 @@ async fn an_invitation_her_assistant_did_not_put_in_is_not_its_to_change_or_remo
     assert_eq!(moved["made"], "updated", "{moved}");
     assert_eq!(answering.count(), 0);
 }
+
+/// Her calendar server follows the standard's table of what a change to an
+/// entry makes it send (RFC 6638, 3.2.1.2): a line that goes from left to the
+/// server to `SCHEDULE-AGENT=CLIENT` has it tell whoever the line names that
+/// the event is off. So what she changes herself, in an entry she organises
+/// that another client stored with its lines left to the server, goes up
+/// with those lines as the server holds them. The server goes on writing to
+/// the people it already wrote to, calls nothing off, and is started writing
+/// to nobody: somebody the change newly names is the client's. When she takes
+/// the entry out, the server tells the people it invited (3.2.1.3) and
+/// nobody else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn her_own_change_to_an_entry_her_server_writes_for_calls_nothing_off() {
+    let ada = Ada::signing_in_as(ADDRESS).await;
+    let her = ada.herself();
+    ada.add().await;
+    let lunch = |start: &str, invited: &[&str]| {
+        inviting("lunch-4@example.org", "Lunch", start, ADDRESS, invited)
+    };
+    // Another client stored it long ago, and the server invited both.
+    let stored = lunch(
+        "20261118T120000",
+        &["bo@example.test", "eve@elsewhere.test"],
+    );
+    ada.server.put("work", "lunch.ics", &stored);
+
+    let moved = ada
+        .put(
+            &her,
+            &carried(
+                "REQUEST",
+                &lunch(
+                    "20261118T130000",
+                    &["bo@example.test", "eve@elsewhere.test", "cy@example.test"],
+                ),
+            ),
+        )
+        .await
+        .expect("her own entry, by her own word");
+    assert_eq!(moved["made"], "updated", "{moved}");
+    let mailed = ada.server.mailed();
+    assert!(
+        !mailed.iter().any(|sent| sent.starts_with("CANCEL")),
+        "her calendar server told people that her lunch is off, which it is not: {mailed:?}"
+    );
+    // The table's row SERVER, column SERVER, for the two it already wrote
+    // to; its row <Absent>, column CLIENT, for the one the change adds.
+    assert_eq!(
+        mailed,
+        [
+            "REQUEST to bo@example.test",
+            "REQUEST to eve@elsewhere.test"
+        ],
+        "the server goes on writing to those it already wrote to and starts writing to nobody"
+    );
+    let now = naming_lines(&ada.server.held("work")[0].1);
+    assert_eq!(now.len(), 4, "{now:?}");
+    for line in naming_lines(&stored) {
+        assert!(
+            now.contains(&line),
+            "a line the server writes for changed: {line} is not in {now:?}"
+        );
+    }
+    assert!(
+        now.iter().any(|line| {
+            line.contains("cy@example.test") && line.contains(";SCHEDULE-AGENT=CLIENT")
+        }),
+        "{now:?}"
+    );
+
+    let gone = ada
+        .put(
+            &her,
+            &carried("CANCEL", &lunch("20261118T130000", &["bo@example.test"])),
+        )
+        .await
+        .expect("she takes it out");
+    assert_eq!(gone["made"], "cancelled", "{gone}");
+    assert!(ada.server.held("work").is_empty());
+    assert_eq!(
+        ada.server.mailed()[2..],
+        ["CANCEL to bo@example.test", "CANCEL to eve@elsewhere.test"],
+        "the server tells those it invited that the lunch is off, and nobody else"
+    );
+}

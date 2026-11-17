@@ -151,7 +151,23 @@ impl DavClient {
         url: &str,
         precondition: Precondition<'_>,
     ) -> Result<DavResponse, Error> {
-        send(apply(self.request(Method::DELETE, url), precondition)).await
+        self.delete_saying(url, &[], precondition).await
+    }
+
+    /// `DELETE` under `precondition`, saying `headers` beside it: what a
+    /// server is told about the removal, such as `Schedule-Reply: F` to a
+    /// calendar server that would answer an organiser for it (RFC 6638, 8.1).
+    pub async fn delete_saying(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        precondition: Precondition<'_>,
+    ) -> Result<DavResponse, Error> {
+        let mut request = self.request(Method::DELETE, url);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        send(apply(request, precondition)).await
     }
 
     pub async fn mkcol(&self, url: &str) -> Result<DavResponse, Error> {
@@ -302,6 +318,8 @@ mod tests {
         let server = Responder::start(vec![
             Reply::status(201).header("ETag", "\"v1\""),
             Reply::status(412),
+            Reply::status(204),
+            Reply::status(204),
         ]);
         let url = format!("{}/cal/a.ics", server.url());
         run(async {
@@ -321,11 +339,37 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(conflict.status(), StatusCode::PRECONDITION_FAILED);
+            // A removal says what it is given to say beside its
+            // precondition, and nothing more where it is given nothing.
+            let told = client
+                .delete_saying(
+                    &url,
+                    &[("Schedule-Reply", "F")],
+                    Precondition::IfMatch("\"v1\""),
+                )
+                .await
+                .unwrap();
+            assert_eq!(told.status(), StatusCode::NO_CONTENT);
+            client
+                .delete(&url, Precondition::IfMatch("\"v2\""))
+                .await
+                .unwrap();
         });
         let create = server.next_request();
         assert_eq!(create.header("if-none-match"), Some("*"));
         assert_eq!(create.header("content-type"), Some("text/calendar"));
         assert_eq!(server.next_request().header("if-match"), Some("\"v0\""));
+        let told = server.next_request();
+        assert_eq!(
+            (told.method.as_str(), told.target.as_str()),
+            ("DELETE", "/cal/a.ics")
+        );
+        assert_eq!(told.header("schedule-reply"), Some("F"));
+        assert_eq!(told.header("if-match"), Some("\"v1\""));
+        let plain = server.next_request();
+        assert_eq!(plain.method, "DELETE");
+        assert_eq!(plain.header("schedule-reply"), None);
+        assert_eq!(plain.header("if-match"), Some("\"v2\""));
     }
 
     #[test]

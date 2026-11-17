@@ -14,11 +14,15 @@
 //! [`calendar::spans`]): a device and its holder agree about time zones,
 //! repeats and all-day entries because they are the same reader.
 //!
-//! Nothing here sends anything to anybody, and nothing here leaves it to a
-//! calendar server to: an entry is written into the person's own calendar
-//! with every line that names somebody saying that the server is not the
-//! one to write to them (`SCHEDULE-AGENT=CLIENT`, RFC 6638), and it is
-//! removed with `Schedule-Reply: F`. Whoever it invites is mailed nothing.
+//! Nothing here sends anything to anybody, and nothing here starts a
+//! calendar server doing it: an entry is written into the person's own
+//! calendar with every line that names somebody saying that the server is
+//! not the one to write to them (`SCHEDULE-AGENT=CLIENT`, RFC 6638), and it
+//! is removed with `Schedule-Reply: F`. Whoever it invites is mailed
+//! nothing. What a server already does is not undone either: a line it
+//! writes for, in an entry another client stored, goes up as the server
+//! holds it, because marking it then would have the server tell that person
+//! the event is off (RFC 6638, 3.2.1.2; [`calendar::ics::kept_beside`]).
 //!
 //! The person changes their calendar by asking. An agent they named for the
 //! account hands over text of its own writing, so what it may do with it is
@@ -826,7 +830,13 @@ fn planned(root: &Path, accounts: &[Account], invitation: &Invitation) -> Result
     let existing = held(root, std::slice::from_ref(account))
         .into_iter()
         .find(|held| held.event.id == event.id);
-    let text = calendar::ics::kept_text(&invitation.ics);
+    // What a line says of who writes to the person it names is settled
+    // against what the server holds of them (RFC 6638, 3.2.1.2), as just
+    // read, and is written over that version only ([`carry_out`]).
+    let text = calendar::ics::kept_beside(
+        &invitation.ics,
+        existing.as_ref().map(|held| held.ics.as_str()),
+    );
     let (change, text) = match (existing, cancels) {
         (None, true) => (Change::Nothing, text),
         (Some(held), true) => (Change::Remove(Found::of(&held)), text),
@@ -881,6 +891,7 @@ fn carry_out(root: &Path, planned: Planned) -> Result<Value, String> {
         account,
         entry,
         text,
+        named,
         change,
         ..
     } = planned;
@@ -909,7 +920,21 @@ fn carry_out(root: &Path, planned: Planned) -> Result<Value, String> {
             "cancelled"
         }
         Change::Update(found) => {
-            let matching = found.etag.as_deref().unwrap_or("*");
+            // What the text says of who writes to the people it names was
+            // settled against one version of the entry (RFC 6638, 3.2.1.2),
+            // so it goes over that version and no other.
+            let names = !(named.organizers.is_empty() && named.attendees.is_empty());
+            let matching = match found.etag.as_deref() {
+                Some(version) => version,
+                None if names => {
+                    return Err(
+                        "The calendar server gave no version of this entry, so what it holds \
+                         of the people the entry names could not be kept: nothing was written"
+                            .into(),
+                    );
+                }
+                None => "*",
+            };
             if !write(
                 root,
                 &account,

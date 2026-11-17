@@ -676,17 +676,43 @@ mod live {
                     request.if_match = Some(job.etag.clone().unwrap_or_else(|| "*".into()));
                     request.if_none_match = false;
                 }
-                let precondition = match &request.if_match {
-                    Some(etag) => Precondition::IfMatch(etag),
-                    None if request.if_none_match => Precondition::IfNoneMatchAny,
-                    None => Precondition::None,
-                };
                 let authenticated = match authenticated(client, &job.config, &request.url).await {
                     Ok(client) => client,
                     Err(error) => {
                         result.failures.push((job.event.id, error));
                         continue;
                     }
+                };
+                if names_somebody(&request.body) {
+                    // A server that schedules by itself is never started writing to anybody, and
+                    // never made to invite or call off by a line that says something else of who
+                    // writes than the server holds (RFC 6638, 3.2.1.1 and 3.2.1.2). A new entry
+                    // has every line marked; over an existing one, what the server holds is read
+                    // first and written over as that version only.
+                    let held = if job.href.is_some() {
+                        match held_now(&authenticated, &request.url, job.etag.as_deref()).await {
+                            Ok((text, version)) => {
+                                request.if_match = Some(version);
+                                Some(text)
+                            }
+                            Err(Unread::Changed) => {
+                                result.conflicts.push((job.event.id, request.url));
+                                continue;
+                            }
+                            Err(Unread::Failed(reason)) => {
+                                result.failures.push((job.event.id, reason));
+                                continue;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    request.body = ics::kept_beside(&request.body, held.as_deref());
+                }
+                let precondition = match &request.if_match {
+                    Some(etag) => Precondition::IfMatch(etag),
+                    None if request.if_none_match => Precondition::IfNoneMatchAny,
+                    None => Precondition::None,
                 };
                 let sent = authenticated
                     .put(
@@ -746,9 +772,12 @@ mod live {
                         continue;
                     }
                 };
+                // Where its person was invited, taking an entry out is not declining it: the
+                // server answers the organiser nothing for them (RFC 6638, 3.2.2.4 and 8.1).
                 let sent = authenticated
-                    .delete(
+                    .delete_saying(
                         url.as_str(),
+                        &[("Schedule-Reply", "F")],
                         Precondition::IfMatch(job.etag.as_deref().unwrap_or("*")),
                     )
                     .await;
@@ -782,6 +811,58 @@ mod live {
                 href.trim_start_matches('/')
             )
         }
+    }
+
+    /// Why what a server holds of an entry was not taken as read.
+    enum Unread {
+        /// It is gone, or it is no longer the version this calendar last saw.
+        Changed,
+        /// It could not be read: why, for the person.
+        Failed(String),
+    }
+
+    /// Whether the entry `body` names somebody a calendar server could write to: who organises
+    /// it, or somebody it invites.
+    fn names_somebody(body: &str) -> bool {
+        let named = ics::named(body);
+        !(named.organizers.is_empty() && named.attendees.is_empty())
+    }
+
+    /// What the server holds at `url` now, and its version. It is read before an entry that
+    /// names somebody is written over it, because what each line says of who writes to the
+    /// person it names has to stay as the server holds it (RFC 6638, 3.2.1.2;
+    /// [`ics::kept_beside`]). `known` is the version this calendar last saw there: a server
+    /// that holds another one changed the entry since, and nothing is written over it.
+    async fn held_now(
+        client: &AuthorisedClient,
+        url: &str,
+        known: Option<&str>,
+    ) -> Result<(String, String), Unread> {
+        let unread = |why: &str| {
+            Unread::Failed(format!(
+                "the calendar server did not show what it holds of this event ({why}), so \
+                 nothing was written to it"
+            ))
+        };
+        let response = client.get(url).await.map_err(|error| unread(&error))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(Unread::Changed);
+        }
+        if !response.status().is_success() {
+            return Err(unread(&format!("server returned {}", response.status())));
+        }
+        let Some(version) = response.etag() else {
+            return Err(unread("it gave no version of it"));
+        };
+        if known.is_some_and(|known| known != version) {
+            return Err(Unread::Changed);
+        }
+        let bytes = response
+            .read_bounded(super::MAX_ICAL_BYTES)
+            .await
+            .map_err(|error| unread(&dav_error_message(&error)))?;
+        let text = String::from_utf8(bytes).map_err(|_| unread("it is not text"))?;
+        Ok((text, version))
     }
 
     #[cfg(test)]
@@ -1080,6 +1161,433 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
                         etag: Some("\"stale\"".into()),
                     }]);
                     assert_eq!(removed.conflicts, vec![(event.id, href)]);
+                }
+            }
+
+            phase what_a_calendar_server_is_sent_tells_it_to_write_to_nobody;
+            {
+                let server = Responder::start(vec![
+                    Reply::status(201).header("ETag", "\"v1\""),
+                    Reply::status(204),
+                ]);
+                let config = config(server.url());
+                let calendar = calendar();
+                let mut event = super::super::pull_calendar(&config, &calendar, today())
+                    .events
+                    .remove(0);
+                event.calendar_id = Some(calendar.id.clone());
+                // Its person organises it and invites Bo.
+                let organizer = crate::model::Attendee {
+                    id: crate::model::Id::new_v4(),
+                    name: "Ada".into(),
+                    email: "ada@example.test".into(),
+                    status: crate::model::InviteStatus::Accepted,
+                };
+                event.organizer = Some(organizer.id);
+                event.attendees.push(organizer);
+                event.attendees.push(crate::model::Attendee {
+                    id: crate::model::Id::new_v4(),
+                    name: "Bo".into(),
+                    email: "bo@example.test".into(),
+                    status: crate::model::InviteStatus::NeedsAction,
+                });
+                let upload = push_jobs_live(&[super::super::UploadJob {
+                    config: config.clone(),
+                    calendar: calendar.clone(),
+                    event: event.clone(),
+                    href: None,
+                    etag: None,
+                }]);
+                assert_eq!(upload.confirmed, vec![event.id]);
+                let put = server.next_request();
+                assert_eq!(put.method, "PUT");
+                let text = put.body_text().replace("\r\n ", "");
+                let naming: Vec<&str> = text
+                    .lines()
+                    .filter(|line| line.starts_with("ORGANIZER") || line.starts_with("ATTENDEE"))
+                    .collect();
+                assert_eq!(naming.len(), 3, "{text}");
+                for line in naming {
+                    assert!(
+                        line.contains(";SCHEDULE-AGENT=CLIENT"),
+                        "the calendar server is left to write to whoever this line names: {line}"
+                    );
+                }
+                let removed = remove_jobs_live(&[super::super::RemoveJob {
+                    config,
+                    calendar,
+                    id: event.id,
+                    href: Some(format!("{}/cal/{}.ics", server.url(), event.id)),
+                    etag: Some("\"v1\"".into()),
+                }]);
+                assert_eq!(removed.confirmed, vec![event.id]);
+                let delete = server.next_request();
+                assert_eq!(delete.method, "DELETE");
+                assert_eq!(
+                    delete.header("schedule-reply"),
+                    Some("F"),
+                    "a removal tells the calendar server to answer nobody"
+                );
+            }
+        }
+
+        /// The address the calendar server these tests start writes to its person at: the
+        /// name her account signs in with.
+        const ADA: &str = "ada@example.test";
+        /// Whom that server wrote to by itself, where that is nobody.
+        const NOBODY: [&str; 0] = [];
+        /// What stands on a line that names somebody: nothing, which leaves writing to them
+        /// to the server, or that the client writes.
+        const LEFT_TO_SERVER: &str = "";
+        const CLIENT: &str = ";SCHEDULE-AGENT=CLIENT";
+
+        /// Ada's calendar server, which schedules by itself and answers by RFC 6638's
+        /// tables, with her account as this device keeps it and her one calendar there.
+        fn adas() -> (crate::fake_caldav::Server, CalDavConfig, RemoteCalendar) {
+            let server = crate::fake_caldav::Server::start(ADA, "secret");
+            let work = server.add_calendar("work", "Work");
+            let account = CalDavConfig {
+                username: ADA.into(),
+                ..config(server.url())
+            };
+            let work = RemoteCalendar {
+                id: work,
+                ..calendar()
+            };
+            (server, account, work)
+        }
+
+        /// An entry as a server holds it: `by` organises it and invites `invited`, and
+        /// `mark` stands on every line that names somebody.
+        fn held_entry(uid: &str, by: &str, invited: &[&str], mark: &str) -> String {
+            let people: String =
+                std::iter::once(format!("ORGANIZER{mark};CN=Organiser:mailto:{by}\r\n"))
+                    .chain(invited.iter().map(|address| {
+                        format!(
+                            "ATTENDEE{mark};PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{address}\r\n"
+                        )
+                    }))
+                    .collect();
+            format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example//Server//EN\r\n\
+                 BEGIN:VEVENT\r\nUID:{uid}\r\nSUMMARY:Dinner\r\nDTSTART:20261119T190000Z\r\n\
+                 DTEND:20261119T200000Z\r\n{people}END:VEVENT\r\nEND:VCALENDAR\r\n"
+            )
+        }
+
+        /// The lines of the entry `text` that name somebody, each whole.
+        fn naming_lines(text: &str) -> Vec<String> {
+            text.replace("\r\n ", "")
+                .lines()
+                .filter(|line| line.starts_with("ORGANIZER") || line.starts_with("ATTENDEE"))
+                .map(str::to_owned)
+                .collect()
+        }
+
+        /// The one entry Ada's calendar holds on her server.
+        fn held_text(server: &crate::fake_caldav::Server) -> String {
+            let mut held = server.held("work");
+            assert_eq!(held.len(), 1, "her calendar holds one entry");
+            held.remove(0).1
+        }
+
+        /// The upload of the one entry Ada's calendar holds, as this device read it just
+        /// now: where the server keeps it and in which version.
+        fn as_pulled(account: &CalDavConfig, work: &RemoteCalendar) -> super::super::UploadJob {
+            let mut pulled = pull_calendar_live(&client(), account, work, today(), None)
+                .expect("her calendar reads");
+            let mut resource = pulled.resources.remove(0);
+            let mut event = resource.events.remove(0);
+            event.calendar_id = Some(work.id.clone());
+            super::super::UploadJob {
+                config: account.clone(),
+                calendar: work.clone(),
+                event,
+                href: Some(resource.href),
+                etag: resource.etag,
+            }
+        }
+
+        fn attendee(name: &str, email: &str) -> crate::model::Attendee {
+            crate::model::Attendee {
+                id: crate::model::Id::new_v4(),
+                name: name.into(),
+                email: email.into(),
+                status: crate::model::InviteStatus::NeedsAction,
+            }
+        }
+
+        fn methods(requests: &[test_http::Request]) -> Vec<&str> {
+            requests
+                .iter()
+                .map(|request| request.method.as_str())
+                .collect()
+        }
+
+        tilo_test_env::scenario! {
+            /// The live client against a calendar server that schedules by itself and answers
+            /// by RFC 6638's tables: nothing this calendar stores or removes starts it writing
+            /// to anybody.
+            fn a_calendar_server_is_never_started_writing_to_anybody;
+
+            phase a_new_entry_that_invites_people_and_its_removal_have_the_server_write_to_nobody;
+            {
+                let (server, account, work) = adas();
+                let ada = attendee("Ada", ADA);
+                let mut event = crate::model::Event {
+                    id: crate::model::Id::new_v4(),
+                    title: "Dinner".into(),
+                    start: today().at(19, 0, 0, 0),
+                    end: today().at(20, 0, 0, 0),
+                    calendar_id: Some(work.id.clone()),
+                    organizer: Some(ada.id),
+                    ..crate::model::Event::default()
+                };
+                event.attendees.push(ada);
+                event.attendees.push(attendee("Bo", "bo@example.test"));
+                event.attendees.push(attendee("Eve", "eve@elsewhere.test"));
+                let upload = push_jobs_live(&[super::super::UploadJob {
+                    config: account.clone(),
+                    calendar: work.clone(),
+                    event: event.clone(),
+                    href: None,
+                    etag: None,
+                }]);
+                assert_eq!(upload.confirmed, vec![event.id], "{:?}", upload.failures);
+                // RFC 6638, 3.2.1.1: a new entry's line left to the server has it invite
+                // whoever the line names.
+                assert_eq!(
+                    server.mailed(),
+                    NOBODY,
+                    "her calendar server invited the people a new event names"
+                );
+                let naming = naming_lines(&held_text(&server));
+                assert_eq!(naming.len(), 4, "{naming:?}");
+                for line in &naming {
+                    assert!(
+                        line.contains(";SCHEDULE-AGENT=CLIENT"),
+                        "the calendar server is left to write to whoever this line names: {line}"
+                    );
+                }
+                let stored = &upload.revisions[0];
+                let removed = remove_jobs_live(&[super::super::RemoveJob {
+                    config: account,
+                    calendar: work,
+                    id: event.id,
+                    href: Some(stored.href.clone()),
+                    etag: stored.etag.clone(),
+                }]);
+                assert_eq!(removed.confirmed, vec![event.id], "{:?}", removed.failures);
+                assert!(server.held("work").is_empty());
+                // RFC 6638, 3.2.1.3: a removed entry's line left to the server has it tell
+                // whoever the line names that the event is off.
+                assert_eq!(
+                    server.mailed(),
+                    NOBODY,
+                    "her calendar server told people a removed event is off"
+                );
+                let requests = server.requests();
+                let removal = requests
+                    .iter()
+                    .find(|request| request.method == "DELETE")
+                    .expect("the removal");
+                assert_eq!(
+                    removal.header("Schedule-Reply"),
+                    Some("F"),
+                    "a removal tells the calendar server to answer nobody"
+                );
+            }
+
+            phase an_invitation_taken_out_has_the_server_answer_its_organiser_nothing;
+            {
+                // RFC 6638, 3.2.2.4 and 8.1: an invitation the server delivered leaves
+                // answering its organiser to the server, which says she declines when the
+                // entry goes, unless the removal says not to answer.
+                let (server, account, work) = adas();
+                server.put(
+                    "work",
+                    "offsite.ics",
+                    &held_entry(
+                        "offsite-9@example.org",
+                        "bo@example.test",
+                        &[ADA, "cy@example.test"],
+                        LEFT_TO_SERVER,
+                    ),
+                );
+                let job = as_pulled(&account, &work);
+                let removed = remove_jobs_live(&[super::super::RemoveJob {
+                    config: account,
+                    calendar: work,
+                    id: job.event.id,
+                    href: job.href.clone(),
+                    etag: job.etag.clone(),
+                }]);
+                assert_eq!(removed.confirmed, vec![job.event.id], "{:?}", removed.failures);
+                assert!(server.held("work").is_empty());
+                assert_eq!(
+                    server.mailed(),
+                    NOBODY,
+                    "taking an invitation out of her calendar declined it for her"
+                );
+            }
+        }
+
+        tilo_test_env::scenario! {
+            /// The live client against the same server: what an entry's lines say of who
+            /// writes to the people they name goes up as its server holds it (RFC 6638,
+            /// 3.2.1.2), and an entry that is no longer what was read is not written.
+            fn what_an_entry_says_of_who_writes_to_people_goes_up_as_its_server_holds_it;
+
+            phase an_entry_stored_with_client_marks_goes_up_again_with_them;
+            {
+                let (server, account, work) = adas();
+                // As her own server keeps what it puts in: she organises, and every line
+                // says that the client writes.
+                server.put(
+                    "work",
+                    "dinner.ics",
+                    &held_entry(
+                        "dinner-3@example.org",
+                        ADA,
+                        &["bo@example.test", "eve@elsewhere.test"],
+                        CLIENT,
+                    ),
+                );
+                let mut job = as_pulled(&account, &work);
+                job.event.title = "Dinner an hour later".into();
+                let upload = push_jobs_live(std::slice::from_ref(&job));
+                assert_eq!(
+                    upload.confirmed,
+                    vec![job.event.id],
+                    "{:?} {:?}",
+                    upload.conflicts,
+                    upload.failures
+                );
+                // The table's row CLIENT, column SERVER: a line that loses its mark has the
+                // server invite whoever it names.
+                assert_eq!(
+                    server.mailed(),
+                    NOBODY,
+                    "her calendar server invited the people of an event that was only changed"
+                );
+                let text = held_text(&server);
+                assert!(text.contains("Dinner an hour later"), "{text}");
+                let naming = naming_lines(&text);
+                assert!(naming.len() >= 3, "{naming:?}");
+                for line in &naming {
+                    assert!(
+                        line.contains(";SCHEDULE-AGENT=CLIENT"),
+                        "the calendar server is left to write to whoever this line names: {line}"
+                    );
+                }
+            }
+
+            phase a_line_its_server_writes_for_goes_up_as_held_and_a_new_guest_is_written_to_by_nobody;
+            {
+                let (server, account, work) = adas();
+                // Another client stored it and left its lines to the server, which invited
+                // both.
+                let stored = held_entry(
+                    "lunch-4@example.org",
+                    ADA,
+                    &["bo@example.test", "eve@elsewhere.test"],
+                    LEFT_TO_SERVER,
+                );
+                server.put("work", "lunch.ics", &stored);
+                let mut job = as_pulled(&account, &work);
+                job.event.title = "Lunch moved".into();
+                job.event.attendees.push(attendee("Cy", "cy@example.test"));
+                let upload = push_jobs_live(std::slice::from_ref(&job));
+                assert_eq!(
+                    upload.confirmed,
+                    vec![job.event.id],
+                    "{:?} {:?}",
+                    upload.conflicts,
+                    upload.failures
+                );
+                // The table's row SERVER has no column that sends nothing. Its column SERVER
+                // is the server going on as it did, to the two it already wrote to; its
+                // column CLIENT would have it tell them the lunch is off. Cy is new: row
+                // <Absent>, column CLIENT, which sends nothing.
+                assert_eq!(
+                    server.mailed(),
+                    ["REQUEST to bo@example.test", "REQUEST to eve@elsewhere.test"],
+                    "the server goes on writing to those it already wrote to, calls nothing \
+                     off and starts writing to nobody"
+                );
+                let text = held_text(&server);
+                assert!(text.contains("Lunch moved"), "{text}");
+                let now = naming_lines(&text);
+                for line in naming_lines(&stored) {
+                    assert!(
+                        now.contains(&line),
+                        "a line the server writes for changed: {line} is not in {now:?}"
+                    );
+                }
+                assert!(
+                    now.iter().any(|line| {
+                        line.contains("cy@example.test") && line.contains(";SCHEDULE-AGENT=CLIENT")
+                    }),
+                    "{now:?}"
+                );
+            }
+
+            phase an_entry_that_changed_on_its_server_or_cannot_be_read_is_not_written;
+            {
+                let (server, account, work) = adas();
+                let ours = held_entry("dinner-3@example.org", ADA, &["bo@example.test"], CLIENT);
+                server.put("work", "dinner.ics", &ours);
+                let mut job = as_pulled(&account, &work);
+                job.event.title = "Dinner, changed here".into();
+                // Meanwhile another client stores it with its lines left to the server.
+                let theirs = held_entry(
+                    "dinner-3@example.org",
+                    ADA,
+                    &["bo@example.test"],
+                    LEFT_TO_SERVER,
+                );
+                server.put("work", "dinner.ics", &theirs);
+                let _ = server.requests();
+                let upload = push_jobs_live(std::slice::from_ref(&job));
+                assert!(upload.confirmed.is_empty());
+                assert_eq!(upload.conflicts.len(), 1, "{:?}", upload.failures);
+                assert_eq!(
+                    methods(&server.requests()),
+                    ["GET"],
+                    "a read that is no longer true is followed by no write"
+                );
+                assert_eq!(held_text(&server), theirs);
+                assert_eq!(server.mailed(), NOBODY);
+
+                // The entry is gone from the server.
+                server.remove("work", "dinner.ics");
+                let upload = push_jobs_live(std::slice::from_ref(&job));
+                assert!(upload.confirmed.is_empty());
+                assert_eq!(upload.conflicts.len(), 1, "{:?}", upload.failures);
+                assert_eq!(methods(&server.requests()), ["GET"]);
+                assert!(server.held("work").is_empty());
+                assert_eq!(server.mailed(), NOBODY);
+
+                // A server that does not answer the read, and one that gives no version of
+                // what it holds: nothing is written, and the person is told why.
+                for (reply, why) in [
+                    (Reply::status(500), "the read fails"),
+                    (Reply::status(200).body(ours), "the read has no version"),
+                ] {
+                    let scripted = Responder::start(vec![reply]);
+                    let mut blind = job.clone();
+                    blind.config.server_url = scripted.url();
+                    blind.href = Some(format!("{}/cal/dinner.ics", scripted.url()));
+                    let upload = push_jobs_live(std::slice::from_ref(&blind));
+                    assert!(upload.confirmed.is_empty(), "{why}");
+                    assert!(upload.conflicts.is_empty(), "{why}");
+                    assert_eq!(upload.failures.len(), 1, "{why}");
+                    assert!(
+                        upload.failures[0].1.contains("nothing was written"),
+                        "{why}: {}",
+                        upload.failures[0].1
+                    );
+                    assert_eq!(methods(&scripted.drain_requests()), ["GET"], "{why}");
                 }
             }
         }
