@@ -74,6 +74,12 @@ pub(crate) struct Upstream {
     pub cursor_shape: Option<
         wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
     >,
+    pub idle_inhibit: Option<
+        wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1,
+    >,
+    pub shortcuts_inhibit: Option<
+        wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1,
+    >,
     /// The version the desktop's presentation global was bound at.
     pub presentation_version: u32,
     pub feedback: FeedbackParts,
@@ -146,6 +152,8 @@ impl Upstream {
                 activation: None,
                 presentation: None,
                 cursor_shape: None,
+                idle_inhibit: None,
+                shortcuts_inhibit: None,
                 presentation_version: 0,
                 feedback: FeedbackParts::default(),
                 xdg_outputs: None,
@@ -320,6 +328,12 @@ impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
                 let version = version.min(2);
                 up.cursor_shape = Some(registry.bind(name, version, qh, ()));
                 cursor_shape_version = Some(version);
+            }
+            "zwp_idle_inhibit_manager_v1" => {
+                up.idle_inhibit = Some(registry.bind(name, 1, qh, ()));
+            }
+            "zwp_keyboard_shortcuts_inhibit_manager_v1" => {
+                up.shortcuts_inhibit = Some(registry.bind(name, 1, qh, ()));
             }
             "wl_output" => {
                 let wl: c::wl_output::WlOutput = registry.bind(name, version.min(4), qh, name);

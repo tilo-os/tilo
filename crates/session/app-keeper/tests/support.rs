@@ -50,6 +50,13 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::{self, WpFractionalScaleV1},
 };
+use wayland_protocols::wp::idle_inhibit::zv1::client::{
+    zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
+};
+use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
+    zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1,
+    zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1},
+};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_dmabuf_feedback_v1, zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
     zwp_linux_dmabuf_v1, zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
@@ -357,6 +364,9 @@ pub struct Heard {
     pub sync_outputs: usize,
     pub cursor_shape: Option<WpCursorShapeManagerV1>,
     pub pointer_enter_serial: Option<u32>,
+    pub idle_inhibit: Option<ZwpIdleInhibitManagerV1>,
+    pub shortcuts_inhibit: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
+    pub shortcuts_inhibited: bool,
     pub dmabuf_done: usize,
     pub surface_feedback_done: usize,
     pub configures: Vec<(i32, i32, Vec<u32>)>,
@@ -700,6 +710,31 @@ impl App {
         );
     }
 
+    /// Ask the desktop not to idle while this window shows.
+    pub fn inhibit_idle(&self) -> ZwpIdleInhibitorV1 {
+        let qh = self.qh();
+        self.heard
+            .idle_inhibit
+            .as_ref()
+            .expect("an idle inhibit manager")
+            .create_inhibitor(self.surface.as_ref().unwrap(), &qh, ())
+    }
+
+    /// Ask the desktop to stop acting on its own shortcuts while this window has the keys.
+    pub fn inhibit_shortcuts(&self) -> ZwpKeyboardShortcutsInhibitorV1 {
+        let qh = self.qh();
+        self.heard
+            .shortcuts_inhibit
+            .as_ref()
+            .expect("a shortcuts inhibit manager")
+            .inhibit_shortcuts(
+                self.surface.as_ref().unwrap(),
+                self.heard.seat.as_ref().expect("a seat"),
+                &qh,
+                (),
+            )
+    }
+
     /// Ask for the next frame callback on the window.
     pub fn request_frame(&self) -> WlCallback {
         let qh = self.qh();
@@ -850,6 +885,12 @@ impl Dispatch<WlRegistry, ()> for Heard {
                 }
                 "wp_cursor_shape_manager_v1" => {
                     heard.cursor_shape = Some(registry.bind(name, version.min(2), qh, ()));
+                }
+                "zwp_idle_inhibit_manager_v1" => {
+                    heard.idle_inhibit = Some(registry.bind(name, 1, qh, ()));
+                }
+                "zwp_keyboard_shortcuts_inhibit_manager_v1" => {
+                    heard.shortcuts_inhibit = Some(registry.bind(name, 1, qh, ()));
                 }
                 "zwp_linux_dmabuf_v1" if version >= 4 => {
                     let dmabuf: ZwpLinuxDmabufV1 = registry.bind(name, version.min(5), qh, ());
@@ -1273,6 +1314,29 @@ impl Dispatch<WpPresentationFeedback, FeedbackSeen> for Heard {
         }
     }
 }
+
+impl Dispatch<ZwpKeyboardShortcutsInhibitorV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZwpKeyboardShortcutsInhibitorV1,
+        event: zwp_keyboard_shortcuts_inhibitor_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_keyboard_shortcuts_inhibitor_v1::Event::Active => heard.shortcuts_inhibited = true,
+            zwp_keyboard_shortcuts_inhibitor_v1::Event::Inactive => {
+                heard.shortcuts_inhibited = false;
+            }
+            _ => {}
+        }
+    }
+}
+
+delegate_noop!(Heard: ignore ZwpIdleInhibitManagerV1);
+delegate_noop!(Heard: ignore ZwpIdleInhibitorV1);
+delegate_noop!(Heard: ignore ZwpKeyboardShortcutsInhibitManagerV1);
 
 delegate_noop!(Heard: ignore WpCursorShapeManagerV1);
 delegate_noop!(Heard: ignore WpCursorShapeDeviceV1);

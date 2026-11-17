@@ -51,6 +51,8 @@ mod data_device;
 mod decorations;
 mod dmabuf;
 mod fractional;
+mod idle_inhibit;
+mod keyboard_shortcuts_inhibit;
 mod outputs;
 mod pings;
 mod pointer_constraints;

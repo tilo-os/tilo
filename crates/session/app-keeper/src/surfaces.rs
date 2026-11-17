@@ -61,6 +61,10 @@ pub(crate) struct Kept {
     pub xdg_decoration: Option<crate::decorations::Xdg>,
     /// The app's KDE decoration object and what it last asked for.
     pub kde_decoration: Option<crate::decorations::Kde>,
+    /// The app asked the desktop not to idle while this surface shows.
+    pub idle_inhibitor: bool,
+    /// The app asked the desktop to stop acting on its own shortcuts here.
+    pub shortcuts_inhibitor: Option<crate::keyboard_shortcuts_inhibit::Held>,
     pub role: Role,
     pub up: Option<UpSurface>,
 }
@@ -83,6 +87,8 @@ impl Kept {
             preferred_scale: None,
             xdg_decoration: None,
             kde_decoration: None,
+            idle_inhibitor: false,
+            shortcuts_inhibitor: None,
             role: Role::None,
             up: None,
         }
@@ -202,6 +208,13 @@ pub(crate) struct UpSurface {
     >,
     pub kde_decoration: Option<
         wayland_protocols_misc::server_decoration::client::org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration,
+    >,
+    /// The desktop's inhibitors while it is attached.
+    pub idle_inhibitor: Option<
+        wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
+    >,
+    pub shortcuts_inhibitor: Option<
+        wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibitor_v1::ZwpKeyboardShortcutsInhibitorV1,
     >,
 }
 
@@ -800,10 +813,14 @@ impl State {
             fractional_scale: None,
             xdg_decoration: None,
             kde_decoration: None,
+            idle_inhibitor: None,
+            shortcuts_inhibitor: None,
         });
         self.request_surface_feedback(id);
         self.request_fractional_scale(id);
         self.ensure_decorations(id);
+        self.ensure_idle_inhibit(id);
+        self.ensure_shortcuts_inhibitor(id);
         true
     }
 
@@ -1485,6 +1502,7 @@ impl State {
         self.hold_activation();
         self.hold_presentation();
         self.hold_cursor_shape();
+        self.hold_shortcuts_inhibit();
         for kept in self.surfaces.values_mut() {
             kept.up = None;
             match &mut kept.role {

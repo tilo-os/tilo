@@ -626,6 +626,49 @@ fn a_fault_is_attributed_to_the_window_that_caused_it_not_the_last_one_sent() {
 }
 
 #[test]
+fn an_idle_inhibitor_holds_the_desktop_awake_and_returns_with_the_next_one() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Playing", Some("playing"));
+    app.show(&mut rig, (100, 80), GREEN);
+    assert!(!rig.desktop().idle_inhibited());
+    let _inhibitor = app.inhibit_idle();
+    rig.pump(&mut [&mut app], |rig, _| rig.desktop().idle_inhibited());
+
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    rig.pump(&mut [&mut app], |rig, _| rig.desktop().idle_inhibited());
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
+fn a_shortcuts_inhibitor_follows_the_windows_focus_and_the_desktops_comings_and_goings() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Remote", Some("remote"));
+    app.show(&mut rig, (100, 80), GREEN);
+    let _inhibitor = app.inhibit_shortcuts();
+    rig.pump(&mut [&mut app], |_, apps| apps[0].heard.shortcuts_inhibited);
+
+    // No desktop holds the keys: the app is told its inhibitor is inactive.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    assert!(
+        !app.heard.shortcuts_inhibited,
+        "inactive while no desktop is attached"
+    );
+
+    // The next desktop grants it again to the focused window.
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, apps| {
+        !rig.windows().is_empty() && apps[0].heard.shortcuts_inhibited
+    });
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
 fn a_cursor_shape_the_app_names_is_drawn_by_the_desktop_and_kept_across_a_restart() {
     use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
 
