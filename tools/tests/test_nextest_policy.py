@@ -306,6 +306,13 @@ class SetupHandedProgramTests(unittest.TestCase):
         found = []
         for family in tomllib.loads(T_TOML.read_text(encoding="utf-8")).get("cargo", []):
             tested = families.tested(family, members)
+            if tested is None and family.get("tool") == "nextest" and "packages" in family:
+                # A family that names its packages tests them, whatever part of their tests
+                # its `-E` leaves to another family (the per-arch family leaves
+                # tilolang-tilo's budget checks to test-bench). `families.tested` reads no
+                # family with an `-E`, so the packages such a family names are read here:
+                # it owes them the same programs.
+                tested = set(family["packages"])
             if tested and package in tested:
                 found.append(family)
         return found
