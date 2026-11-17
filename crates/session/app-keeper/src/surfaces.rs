@@ -37,6 +37,10 @@ pub(crate) type Rect = (i32, i32, i32, i32);
 type Region = Vec<(bool, Rect)>;
 
 /// One surface of the app and everything the keeper holds of it.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a separate thing the app did or asked for on this surface"
+)]
 pub(crate) struct Kept {
     pub surface: WlSurface,
     /// Creation order, so a desktop recreates the oldest first.
@@ -65,6 +69,8 @@ pub(crate) struct Kept {
     pub idle_inhibitor: bool,
     /// The app asked the desktop to stop acting on its own shortcuts here.
     pub shortcuts_inhibitor: Option<crate::keyboard_shortcuts_inhibit::Held>,
+    /// The app marked this window a modal dialog.
+    pub modal: bool,
     pub role: Role,
     pub up: Option<UpSurface>,
 }
@@ -89,6 +95,7 @@ impl Kept {
             kde_decoration: None,
             idle_inhibitor: false,
             shortcuts_inhibitor: None,
+            modal: false,
             role: Role::None,
             up: None,
         }
@@ -216,6 +223,9 @@ pub(crate) struct UpSurface {
     pub shortcuts_inhibitor: Option<
         wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibitor_v1::ZwpKeyboardShortcutsInhibitorV1,
     >,
+    /// The desktop's dialog object while it is attached, and whether the hint was set.
+    pub dialog: Option<wayland_protocols::xdg::dialog::v1::client::xdg_dialog_v1::XdgDialogV1>,
+    pub modal_sent: Option<bool>,
 }
 
 pub(crate) enum UpRole {
@@ -815,12 +825,15 @@ impl State {
             kde_decoration: None,
             idle_inhibitor: None,
             shortcuts_inhibitor: None,
+            dialog: None,
+            modal_sent: None,
         });
         self.request_surface_feedback(id);
         self.request_fractional_scale(id);
         self.ensure_decorations(id);
         self.ensure_idle_inhibit(id);
         self.ensure_shortcuts_inhibitor(id);
+        self.ensure_dialog(id);
         true
     }
 

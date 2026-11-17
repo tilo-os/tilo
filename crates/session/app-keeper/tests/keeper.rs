@@ -626,6 +626,52 @@ fn a_fault_is_attributed_to_the_window_that_caused_it_not_the_last_one_sent() {
 }
 
 #[test]
+fn a_modal_dialog_takes_the_focus_from_its_parent_and_the_hint_survives_a_restart() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Parent", Some("parent"));
+    app.show(&mut rig, (100, 80), GREEN);
+    let parent_toplevel = app.toplevel.clone().unwrap();
+    let parent_surface = app.surface.clone().unwrap();
+    app.open_child(&mut rig, "Dialog", Some("dialog"), &parent_toplevel);
+    app.show(&mut rig, (60, 40), BLUE);
+    rig.pump(&mut [&mut app], |rig, _| rig.windows().len() == 2);
+    let dialog = app.dialog();
+    dialog.set_modal();
+    app.surface.as_ref().unwrap().commit();
+    rig.settle(&mut [&mut app]);
+
+    let id_of = |rig: &mut Rig, title: &str| {
+        rig.desktop()
+            .windows()
+            .into_iter()
+            .find(|(info, _)| info.title.as_deref() == Some(title))
+            .map(|(info, _)| info.id)
+            .expect("a window")
+    };
+    let dialog_id = id_of(&mut rig, "Dialog");
+    let token = rig.desktop().activation_token();
+    app.activate_on(token, &parent_surface);
+    rig.pump(&mut [&mut app], |rig, _| {
+        rig.desktop().focused_window().map(|info| info.id) == Some(dialog_id)
+    });
+
+    // The next desktop is told again, so the dialog still takes the focus from its parent.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| rig.windows().len() == 2);
+    rig.settle(&mut [&mut app]);
+    let dialog_id = id_of(&mut rig, "Dialog");
+    let token = rig.desktop().activation_token();
+    app.activate_on(token, &parent_surface);
+    rig.pump(&mut [&mut app], |rig, _| {
+        rig.desktop().focused_window().map(|info| info.id) == Some(dialog_id)
+    });
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
 fn an_idle_inhibitor_holds_the_desktop_awake_and_returns_with_the_next_one() {
     let mut rig = Rig::new(None);
     let mut app = App::connect(&mut rig);

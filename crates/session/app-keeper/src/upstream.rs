@@ -80,6 +80,7 @@ pub(crate) struct Upstream {
     pub shortcuts_inhibit: Option<
         wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1,
     >,
+    pub dialog: Option<wayland_protocols::xdg::dialog::v1::client::xdg_wm_dialog_v1::XdgWmDialogV1>,
     /// The version the desktop's presentation global was bound at.
     pub presentation_version: u32,
     pub feedback: FeedbackParts,
@@ -154,6 +155,7 @@ impl Upstream {
                 cursor_shape: None,
                 idle_inhibit: None,
                 shortcuts_inhibit: None,
+                dialog: None,
                 presentation_version: 0,
                 feedback: FeedbackParts::default(),
                 xdg_outputs: None,
@@ -334,6 +336,9 @@ impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
             }
             "zwp_keyboard_shortcuts_inhibit_manager_v1" => {
                 up.shortcuts_inhibit = Some(registry.bind(name, 1, qh, ()));
+            }
+            "xdg_wm_dialog_v1" => {
+                up.dialog = Some(registry.bind(name, 1, qh, ()));
             }
             "wl_output" => {
                 let wl: c::wl_output::WlOutput = registry.bind(name, version.min(4), qh, name);

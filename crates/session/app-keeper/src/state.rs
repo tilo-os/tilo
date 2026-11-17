@@ -93,6 +93,8 @@ pub struct State {
     pub(crate) idle_inhibit: Option<smithay::wayland::idle_inhibit::IdleInhibitManagerState>,
     pub(crate) shortcuts_inhibit_global:
         Option<smithay::reexports::wayland_server::backend::GlobalId>,
+    /// The app-facing dialog global, once a desktop offered it.
+    pub(crate) dialog: Option<smithay::wayland::shell::xdg::dialog::XdgDialogState>,
     /// What the desktop answered each surface's own feedback request, kept while it is away.
     pub(crate) surface_feedback: crate::dmabuf::SurfaceFeedbacks,
     /// Every live surface of the app, by its id.
@@ -158,6 +160,7 @@ impl State {
             cursor_shape_devices: HashMap::new(),
             idle_inhibit: None,
             shortcuts_inhibit_global: None,
+            dialog: None,
             surface_feedback: crate::dmabuf::SurfaceFeedbacks::default(),
             surfaces: HashMap::new(),
             next_seq: 0,
@@ -196,6 +199,7 @@ impl State {
             "xdg_activation_v1" => self.offer_activation(),
             "zwp_idle_inhibit_manager_v1" => self.offer_idle_inhibit(),
             "zwp_keyboard_shortcuts_inhibit_manager_v1" => self.offer_shortcuts_inhibit(),
+            "xdg_wm_dialog_v1" => self.offer_dialog(),
             _ => self.offer_decorations(interface),
         }
     }

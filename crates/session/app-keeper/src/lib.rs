@@ -49,6 +49,7 @@ mod control;
 mod cursor_shape;
 mod data_device;
 mod decorations;
+mod dialog;
 mod dmabuf;
 mod fractional;
 mod idle_inhibit;

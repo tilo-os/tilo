@@ -100,6 +100,9 @@ use wayland_protocols::xdg::decoration::zv1::client::{
     zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
     zxdg_toplevel_decoration_v1::{self, Mode as DecorationMode, ZxdgToplevelDecorationV1},
 };
+use wayland_protocols::xdg::dialog::v1::client::{
+    xdg_dialog_v1::XdgDialogV1, xdg_wm_dialog_v1::XdgWmDialogV1,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_popup::XdgPopup, xdg_positioner::XdgPositioner, xdg_surface,
     xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
@@ -367,6 +370,7 @@ pub struct Heard {
     pub idle_inhibit: Option<ZwpIdleInhibitManagerV1>,
     pub shortcuts_inhibit: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
     pub shortcuts_inhibited: bool,
+    pub dialog_manager: Option<XdgWmDialogV1>,
     pub dmabuf_done: usize,
     pub surface_feedback_done: usize,
     pub configures: Vec<(i32, i32, Vec<u32>)>,
@@ -735,6 +739,60 @@ impl App {
             )
     }
 
+    /// Open a second window of this app in front of `parent`, as a dialog would be.
+    pub fn open_child(
+        &mut self,
+        rig: &mut Rig,
+        title: &str,
+        app_id: Option<&str>,
+        parent: &XdgToplevel,
+    ) {
+        let qh = self.qh();
+        let surface = self
+            .heard
+            .compositor
+            .as_ref()
+            .unwrap()
+            .create_surface(&qh, ());
+        let xdg = self
+            .heard
+            .wm_base
+            .as_ref()
+            .unwrap()
+            .get_xdg_surface(&surface, &qh, ());
+        let toplevel = xdg.get_toplevel(&qh, ());
+        toplevel.set_title(title.to_owned());
+        if let Some(app_id) = app_id {
+            toplevel.set_app_id(app_id.to_owned());
+        }
+        toplevel.set_parent(Some(parent));
+        surface.commit();
+        self.surface = Some(surface);
+        self.xdg = Some(xdg);
+        self.toplevel = Some(toplevel);
+        let configured = self.heard.configured;
+        rig.pump(&mut [self], |_, apps| apps[0].heard.configured > configured);
+    }
+
+    /// Mark this window a modal dialog.
+    pub fn dialog(&self) -> XdgDialogV1 {
+        let qh = self.qh();
+        self.heard
+            .dialog_manager
+            .as_ref()
+            .expect("a dialog manager")
+            .get_xdg_dialog(self.toplevel.as_ref().expect("a toplevel"), &qh, ())
+    }
+
+    /// Ask to be activated with `token` on `surface`.
+    pub fn activate_on(&self, token: String, surface: &WlSurface) {
+        self.heard
+            .activation
+            .as_ref()
+            .expect("an activation manager")
+            .activate(token, surface);
+    }
+
     /// Ask for the next frame callback on the window.
     pub fn request_frame(&self) -> WlCallback {
         let qh = self.qh();
@@ -891,6 +949,9 @@ impl Dispatch<WlRegistry, ()> for Heard {
                 }
                 "zwp_keyboard_shortcuts_inhibit_manager_v1" => {
                     heard.shortcuts_inhibit = Some(registry.bind(name, 1, qh, ()));
+                }
+                "xdg_wm_dialog_v1" => {
+                    heard.dialog_manager = Some(registry.bind(name, 1, qh, ()));
                 }
                 "zwp_linux_dmabuf_v1" if version >= 4 => {
                     let dmabuf: ZwpLinuxDmabufV1 = registry.bind(name, version.min(5), qh, ());
@@ -1334,6 +1395,8 @@ impl Dispatch<ZwpKeyboardShortcutsInhibitorV1, ()> for Heard {
     }
 }
 
+delegate_noop!(Heard: ignore XdgWmDialogV1);
+delegate_noop!(Heard: ignore XdgDialogV1);
 delegate_noop!(Heard: ignore ZwpIdleInhibitManagerV1);
 delegate_noop!(Heard: ignore ZwpIdleInhibitorV1);
 delegate_noop!(Heard: ignore ZwpKeyboardShortcutsInhibitManagerV1);
