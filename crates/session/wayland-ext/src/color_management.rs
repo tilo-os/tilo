@@ -929,7 +929,7 @@ where
                 }
                 // Version 1: `ready` is the only success event (see
                 // `create_image_description`).
-                tell_ready(state.as_ref(), obj, (identity & 0xFFFF_FFFF) as u32);
+                tell_ready(state.as_ref(), &obj, (identity & 0xFFFF_FFFF) as u32);
             }
             wp_color_manager_v1::Request::GetOutput { id, output } => {
                 let data = ColorManagementOutputData::new(output);
@@ -1073,16 +1073,18 @@ where
 
 /// Tell a client its description is ready, or hold it back while a test says so.
 #[cfg(target_os = "linux")]
-fn tell_ready(manager: &ColorManagerState, obj: WpImageDescriptionV1, identity_lo: u32) {
+fn tell_ready(manager: &ColorManagerState, obj: &WpImageDescriptionV1, identity_lo: u32) {
     #[cfg(feature = "test-support")]
     {
         if manager.holding.load(Ordering::Relaxed) {
             if let Ok(mut held) = manager.held.lock() {
-                held.push((obj, identity_lo));
+                held.push((obj.clone(), identity_lo));
             }
             return;
         }
     }
+    #[cfg(not(feature = "test-support"))]
+    let _ = manager;
     let () = obj.ready(identity_lo);
 }
 
@@ -1114,7 +1116,7 @@ fn create_image_description<D>(
             // The global is deliberately version 1, so `ready` is the only
             // valid success event. `ready2` has opcode 2 and exists only from
             // version 2 onward; emitting it disconnects v1 clients.
-            tell_ready(manager, obj, (identity & 0xFFFF_FFFF) as u32);
+            tell_ready(manager, &obj, (identity & 0xFFFF_FFFF) as u32);
         }
         Err(error) => {
             // The request carried a `new_id`; initialise it before the fatal
