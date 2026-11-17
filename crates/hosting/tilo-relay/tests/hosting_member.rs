@@ -1,21 +1,21 @@
-//! A certified host of a person serves a workspace one of the person's devices
-//! governs: the governor attaches it, the workspace's hosts name it, it admits
+//! A certified holder of a person serves a workspace one of the person's devices
+//! governs: the governor attaches it, the workspace's holders name it, it admits
 //! whom the workspace's governance admits as that governance changes, carries
 //! members' changes to every other holder, and stops when detached.
 
 use tilo_relay::{Envelope, RelayClient};
-use tilo_relay_protocol::WorkSetting;
+use tilo_relay_protocol::{WorkFrom, WorkSetting};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, host_on, next_delta, session_to};
 use tilo_relay::WorkspaceId;
 
-/// How long the hosts are watched doing nothing: longer than the host's
+/// How long the holders are watched doing nothing: longer than the holder's
 /// first two waits before dialing again, so a session that kept ending
 /// would show.
 const IDLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// How long both hosts' counters stand still before the idle watch starts.
+/// How long both holders' counters stand still before the idle watch starts.
 const SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// `counters` once they have stood still for [`SETTLE`].
@@ -38,7 +38,7 @@ where
     .await
 }
 
-/// Whether `client`'s host admits it to `workspace_id`.
+/// Whether `client`'s holder admits it to `workspace_id`.
 async fn admitted(client: &RelayClient, workspace_id: WorkspaceId) -> bool {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     loop {
@@ -71,7 +71,7 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
 
-    // Which hosts serve the workspace is its owner's decision: another person's
+    // Which holders serve the workspace is its owner's decision: another person's
     // device asking is refused.
     let bob = TestUser::fresh("Bob");
     let bobs = bob.enrol("bob-phone", DeviceCapabilities::member());
@@ -103,7 +103,7 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
     assert_eq!(hosts[0].host, laptop.cert, "the governor comes first");
     assert_eq!(hosts[1], hint);
 
-    // The phone enters the workspace on the laptop; the host follows that
+    // The phone enters the workspace on the laptop; the holder follows that
     // governance and admits it.
     workspaces
         .enter(&workspace.workspace, &phone.cert)
@@ -117,7 +117,7 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
     })
     .await;
 
-    // A change the phone sends the host reaches the governor's own session.
+    // A change the phone sends the holder reaches the governor's own session.
     let local = governor
         .host
         .connect_local(
@@ -142,9 +142,9 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
         b"from the phone, through the host"
     );
 
-    // With nothing changing, neither host does anything: no session is
+    // With nothing changing, neither holder does anything: no session is
     // opened again, nothing is subscribed, sent or received. The watch
-    // starts once the counters stand still, so what a host set in motion
+    // starts once the counters stand still, so what a holder set in motion
     // before it (the change just carried, the address it names itself at)
     // is not read as the host doing something.
     let quiet = still(|| (governor.host.metrics(), member.host.metrics())).await;
@@ -724,6 +724,156 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     );
 
     drop((on_holder, local));
+    holder.stop().await;
+    governor.stop().await;
+}
+
+/// A device that is handed a workspace keeps one file for it, named by the
+/// workspace's id. A hand-over that names its workspace by anything else (a
+/// path that climbs out of the folder, an absolute path, a name with a
+/// separator in it, another workspace's id) is refused, and nothing is
+/// written anywhere for it. Under the workspace's own id the same hand-over
+/// is taken, and its file is the only one kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Hosted::stop consumes each device after the assertions; the suggested earlier drop would use a moved value"
+)]
+async fn a_hand_over_names_its_workspace_by_its_id_and_writes_nowhere_else() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let nas = alice.enrol("nas", DeviceCapabilities::member());
+    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let state = tempfile::tempdir().unwrap();
+    let root = state.path().to_path_buf();
+    let member = crate::common::host_in(&alice, &nas, WorkSetting::own_person(), state).await;
+    let at = member.host.node_addr();
+    let workspaces = governor.host.workspaces();
+    let workspace = workspaces.create("Notes").await.unwrap();
+
+    // Folders a written name could point into: on a device that keeps many
+    // people's files, another person's lie beside this one.
+    let kept = root.join("hosted");
+    std::fs::create_dir_all(kept.join("inner")).unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let another = WorkspaceId::new().to_string();
+    let names = [
+        ("../outside".to_owned(), root.join("outside.json")),
+        (
+            elsewhere.path().join("planted").display().to_string(),
+            elsewhere.path().join("planted.json"),
+        ),
+        (
+            "inner/within".to_owned(),
+            kept.join("inner").join("within.json"),
+        ),
+        (another.clone(), kept.join(format!("{another}.json"))),
+    ];
+    for (name, written) in &names {
+        let answered = workspaces
+            .hand_over_named(&workspace.workspace, nas.device_pubkey(), at.clone(), name)
+            .await;
+        assert!(
+            answered.is_err(),
+            "a hand-over that names its workspace {name:?} was taken: {answered:?}"
+        );
+        assert!(
+            !written.exists(),
+            "a hand-over that names its workspace {name:?} wrote {}",
+            written.display()
+        );
+    }
+
+    workspaces
+        .attach_host(&workspace.workspace, &laptop.cert, nas.device_pubkey(), at)
+        .await
+        .unwrap();
+    let files: Vec<String> = std::fs::read_dir(&kept)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.path().is_file())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(files, [format!("{}.json", workspace.workspace)]);
+
+    member.stop().await;
+    governor.stop().await;
+}
+
+/// A workspace a device holds for one governor is not taken from another.
+/// Someone else who makes a workspace under the same id on a device of
+/// their own and hands that over is refused, and the people the first
+/// governor's workspace admits are admitted as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Hosted::stop consumes each device after the assertions; the suggested earlier drop would use a moved value"
+)]
+async fn a_held_workspace_is_not_taken_from_another_governor() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let phone = alice.enrol("phone", DeviceCapabilities::primary());
+    let mallory = TestUser::fresh("Mallory");
+    let hers = mallory.enrol("laptop", DeviceCapabilities::primary());
+    let site = TestUser::fresh("Site");
+    let kept_on = site.enrol("server", DeviceCapabilities::member());
+    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let workspaces = governor.host.workspaces();
+    let workspace = workspaces.create("Notes").await.unwrap();
+    workspaces
+        .enter(&workspace.workspace, &phone.cert)
+        .await
+        .unwrap();
+    // The site's operator takes that workspace, whoever hands it over.
+    let mut takes = WorkSetting::own_person();
+    takes.from = WorkFrom::Workspaces([workspace.workspace_id].into_iter().collect());
+    let holder = host_on(&site, &kept_on, takes).await;
+    let at = holder.host.node_addr();
+    workspaces
+        .attach_host(
+            &workspace.workspace,
+            &laptop.cert,
+            kept_on.device_pubkey(),
+            at.clone(),
+        )
+        .await
+        .unwrap();
+    let on_holder = session_at(&phone, &site, &kept_on, &holder).await;
+    tilo_test_env::within("the site admits the workspace's member", async {
+        while !admitted(&on_holder, workspace.workspace_id).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    // Mallory's own device governs a workspace she made under Alice's id.
+    let second = host_on(&mallory, &hers, WorkSetting::none()).await;
+    let of_mallory = second.host.workspaces();
+    of_mallory
+        .create_workspace("Notes", Some(&workspace.workspace))
+        .await
+        .unwrap();
+    let answered = of_mallory
+        .attach_host(
+            &workspace.workspace,
+            &hers.cert,
+            kept_on.device_pubkey(),
+            at,
+        )
+        .await;
+    assert!(
+        answered
+            .as_ref()
+            .is_err_and(|error| error.contains("another governor")),
+        "a workspace held for its governor was taken from somebody else: {answered:?}"
+    );
+    assert!(
+        admitted(&on_holder, workspace.workspace_id).await,
+        "the member the first governor's workspace admits is admitted no more"
+    );
+
+    drop(on_holder);
+    second.stop().await;
     holder.stop().await;
     governor.stop().await;
 }
