@@ -67,7 +67,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     // The agent's computer enters the workspace as a device of the person's,
     // as `tilo login` does, and serves the projection over its session.
     let agent = Browser::open(&hosted, &computer, &host).await;
-    // Its session runs the agent, as `tilo login` makes it say.
+    // Its session is the agent's, as `tilo login` makes it say.
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
@@ -566,6 +566,15 @@ fn terminal_commands(browser: &mut Browser) -> Vec<terminal::resource::Command> 
         .collect()
 }
 
+/// A server's options whose workspaces' Terminal sessions keep their shells
+/// in `shells`, on the server itself.
+fn shelled(shells: &std::path::Path) -> Options {
+    Options {
+        shell: Some(tilo_server::agents::host_shells(shells.to_path_buf()).unwrap()),
+        ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -581,19 +590,10 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
     // granted: not one below /dev, where the scratch state is.
     let shell_state = tempfile::tempdir().unwrap();
     let shells = shell_state.path().join("shells");
-    let hosted = crate::harness::hosted::start(
-        &root,
-        &host,
-        state.path(),
-        Options {
-            shell: Some(tilo_server::agents::host_shells(shells.clone()).unwrap()),
-            ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
-        },
-    )
-    .await;
+    let hosted = crate::harness::hosted::start(&root, &host, state.path(), shelled(&shells)).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
-    // Its session runs the agent, as `tilo login` makes it say.
+    // Its session is the agent's, as `tilo login` makes it say.
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let server = McpServer::new(
@@ -636,7 +636,7 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
     .await;
     assert!(!failed && again.contains("/src"), "{again}");
 
-    // The browser sees the runs on the session record: the commands, where
+    // The browser sees them in the session: the commands, where
     // they ran and how they ended, recorded as the agent's run.
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -682,6 +682,119 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
     }
 }
 
+/// A window of another device opened the workspace's Terminal session once,
+/// which set the session up on that device and claimed its pane there, and
+/// closed again: the session still names that device. An agent's
+/// command still goes to the workspace's shell, on the server, and lands in
+/// that session's commands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agents_command_lands_after_another_devices_terminal_closed() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
+    let state = crate::support::scratch_dir();
+    let shell_state = tempfile::tempdir().unwrap();
+    let shells = shell_state.path().join("shells");
+    let hosted = crate::harness::hosted::start(&root, &host, state.path(), shelled(&shells)).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    // The device's Terminal window set its session up there and claimed a
+    // pane, as a window does when it opens; then it closed.
+    let page_device = hex::encode(browser_device.cert.device_public_key);
+    let ada = MemberId::person(hex::encode(root.verifying_key().to_bytes()));
+    let mut page = crate::common::open_in(
+        &browser.cluster_id,
+        "so.tilo.terminal",
+        &ada,
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    let session = DocumentRoute {
+        app_id: "so.tilo.terminal".into(),
+        cluster_id: browser.cluster_id.clone(),
+        document: page.wire_document().to_owned(),
+    };
+    for (action, arguments) in [
+        (
+            "record-target",
+            json!({"target": terminal::target::SessionTarget::Host.encode(), "device": page_device}),
+        ),
+        (
+            "claim-pane",
+            json!({"pane": "6f1c2b8e-0000-4000-8000-000000000001", "device": page_device}),
+        ),
+    ] {
+        let resource = page
+            .survey()
+            .into_iter()
+            .find(|descriptor| descriptor.address.action == action)
+            .unwrap_or_else(|| panic!("the session offers {action}"))
+            .address
+            .resource;
+        page.invoke(
+            &tilo_actions::api::ActionAddress::new(&resource, action),
+            arguments.as_object().unwrap(),
+            true,
+        )
+        .unwrap();
+    }
+    let claimed = page.take_mutation().unwrap().unwrap();
+    browser.peer.write(session.clone(), &claimed).unwrap();
+    let bytes = match claimed {
+        collab_types::DocumentMutation::Snapshot(bytes)
+        | collab_types::DocumentMutation::Incremental(bytes) => bytes,
+    };
+    browser
+        .documents
+        .entry(session.clone())
+        .or_default()
+        .push(([0; 32], bytes));
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+
+    let agent = Browser::open(&hosted, &computer, &host).await;
+    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    let server = McpServer::new(
+        SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
+        WORKSPACE.into(),
+        person,
+    )
+    .with_surface(Surface::Agent)
+    .with_agent_session("session-8", "Claude Code");
+
+    let (ran, failed) = tool(
+        &server,
+        "tilo_do",
+        json!({"path": "terminal#run", "args": {"command": "echo ran on the server"}}),
+    )
+    .await;
+    assert!(!failed, "{ran}");
+    assert!(
+        ran.contains("ran on the server") && ran.contains("\"exit\":0"),
+        "{ran}"
+    );
+
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        if terminal_commands(&mut browser)
+            .iter()
+            .any(|run| run.command.0 == "echo ran on the server" && run.exit == 0)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the command never reached the Terminal session"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// A command that takes minutes is not silent while it runs: what it printed
 /// so far comes back with the `pending` answer and with `tilo_status`, and
 /// the agent's cancel ends it in the workspace's shell, recording the run it
@@ -699,19 +812,10 @@ async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
     let state = crate::support::scratch_dir();
     let shell_state = tempfile::tempdir().unwrap();
     let shells = shell_state.path().join("shells");
-    let hosted = crate::harness::hosted::start(
-        &root,
-        &host,
-        state.path(),
-        Options {
-            shell: Some(tilo_server::agents::host_shells(shells.clone()).unwrap()),
-            ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
-        },
-    )
-    .await;
+    let hosted = crate::harness::hosted::start(&root, &host, state.path(), shelled(&shells)).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
-    // Its session runs the agent, as `tilo login` makes it say.
+    // Its session is the agent's, as `tilo login` makes it say.
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let server = McpServer::new(
