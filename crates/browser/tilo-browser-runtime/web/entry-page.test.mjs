@@ -43,9 +43,14 @@ const DOOR = ['arrival-refusal', 'arrival-refusal-heading', 'arrival-refusal-bod
 // whether or not a tab opened them (`keptIdentity`). `join` stands for
 // joining through a host's entry (`joinViaHost`) where a test says what the
 // host answers; without one the page's own join runs. `door` gives the page
-// the entry's own parts (`DOOR`), as index.html has them.
+// the entry's own parts (`DOOR`), as index.html has them. `profile` is what
+// the host keeps of the person a pairing link names (`{display_name}`, or
+// `null` for none), and `whose` what the person presses on the card that says
+// whose device this becomes: `'go'`, `'stop'`, or a function told the card
+// that answers which.
 async function fixture({boot, remembered = [], own = false, search = '', session = {}, local = {}, member = null, entry = null, scope = null,
-  pair = async () => { throw new Error('this fixture pairs no device'); }, identity = {userPublicKey: USER}, kept = null, join = null, door = false} = {}) {
+  pair = async () => { throw new Error('this fixture pairs no device'); }, identity = {userPublicKey: USER}, kept = null, join = null, door = false,
+  profile = null, whose = 'go'} = {}) {
   const values = new Map(Object.entries(local));
   let assigned = null;
   const stored = new Map(Object.entries(session));
@@ -65,6 +70,17 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     querySelector: selector => document.body.children.find(card => selector === `[data-card="${card.dataset.card}"]`) ?? null,
     getElementById: id => id === 'status' ? status : id === 'surface' ? new Element('canvas')
       : id.startsWith('arrival-failure') || (door && DOOR.includes(id)) ? (screen[id] ??= new Element(id)) : null};
+  const appendToBody = document.body.append.bind(document.body);
+  document.body.append = (...nodes) => {
+    appendToBody(...nodes);
+    for (const card of nodes.filter(node => node.dataset?.card === 'pair-whose')) {
+      queueMicrotask(() => {
+        const pressed = typeof whose === 'function' ? whose(card) : whose;
+        const buttons = card.children.find(part => part.className === 'tilo-entry-actions').children;
+        buttons.find(button => button.textContent === (pressed === 'stop' ? 'Stop' : 'Add this device')).listeners.get('click')();
+      });
+    }
+  };
   // The failure screen's parts (index.html, `#arrival-failure`), by id.
   const screen = {};
   const status = {textContent: 'Loading…'};
@@ -117,6 +133,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   });
   globalThis.__entryPageFixture = {page, runtime, mounted: [], prepared, identity, kept, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
     joinViaHost: join ?? joinViaHost, pair,
+    findProfile: async person => (profile ? {version: 1, user_public_key: person, ...profile} : null),
     boot: async options => {
       diagnostics = options.diagnostics;
       // The page loads its runtime as boot starts; the fixture's is the stub above.
@@ -140,10 +157,10 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, keptIdentity, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;\nconst keptIdentity = async () => globalThis.__entryPageFixture.kept;\nconst signInWithPasskey = (...args) => globalThis.__entryPageFixture.signIn(...args);\nconst fetchEnvelope = async () => null;')
     .replace('hostToReconnect, joinGranted, joinViaHost,', 'hostToReconnect, joinGranted,')
     .replace('identityProfile, inspectInvitation, joinWorkspace, openInvitation,', 'identityProfile, inspectInvitation, openInvitation,')
-    .replace('return await pairViaHost({origin,', 'return await pairViaHost({pair: (...args) => globalThis.__entryPageFixture.pair(...args), origin,')
+    .replace('return await pairViaHost({origin,', 'return await pairViaHost({pair: (...args) => globalThis.__entryPageFixture.pair(...args), findProfile: (...args) => globalThis.__entryPageFixture.findProfile(...args), origin,')
     .replace('const PAGE_BUILD', 'const joinViaHost = (...args) => globalThis.__entryPageFixture.joinViaHost(...args);\nconst joinWorkspace = (...args) => globalThis.__entryPageFixture.joinWorkspace(...args);\nconst PAGE_BUILD')
     .replace(/from '(\.\/[^']+)'/g, (_all, path) => `from '${new URL(path, import.meta.url).href}'`);
-  assert.ok(source.includes('pairViaHost({pair: (...args) => globalThis.__entryPageFixture.pair(...args), origin,'), 'the page pairs through the fixture’s host');
+  assert.ok(source.includes('pairViaHost({pair: (...args) => globalThis.__entryPageFixture.pair(...args), findProfile: (...args) => globalThis.__entryPageFixture.findProfile(...args), origin,'), 'the page pairs through the fixture’s host');
   // A fresh module per fixture; the nonce rides in the source since Bun refuses a fragment on a base64 data URL.
   const module = await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
   const {startEntryPage} = module;
@@ -852,4 +869,62 @@ test('the entry’s link field takes a pairing link and an invitation’s short 
   assert.equal(screen['arrival-invite-toggle'].textContent, 'Have an invite or pairing link?');
   assert.equal(screen['arrival-invite-link'].placeholder, 'Paste an invite or pairing link');
   assert.match(screen['arrival-refusal-body'].textContent, /“Pair a new device”/, 'the entry says a pairing link is a way in');
+});
+
+/** What a card says, part by part, with the buttons under it by their words. */
+const cardAndButtons = card => card.children.flatMap(part => (part.className === 'tilo-entry-actions'
+  ? part.children.map(button => button.textContent) : [part.textContent]));
+
+test('a device that follows a pairing link says whose device it becomes before it asks, and Stop pairs nothing', async () => {
+  // A pairing link makes the device that opens it a device of whoever made
+  // the link, and the device said nothing of whose it would be. It asked the
+  // host at once and showed a code. Now it names that person first, as the
+  // host that keeps them names them, and asks nobody until its person goes on.
+  const words = await import('./pairing.mjs');
+  for (const [profile, sentence] of [
+    [{display_name: 'Ada Lovelace'}, 'You are adding this device to Ada Lovelace’s devices. If that is not you, stop.'],
+    [null, 'You are adding this device to the devices of someone this host has no name for. If you did not make this link yourself, stop.'],
+  ]) {
+    const asked = [];
+    let shown = null;
+    const {failure, screen} = await fixture({boot: pairingBoot(ELSEWHERE), identity: null, profile,
+      whose: card => { shown = cardAndButtons(card); return 'stop'; },
+      pair: async options => { asked.push(options); return {workspace: 'current'}; }});
+    assert.deepEqual(shown, ['Add this device?', sentence, words.PAIRING_WHOSE.consequence, 'Add this device', 'Stop']);
+    assert.deepEqual(asked, [], 'the host is asked nothing: the link is not spent, and nobody is asked to approve');
+    assert.equal(localStorage.getItem('tilo-host-memberships'), null, 'this browser is kept as nobody’s device');
+    assert.equal(failure?.code, 'pairing');
+    assert.equal(document.documentElement.dataset.entry, 'refused');
+    assert.equal(screen['arrival-failure-body'].textContent, words.PAIRING_STOPPED);
+    assert.equal(cardWords('pair-whose'), null, 'the card goes with its answer');
+  }
+});
+
+test('a device that waits to be approved says again whose it becomes, and its Stop leaves with nothing paired', async () => {
+  const words = await import('./pairing.mjs');
+  const sentence = 'You are adding this device to Ada Lovelace’s devices. If that is not you, stop.';
+  let said = null;
+  let waiting = null;
+  const letGo = [];
+  // This browser holds a person of its own (`identity`), and the link names another.
+  const {failure, screen, calls, at} = await fixture({boot: pairingBoot(ELSEWHERE), profile: {display_name: 'Ada Lovelace'},
+    whose: card => { said = cardAndButtons(card); return 'go'; },
+    pair: async options => {
+      options.onPairingCode('123456');
+      const card = document.body.children.find(part => part.dataset.card === 'pair-wait');
+      waiting = card.children.map(part => part.textContent);
+      // The person stops. The device that made the link approves all the same.
+      card.children.find(part => part.textContent === 'Stop').listeners.get('click')();
+      return {workspace: 'current', dispose: async () => letGo.push('device')};
+    }});
+  assert.deepEqual(said, ['Add this device?', sentence, words.PAIRING_WHOSE.consequence, words.PAIRING_WHOSE.already, 'Add this device', 'Stop'],
+    'a browser that is somebody already is told it would act as another here');
+  assert.deepEqual(waiting.slice(0, 4), ['Waiting for approval on your other device…', words.PAIRING_WAIT.where, '123456', sentence]);
+  assert.deepEqual(calls.filter(call => call === 'assign' || call === 'reload'), ['assign', 'reload'],
+    'the page leaves, so the host hears its request go and nobody can approve it any more');
+  assert.equal(at(), 'https://web.example/', 'for the bare site: the link is gone from the address');
+  assert.deepEqual(letGo, ['device'], 'the device an approval made meanwhile is let go');
+  assert.equal(localStorage.getItem('tilo-host-memberships'), null, 'and this browser is kept as nobody’s device');
+  assert.equal(failure?.code, 'pairing');
+  assert.equal(screen['arrival-failure-body'].textContent, words.PAIRING_STOPPED);
 });

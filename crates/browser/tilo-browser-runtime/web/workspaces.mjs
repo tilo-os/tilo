@@ -59,7 +59,8 @@ import {AdmissionError} from './admission.mjs';
 import {connectPeer, fitDisplayName, identityProfile, joinWorkspace, pairDevice, renewDevice, withCustody} from './peer.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {originOf} from './entered-workspaces.mjs';
-import {PAIRING_SAME_PERSON} from './pairing.mjs';
+import {fetchProfile} from './identity.mjs';
+import {PAIRING_SAME_PERSON, PAIRING_STOPPED, shownName} from './pairing.mjs';
 import {backoffDelay} from './reconnect.mjs';
 import {hostUnreachable} from './session-refusal.mjs';
 
@@ -815,19 +816,39 @@ export async function joinViaHost({
  * nobody is asked to approve, and nothing kept changes. Paired, the browser
  * would be remembered as a device whose root is elsewhere and leave the root
  * it holds unused: it could let no further device in.
+ *
+ * A device says whose it becomes before it asks. A link is written by
+ * whoever made it, and following one makes this device theirs: so, before
+ * the host is asked to let it in, `agree({userPublicKey, name, holds})` puts
+ * that to the person here and resolves to whether they go on. `name` is the
+ * host's word for the key the link names (the profile it keeps of them,
+ * `findProfile`; empty when it keeps none or does not answer), never
+ * anything the link says. Without their yes the host is asked nothing
+ * (`stopped`), and there is no pairing without `agree`. `stopped()` says
+ * whether they stopped while the device waited: one approved meanwhile is
+ * let go and nothing is kept of it.
  */
 export async function pairViaHost({
   origin, workspace, userPublicKey, listed = null, label = 'Browser', displayName = defaultDisplayName(userPublicKey),
-  memberships = globalThis.localStorage, fetch = globalThis.fetch, pair = pairDevice, holds = null, ...connectOptions
+  memberships = globalThis.localStorage, fetch = globalThis.fetch, pair = pairDevice, holds = null,
+  agree, findProfile = fetchProfile, stopped = () => false, ...connectOptions
 }) {
   if (!/^[0-9a-f]{64}$/.test(userPublicKey ?? '')) throw new HostAdmissionError('invalid', 'This pairing link names no person');
   if (connectOptions.invite != null && !/^[0-9a-f]{32}$/.test(connectOptions.invite)) {
     throw new HostAdmissionError('invalid', 'This pairing link is damaged');
   }
   if (holds && holds === userPublicKey) throw new HostAdmissionError('same-person', PAIRING_SAME_PERSON);
+  if (typeof agree !== 'function') throw new TypeError('a device is paired only once it said whose it becomes: pairViaHost needs agree');
+  const kept = await Promise.resolve().then(() => findProfile(userPublicKey, [origin], fetch ? {fetch} : {})).catch(() => null);
+  const stop = () => new HostAdmissionError('stopped', PAIRING_STOPPED);
+  if (!(await agree({userPublicKey, name: shownName(kept?.display_name), holds}))) throw stop();
   const entry = listed?.admission ?? undefined;
   const peer = await pair({...connectOptions, origin, workspace, userPublicKey, label, displayName, fetch, entry,
-    profile: identityProfile({userPublicKey}, origin)}).catch(error => { throw entryRefused(error); });
+    profile: identityProfile({userPublicKey}, origin)}).catch(error => { throw stopped() ? stop() : entryRefused(error); });
+  if (stopped()) {
+    await peer.dispose?.();
+    throw stop();
+  }
   keepMembership(memberships, {host: {origin}}, {origin, workspace: peer.workspace ?? workspace, userPublicKey, paired: true});
   return peer;
 }

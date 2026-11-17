@@ -122,3 +122,22 @@ test('a waiting device is told where it is approved and where “Pair a new devi
   assert.equal(INVITE_TTL_MS, 10 * 60 * 1000, 'the minutes the sentence names');
   assert.equal(pairingStatus('123456'), 'Pairing code 123456. This tab is a new device of yours and waits for your approval. On a device where you are signed in, approve 123456 where it asks. If nothing asks, choose “Pair a new device” there on your own card (your picture, at the top right) or in search, and open its link in this tab.');
 });
+
+test('a device says whose it becomes in one sentence, with the name its host gave and nothing that could bend it', async () => {
+  const pairing = await import('./pairing.mjs');
+  assert.equal(pairing.pairingWhose('Ada Lovelace'), 'You are adding this device to Ada Lovelace’s devices. If that is not you, stop.');
+  // No name from the host: it says so, and what to go by instead.
+  for (const none of ['', null, undefined, '   ', '‮‏']) {
+    assert.equal(pairing.pairingWhose(none),
+      'You are adding this device to the devices of someone this host has no name for. If you did not make this link yourself, stop.');
+  }
+  // A name cannot turn the sentence round, break its line or run on.
+  assert.equal(pairing.pairingWhose('Bo‮\n  Smith⁦‏'), 'You are adding this device to Bo Smith’s devices. If that is not you, stop.');
+  assert.equal(Array.from(pairing.shownName('x'.repeat(200))).length, 64);
+});
+
+test('a device that stopped is told that nothing was paired', async () => {
+  const pairing = await import('./pairing.mjs');
+  assert.equal(pairing.pairingFailure(Object.assign(new Error('stopped here'), {code: 'stopped'})), pairing.PAIRING_STOPPED);
+  assert.match(pairing.PAIRING_STOPPED, /^Nothing was paired\./);
+});
