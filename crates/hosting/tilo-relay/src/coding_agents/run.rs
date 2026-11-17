@@ -44,7 +44,7 @@ const BESIDE_KEPT: usize = 4 * 1024;
 /// line of its protocol.
 const MAX_LINE: usize = 8 * 1024 * 1024;
 
-/// The channel to a served run, as its host holds it.
+/// The connection to a served run, as its host holds it.
 pub trait Machine: Send + Sync {
     /// Send `frame` to the run; `false` once it is over or let go of.
     fn tell(&self, frame: &ToRun) -> bool;
@@ -93,7 +93,7 @@ pub enum Ending {
     Stopped,
     /// It could not start, or ended saying it failed.
     Failed,
-    /// Its machine or its channel went away under it.
+    /// Its machine or its connection went away under it.
     Lost,
 }
 

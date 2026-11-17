@@ -111,10 +111,10 @@ impl HostAgents {
                     .working_in(workspace_id)
                     .spending_as(Spender {
                         workspace: workspace.to_owned(),
-                        agent: turn.agent.id.0.clone(),
-                        name: turn.agent.name.clone(),
+                        agent: super::sub_agents::payer(turn).id.0.clone(),
+                        name: super::sub_agents::payer(turn).name.clone(),
                         day: day.to_owned(),
-                        limit_micros: turn.agent.spend_limit_micros,
+                        limit_micros: super::sub_agents::payer(turn).spend_limit_micros,
                     })
             });
         if let Some(theirs) = theirs {
@@ -152,10 +152,10 @@ impl HostAgents {
                 }
             }
         }
-        if turn
-            .agent
+        let pays = super::sub_agents::payer(turn);
+        if pays
             .spend_limit_micros
-            .is_some_and(|limit| turn.agent.spent_on(day) >= limit)
+            .is_some_and(|limit| pays.spent_on(day) >= limit)
         {
             return None;
         }
