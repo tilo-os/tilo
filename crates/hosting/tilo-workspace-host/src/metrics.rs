@@ -403,7 +403,7 @@ mod tests {
         second.write_all(b"server frame").await.unwrap();
         first.write_all(b"!").await.unwrap();
         assert_eq!(first.bytes_sent(), 6);
-        assert_eq!(metrics.snapshot().bytes_sent, 17);
+        assert_eq!(metrics.snapshot().bytes_sent, 18);
         let mut sessions = metrics.session_egress();
         sessions.sort_by_key(|session| session.device_public_key);
         assert_eq!(
@@ -416,7 +416,7 @@ mod tests {
                 },
                 SessionEgress {
                     device_public_key: [2; 32],
-                    bytes_sent: 11,
+                    bytes_sent: 12,
                     writes: 1,
                 },
             ]
@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(metrics.session_egress().len(), 1, "an ended session leaves");
         assert_eq!(
             metrics.snapshot().bytes_sent,
-            17,
+            18,
             "the server keeps its total"
         );
     }
