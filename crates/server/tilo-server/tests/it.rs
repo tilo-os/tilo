@@ -79,6 +79,8 @@ mod remote_action_routing;
 mod server_cost;
 #[path = "server_daemon.rs"]
 mod server_daemon;
+#[path = "servers_document.rs"]
+mod servers_document;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
 #[path = "surface_content.rs"]

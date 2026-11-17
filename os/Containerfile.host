@@ -134,6 +134,7 @@ COPY os/usr/libexec/tilo-hosted-prepare os/usr/libexec/tilo-hosted-serve \
      os/usr/libexec/tilo-update-policy-set \
      os/usr/libexec/tilo-image-trust-staged os/usr/libexec/tilo-esp-mount \
      os/usr/libexec/tilo-server-firstboot os/usr/libexec/tilo-server-state-migrate \
+     os/usr/libexec/tilo-server-update-policy \
      /usr/libexec/
 RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
         /usr/libexec/tilo-server-health /usr/libexec/tilo-server-update-window \
@@ -143,7 +144,7 @@ RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
         /usr/libexec/tilo-update-policy-check /usr/libexec/tilo-update-policy-set \
         /usr/libexec/tilo-image-trust-staged \
         /usr/libexec/tilo-esp-mount /usr/libexec/tilo-server-firstboot \
-        /usr/libexec/tilo-server-state-migrate
+        /usr/libexec/tilo-server-state-migrate /usr/libexec/tilo-server-update-policy
 
 # ---- Units ------------------------------------------------------------------
 COPY os/usr/lib/systemd/system/tilo-server.service \
@@ -161,6 +162,8 @@ COPY os/usr/lib/systemd/system/tilo-server.service \
     os/usr/lib/systemd/system/tilo-server-health.service \
     os/usr/lib/systemd/system/tilo-server-update-apply.service \
     os/usr/lib/systemd/system/tilo-server-update-apply.timer \
+    os/usr/lib/systemd/system/tilo-server-update-policy.service \
+    os/usr/lib/systemd/system/tilo-server-update-policy.path \
     /usr/lib/systemd/system/
 # An update stages where the desktop's does — verified, counted before the
 # reboot, finalized at the next boot — and this image's own step boots into it
@@ -240,6 +243,7 @@ RUN systemctl enable tilo-server-firstboot.service \
     && systemctl enable tilo-boot-health.service \
     && systemctl enable tilo-boot-fallback.service \
     && systemctl enable tilo-server-update-apply.timer \
+    && systemctl enable tilo-server-update-policy.path \
     && systemctl enable bootc-fetch-apply-updates.timer \
     && systemctl set-default multi-user.target
 

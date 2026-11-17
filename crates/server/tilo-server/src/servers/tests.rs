@@ -6,10 +6,25 @@ fn device() -> Id {
     device_id(&[7; 32])
 }
 
+/// The address a server enrols: its own endpoint, with no address of its own
+/// yet, as `node_addr` spells one.
+fn endpoint() -> String {
+    let key = iroh_base::SecretKey::from_bytes(&[7; 32]);
+    serde_json::to_string(&iroh_base::EndpointAddr::from_parts(
+        key.public(),
+        std::iter::empty(),
+    ))
+    .unwrap()
+}
+
 fn enrolled() -> Replica<Servers> {
     let mut record = Replica::<Servers>::new();
     record
-        .apply(Servers::ENROLL_SERVER.with((device().as_str().to_owned(), "Attic".into())))
+        .apply(Servers::ENROLL_SERVER.with((
+            device().as_str().to_owned(),
+            "Attic".into(),
+            endpoint(),
+        )))
         .unwrap();
     record
 }
@@ -22,7 +37,7 @@ fn the_record_answers_a_read_with_what_each_server_is_set_to() {
     const { assert!(<Servers as tilo_resource::Resource>::READABLE) };
     let mut record = enrolled();
     record
-        .apply(Servers::SET_UPDATE_CHANNEL.with((device(), "stable".into())))
+        .apply(Servers::SET_UPDATES.with((device(), "stable".into())))
         .unwrap();
     let read = Servers::read_content(&record.state().unwrap(), record.doc(), None).unwrap();
     let said = read.to_string();
@@ -41,7 +56,7 @@ fn a_servers_configuration_is_typed_actions_with_history() {
         .apply(Servers::SET_APPETITE.with((device(), 500, true, 2)))
         .unwrap();
     record
-        .apply(Servers::SET_UPDATE_CHANNEL.with((device(), "stable".into())))
+        .apply(Servers::SET_UPDATES.with((device(), "stable".into())))
         .unwrap();
     record
         .apply(Servers::SET_MAINTENANCE_WINDOW.with((device(), 180, 60)))
@@ -57,7 +72,7 @@ fn a_servers_configuration_is_typed_actions_with_history() {
         (server.storage_gb, server.compute, server.machines),
         (500, true, 2)
     );
-    assert_eq!(server.update_channel, "stable");
+    assert_eq!(server.updates, "stable");
     assert_eq!(
         (server.maintenance_start, server.maintenance_minutes),
         (180, 60)
@@ -97,12 +112,17 @@ fn a_change_the_record_cannot_mean_is_refused() {
     for refused in [
         Servers::HOLD_WORKSPACE.with((device(), "not-a-workspace".into(), STORE.into())),
         Servers::HOLD_WORKSPACE.with((device(), WORKSPACE.into(), "owner".into())),
-        Servers::SET_UPDATE_CHANNEL.with((device(), "nightly-ish".into())),
+        Servers::SET_UPDATES.with((device(), "nightly-ish".into())),
         Servers::SET_MAINTENANCE_WINDOW.with((device(), 24 * 60, 10)),
         Servers::SET_UNLOCK_POLICY.with((device(), "none".into())),
         Servers::RENAME_SERVER.with((device(), " ".into())),
         Servers::RENAME_SERVER.with((device_id(&[8; 32]), "Other".into())),
-        Servers::ENROLL_SERVER.with(("attic".into(), "Attic".into())),
+        Servers::ENROLL_SERVER.with(("attic".into(), "Attic".into(), endpoint())),
+        Servers::ENROLL_SERVER.with((
+            device().as_str().to_owned(),
+            "Attic".into(),
+            "not-an-address".into(),
+        )),
     ] {
         assert!(record.apply(refused).is_err());
     }
@@ -118,7 +138,11 @@ fn a_retired_server_holds_nothing_and_is_not_taken_in_again() {
     record.apply(Servers::RETIRE_SERVER.with(device())).unwrap();
     assert!(record.state().unwrap().active(&[7; 32]).is_none());
     record
-        .apply(Servers::ENROLL_SERVER.with((device().as_str().to_owned(), "Attic again".into())))
+        .apply(Servers::ENROLL_SERVER.with((
+            device().as_str().to_owned(),
+            "Attic again".into(),
+            endpoint(),
+        )))
         .unwrap();
     assert!(record.state().unwrap().active(&[7; 32]).is_none());
     assert!(
@@ -134,4 +158,44 @@ fn each_server_of_a_person_finds_the_same_admin_workspace() {
     assert_eq!(ana, admin_workspace_id(&[1; 32]));
     assert_ne!(ana, admin_workspace_id(&[2; 32]));
     assert!(uuid::Uuid::parse_str(&ana).is_ok());
+}
+
+/// A server keeps the address it enrolled, and enrolling again moves it; the
+/// first name it was given stays.
+#[test]
+fn a_server_keeps_the_address_it_enrolled() {
+    let mut servers = enrolled();
+    let first = endpoint();
+    assert_eq!(
+        servers
+            .state()
+            .unwrap()
+            .servers
+            .get(&device())
+            .unwrap()
+            .endpoint,
+        first
+    );
+    let moved = serde_json::to_string(&iroh_base::EndpointAddr::from_parts(
+        iroh_base::SecretKey::from_bytes(&[9; 32]).public(),
+        std::iter::empty(),
+    ))
+    .unwrap();
+    assert_ne!(moved, first);
+    servers
+        .apply(Servers::ENROLL_SERVER.with((
+            device().as_str().to_owned(),
+            "Attic".into(),
+            moved.clone(),
+        )))
+        .unwrap();
+    let server = servers
+        .state()
+        .unwrap()
+        .servers
+        .get(&device())
+        .cloned()
+        .unwrap();
+    assert_eq!(server.endpoint, moved);
+    assert_eq!(server.label, "Attic");
 }

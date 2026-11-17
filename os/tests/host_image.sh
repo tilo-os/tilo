@@ -43,6 +43,7 @@ for bin in usr/libexec/tilo/tilo-server usr/libexec/tilo/tilo-server-admin \
   usr/libexec/tilo-server-update-window usr/libexec/tilo-server-update-apply \
   usr/libexec/tilo-hosted-prepare usr/libexec/tilo-hosted-serve \
   usr/libexec/tilo-update-channel usr/libexec/tilo-update-policy-set \
+  usr/libexec/tilo-server-update-policy \
   usr/libexec/tilo-image-trust-staged \
   usr/libexec/tilo-esp-mount; do
   [[ -x $root/$bin ]] || die "no executable /$bin"
@@ -107,6 +108,16 @@ grep -q '^ConditionPathExists=/etc/tilo/api.env' \
   "$root/usr/lib/systemd/system/tilo-api.service" \
   || die 'the API server does not wait for its configuration'
 [[ ! -e $root/etc/tilo/api.env ]] || die 'the image carries an API configuration; the deployment owns it'
+# A server's updates and window are its document's, applied by a root-run
+# helper that only the request file starts.
+[[ -L $wants/multi-user.target.wants/tilo-server-update-policy.path ]] \
+  || die "nothing applies the update settings a server's document asks for"
+grep -q '^ExecStart=/usr/libexec/tilo-server-update-policy$' \
+  "$root/usr/lib/systemd/system/tilo-server-update-policy.service" \
+  || die 'the update-policy service runs something else'
+[[ $(stat -c '%u' "$root/usr/libexec/tilo-server-update-policy") == 0 ]] \
+  || die 'the update-policy helper is not root-owned'
+[[ ! -e $root/usr/libexec/tilo-update-policy.request ]] || die 'the image ships an update-policy request'
 
 # An update stages (verified, counted) and is never applied blindly: the boot
 # into it is this image's own step, inside the operator's window.

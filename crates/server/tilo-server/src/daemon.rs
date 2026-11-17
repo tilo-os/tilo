@@ -726,7 +726,7 @@ impl Server {
             // A server of the person's own takes part in their admin workspace,
             // whose record of their servers says what it should be.
             if enrolled_server {
-                crate::servers::enroll(governed, &identity.device_cert)
+                crate::servers::enroll(governed, &identity.device_cert, &endpoint.addr())
                     .await
                     .map_err(|error| ServerError::Identity(format!("admin workspace: {error}")))?;
                 // Its OS updates wait their turn among the person's servers.
@@ -735,6 +735,10 @@ impl Server {
                     cfg.state_root.clone(),
                 ))?;
                 push_background_task(&background_tasks, rollout);
+                // What this server is, and what the person's other servers are
+                // told to be, is its entry in the admin workspace's document:
+                // it applies the document now and after each change to it.
+                push_background_task(&background_tasks, crate::servers::applied::follow(governed));
             }
             governed.serve_content(Arc::new(crate::content::StoresContent(Arc::clone(
                 &content,

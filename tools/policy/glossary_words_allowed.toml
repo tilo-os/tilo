@@ -428,3 +428,46 @@ reason = "The launcher's `--dry-run`, the common command-line name for planning 
 words = ["run"]
 identifiers = ["run"]
 paths = ["crates/session/session/tests/kept_apps.rs"]
+
+[[allow]]
+reason = "The update policy's own unit names and verbs, which tilo-update-policy-set reads (channel-dev, channel-stable); the request the server writes names no channel."
+words = ["channel"]
+paths = ["os/usr/libexec/tilo-server-update-policy", "os/tests/server_update_policy_test.sh"]
+
+[[allow]]
+reason = "These files apply and test the workspace-serving API main already names with it: attach_host, detach_host, hosts, host_on, test_host and HostJobs, and their prose describes that API."
+words = ["host"]
+identifiers = ["host", "hosts", "attach_host", "detach_host", "host_on", "test_host", "tilo_workspace_host", "HostJobs", "HostOffering", "host_image"]
+paths = [
+    "crates/server/tilo-server/src/servers.rs",
+    "crates/server/tilo-server/src/servers/applied.rs",
+    "crates/server/tilo-server/src/servers/policy.rs",
+    "crates/server/tilo-server/src/servers/tests.rs",
+    "crates/server/tilo-server/src/daemon.rs",
+    "crates/server/tilo-server/tests/servers_document.rs",
+    "crates/server/tilo-workspace-service/src/workspaces.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/device_actions.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/device_actions_tests.rs",
+    "docs/architecture/workspace.md",
+    "os/tests/host_image.sh",
+    "os/tests/server_update_policy_test.sh"
+]
+
+[[allow]]
+# A device runs its workspaces' work; the API main already names that with it.
+words = ["run"]
+identifiers = ["run", "runs", "run_jobs", "runner"]
+paths = [
+    "crates/server/tilo-server/src/servers.rs",
+    "crates/server/tilo-server/src/servers/applied.rs",
+    "crates/server/tilo-server/src/servers/policy.rs",
+    "crates/server/tilo-server/src/servers/tests.rs",
+    "crates/server/tilo-server/src/daemon.rs",
+    "crates/server/tilo-server/tests/servers_document.rs",
+    "crates/server/tilo-workspace-service/src/workspaces.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/device_actions.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/device_actions_tests.rs",
+    "docs/architecture/workspace.md",
+    "os/tests/host_image.sh",
+    "os/tests/server_update_policy_test.sh"
+]

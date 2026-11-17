@@ -53,7 +53,7 @@ mod device_actions_tests;
 mod device_keys;
 mod follow;
 mod removals;
-pub use device_actions::HostJobs;
+pub use device_actions::{HostJobs, Offer};
 pub use follow::ResourceWrite;
 #[cfg(test)]
 mod device_rejoin_tests;
@@ -1201,6 +1201,20 @@ impl Workspaces {
     ) -> GroupKeysAnswer {
         let device = self.device_keys()?;
         device.group_keys(&route.cluster_id, create).await
+    }
+
+    /// Set what this host offers its workspaces, as the entry its person keeps
+    /// of it in their admin workspace says: whether it runs their actions and jobs,
+    /// how much storage it offers and how many machines it runs. What devices
+    /// offering it work are answered with follows it.
+    pub fn set_offer(&self, offer: Offer) {
+        self.inner.jobs.set_offer(offer);
+    }
+
+    /// What this host offers its workspaces ([`Self::set_offer`]).
+    #[must_use]
+    pub fn offer(&self) -> Offer {
+        self.inner.jobs.offer()
     }
 
     /// Every record this host holds of `workspace`, by the app whose document
