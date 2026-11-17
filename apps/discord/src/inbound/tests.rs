@@ -573,7 +573,7 @@ tilo_test_env::scenario! {
             person: "u_ada".into(),
             ..Link::default()
         });
-        let workspace = json!({"members": [{"person": "u_ada", "role": "editor"}]});
+        let workspace = json!({"members": [{"member": {"person": "u_ada"}, "role": "editor"}]});
         let changed = MemberChanged {
             user_id: "u7".into(),
             roles: vec!["r_own".into()],
