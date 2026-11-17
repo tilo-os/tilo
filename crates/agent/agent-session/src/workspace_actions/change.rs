@@ -21,11 +21,15 @@ struct ChangeWait {
 #[derive(Default)]
 pub(super) struct Watchers {
     waiting: Vec<ChangeWait>,
+    /// A wait was answered since it was last asked: once nothing waits here, the thread stops
+    /// asking to be woken for the workspace.
+    answered: bool,
 }
 
 impl Watchers {
     /// Answer everyone waiting for a change of this workspace: a landing is one.
     fn wake(&mut self) {
+        self.answered |= !self.waiting.is_empty();
         for ChangeWait { done, .. } in std::mem::take(&mut self.waiting) {
             done.complete(Ok(()));
         }
@@ -50,6 +54,19 @@ impl Watchers {
     /// When the earliest wait ends.
     pub(super) fn due(&self) -> Option<Instant> {
         self.waiting.iter().map(|waiting| waiting.until).min()
+    }
+
+    /// Whether anyone holds a wait here: what keeps this thread asking to be woken for a
+    /// change of the workspace.
+    pub(super) fn held(&self) -> bool {
+        self.waiting
+            .iter()
+            .any(|waiting| !waiting.done.is_abandoned())
+    }
+
+    /// Whether a wait here was answered since the last look.
+    pub(super) fn answered_since(&mut self) -> bool {
+        std::mem::take(&mut self.answered)
     }
 }
 
@@ -176,17 +193,39 @@ impl Worker {
         let until = Instant::now()
             .checked_add(MAX_REMOTE_WAIT)
             .unwrap_or_else(Instant::now);
-        match self.membership(workspace_id) {
-            Ok(workspace) => workspace.watchers.wait(until, done),
-            Err(error) => done.complete(Err(error)),
+        let held = match self.membership(workspace_id) {
+            Ok(workspace) => {
+                workspace.watchers.wait(until, done);
+                true
+            }
+            Err(error) => {
+                done.complete(Err(error));
+                false
+            }
+        };
+        // The wait is woken by a change landing in the workspace, as a request held for one is:
+        // the session hands this thread every change of a workspace it is asked to be woken
+        // for, and the wait answers on it ([`Job::Joined`]) rather than only on its bound.
+        if held {
+            self.awaiting(workspace_id, true);
         }
     }
 
-    /// Answer the waits for a change of any workspace that ran out, so none is held for ever.
+    /// Answer the waits for a change of any workspace that ran out, so none is held for ever,
+    /// and stop asking to be woken for a workspace nothing waits for any more.
     pub(super) fn expire_watchers(&mut self) {
         let now = Instant::now();
-        for workspace in self.workspaces.values_mut() {
+        let mut idle: Vec<WorkspaceId> = Vec::new();
+        for (workspace_id, workspace) in &mut self.workspaces {
+            let held = workspace.watchers.held();
             workspace.watchers.expire(now);
+            let answered = workspace.watchers.answered_since();
+            if (held || answered) && !workspace.watchers.held() {
+                idle.push(*workspace_id);
+            }
+        }
+        for workspace_id in idle {
+            self.stop_waiting_if_idle(workspace_id);
         }
     }
 

@@ -1715,9 +1715,23 @@ impl Worker {
         }
     }
 
+    /// A change of `workspace_id` arrived: the replica is read up to it, so a wait of a watch
+    /// of the workspace answers ([`change::Watchers`]), and the requests held for the same
+    /// change look again.
+    fn woken(&mut self, workspace_id: WorkspaceId) {
+        if let Ok(workspace) = self.membership(workspace_id) {
+            workspace.pump(workspace_id);
+        }
+        self.resume(workspace_id);
+    }
+
     /// Stop asking to be woken for `workspace_id` once nothing waits for it.
     fn stop_waiting_if_idle(&self, workspace_id: WorkspaceId) {
-        if !self.joining.contains_key(&workspace_id) {
+        let watched = self
+            .workspaces
+            .get(&workspace_id)
+            .is_some_and(|workspace| workspace.watchers.held());
+        if !self.joining.contains_key(&workspace_id) && !watched {
             self.awaiting(workspace_id, false);
         }
     }
@@ -1855,7 +1869,7 @@ impl Worker {
                     query,
                     done,
                 } => done.complete(self.invocations(workspace_id, &caller, &query)),
-                Job::Joined(workspace_id) => self.resume(workspace_id),
+                Job::Joined(workspace_id) => self.woken(workspace_id),
                 Job::NotesFolder(workspace_id) => self.notes_pass(workspace_id),
                 Job::Rename(workspace_id, route) => self.rename(workspace_id, &route),
                 Job::Forget(workspace_id) => self.forget(workspace_id),
