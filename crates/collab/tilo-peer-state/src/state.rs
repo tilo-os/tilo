@@ -79,7 +79,7 @@ mod publication;
 mod workspace_grants;
 pub use workspace_grants::workspace_grants_of;
 mod workspace_hosts;
-pub use workspace_hosts::{WORKSPACE_HOSTS_KEY, workspace_hosts_of};
+pub use workspace_hosts::{WORKSPACE_HOSTS_KEY, serving_devices_of, workspace_hosts_of};
 mod personal;
 pub(crate) mod seed;
 mod workspace_name;

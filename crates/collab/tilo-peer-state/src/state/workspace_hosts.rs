@@ -1,4 +1,4 @@
-//! The hosts serving a workspace beside its owner, written by the workspace's
+//! The devices serving a workspace beside its owner, written by the workspace's
 //! governance and read by every member.
 //!
 //! Each is a device of the owner's own person that serves the workspace as well
@@ -11,13 +11,14 @@ use automerge::transaction::Transactable as _;
 use automerge::{ObjType, ReadDoc as _, Value};
 use collab_types::signer::DeviceSigner;
 
-/// Key of the workspace's hosts in its governance document: a map from each
-/// host's device key (hex) to its signed address (JSON).
+/// Key of the devices serving the workspace in its governance document: a map
+/// from each one's device key (hex) to its signed address (JSON).
 pub const WORKSPACE_HOSTS_KEY: &str = "hosts_v1";
 
-/// The hosts `doc` names, ordered by device key. An entry this build cannot
-/// read, or one its host did not sign, is left out: whoever wrote the list,
-/// only a host's own signature names where it answers.
+/// The devices `doc` names as serving it, ordered by device key. An entry this
+/// build cannot read, or one whose own device did not sign it, is left out:
+/// whoever wrote the list, only that device's signature names where it
+/// answers.
 #[must_use]
 pub fn workspace_hosts_of(doc: &automerge::AutoCommit) -> Vec<TransportHint> {
     let Ok(Some((Value::Object(ObjType::Map), hosts))) = doc.get(ROOT, WORKSPACE_HOSTS_KEY) else {
@@ -36,6 +37,16 @@ pub fn workspace_hosts_of(doc: &automerge::AutoCommit) -> Vec<TransportHint> {
                 && tilo_workspace_join::verify_transport_hint(&hint).is_ok())
             .then_some(hint)
         })
+        .collect()
+}
+
+/// The devices that serve `doc`'s workspace, by their keys: a workspace's
+/// servers are no member's devices, whichever of them founded it.
+#[must_use]
+pub fn serving_devices_of(doc: &automerge::AutoCommit) -> std::collections::BTreeSet<[u8; 32]> {
+    workspace_hosts_of(doc)
+        .into_iter()
+        .map(|hint| hint.host.device_public_key)
         .collect()
 }
 

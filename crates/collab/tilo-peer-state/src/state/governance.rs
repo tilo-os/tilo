@@ -5,7 +5,7 @@ use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, Grant, GrantId, Grantee,
     Member, MemberAccess, MemberId, MemberList, MembershipError, Person, ROOT, ReadDoc,
     RevocationList, Role, SystemTime, Transactable, administrator_grant_id, err, governed_map,
-    now_ns, person_of, workspace,
+    now_ns, person_of, serving_devices_of, workspace,
 };
 use crate::join::WorkspaceId;
 use collab_types::signer::DeviceSigner;
@@ -316,6 +316,10 @@ impl PeerGovernance<'_> {
             .workspace_doc
             .as_ref()
             .ok_or("workspace governance missing")?;
+        // A device the workspace names among its servers holds it by that
+        // name: it is no member's device, though it founded the workspace, so
+        // no member list names it as one.
+        let serving: BTreeSet<[u8; 32]> = serving_devices_of(doc);
         let workspace_policy = doc.workspace_policy(&self.peer.core.workspace);
         let certificates = doc.identity_certificates();
         let mut people: BTreeMap<[u8; 32], GovernedMember> = BTreeMap::new();
@@ -394,6 +398,7 @@ impl PeerGovernance<'_> {
                 .get(id)
                 .is_some_and(|verified| verified.current_typed(now_ns(now)).is_ok())
                 && !self.peer.core.revocations.refuses(cert)
+                && !serving.contains(&cert.device_public_key)
             {
                 member.devices.push(cert.device_public_key);
             }
