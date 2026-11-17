@@ -24,7 +24,10 @@ fn titles(app: &ui::framework::testing::TestApp<notes::NotesShell>) -> Vec<Strin
 #[test]
 fn one_undo_takes_back_every_page_the_import_added() {
     let mut app = crate::framework_support::notes();
-    app.invoke_confirmed(import_action(&pages())).unwrap();
+    crate::framework_support::surface(&mut app, |notes| {
+        notes.invoke_notes_for_test(&import_action(&pages()))
+    })
+    .unwrap();
     assert_eq!(titles(&app), ["Page 0", "Page 1", "Page 2"]);
 
     assert!(app.undo(), "the import is one undo step");

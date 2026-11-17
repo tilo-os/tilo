@@ -11,7 +11,7 @@ use ui::framework::testing::TestApp;
 const T0: u64 = 1_800_000_000_000;
 
 fn title(app: &TestApp<NotesShell>, page: notes::PageId) -> String {
-    app.read_document(notes::read::list_pages)
+    crate::framework_support::notes_doc(app, notes::read::list_pages)
         .into_iter()
         .find(|shown| shown.id == page)
         .map(|shown| shown.title)
@@ -33,7 +33,10 @@ fn retitle(app: &mut TestApp<NotesShell>, text: &str, at_ms: u64) {
 
 /// The renames History lists, oldest first, as it reads them.
 fn renames(app: &TestApp<NotesShell>) -> Vec<String> {
-    let mut doc = app.peer_document();
+    // The notes, and their history, are kept in the first part.
+    let mut doc = app
+        .peer_document_of(&notes::part::chain().part(0))
+        .expect("the part is held");
     let rows = ui::history_source::HistorySource::new()
         .without_resource_genesis()
         .entries(&mut doc);
@@ -89,7 +92,7 @@ fn a_members_change_in_between_ends_the_rename() {
         });
         app.harness().click_at(center.x, center.y);
         app.harness().type_text("Ro");
-        app.merge_peer_edit(|doc| {
+        crate::framework_support::part_edit(&mut app, page, |doc| {
             let first = notes::read::page_block_snapshots(doc, page)[0].0.clone();
             crate::component_support::edit_page_body(
                 doc,

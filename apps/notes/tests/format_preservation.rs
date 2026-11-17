@@ -186,8 +186,8 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
         );
         let checkout = notebook(&f);
         let (id, original_marks) = f
-            .records
-            .read(&checkout.id, |doc| {
+            .store
+            .read(&f.part(), |doc| {
                 (
                     read::page_block_snapshots(doc, f.child)[1].0.clone(),
                     read::page_block_marks(doc, f.child),
@@ -218,19 +218,22 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
             );
             assert_eq!(read::page_block_marks(doc, page), original_marks);
         };
-        f.records.read(&checkout.id, verify).unwrap();
+        f.store.read(&f.part(), verify).unwrap();
         live.set_modifiers(&["ctrl".into()]);
         live.key("z");
         live.set_modifiers(&["ctrl".into(), "shift".into()]);
         live.key("z");
         live.set_modifiers(&[]);
-        f.records.read(&checkout.id, verify).unwrap();
+        f.store.read(&f.part(), verify).unwrap();
         close_driver(&mut live);
         drop(live);
-        f.records.try_flush().unwrap();
+        f.store.try_flush().unwrap();
         let reopened_fixture = f.reopen();
         let mut reopened = driver(&reopened_fixture, 96, &checkout);
-        reopened_fixture.records.read(&checkout.id, verify).unwrap();
+        reopened_fixture
+            .store
+            .read(&reopened_fixture.part(), verify)
+            .unwrap();
         close_driver(&mut reopened);
     }
 
@@ -244,8 +247,8 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
             );
             let checkout = notebook(&f);
             let (id, marks) = f
-                .records
-                .read(&checkout.id, |doc| {
+                .store
+                .read(&f.part(), |doc| {
                     (
                         read::page_block_snapshots(doc, f.child)[0].0.clone(),
                         read::page_block_marks(doc, f.child),
@@ -258,8 +261,8 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
             live.click_at(rect.x0 + 8.0, rect.center().y);
             live.key("Home");
             live.type_text(prefix);
-            f.records
-                .read(&checkout.id, |doc| {
+            f.store
+                .read(&f.part(), |doc| {
                     notes::read::validate(doc).unwrap();
                     assert_eq!(
                         read::page_blocks(doc, f.child)[0].kind.stored(),

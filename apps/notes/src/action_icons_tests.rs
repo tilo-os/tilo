@@ -10,6 +10,11 @@ fn actions() -> Vec<ui::tilo_actions::ActionSpec> {
             .map(declaration_spec),
     );
     actions.extend(
+        <crate::part::PagePart>::declarations()
+            .iter()
+            .map(declaration_spec),
+    );
+    actions.extend(
         <crate::effect::NotesEffect>::declarations()
             .iter()
             .map(EffectDecl::spec_of::<crate::effect::NotesEffect>),

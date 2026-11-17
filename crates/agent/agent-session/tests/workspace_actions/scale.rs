@@ -167,7 +167,7 @@ async fn a_company_sized_workspace_answers_at_the_speed_of_an_empty_one() {
     for index in 0..notes {
         let (took, _) = timed(agent.act(
             &base,
-            "notes/Notebook",
+            "notes/Notes",
             "create-page",
             &json!({"title": format!("note-{index}"), "markdown": page(index)}),
         ))
@@ -186,7 +186,7 @@ async fn a_company_sized_workspace_answers_at_the_speed_of_an_empty_one() {
     // Listed a page at a time, every note is reachable, and the cursor says
     // whether more follow.
     let (list, (status, listed, list_bytes)) =
-        timed(agent.get(&format!("{base}/resources?path=notes/Notebook&limit=40"))).await;
+        timed(agent.get(&format!("{base}/resources?path=notes/Notes&limit=40"))).await;
     eprintln!("list notes: {list:?}, {list_bytes} bytes");
     assert_eq!(status, 200, "{listed}");
     assert_eq!(
@@ -199,7 +199,7 @@ async fn a_company_sized_workspace_answers_at_the_speed_of_an_empty_one() {
         .unwrap_or_else(|| panic!("more notes follow the first page: {listed}"));
     let (_, second, _) = agent
         .get(&format!(
-            "{base}/resources?path=notes/Notebook&limit=40&cursor={next}"
+            "{base}/resources?path=notes/Notes&limit=40&cursor={next}"
         ))
         .await;
     assert_ne!(
@@ -207,7 +207,7 @@ async fn a_company_sized_workspace_answers_at_the_speed_of_an_empty_one() {
         "the next page starts where the first ended"
     );
     let began = Instant::now();
-    let (rows, pages) = every_row(&agent, &base, "notes/Notebook", 200).await;
+    let (rows, pages) = every_row(&agent, &base, "notes/Notes", 200).await;
     let walked = began.elapsed();
     let names: std::collections::BTreeSet<String> = rows
         .iter()
@@ -222,12 +222,11 @@ async fn a_company_sized_workspace_answers_at_the_speed_of_an_empty_one() {
 
     // Read, found, and changed then read again, each in the time an empty
     // notebook answers in.
-    let (read, (_, read_bytes)) =
-        timed(agent.act(&base, "notes/Notebook", "read", &json!({}))).await;
+    let (read, (_, read_bytes)) = timed(agent.act(&base, "notes/Notes", "read", &json!({}))).await;
     eprintln!("read notebook: {read:?}, {read_bytes} bytes");
     let (find, (found, _)) = timed(agent.act(
         &base,
-        "notes/Notebook",
+        "notes/Notes",
         "find-page",
         &json!({"title": format!("note-{}", notes / 2)}),
     ))
@@ -236,13 +235,13 @@ async fn a_company_sized_workspace_answers_at_the_speed_of_an_empty_one() {
     assert!(!found.is_null(), "the note is found");
     let (write, _) = timed(agent.act(
         &base,
-        "notes/Notebook",
+        "notes/Notes",
         "new-note",
         &json!({"title": "after the move"}),
     ))
     .await;
     let (after, (_, relisted, _)) =
-        timed(agent.get(&format!("{base}/resources?path=notes/Notebook&limit=40"))).await;
+        timed(agent.get(&format!("{base}/resources?path=notes/Notes&limit=40"))).await;
     eprintln!("write a note: {write:?}, then list: {after:?}");
     assert_eq!(
         relisted["rows"].as_array().map(Vec::len),

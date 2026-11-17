@@ -392,7 +392,7 @@ mod tests {
                     }
                 );
                 let mut registry = tilo_actions::ActionRegistry::new();
-                <crate::Notebook as ui::tilo_resource::Resource>::register(&mut registry);
+                <crate::PagePart as ui::tilo_resource::Resource>::register(&mut registry);
                 tilo_actions::replay(&mut peer, &envelope, &registry).unwrap();
                 let mut peer_index = NoteDateIndex::default();
                 peer_index.sync(&peer, Some(page));
@@ -545,7 +545,7 @@ mod tests {
             eprintln!("phase metadata_shared_undo_and_redo_preserve_creation");
             {
                 let mut state = ui::State::new();
-                crate::read::initialize(&mut state.doc);
+                crate::read::initialize_part(&mut state.doc);
                 let page = PageId::new_v4();
                 apply(
                     &mut state.doc,

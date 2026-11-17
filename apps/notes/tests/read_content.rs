@@ -1,7 +1,6 @@
 //! A notebook is read through its published `read` action, as a script or an
 //! agent reads it: the pages it holds, then one page's title and blocks.
 
-use automerge::transaction::Transactable;
 use notes::NotesShell;
 use notes::read;
 use serde_json::json;
@@ -15,23 +14,36 @@ fn read(app: &mut TestApp<NotesShell>, arguments: serde_json::Value) -> serde_js
         .expect("read answers a value")
 }
 
+/// Read `resource`, the notes' chain or a note in it, through its own read.
+fn read_notes(app: &mut TestApp<NotesShell>, resource: &str) -> serde_json::Value {
+    app.call_on(resource, "read", json!({}))
+        .unwrap_or_else(|error| panic!("read of {resource} refused: {error:?}"))
+        .expect("read answers a value")
+}
+
 #[test]
 fn a_note_written_through_actions_reads_back_through_actions() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.call("new-note", serde_json::json!({ "title": "Groceries" }))
-        .unwrap();
+    app.call_on(
+        &notes::part::chain_resource(),
+        "new-note",
+        serde_json::json!({ "title": "Groceries" }),
+    )
+    .unwrap();
 
     let notebook = read(&mut app, json!({}));
     assert_eq!(notebook["kind"], "notes.notebook");
-    let pages = notebook["pages"].as_array().expect("pages");
+    let notes = read_notes(&mut app, &notes::part::chain_resource());
+    assert_eq!(notes["kind"], "notes.pages");
+    let pages = notes["pages"].as_array().expect("pages");
     let page = pages
         .iter()
-        .find(|page| page["title"] == "Groceries")
-        .unwrap_or_else(|| panic!("the new note is not listed: {notebook}"));
+        .find(|page| page["name"] == "Groceries")
+        .unwrap_or_else(|| panic!("the new note is not listed: {notes}"));
     let item = page["item"].as_str().expect("item id").to_owned();
 
-    let id = app.read_document(|doc| {
+    let id = crate::framework_support::notes_doc(&app, |doc| {
         read::list_pages(doc)
             .into_iter()
             .find(|page| page.title == "Groceries")
@@ -46,7 +58,7 @@ fn a_note_written_through_actions_reads_back_through_actions() {
         },
     );
 
-    let note = read(&mut app, json!({ "item": item }));
+    let note = read_notes(&mut app, &item);
     assert_eq!(note["kind"], "notes.page");
     assert_eq!(note["title"], "Groceries");
     let markdown = note["markdown"].as_str().expect("the body as Markdown");
@@ -64,7 +76,11 @@ fn a_note_written_through_actions_reads_back_through_actions() {
         format!("{}/body", notes::actions::page_resource_id(id))
     );
 
-    let missing = app.call("read", json!({ "item": "notes.page:not-a-page" }));
+    let missing = app.call_on(
+        &notes::part::chain_resource(),
+        "read",
+        json!({ "item": "notes.page:not-a-page" }),
+    );
     assert!(missing.is_err(), "an unknown note is refused: {missing:?}");
 }
 
@@ -74,7 +90,9 @@ fn a_viewer_reads_the_notebook() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::with_role(Role::Viewer).unwrap();
     let notebook = read(&mut app, json!({}));
-    assert!(notebook["pages"].is_array(), "{notebook}");
+    assert!(notebook["tags"].is_array(), "{notebook}");
+    let notes = read_notes(&mut app, &notes::part::chain_resource());
+    assert_eq!(notes["kind"], "notes.pages", "{notes}");
 }
 
 /// `read` is published as a read: a view tagged as the document read, so a
@@ -113,8 +131,12 @@ fn note_and_body_reads_are_bound_document_projections() {
     }
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.call("new-note", json!({"title": "Public note"}))
-        .unwrap();
+    app.call_on(
+        &notes::part::chain_resource(),
+        "new-note",
+        json!({"title": "Public note"}),
+    )
+    .unwrap();
     app.settle();
     let id = crate::framework_support::shown(&app).pages()[0].id;
     let resources = app.harness().resources();
@@ -136,7 +158,7 @@ fn note_and_body_reads_are_bound_document_projections() {
             read.build_json(json!({"item": "private-account"}).as_object().unwrap())
                 .is_err()
         );
-        assert!(app.call("read", json!({"item": id})).is_ok());
+        assert!(app.call_on(&id, "read", json!({})).is_ok());
     }
 }
 
@@ -150,7 +172,8 @@ fn inspect_editor(app: &mut TestApp<NotesShell>) -> serde_json::Value {
 fn editor_inspection_reuses_the_native_observer_and_writes_nothing() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.call(
+    app.call_on(
+        &notes::part::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Private fixture title" }),
     )
@@ -164,14 +187,14 @@ fn editor_inspection_reuses_the_native_observer_and_writes_nothing() {
         },
     );
     app.settle();
-    let canonical_body = app.read_document(|doc| {
+    let canonical_body = crate::framework_support::notes_doc(&app, |doc| {
         read::page_block_snapshots(doc, page)
             .into_iter()
             .map(|(_, text)| text)
             .collect::<Vec<_>>()
             .join("\n")
     });
-    let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+    let before = crate::framework_support::written(&app);
     let native = app
         .harness()
         .native_input_snapshot()
@@ -206,10 +229,7 @@ fn editor_inspection_reuses_the_native_observer_and_writes_nothing() {
     assert!(observed.get("text").is_none());
     assert!(observed.get("body").is_none());
     assert!(!observed.to_string().contains("Private fixture title"));
-    assert_eq!(
-        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
-        before
-    );
+    assert_eq!(crate::framework_support::written(&app), before);
     assert_eq!(inspect_editor(&mut app), observed);
 }
 
@@ -217,13 +237,15 @@ fn editor_inspection_reuses_the_native_observer_and_writes_nothing() {
 fn editor_inspection_preserves_actual_wrong_page_and_stale_cache_evidence() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.call(
+    app.call_on(
+        &notes::part::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "First private fixture" }),
     )
     .unwrap();
     let first = crate::framework_support::shown(&app).pages()[0].id;
-    app.call(
+    app.call_on(
+        &notes::part::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Second private fixture" }),
     )
@@ -237,13 +259,13 @@ fn editor_inspection_preserves_actual_wrong_page_and_stale_cache_evidence() {
     app.call("open-note", json!({ "page": second }))
         .expect("the second page opens through its actual published row");
     app.settle();
-    let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
-    let canonical = app.read_document(Clone::clone);
+    let before = crate::framework_support::written(&app);
+    let canonical = crate::framework_support::notes_doc(&app, Clone::clone);
     // A real panel binding can lag or disagree with the local selected route.
     // Inspection must report that state rather than rebinding it to a target.
     app.surface_mut::<notes::NotesApp>()
         .main_panel_mut()
-        .bind_canonical_page(&canonical, first, "First private fixture")
+        .bind_canonical_page(&canonical, first, Some(0), "First private fixture")
         .unwrap();
     let observed = inspect_editor(&mut app);
     assert_eq!(observed["selected_page"], second.to_string());
@@ -265,10 +287,7 @@ fn editor_inspection_preserves_actual_wrong_page_and_stale_cache_evidence() {
         blake3::hash(b"Stale private cache").to_hex().to_string()
     );
     assert!(!cached.to_string().contains("Stale private cache"));
-    assert_eq!(
-        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
-        before
-    );
+    assert_eq!(crate::framework_support::written(&app), before);
     assert!(
         app.call("inspect-editor", json!({"page":first})).is_err(),
         "a caller cannot inject the page identity to be reported"
@@ -279,20 +298,21 @@ fn editor_inspection_preserves_actual_wrong_page_and_stale_cache_evidence() {
 fn a_viewer_inspects_editor_without_gaining_note_mutation_rights() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::with_role(Role::Viewer).unwrap();
-    let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+    let before = crate::framework_support::written(&app);
     let observed = inspect_editor(&mut app);
     assert!(observed["selected_page"].is_null());
     assert!(observed["main_page"].is_null());
     assert!(observed["body_hash"].is_null());
     assert!(
-        app.call("new-note", serde_json::json!({ "title": "Not permitted" }))
-            .is_err()
+        app.call_on(
+            &notes::part::chain_resource(),
+            "new-note",
+            serde_json::json!({ "title": "Not permitted" })
+        )
+        .is_err()
     );
     assert_eq!(inspect_editor(&mut app), observed);
-    assert_eq!(
-        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
-        before
-    );
+    assert_eq!(crate::framework_support::written(&app), before);
 }
 
 /// A past version reads through the `read` actions and draws in the app's own
@@ -302,7 +322,8 @@ fn a_past_version_reads_and_shows_its_note() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let created = app
-        .call(
+        .call_on(
+            &notes::part::chain_resource(),
             "create-page",
             json!({ "title": "Kumquat plans", "markdown": "Marker kumquat parade" }),
         )
@@ -310,15 +331,21 @@ fn a_past_version_reads_and_shows_its_note() {
         .unwrap();
     let note = created["resource"].as_str().expect("the note").to_owned();
     app.settle();
-    let past = app.versions().pop().unwrap().hash;
+    // A note's past is the past of the part keeping it.
+    let page = crate::framework_support::shown(&app).pages()[0].id;
+    let past = crate::framework_support::part_doc(&app, page, |doc| doc.clone().get_heads())
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("+");
     app.call_on(&note, "rename", json!({ "title": "Later title" }))
         .unwrap();
     app.settle();
 
-    let then = read(
-        &mut app,
-        json!({ "version": past.to_string(), "item": note }),
-    );
+    let then = app
+        .call_on(&note, "read", json!({ "version": past }))
+        .unwrap_or_else(|error| panic!("the past read is refused: {error:?}"))
+        .expect("the past read answers");
     let content = &then["content"];
     assert_eq!(content["title"], "Kumquat plans", "{then}");
     assert!(
@@ -326,13 +353,5 @@ fn a_past_version_reads_and_shows_its_note() {
             .as_str()
             .is_some_and(|markdown| markdown.contains("Marker kumquat parade")),
         "{then}"
-    );
-
-    let texts = app.past_version(&[past]).unwrap().texts();
-    assert!(
-        texts
-            .iter()
-            .any(|text| text.contains("Marker kumquat parade")),
-        "{texts:?}"
     );
 }

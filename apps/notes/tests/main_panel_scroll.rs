@@ -399,7 +399,7 @@ fn external_primary_region_is_measured_editor_and_matches_wheel() {
     };
     let m = metrics(&mut app);
     assert!(m.max_scroll() > 0.0);
-    let heads = app.peer_document().get_heads();
+    let heads = crate::framework_support::stored(&app);
     surface(&mut app, |notes| {
         notes.apply_primary_vertical_scroll(PrimaryScrollAction::End);
     });
@@ -410,7 +410,7 @@ fn external_primary_region_is_measured_editor_and_matches_wheel() {
     dispatch(&mut app, &wheel(2.0));
     app.harness().relayout_at((1000, 300)).unwrap();
     assert!(metrics(&mut app).offset < m.offset);
-    assert_eq!(app.peer_document().get_heads(), heads);
+    assert_eq!(crate::framework_support::stored(&app), heads);
     app.harness().relayout_at((1000, 1200)).unwrap();
     let m = metrics(&mut app);
     assert!(m.offset <= m.max_scroll());

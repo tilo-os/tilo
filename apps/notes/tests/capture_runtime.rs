@@ -5,18 +5,18 @@ fn creating_then_visiting_another_note_keeps_creation_reachable_by_ctrl_z() {
     let fixture = NotebookFixture::rich();
     let checkout = notebook(&fixture);
     let initial = fixture
-        .records
-        .read(&checkout.id, |doc| notes::read::list_pages(doc).len())
-        .unwrap();
+        .store
+        .read(&fixture.part(), |doc| notes::read::list_pages(doc).len())
+        .unwrap_or_default();
     let mut live = driver(&fixture, 225, &checkout);
 
     let new_note = semantic_rect(&live, "new-note").center();
     live.click_at(new_note.x, new_note.y);
     assert_eq!(
         fixture
-            .records
-            .read(&checkout.id, |doc| notes::read::list_pages(doc).len())
-            .unwrap(),
+            .store
+            .read(&fixture.part(), |doc| notes::read::list_pages(doc).len())
+            .unwrap_or_default(),
         initial + 1,
         "the visible new-note affordance creates one canonical note"
     );
@@ -31,9 +31,9 @@ fn creating_then_visiting_another_note_keeps_creation_reachable_by_ctrl_z() {
 
     assert_eq!(
         fixture
-            .records
-            .read(&checkout.id, |doc| notes::read::list_pages(doc).len())
-            .unwrap(),
+            .store
+            .read(&fixture.part(), |doc| notes::read::list_pages(doc).len())
+            .unwrap_or_default(),
         initial,
         "switching notes must not strand the creation outside action history"
     );
@@ -107,8 +107,8 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
         );
         let checkout = notebook(&f);
         let before = f
-            .records
-            .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
+            .store
+            .read(&f.part(), |doc| read::page_block_snapshots(doc, f.child))
             .unwrap();
         let mut live = driver(&f, 225, &checkout);
         live.set_theme(
@@ -151,8 +151,8 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
         );
         assert_eq!(revision(&f, &checkout), original_revision);
         assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
+            f.store
+                .read(&f.part(), |doc| read::page_block_snapshots(doc, f.child))
                 .unwrap(),
             before
         );
@@ -174,8 +174,8 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
         live.key("Enter");
         live.set_modifiers(&[]);
         let split = f
-            .records
-            .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
+            .store
+            .read(&f.part(), |doc| read::page_block_snapshots(doc, f.child))
             .unwrap();
         assert_eq!(split[0], before[0]);
         assert_eq!(split[1].1, "", "Shift+Enter creates a blank source row");
@@ -185,8 +185,8 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
         live.set_modifiers(&[]);
         live.type_text("Outside code");
         let after = f
-            .records
-            .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
+            .store
+            .read(&f.part(), |doc| read::page_block_snapshots(doc, f.child))
             .unwrap();
         assert_eq!(after[0], before[0]);
         assert_eq!(
@@ -252,8 +252,8 @@ fn accessible_block_text_edits_and_grapheme_selection_use_the_canonical_history_
     f.write_page(f.child, "a👩‍👩‍👧‍👦éz\n\n```python\nprint(1)\n```\n".as_bytes());
     let checkout = notebook(&f);
     let before = f
-        .records
-        .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
+        .store
+        .read(&f.part(), |doc| read::page_block_snapshots(doc, f.child))
         .unwrap();
     let mut live = driver(&f, 224, &checkout);
     open_note(&mut live, 224, f.child, None);
@@ -276,8 +276,8 @@ fn accessible_block_text_edits_and_grapheme_selection_use_the_canonical_history_
     );
     live.type_text("X");
     let changed = f
-        .records
-        .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
+        .store
+        .read(&f.part(), |doc| read::page_block_snapshots(doc, f.child))
         .unwrap();
     assert_eq!(changed[0], (before[0].0.clone(), "aXz".to_owned()));
     let prior_edit = revision(&f, &checkout);
@@ -289,8 +289,8 @@ fn accessible_block_text_edits_and_grapheme_selection_use_the_canonical_history_
     .unwrap();
     assert_eq!(revision(&f, &checkout), prior_edit + 1);
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
+        f.store
+            .read(&f.part(), |doc| read::page_block_snapshots(doc, f.child))
             .unwrap()[1],
         (before[1].0.clone(), "print(2)".to_owned())
     );
@@ -298,18 +298,18 @@ fn accessible_block_text_edits_and_grapheme_selection_use_the_canonical_history_
     live.key("z");
     live.set_modifiers(&[]);
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
+        f.store
+            .read(&f.part(), |doc| read::page_block_snapshots(doc, f.child))
             .unwrap()[1],
         before[1]
     );
     close_driver(&mut live);
     drop(live);
     let f = f.reopen();
-    f.records.try_open_resource(&checkout).unwrap();
+    f.store.try_open_resource(&checkout).unwrap();
     let reopened = f
-        .records
-        .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
+        .store
+        .read(&f.part(), |doc| read::page_block_snapshots(doc, f.child))
         .unwrap();
     assert_eq!(reopened[0], changed[0]);
     assert_eq!(reopened[1], before[1]);

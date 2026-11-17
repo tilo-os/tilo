@@ -13,13 +13,16 @@ fn with_page() -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&create_page_action(page, None, "First")).unwrap())
-        .unwrap();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&create_page_action(page, None, "First")).unwrap(),
+    )
+    .unwrap();
     (app, page)
 }
 
 fn body(app: &TestApp<NotesShell>, page: PageId) -> Vec<String> {
-    app.read_document(|doc| {
+    crate::framework_support::notes_doc(app, |doc| {
         read::page_block_snapshots(doc, page)
             .into_iter()
             .map(|(_, text)| text)
@@ -77,7 +80,7 @@ fn importing_a_long_note_keeps_actions_usable_before_the_next_frame() {
     for index in 0..180 {
         writeln!(markdown, "Paragraph {index}: {paragraph}\n").unwrap();
     }
-    let invoke = Invoke::<notes::Notebook>::apply(&import_markdown_action(
+    let invoke = Invoke::<notes::PagePart>::apply(&import_markdown_action(
         Some(page),
         "Long note",
         &markdown,
@@ -86,7 +89,7 @@ fn importing_a_long_note_keeps_actions_usable_before_the_next_frame() {
     .unwrap();
     let address = BoundActionAddress {
         instance_id: app.harness().component_instance_id().unwrap(),
-        address: invoke.address(),
+        address: invoke.address_on(notes::part::chain_resource()),
     };
     // The control socket may request publication between applying an action
     // and drawing the next frame. Deliberately do not relayout here.

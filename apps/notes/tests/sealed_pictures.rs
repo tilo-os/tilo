@@ -30,14 +30,17 @@ fn app() -> TestApp<NotesShell> {
 
 fn with_page(app: &mut TestApp<NotesShell>) -> PageId {
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&notes::actions::create_page_action(page, None, "Trip")).unwrap())
-        .unwrap();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&notes::actions::create_page_action(page, None, "Trip")).unwrap(),
+    )
+    .unwrap();
     page
 }
 
 /// The one picture the notebook keeps.
 fn kept(app: &TestApp<NotesShell>) -> Bytes {
-    let images = app.read_document(|doc| notes::read::notebook(doc).images);
+    let images = notes::part::images(&crate::framework_support::parts(app));
     let [(_, stored)] = images.iter().collect::<Vec<_>>()[..] else {
         panic!("one picture, got {}", images.len());
     };
@@ -47,11 +50,12 @@ fn kept(app: &TestApp<NotesShell>) -> Bytes {
 /// The pictures `app` shows, read from its own device's store.
 fn shown(app: &TestApp<NotesShell>) -> Vec<Vec<u8>> {
     let store = app.content();
-    app.read_document(|doc| {
-        notes::notebook::image_snapshot(&notes::read::notebook(doc).images, &store)
-            .into_values()
-            .collect()
-    })
+    notes::notebook::image_snapshot(
+        &notes::part::images(&crate::framework_support::parts(app)),
+        &store,
+    )
+    .into_values()
+    .collect()
 }
 
 fn holds(haystack: &[u8], picture: &[u8]) -> bool {
@@ -92,14 +96,12 @@ fn a_placed_picture_is_ciphertext_off_its_readers_and_every_member_opens_it() {
     let picture = png(240, 180);
     let mut alice = app();
     let page = with_page(&mut alice);
-    let mut record =
-        automerge::AutoCommit::load(&alice.resource_document(&alice.record().clone()).unwrap())
-            .unwrap();
-    let mut bob = TestApp::<NotesShell>::with_workspace_resource(&mut record).unwrap();
+    let mut bob = alice.another_device().unwrap();
 
     // Alice places it from her window.
     alice
-        .invoke(
+        .invoke_child::<notes::PagePart>(
+            &notes::part::chain_resource(),
             Invoke::apply(&notes::actions::place_image_action(
                 page,
                 picture.clone(),
@@ -130,7 +132,7 @@ fn a_placed_picture_is_ciphertext_off_its_readers_and_every_member_opens_it() {
 
     // Bob, a member with the notebook open, takes Alice's change and the
     // ciphertext the host served, and sees the picture.
-    assert!(alice.deliver_changes_to(&mut bob).unwrap());
+    assert!(crate::framework_support::deliver(&mut alice, &mut bob));
     assert_eq!(kept(&bob), stored);
     assert!(shown(&bob).is_empty(), "not here before it arrives");
     bob.content().put_public(&served).unwrap();
@@ -139,10 +141,7 @@ fn a_placed_picture_is_ciphertext_off_its_readers_and_every_member_opens_it() {
 
     // Carol joins later: the notebook's history reaches her, and the host
     // she fetches the picture from still holds it sealed.
-    let mut joined =
-        automerge::AutoCommit::load(&alice.resource_document(&alice.record().clone()).unwrap())
-            .unwrap();
-    let carol = TestApp::<NotesShell>::with_workspace_resource(&mut joined).unwrap();
+    let carol = alice.another_device().unwrap();
     carol
         .content()
         .put_public(

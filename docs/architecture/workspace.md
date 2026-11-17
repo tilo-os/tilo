@@ -796,6 +796,11 @@ app writes none of them:
   what spans parts (an issue's parent in another part, its place in the
   order), so the verb itself reads only its part and replays the same
   everywhere.
+- **What one change means elsewhere.** `Chained::spread` names further
+  actions the same invocation writes into other parts right after the action
+  lands: renaming a note relabels the links to it in every part holding one.
+  Each is the same invoker's step in its own part's history, so each part's
+  change costs that part.
 - **Held whole or by the reader.** A chain whose views list all of it
   (`Chained::HELD_WHOLE`: a tracker's issues, a reader's articles) holds every
   part as soon as it knows the head; one read back in time (a chat) holds the
@@ -835,7 +840,8 @@ there before it moves into parts:
 | --- | --- | --- | --- |
 | Tasks | (before) every issue with its body, thread, links and attachment references | issues | 6.7 ms to apply and a 711 ms load at 2,500 issues (311 KB saved, 2.6 MB with history), every holder |
 | Tasks | (now) projects and areas; issues in parts of at most 500 issues or 512 KiB of text | parts | one part's cost: the same bytes and document size at 10× the issues |
-| Notes | every page, its rich-text body and reactions | pages | 600 KB at 101 pages; whole document per change |
+| Notes | (before) every page, its rich-text body and reactions | pages | 600 KB at 101 pages; whole document per change |
+| Notes | (now) tags; pages in parts of at most 200 pages or 512 KiB of text | parts | one part's cost: the same bytes at 10× the pages |
 | Files (folder) | (before) every file and folder node of the workspace | files | 28 MB at 19,513 files; whole document per change |
 | Files (folder) | (now) the tree's own document, listing chunks of up to 1,024 nodes each | chunks | one chunk's cost: about 1 ms and 755 bytes sent per file written at 20,000 files |
 | Mail | every message's state, held bodies, drafts, outboxes; the person's copies | messages | grows with the mailbox |

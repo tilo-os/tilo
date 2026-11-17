@@ -29,7 +29,7 @@ use serde_json::Value;
 use tilo_doc_codecs::safety::{ZipLimits, read_zip_parts};
 use ui::tilo_resource::Invoke;
 
-use crate::notebook::Notebook;
+use crate::part::{ImportedNote, PagePart, page_part};
 
 /// The most pages one import brings.
 pub const MAX_IMPORTED_PAGES: usize = 256;
@@ -83,23 +83,27 @@ pub fn pages(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
 /// Every page of `pages`, added to the notebook as one action: one undo
 /// takes the whole import back, and a member sees all of it or none.
 ///
-/// Each note's id is minted by the group from its seed and the member's
-/// position, so every replica adds the same notes under the same ids.
+/// Each note's id is minted from the action's seed and the note's place in
+/// it, so every replica adds the same notes under the same ids.
 #[must_use]
-pub fn import_action(pages: &[ImportedPage]) -> Invoke<Notebook> {
-    Invoke::group(pages.iter().filter_map(import_of))
-}
-
-/// The import of `page` as one invocation; `None` only if the action cannot
-/// be encoded, which plain owned data never causes.
-fn import_of(page: &ImportedPage) -> Option<Invoke<Notebook>> {
-    Invoke::apply(&crate::actions::import_markdown_action(
-        None,
-        &page.title,
-        &page.markdown,
-        page.images.clone(),
-    ))
-    .ok()
+pub fn import_action(pages: &[ImportedPage]) -> Invoke<PagePart> {
+    PagePart::IMPORT_NOTES.with(page_part::ImportNotes {
+        notes: pages
+            .iter()
+            .map(|page| ImportedNote {
+                title: page.title.clone(),
+                markdown: page.markdown.clone(),
+                images: page
+                    .images
+                    .iter()
+                    .cloned()
+                    .map(ui::tilo_resource::Bytes::to_keep)
+                    .collect(),
+            })
+            .collect(),
+        ranks: None,
+        links: None,
+    })
 }
 
 /// Whether `bytes` starts with a zip archive's signature: a Notion export is

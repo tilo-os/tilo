@@ -36,8 +36,11 @@ impl ClipboardBackend for Clipboard {
 fn app() -> (TestApp<notes::NotesShell>, notes::PageId) {
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke(Invoke::apply(&actions::create_page_action(page, None, "Clipboard")).unwrap())
-        .unwrap();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&actions::create_page_action(page, None, "Clipboard")).unwrap(),
+    )
+    .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
     app.harness().type_text("Ä😀");
@@ -83,8 +86,9 @@ fn refused_cut(route: &str) {
     let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
     let _host = ui::host::enter(&services);
     let (mut app, page) = app();
-    let blocks = app.read_document(|doc| read::page_blocks(doc, page));
-    app.invoke(
+    let blocks = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
         Invoke::apply(&actions::edit_body_action(
             page,
             tilo_document::RichTextAction::SetMark {
@@ -114,17 +118,17 @@ fn refused_cut(route: &str) {
             },
         )
         .unwrap();
-    let before = app.read_document(|doc| read::page_blocks(doc, page));
+    let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert!(before[..2].iter().all(|block| !block.marks.is_empty()));
-    let versions = app.versions().len();
+    let versions = crate::framework_support::versions(&app).len();
     cut(&mut app, route);
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before,
         "refused {route} cut preserves canonical blocks"
     );
     assert_eq!(
-        app.versions().len(),
+        crate::framework_support::versions(&app).len(),
         versions,
         "refusal creates no history step"
     );
@@ -136,7 +140,7 @@ fn refused_cut(route: &str) {
         Some("Ä😀\n日本"),
         "refusal preserved the exact selection"
     );
-    let after = app.read_document(|doc| read::page_blocks(doc, page));
+    let after = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(
         after
             .iter()
@@ -147,7 +151,7 @@ fn refused_cut(route: &str) {
     assert_eq!(after[0].id, before[0].id);
     assert!(app.undo());
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before
     );
 }
@@ -171,7 +175,8 @@ fn refused_table_context_menu_cut_preserves_cell_selection_and_history() {
     let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
     let _host = ui::host::enter(&services);
     let (mut app, page) = app();
-    let id = app.read_document(|doc| read::page_blocks(doc, page)[0].id.clone());
+    let id =
+        crate::framework_support::notes_doc(&app, |doc| read::page_blocks(doc, page)[0].id.clone());
     for action in [
         RichTextAction::SpliceText {
             region: RegionKind::Body,
@@ -187,36 +192,39 @@ fn refused_table_context_menu_cut_preserves_cell_selection_and_history() {
             value: AttrVal::Bool(true),
         },
     ] {
-        app.invoke(Invoke::apply(&actions::edit_body_action(page, action)).unwrap())
-            .unwrap();
+        app.invoke_child::<notes::PagePart>(
+            &notes::part::chain_resource(),
+            Invoke::apply(&actions::edit_body_action(page, action)).unwrap(),
+        )
+        .unwrap();
     }
     let target = format!("notes.table-cell:{id}:1:0");
     app.harness()
         .perform_semantic_named("block_editor", Some(&target), &ui::a11y::Action::Focus)
         .unwrap();
     menu(&mut app, 3);
-    let before = app.read_document(|doc| read::page_blocks(doc, page));
-    let versions = app.versions().len();
+    let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
+    let versions = crate::framework_support::versions(&app).len();
     menu(&mut app, 0);
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before
     );
-    assert_eq!(app.versions().len(), versions);
+    assert_eq!(crate::framework_support::versions(&app).len(), versions);
     clipboard.accept.store(true, Ordering::Relaxed);
     menu(&mut app, 0);
     assert_eq!(
         clipboard.text(ClipboardTarget::Clipboard).as_deref(),
         Some("日本")
     );
-    let after = app.read_document(|doc| read::page_blocks(doc, page));
+    let after = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert!(!after[0].text.contains("日本"));
     assert!(after[0].text.contains("other"));
     assert_eq!(after[0].id, before[0].id);
     assert_eq!(after[1..], before[1..]);
     assert!(app.undo());
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before
     );
 }
@@ -226,8 +234,8 @@ fn refused_image_cut(route: &str) {
     let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
     let _host = ui::host::enter(&services);
     let (mut app, page, source) = image_app();
-    let before = app.read_document(|doc| read::page_blocks(doc, page));
-    let versions = app.versions().len();
+    let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
+    let versions = crate::framework_support::versions(&app).len();
     if route == "keyboard" {
         // The browser preflights Cut with Copy before attempting its write.
         app.harness().set_modifiers(&["ctrl".into()]);
@@ -235,7 +243,7 @@ fn refused_image_cut(route: &str) {
         app.harness().set_modifiers(&[]);
         app.harness().key("Q");
         assert_eq!(
-            app.read_document(|doc| read::page_blocks(doc, page)),
+            crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
             before,
             "copy must not expose hidden source to subsequent typing"
         );
@@ -243,11 +251,11 @@ fn refused_image_cut(route: &str) {
     cut(&mut app, route);
     app.harness().key("Q");
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before,
         "typing after refused image cut must not replace hidden source"
     );
-    assert_eq!(app.versions().len(), versions);
+    assert_eq!(crate::framework_support::versions(&app).len(), versions);
     clipboard.accept.store(true, Ordering::Relaxed);
     cut(&mut app, route);
     assert_eq!(
@@ -255,12 +263,14 @@ fn refused_image_cut(route: &str) {
         Some(source)
     );
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)[0].text.clone()),
+        crate::framework_support::notes_doc(&app, |doc| read::page_blocks(doc, page)[0]
+            .text
+            .clone()),
         ""
     );
     assert!(app.undo());
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before
     );
 }
@@ -275,9 +285,11 @@ fn refused_image_menu_cut_does_not_expose_hidden_source_to_typing() {
 
 fn image_app() -> (TestApp<notes::NotesShell>, notes::PageId, &'static str) {
     let (mut app, page) = app();
-    let id = app.read_document(|doc| read::page_blocks(doc, page)[0].id.clone());
+    let id =
+        crate::framework_support::notes_doc(&app, |doc| read::page_blocks(doc, page)[0].id.clone());
     let source = "![Synthetic preview](asset:missing-test-image)";
-    app.invoke(
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
         Invoke::apply(&actions::edit_body_action(
             page,
             tilo_document::RichTextAction::SpliceText {
@@ -316,12 +328,12 @@ fn image_replacement(route: &str) {
     let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
     let _host = ui::host::enter(&services);
     let (mut app, page, source) = image_app();
-    let before = app.read_document(|doc| read::page_blocks(doc, page));
-    let assets_before = app.read_document(notes::read::images);
-    let versions = app.versions().len();
+    let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
+    let assets_before = notes::read::images(&crate::framework_support::parts(&app));
+    let versions = crate::framework_support::versions(&app).len();
     *clipboard.image.lock().unwrap() = Some(image_bytes());
     paste(&mut app, route);
-    let after = app.read_document(|doc| read::page_blocks(doc, page));
+    let after = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert!(!after.iter().any(|block| block.text == source));
     assert_eq!(
         after
@@ -336,18 +348,24 @@ fn image_replacement(route: &str) {
             .any(|block| block.text.starts_with("![Pasted image](asset:"))
     );
     assert_eq!(
-        app.versions().len(),
+        crate::framework_support::versions(&app).len(),
         versions.checked_add(1).unwrap(),
         "one canonical image-paste action"
     );
     assert!(app.undo());
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before
     );
-    assert_eq!(app.read_document(notes::read::images), assets_before);
+    assert_eq!(
+        notes::read::images(&crate::framework_support::parts(&app)),
+        assets_before
+    );
     assert!(app.redo());
-    assert_eq!(app.read_document(|doc| read::page_blocks(doc, page)), after);
+    assert_eq!(
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
+        after
+    );
 }
 
 fn paste(app: &mut TestApp<notes::NotesShell>, route: &str) {
@@ -386,8 +404,8 @@ fn invalid_image_paste_preserves_selected_source_and_history_then_retries() {
     let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
     let _host = ui::host::enter(&services);
     let (mut app, page, _) = image_app();
-    let before = app.read_document(|doc| read::page_blocks(doc, page));
-    let versions = app.versions().len();
+    let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
+    let versions = crate::framework_support::versions(&app).len();
     *clipboard.image.lock().unwrap() = Some(ui::clipboard::ClipboardImage {
         mime: "image/png",
         bytes: vec![0, 1, 2, 3],
@@ -396,17 +414,20 @@ fn invalid_image_paste_preserves_selected_source_and_history_then_retries() {
         paste(&mut app, route);
         app.harness().key("Q");
         assert_eq!(
-            app.read_document(|doc| read::page_blocks(doc, page)),
+            crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
             before
         );
-        assert_eq!(app.versions().len(), versions);
+        assert_eq!(crate::framework_support::versions(&app).len(), versions);
     }
     *clipboard.image.lock().unwrap() = Some(image_bytes());
     paste(&mut app, "menu");
-    assert_eq!(app.versions().len(), versions.checked_add(1).unwrap());
+    assert_eq!(
+        crate::framework_support::versions(&app).len(),
+        versions.checked_add(1).unwrap()
+    );
     assert!(app.undo());
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before
     );
 }
@@ -417,8 +438,9 @@ fn image_paste_replaces_a_marked_unicode_range_and_restores_it_in_one_undo() {
     let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
     let _host = ui::host::enter(&services);
     let (mut app, page) = app();
-    let blocks = app.read_document(|doc| read::page_blocks(doc, page));
-    app.invoke(
+    let blocks = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
         Invoke::apply(&actions::edit_body_action(
             page,
             tilo_document::RichTextAction::SetMark {
@@ -439,8 +461,8 @@ fn image_paste_replaces_a_marked_unicode_range_and_restores_it_in_one_undo() {
         .unwrap(),
     )
     .unwrap();
-    let before = app.read_document(|doc| read::page_blocks(doc, page));
-    let versions = app.versions().len();
+    let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
+    let versions = crate::framework_support::versions(&app).len();
     app.harness()
         .perform_named(
             "block_editor",
@@ -452,7 +474,7 @@ fn image_paste_replaces_a_marked_unicode_range_and_restores_it_in_one_undo() {
         .unwrap();
     *clipboard.image.lock().unwrap() = Some(image_bytes());
     paste(&mut app, "keyboard");
-    let after = app.read_document(|doc| read::page_blocks(doc, page));
+    let after = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(
         after.len(),
         4,
@@ -464,14 +486,20 @@ fn image_paste_replaces_a_marked_unicode_range_and_restores_it_in_one_undo() {
     assert_eq!(after[3], before[2]);
     assert!(!after[0].marks.is_empty());
     assert!(!after[2].marks.is_empty());
-    assert_eq!(app.versions().len(), versions.checked_add(1).unwrap());
+    assert_eq!(
+        crate::framework_support::versions(&app).len(),
+        versions.checked_add(1).unwrap()
+    );
     assert!(app.undo());
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before
     );
     assert!(app.redo());
-    assert_eq!(app.read_document(|doc| read::page_blocks(doc, page)), after);
+    assert_eq!(
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
+        after
+    );
 }
 
 #[test]
@@ -481,21 +509,24 @@ fn image_paste_into_a_fresh_empty_note_is_undoable() {
     let _host = ui::host::enter(&services);
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke(Invoke::apply(&actions::create_page_action(page, None, "Image")).unwrap())
-        .unwrap();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&actions::create_page_action(page, None, "Image")).unwrap(),
+    )
+    .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
-    let before = app.read_document(|doc| read::page_blocks(doc, page));
+    let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     *clipboard.image.lock().unwrap() = Some(image_bytes());
     paste(&mut app, "keyboard");
-    let after = app.read_document(|doc| read::page_blocks(doc, page));
+    let after = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     // The picture, then the empty line the caret goes on.
     assert_eq!(after.len(), 2);
     assert!(after[0].text.starts_with("![Pasted image](asset:"));
     assert_eq!(after[1].text, "");
     assert!(app.undo());
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before
     );
 }
@@ -506,8 +537,8 @@ fn image_paste_excludes_a_column_zero_endpoint_and_preserves_peer_text_through_u
     let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
     let _host = ui::host::enter(&services);
     let (mut app, page) = app();
-    let before = app.read_document(|doc| read::page_blocks(doc, page));
-    let mut peer = app.peer_document();
+    let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
+    let (part, mut peer) = crate::framework_support::peer_part(&app, page);
     crate::component_support::edit_page_body(
         &mut peer,
         page,
@@ -532,20 +563,22 @@ fn image_paste_excludes_a_column_zero_endpoint_and_preserves_peer_text_through_u
         .unwrap();
     *clipboard.image.lock().unwrap() = Some(image_bytes());
     paste(&mut app, "keyboard");
-    let after = app.read_document(|doc| read::page_blocks(doc, page));
+    let after = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     // The selected line becomes the picture and an empty line for the
     // caret; the lines after it are untouched.
     assert_eq!(after.len(), 4);
     assert!(after[0].text.starts_with("![Pasted image](asset:"));
     assert_eq!(after[1].text, "");
     assert_eq!(after[2..], before[1..]);
-    app.merge_peer(&mut peer).unwrap();
+    crate::framework_support::merge_part(&mut app, &part, &mut peer);
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)[3].text.clone()),
+        crate::framework_support::notes_doc(&app, |doc| read::page_blocks(doc, page)[3]
+            .text
+            .clone()),
         "Peer After"
     );
     assert!(app.undo());
-    let undone = app.read_document(|doc| read::page_blocks(doc, page));
+    let undone = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(undone[..2], before[..2]);
     assert_eq!(undone[2].text, "Peer After");
 }
@@ -556,8 +589,8 @@ fn image_paste_refuses_during_composition_and_for_viewers() {
     let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
     let _host = ui::host::enter(&services);
     let (mut app, page) = app();
-    let before = app.read_document(|doc| read::page_blocks(doc, page));
-    let versions = app.versions().len();
+    let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
+    let versions = crate::framework_support::versions(&app).len();
     *clipboard.image.lock().unwrap() = Some(image_bytes());
     app.harness()
         .perform_named(
@@ -574,10 +607,10 @@ fn image_paste_refuses_during_composition_and_for_viewers() {
         ));
     paste(&mut app, "keyboard");
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before
     );
-    assert_eq!(app.versions().len(), versions);
+    assert_eq!(crate::framework_support::versions(&app).len(), versions);
     app.harness()
         .dispatch_to_root(&ui::winit::event::WindowEvent::Ime(
             ui::winit::event::Ime::Preedit(String::new(), None),
@@ -586,10 +619,10 @@ fn image_paste_refuses_during_composition_and_for_viewers() {
     paste(&mut app, "keyboard");
     menu(&mut app, 2);
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before
     );
-    assert_eq!(app.versions().len(), versions);
+    assert_eq!(crate::framework_support::versions(&app).len(), versions);
 }
 
 #[test]
@@ -600,8 +633,11 @@ fn image_paste_replaces_empty_rows_and_selected_separators_without_touching_the_
         let _host = ui::host::enter(&services);
         let (mut app, page) = app();
         if empty {
-            let id = app.read_document(|doc| read::page_blocks(doc, page)[0].id.clone());
-            app.invoke(
+            let id = crate::framework_support::notes_doc(&app, |doc| {
+                read::page_blocks(doc, page)[0].id.clone()
+            });
+            app.invoke_child::<notes::PagePart>(
+                &notes::part::chain_resource(),
                 Invoke::apply(&actions::edit_body_action(
                     page,
                     tilo_document::RichTextAction::SpliceText {
@@ -616,7 +652,8 @@ fn image_paste_replaces_empty_rows_and_selected_separators_without_touching_the_
             )
             .unwrap();
         }
-        let before = app.read_document(|doc| read::page_blocks(doc, page));
+        let before =
+            crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
         let anchor = if empty { 0 } else { 2 };
         app.harness()
             .perform_named(
@@ -629,7 +666,8 @@ fn image_paste_replaces_empty_rows_and_selected_separators_without_touching_the_
             .unwrap();
         *clipboard.image.lock().unwrap() = Some(image_bytes());
         paste(&mut app, "keyboard");
-        let after = app.read_document(|doc| read::page_blocks(doc, page));
+        let after =
+            crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
         let image_at = usize::from(!empty);
         assert!(after[image_at].text.starts_with("![Pasted image](asset:"));
         assert_eq!(after[image_at + 1].text, "", "the caret's line under it");
@@ -639,7 +677,7 @@ fn image_paste_replaces_empty_rows_and_selected_separators_without_touching_the_
         }
         assert!(app.undo());
         assert_eq!(
-            app.read_document(|doc| read::page_blocks(doc, page)),
+            crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
             before
         );
     }
@@ -653,26 +691,29 @@ fn unavailable_image_paste_keeps_preview_source_protected_then_accepts_text() {
         let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
         let _host = ui::host::enter(&services);
         let (mut app, page, _) = image_app();
-        let before = app.read_document(|doc| read::page_blocks(doc, page));
-        let versions = app.versions().len();
+        let before =
+            crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
+        let versions = crate::framework_support::versions(&app).len();
         for route in ["keyboard", "menu"] {
             paste(&mut app, route);
             app.harness().key("Q");
             assert_eq!(
-                app.read_document(|doc| read::page_blocks(doc, page)),
+                crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
                 before
             );
-            assert_eq!(app.versions().len(), versions);
+            assert_eq!(crate::framework_support::versions(&app).len(), versions);
         }
         *clipboard.text.lock().unwrap() = Some("replacement".into());
         paste(&mut app, "keyboard");
         assert_eq!(
-            app.read_document(|doc| read::page_blocks(doc, page)[0].text.clone()),
+            crate::framework_support::notes_doc(&app, |doc| read::page_blocks(doc, page)[0]
+                .text
+                .clone()),
             "replacement"
         );
         assert!(app.undo());
         assert_eq!(
-            app.read_document(|doc| read::page_blocks(doc, page)),
+            crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
             before
         );
     }

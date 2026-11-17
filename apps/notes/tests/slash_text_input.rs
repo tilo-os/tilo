@@ -7,8 +7,11 @@ use ui::winit::event::{Ime, WindowEvent};
 fn fixture() -> (TestApp<notes::NotesShell>, notes::PageId) {
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke(Invoke::apply(&actions::create_page_action(page, None, "Slash text")).unwrap())
-        .unwrap();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&actions::create_page_action(page, None, "Slash text")).unwrap(),
+    )
+    .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
     app.harness().type_text("Before");
@@ -23,24 +26,25 @@ fn committed_slash_query_is_typed_into_the_note_and_conversion_is_one_undo_step(
         .send(&WindowEvent::Ime(Ime::Commit("/".into())));
     app.harness()
         .send(&WindowEvent::Ime(Ime::Commit("quote".into())));
-    let before = app.read_document(|doc| read::page_blocks(doc, page));
+    let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(
         before[1].text, "/quote",
         "the query is in the note, where it was typed"
     );
     app.harness().key("Enter");
-    let converted = app.read_document(|doc| read::page_blocks(doc, page));
+    let converted =
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(converted[1].kind, ui::widget::BlockKind::Quote);
     assert_eq!(converted[1].text, "");
     assert_eq!(converted[1].id, before[1].id);
     assert!(app.undo());
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before
     );
     assert!(app.redo());
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         converted
     );
 }
@@ -48,20 +52,20 @@ fn committed_slash_query_is_typed_into_the_note_and_conversion_is_one_undo_step(
 #[test]
 fn preedit_and_multi_character_commits_do_not_open_a_command() {
     let (mut app, page) = fixture();
-    let before = app.read_document(|doc| read::page_blocks(doc, page));
+    let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     app.harness()
         .send(&WindowEvent::Ime(Ime::Preedit("/".into(), Some((1, 1)))));
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before
     );
     app.harness()
         .send(&WindowEvent::Ime(Ime::Commit("/quote".into())));
-    let after = app.read_document(|doc| read::page_blocks(doc, page));
+    let after = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(after[1].text, "/quote");
     assert_eq!(after[1].kind, ui::widget::BlockKind::Paragraph);
     app.harness().key("Enter");
-    let split = app.read_document(|doc| read::page_blocks(doc, page));
+    let split = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(split[1], after[1]);
     assert_eq!(split.len(), 3);
 }
@@ -81,7 +85,8 @@ fn code_keeps_committed_slash_literal_and_escape_keeps_prose_source() {
         }
         app.harness()
             .send(&WindowEvent::Ime(Ime::Commit("quote".into())));
-        let after = app.read_document(|doc| read::page_blocks(doc, page));
+        let after =
+            crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
         assert_eq!(after[1].text, "/quote", "code={code}");
         assert_eq!(
             matches!(after[1].kind, ui::widget::BlockKind::CodeBlock { .. }),
@@ -112,13 +117,16 @@ fn slash_replacing_local_selection_splits_at_the_trigger() {
             } else {
                 app.harness().type_text("/");
             }
-            let before = app.read_document(|doc| read::page_blocks(doc, page));
+            let before =
+                crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
             assert_eq!(before[1].text, "Ä😀 /tail");
             app.harness()
                 .send(&WindowEvent::Ime(Ime::Commit("quote".into())));
-            let typed = app.read_document(|doc| read::page_blocks(doc, page));
+            let typed =
+                crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
             app.harness().key("Enter");
-            let after = app.read_document(|doc| read::page_blocks(doc, page));
+            let after =
+                crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
             // Typed after text, the command keeps the text before it and
             // starts a quote with what followed.
             let shown: Vec<_> = after
@@ -136,9 +144,15 @@ fn slash_replacing_local_selection_splits_at_the_trigger() {
             );
             assert_eq!(after[1].id, before[1].id);
             assert!(app.undo());
-            assert_eq!(app.read_document(|doc| read::page_blocks(doc, page)), typed);
+            assert_eq!(
+                crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
+                typed
+            );
             assert!(app.redo());
-            assert_eq!(app.read_document(|doc| read::page_blocks(doc, page)), after);
+            assert_eq!(
+                crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
+                after
+            );
         }
     }
 }
@@ -151,7 +165,7 @@ fn slash_warn_turns_the_paragraph_into_a_warning_callout_keeping_its_text() {
     app.harness().type_text("/");
     app.harness().type_text("warn");
     app.harness().key("Enter");
-    let after = app.read_document(|doc| read::page_blocks(doc, page));
+    let after = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(
         after[1].kind,
         ui::widget::BlockKind::Callout(ui::widget::CalloutKind::Warning)
@@ -159,7 +173,7 @@ fn slash_warn_turns_the_paragraph_into_a_warning_callout_keeping_its_text() {
     assert_eq!(after[1].text, "Mind the gap");
     // Stored as a quote with its alert, it reads back as the callout and
     // exports as a GitHub alert.
-    let markdown = app.read_document(|doc| actions::page_markdown(&read::workspace(doc), page));
+    let markdown = actions::page_markdown(&crate::framework_support::shown(&app), page);
     assert!(
         markdown.contains("> [!WARNING]\n> Mind the gap"),
         "{markdown}"

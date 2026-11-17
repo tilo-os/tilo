@@ -41,19 +41,19 @@ use ui::widget::{ListModel, ListRow, TreeMarks, TreeRow, VirtualList};
 use ui::window_toolbar::ToolbarAction;
 
 use crate::model::{PageId, Workspace};
-use crate::notebook::{self, Notebook};
-use crate::resource::Notebook as NotebookResource;
+use crate::notebook;
+use crate::part::{PagePart, page_part};
 
 /// The notebook's action dispatcher, once the window is hosted. A tree shown
 /// without one
 /// changes nothing.
-type SharedDispatcher = Rc<RefCell<Option<Dispatcher<NotebookResource>>>>;
+type SharedDispatcher = Rc<RefCell<Option<Dispatcher<PagePart>>>>;
 
 /// The notebook's published actions, once the window is hosted: what the
 /// tree's controls are bound to, so a press and an agent's invocation of the
 /// same action are one thing. A tree shown without them offers no bindable
 /// control.
-type SharedActions = Rc<RefCell<Option<Actions<NotebookResource>>>>;
+type SharedActions = Rc<RefCell<Option<Actions<PagePart>>>>;
 
 /// What the tree asked of its window, shared with the callbacks.
 type SharedWanted = Rc<RefCell<Wanted>>;
@@ -144,9 +144,10 @@ fn new_child_binding(
     actions
         .borrow()
         .as_ref()?
-        .invocation(Notebook::NEW_CHILD.with(notebook::notebook::NewChild {
+        .invocation(PagePart::NEW_CHILD.with(page_part::NewChild {
             page: notebook::page_id(page),
             title: crate::notebook::NO_TITLE.to_owned(),
+            rank: None,
         }))
 }
 
@@ -163,14 +164,17 @@ fn make_note(
         return;
     };
     if let Some(parent) = parent {
-        dispatcher.submit(Notebook::NEW_CHILD.with(notebook::notebook::NewChild {
+        dispatcher.submit(PagePart::NEW_CHILD.with(page_part::NewChild {
             page: notebook::page_id(parent),
             title: crate::notebook::NO_TITLE.to_owned(),
+            rank: None,
         }));
     } else {
-        dispatcher.submit(Notebook::NEW_NOTE.with(notebook::notebook::NewNote {
+        dispatcher.submit(PagePart::NEW_NOTE.with(page_part::NewNote {
             title: crate::notebook::NO_TITLE.to_owned(),
             parent: None,
+            note: None,
+            rank: None,
         }));
     }
     wanted.borrow_mut().title_first = Some(naming);
@@ -179,7 +183,7 @@ fn make_note(
 /// Give `page` a new title.
 fn rename_page(actions: &SharedDispatcher, page: PageId, title: String) {
     if let Some(dispatcher) = actions.borrow().as_ref() {
-        dispatcher.submit(Notebook::RENAME.with(notebook::notebook::Rename {
+        dispatcher.submit(PagePart::RENAME.with(page_part::Rename {
             page: notebook::page_id(page),
             title,
         }));
@@ -194,11 +198,11 @@ fn delete_page(actions: &SharedDispatcher, wanted: &SharedWanted, page: PageId) 
         return;
     };
     let after = dispatcher.landed().revision();
-    dispatcher.submit(Notebook::DELETE.with(notebook::page_id(page)));
+    dispatcher.submit(PagePart::DELETE.with(notebook::page_id(page)));
     wanted.borrow_mut().gone = Some(Gone {
         page,
         after,
-        action: Notebook::DELETE.id(),
+        action: PagePart::DELETE.id(),
     });
 }
 
@@ -209,7 +213,10 @@ fn duplicate_page(actions: &SharedDispatcher, wanted: &SharedWanted, page: PageI
     let Some(dispatcher) = actions.as_ref() else {
         return;
     };
-    dispatcher.submit(Notebook::DUPLICATE.with(notebook::page_id(page)));
+    dispatcher.submit(PagePart::DUPLICATE.with(page_part::Duplicate {
+        page: notebook::page_id(page),
+        copies: None,
+    }));
     wanted.borrow_mut().title_first = Some(false);
 }
 
@@ -222,10 +229,11 @@ fn move_page(
     before: Option<PageId>,
 ) {
     if let Some(dispatcher) = actions.borrow().as_ref() {
-        dispatcher.submit(Notebook::MOVE_NOTE.with(notebook::notebook::MoveNote {
+        dispatcher.submit(PagePart::MOVE_NOTE.with(page_part::MoveNote {
             page: notebook::page_id(page),
             parent: parent.map(notebook::page_id),
             before: before.map(notebook::page_id),
+            place: None,
         }));
     }
 }
@@ -704,15 +712,22 @@ impl PageSidebar {
 
     /// Submit what the tree's keys and menu rows ask for through `dispatcher`
     /// from now on.
-    pub(crate) fn attach_notebook(&self, dispatcher: Dispatcher<NotebookResource>) {
+    pub(crate) fn attach_notebook(&self, dispatcher: Dispatcher<PagePart>) {
         *self.dispatcher.borrow_mut() = Some(dispatcher);
     }
 
     /// Bind the tree's controls to the notebook's published `actions` from now
     /// on: a press and an agent's invocation of the action it names are one
     /// action, and the control is where that action stands.
-    pub(crate) fn attach_actions(&self, actions: Actions<NotebookResource>) {
+    pub(crate) fn attach_actions(&self, actions: Actions<PagePart>) {
         *self.actions.borrow_mut() = Some(actions);
+    }
+
+    /// Submit through the notes' chain and bind the tree's controls to its
+    /// published actions from now on.
+    pub(crate) fn attach_notes(&self, notes: crate::app::Notes) {
+        self.attach_notebook(notes.chain.dispatcher());
+        self.attach_actions(notes.actions);
     }
 
     /// The note this window's action made, opened once the notebook presents
@@ -729,7 +744,7 @@ impl PageSidebar {
             .borrow_mut()
             .title_first
             .take()
-            .unwrap_or_else(|| action == Notebook::NEW_NOTE.id())
+            .unwrap_or_else(|| action == PagePart::NEW_NOTE.id())
     }
 
     /// Make a note, as the keys and the page menu's New note do: inside
@@ -1186,7 +1201,7 @@ mod tests {
 
     /// The tree as the window hosts it: its controls submit through a
     /// detached notebook actions, whose queue the test reads.
-    fn with_actions() -> (PageSidebar, Dispatcher<NotebookResource>) {
+    fn with_actions() -> (PageSidebar, Dispatcher<PagePart>) {
         let tree = PageSidebar::new();
         let actions = Dispatcher::detached(
             "so.tilo.notes",
@@ -1197,7 +1212,7 @@ mod tests {
     }
 
     /// The actions `actions` was handed since the last call.
-    fn asked(actions: &Dispatcher<NotebookResource>) -> Vec<crate::actions::Action> {
+    fn asked(actions: &Dispatcher<PagePart>) -> Vec<crate::actions::Action> {
         actions.take_asked().expect("what was asked builds")
     }
 
@@ -1430,7 +1445,7 @@ mod tests {
             let asked = asked(&actions);
             assert_eq!(asked.len(), 1);
             match &asked[0].operation {
-                crate::notebook::NotebookAction::Rename(rename) => {
+                crate::part::PagePartAction::Rename(rename) => {
                     assert_eq!(rename.page, notebook::page_id(id));
                     assert_eq!(rename.title, "Untitled");
                 }
@@ -1573,7 +1588,7 @@ mod tests {
             let removed = asked(&actions);
             assert_eq!(removed.len(), 1);
             match &removed[0].operation {
-                crate::notebook::NotebookAction::Delete(delete) => {
+                crate::part::PagePartAction::Delete(delete) => {
                     assert_eq!(delete.page, notebook::page_id(page));
                 }
                 other => panic!("expected the notebook's delete, got {other:?}"),
@@ -1581,7 +1596,7 @@ mod tests {
             let gone = tree
                 .take_gone()
                 .expect("the deletion is said once it lands");
-            assert_eq!(gone.action(), Notebook::DELETE.id());
+            assert_eq!(gone.action(), PagePart::DELETE.id());
             assert_eq!(
                 doc.get_heads(),
                 before,

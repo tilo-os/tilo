@@ -2312,7 +2312,7 @@ mod tests {
         // The page links Notes, as its bundle does.
         let _ = notes::definition();
         // A hundred long notes, as a company's wiki moved in.
-        let mut notebook = tilo_resource::Replica::<notes::notebook::Notebook>::new();
+        let mut notebook = tilo_resource::Replica::<notes::PagePart>::new();
         let mut release = String::new();
         for at in 0..100 {
             let page = uuid::Uuid::new_v4();
@@ -2345,13 +2345,29 @@ mod tests {
         }
         let store: crate::platform::Store =
             std::sync::Arc::new(app_state::FsStore::new(home.data()));
-        let key = durable_store::StorageKey::workspace_index(NOTES_APP, &workspace);
-        let lease = store.lease(&key).expect("the key is this test's");
-        store
-            .write(&key, durable_store::WriteOp::Replace(notebook.save()), None)
-            .expect("the notebook is written");
-        store.flush(Some(&key)).expect("the notebook is kept");
-        drop(lease);
+        // Notes keeps its notes in the first part of their chain, beside its own record.
+        let own = tilo_resource::Replica::<notes::Notebook>::new().save();
+        for (key, bytes) in [
+            (
+                durable_store::StorageKey::workspace_index(NOTES_APP, &workspace),
+                own,
+            ),
+            (
+                durable_store::StorageKey::document(
+                    NOTES_APP,
+                    &workspace,
+                    notes::part::chain().part(0).storage_key(),
+                ),
+                notebook.save(),
+            ),
+        ] {
+            let lease = store.lease(&key).expect("the key is this test's");
+            store
+                .write(&key, durable_store::WriteOp::Replace(bytes), None)
+                .expect("the record is written");
+            store.flush(Some(&key)).expect("the record is kept");
+            drop(lease);
+        }
         let invoked = Rc::new(std::cell::RefCell::new(Vec::new()));
         let search = Rc::new(SessionSearch::new(
             SearchOptions {
@@ -2521,7 +2537,7 @@ mod tests {
         const NOTEBOOK: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000bb";
         // The page links Notes, as its bundle does.
         let kind = notes::definition().resource_type.clone();
-        let mut notebook = tilo_resource::Replica::<notes::notebook::Notebook>::new();
+        let mut notebook = tilo_resource::Replica::<notes::PagePart>::new();
         let mut write = |title: &str, text: &str| {
             let page = uuid::Uuid::new_v4();
             notebook
@@ -2541,13 +2557,15 @@ mod tests {
         let record = ui::resource::DocumentId::parse(NOTEBOOK).expect("a record id");
         let mut index = automerge::AutoCommit::new();
         assert!(ui::resource::index::reference(&mut index, &record, &kind));
+        // The notes are kept in the first part of their chain, which no index names.
+        let part = notes::part::chain().part(0);
         for (key, bytes) in [
             (
                 durable_store::StorageKey::workspace_index(NOTES_APP, workspace),
                 index.save(),
             ),
             (
-                durable_store::StorageKey::document(NOTES_APP, workspace, record.storage_key()),
+                durable_store::StorageKey::document(NOTES_APP, workspace, part.storage_key()),
                 notebook.save(),
             ),
         ] {

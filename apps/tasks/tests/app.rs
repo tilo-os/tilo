@@ -366,14 +366,14 @@ tilo_test_env::scenario! {
         assert_eq!(
             picked,
             Some(ui::tilo_actions::Pick::Resource {
-                kind: "notes.notebook.pages".into()
+                kind: "notes.pages.pages".into()
             }),
             "the note is picked, never typed"
         );
         let note = json!({
             "app": tasks::NOTES,
-            "kind": "notes.notebook.pages",
-            "id": "notes.notebook/pages/7",
+            "kind": "notes.pages.pages",
+            "id": "notes.pages/pages/7",
             "label": "Launch checklist",
         });
         app.call_on(
@@ -391,8 +391,8 @@ tilo_test_env::scenario! {
             .collect();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].app, tasks::NOTES);
-        assert_eq!(links[0].kind, "notes.notebook.pages");
-        assert_eq!(links[0].resource, "notes.notebook/pages/7");
+        assert_eq!(links[0].kind, "notes.pages.pages");
+        assert_eq!(links[0].resource, "notes.pages/pages/7");
         assert_eq!(links[0].label, "Launch checklist");
         let issue_ref = json!({
             "app": "so.tilo.tasks",
@@ -1073,7 +1073,7 @@ fn notes_api() -> ui::tilo_actions::remote::TestHost {
         let count = made
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .saturating_add(1);
-        let note = format!("notes.notebook/pages/{count}");
+        let note = format!("notes.pages/pages/{count}");
         ui::tilo_actions::ActionOutput {
             value: Some(json!({ "resource": note })),
             resources: vec![note],
@@ -1087,6 +1087,7 @@ fn notes_api() -> ui::tilo_actions::remote::TestHost {
 /// and their undo takes the link back. Pressed here, it is the app's own
 /// request.
 #[test]
+#[allow(clippy::too_many_lines, reason = "one flow, from the ask to the undo")]
 fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
     use ui::tilo_actions::{ActionInvoker, InvocationUpdate};
     let mut env = tilo_test_env::ScopedEnv::new();
@@ -1125,10 +1126,15 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
 
     let asked = api.asked();
     assert_eq!(asked.len(), 1, "one call of Notes: {asked:?}");
-    let notebook = ui::tilo_reference::ResourceRef::whole("notes.notebook", "notes.notebook", "");
+    let notes = ui::resource::DocumentId::derived("pages", &DocumentId::workspace_default());
+    let pages = ui::tilo_reference::ResourceRef::whole(
+        "notes.pages",
+        ui::resource::chain_resource_id(&notes),
+        "",
+    );
     assert_eq!(
         asked[0].target,
-        notebook.action_target(workspace, tasks::NOTES, None, "create-page")
+        pages.action_target(workspace, tasks::NOTES, None, "create-page")
     );
     assert_eq!(
         asked[0].argument,
@@ -1151,7 +1157,7 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
             .any(|update| matches!(
                 update,
                 InvocationUpdate::Succeeded { output, .. }
-                    if output.value == Some(json!({ "resource": "notes.notebook/pages/1" }))
+                    if output.value == Some(json!({ "resource": "notes.pages/pages/1" }))
             )),
         "{:?}",
         app.harness().job_updates(invocation)
@@ -1166,8 +1172,8 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
         .collect();
     assert_eq!(links.len(), 1, "{links:?}");
     assert_eq!(links[0].app, tasks::NOTES);
-    assert_eq!(links[0].kind, "notes.notebook.pages");
-    assert_eq!(links[0].resource, "notes.notebook/pages/1");
+    assert_eq!(links[0].kind, "notes.pages.pages");
+    assert_eq!(links[0].resource, "notes.pages/pages/1");
     assert_eq!(links[0].label, "#1 Plan the launch");
     assert_eq!(links[0].record, None);
 

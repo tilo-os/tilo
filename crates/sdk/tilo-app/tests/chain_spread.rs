@@ -189,7 +189,7 @@ fn a_change_spreads_to_the_parts_naming_what_it_changed() {
     );
 
     // Each part's change is a step of its own there: undoing the spread
-    // step leaves the rename standing.
+    // step keeps the rename.
     chain.undo_in(1).unwrap();
     let names: Vec<(String, String)> = chain
         .parts()

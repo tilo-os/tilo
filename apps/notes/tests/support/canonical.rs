@@ -19,7 +19,7 @@ pub const LAUNCH_BODY: &str = "# Heading **one**\n\n## Heading *two*\n\n### Head
 /// A notebook of three notes — Projects, its child Launch, and an Empty
 /// one — with one tag, and the bodies [`notebook`](super::notebook) writes.
 pub struct NotebookFixture {
-    pub records: ResourceStore,
+    pub store: ResourceStore,
     pub owners: ResourceOwners,
     pub state_root: PathBuf,
     pub root: PageId,
@@ -47,7 +47,7 @@ impl NotebookFixture {
         let temp = tempfile::tempdir().unwrap();
         let state_root = temp.path().join("state");
         let mut owners = ResourceOwners::new(state_root.clone());
-        let records = owners.open(PACKAGE, WORKSPACE).unwrap();
+        let store = owners.open(PACKAGE, WORKSPACE).unwrap();
         let root = Uuid::from_u128(0x1001);
         let child = Uuid::from_u128(0x1002);
         let empty = Uuid::from_u128(0x1003);
@@ -85,7 +85,7 @@ impl NotebookFixture {
             (child, LAUNCH_BODY.to_owned()),
         ]);
         Self {
-            records,
+            store,
             owners,
             state_root,
             root,
@@ -113,6 +113,16 @@ impl NotebookFixture {
             .insert(page, String::from_utf8(bytes.to_vec()).unwrap());
     }
 
+    /// The notebook's own actions: its tags.
+    pub fn tag_actions(&self) -> Vec<actions::TagAction> {
+        self.workspace
+            .tags()
+            .iter()
+            .map(|tag| actions::new_tag_action(tag.id, &tag.name))
+            .collect()
+    }
+
+    /// The notes' actions: every note, its body and its tags.
     pub fn actions(&self) -> Vec<Action> {
         let titles = self
             .workspace
@@ -133,9 +143,6 @@ impl NotebookFixture {
             let blocks = notes::MainPanel::seed_blocks(&body, |title| titles.get(title).copied());
             out.push(actions::write_body_action(page.id, &blocks));
         }
-        for tag in self.workspace.tags() {
-            out.push(actions::new_tag_action(tag.id, &tag.name));
-        }
         for assignment in &self.workspace.data.tag_assignments {
             out.push(actions::set_tag_assignment_action(
                 assignment.page,
@@ -146,34 +153,71 @@ impl NotebookFixture {
         out
     }
 
-    /// Write the notebook into its resource, the workspace's default, once, and
-    /// make it durable.
+    /// Write the notebook into its resource, the workspace's default, and its
+    /// notes into the first part of the notes beside it, once, and make them
+    /// durable.
     pub fn write_notebook(&self) -> DocumentCheckout {
         let checkout = DocumentCheckout::new(
             DocumentId::workspace_default(),
             ResourceType::new("notes.notebook"),
         );
-        let actions = self.actions();
-        self.records
+        let tags = self.tag_actions();
+        self.store
             .reserve_resource(&checkout)
             .unwrap()
             .initialize(|doc| {
                 <notes::Notebook as ui::tilo_resource::Resource>::initialize(doc)
                     .map_err(|error| error.to_string())?;
-                for action in &actions {
-                    tilo_actions::apply_local(doc, action, actions::encode(action))
+                for action in &tags {
+                    tilo_actions::apply_local(doc, action, actions::encode_tag(action))
                         .map_err(|error| error.to_string())?;
                 }
                 Ok(())
             })
             .unwrap();
-        self.records.try_flush().unwrap();
+        let pages = self.actions();
+        // The notes are written as a window writes them: each read against
+        // the part and the notebook first (its place among its siblings,
+        // the tags it names).
+        let notebook = self
+            .store
+            .read(&checkout.id, notes::read::notebook)
+            .unwrap_or_default();
+        if !pages.is_empty() {
+            let part = DocumentCheckout::new(
+                notes::part::chain().part(0),
+                ResourceType::new(<notes::PagePart as ui::tilo_resource::Resource>::KIND),
+            );
+            self.store
+                .reserve_resource(&part)
+                .unwrap()
+                .initialize(|doc| {
+                    <notes::PagePart as ui::tilo_resource::Resource>::initialize(doc)
+                        .map_err(|error| error.to_string())?;
+                    for action in &pages {
+                        notes::read::apply_in_part(doc, &notebook, action)?;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+        }
+        self.store.try_flush().unwrap();
         checkout
     }
 
+    /// The record the fixture's notes are kept in: the first part of the
+    /// notes.
+    #[allow(
+        clippy::unused_self,
+        reason = "read beside the fixture's other records, as one of them"
+    )]
+    pub fn part(&self) -> DocumentId {
+        notes::part::chain().part(0)
+    }
+
     pub fn reopen(mut self) -> Self {
-        drop(self.records);
-        self.records = self.owners.open(PACKAGE, WORKSPACE).unwrap();
+        drop(self.store);
+        self.store = self.owners.open(PACKAGE, WORKSPACE).unwrap();
         self
     }
 }

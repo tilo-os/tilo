@@ -14,13 +14,29 @@ fn notebook() -> TestApp<notes::NotesShell> {
     TestApp::<notes::NotesShell>::new().expect("Notes opens")
 }
 
+/// Every note of every part of the notes `app` holds.
 fn notes_of(app: &TestApp<notes::NotesShell>) -> Vec<Note> {
-    app.read_document(|doc| {
-        page_keys(doc)
-            .iter()
-            .filter_map(|page| note(doc, page))
-            .collect()
-    })
+    app.chain_parts::<notes::PagePart>()
+        .into_iter()
+        .flat_map(|(index, _)| {
+            app.read_document_of(&notes::part::chain().part(index), |doc| {
+                page_keys(doc)
+                    .iter()
+                    .filter_map(|page| note(doc, page))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+        })
+        .collect()
+}
+
+/// Call the notes' `action` with `arguments`, as an agent does.
+fn call(
+    app: &mut TestApp<notes::NotesShell>,
+    action: &str,
+    arguments: Value,
+) -> Result<Option<Value>, tilo_actions::ApiError> {
+    app.call_on(&notes::part::chain_resource(), action, arguments)
 }
 
 /// A pass over every note and every note file, as the host's first pass over a workspace.
@@ -90,8 +106,7 @@ fn written_by_agent(tree: &mut Namespace, path: &str, provenance: FileProvenance
 /// Apply `edits` as Notes' own actions, and record what each agreed on, as the host does.
 fn apply(app: &mut TestApp<notes::NotesShell>, tree: &mut Namespace, edits: Vec<NoteEdit>) {
     for edit in edits {
-        app.call(edit.action, Value::Object(edit.arguments))
-            .unwrap();
+        call(app, edit.action, Value::Object(edit.arguments)).unwrap();
         app.settle();
         let (node, agreed) = edit.then;
         let (source, _) = tree.projection(&node).unwrap();
@@ -102,7 +117,8 @@ fn apply(app: &mut TestApp<notes::NotesShell>, tree: &mut Namespace, edits: Vec<
 #[test]
 fn a_note_is_a_file_in_the_folder_and_the_hosts_own_write_is_no_change() {
     let mut app = notebook();
-    app.call(
+    call(
+        &mut app,
         "create-page",
         json!({ "title": "Terms", "markdown": "Payment due net 30." }),
     )
@@ -127,7 +143,8 @@ fn a_note_is_a_file_in_the_folder_and_the_hosts_own_write_is_no_change() {
 #[test]
 fn a_file_written_in_the_folder_is_the_note_written_by_the_writer() {
     let mut app = notebook();
-    app.call(
+    call(
+        &mut app,
         "create-page",
         json!({ "title": "Terms", "markdown": "Payment due net 30." }),
     )
@@ -170,7 +187,8 @@ fn a_file_written_in_the_folder_is_the_note_written_by_the_writer() {
 #[test]
 fn a_note_edited_in_notes_is_written_into_its_file_and_renamed_with_it() {
     let mut app = notebook();
-    app.call(
+    call(
+        &mut app,
         "create-page",
         json!({ "title": "Terms", "markdown": "Payment due net 30." }),
     )
@@ -179,13 +197,18 @@ fn a_note_edited_in_notes_is_written_into_its_file_and_renamed_with_it() {
     let mut tree = Namespace::new("host").unwrap();
     reconcile_all(&mut tree, &notes_of(&app), 1);
     let page = page_of(&app, "Terms");
-    app.call(
+    call(
+        &mut app,
         "append-to-note",
         json!({ "title": "Terms", "markdown": "Late fees apply." }),
     )
     .unwrap();
-    app.call("rename", json!({ "page": page, "title": "Payment terms" }))
-        .unwrap();
+    call(
+        &mut app,
+        "rename",
+        json!({ "page": page, "title": "Payment terms" }),
+    )
+    .unwrap();
     app.settle();
     assert!(reconcile_all(&mut tree, &notes_of(&app), 2).is_empty());
     let written = file(&mut tree, "Notes/Payment terms.md").expect("renamed with its note");
@@ -196,7 +219,8 @@ fn a_note_edited_in_notes_is_written_into_its_file_and_renamed_with_it() {
 #[test]
 fn a_deleted_file_deletes_its_note_and_undo_brings_both_back() {
     let mut app = notebook();
-    app.call(
+    call(
+        &mut app,
         "create-page",
         json!({ "title": "Terms", "markdown": "Payment due net 30." }),
     )
@@ -228,7 +252,8 @@ fn a_deleted_file_deletes_its_note_and_undo_brings_both_back() {
 #[test]
 fn a_note_deleted_in_notes_takes_its_file_to_the_trash() {
     let mut app = notebook();
-    app.call(
+    call(
+        &mut app,
         "create-page",
         json!({ "title": "Terms", "markdown": "Payment due net 30." }),
     )
@@ -237,7 +262,7 @@ fn a_note_deleted_in_notes_takes_its_file_to_the_trash() {
     let mut tree = Namespace::new("host").unwrap();
     reconcile_all(&mut tree, &notes_of(&app), 1);
     let page = page_of(&app, "Terms");
-    app.call("delete", json!({ "page": page })).unwrap();
+    call(&mut app, "delete", json!({ "page": page })).unwrap();
     app.settle();
     assert!(reconcile_all(&mut tree, &notes_of(&app), 2).is_empty());
     assert!(file(&mut tree, "Notes/Terms.md").is_none());
@@ -256,26 +281,54 @@ fn a_failed_pass_waits_longer_each_time_up_to_five_minutes() {
 fn a_pass_after_one_note_changed_reads_that_note_alone() {
     let mut app = notebook();
     for n in 0..20 {
-        app.call(
+        call(
+            &mut app,
             "create-page",
             json!({ "title": format!("Note {n}"), "markdown": "Some text." }),
         )
         .unwrap();
     }
     app.settle();
-    let before = app.read_document(|doc| doc.clone().get_heads());
+    let first = notes::part::chain().part(0);
+    let before = app
+        .read_document_of(&first, |doc| doc.clone().get_heads())
+        .unwrap();
     let page = page_of(&app, "Note 7");
-    app.call(
+    call(
+        &mut app,
         "write-note",
         json!({ "page": page, "markdown": "Other text." }),
     )
     .unwrap();
     app.settle();
-    let mut after = app.read_document(Clone::clone);
+    let mut after = app.read_document_of(&first, Clone::clone).unwrap();
     let heads = after.get_heads();
     assert_eq!(
         pages_changed(&mut after, &before, &heads),
         BTreeSet::from([page]),
         "only the written note is read again"
     );
+}
+
+/// Placed `(note, parent)` pairs, all in part 0.
+fn placed(pairs: &[(&str, Option<&str>)]) -> Placed {
+    pairs
+        .iter()
+        .map(|(id, parent)| ((*id).to_owned(), (0, parent.map(str::to_owned))))
+        .collect()
+}
+
+#[test]
+fn a_note_under_one_no_part_keeps_is_hidden_with_the_notes_under_it() {
+    let shown = placed(&[("a", None), ("b", Some("a")), ("c", Some("b"))]);
+    assert!(hidden(&shown).is_empty());
+    // `a` was deleted in its part: `b` and `c`, kept in another, are not shown.
+    let orphaned = placed(&[("b", Some("a")), ("c", Some("b")), ("d", None)]);
+    assert_eq!(
+        hidden(&orphaned),
+        BTreeSet::from(["b".to_owned(), "c".to_owned()])
+    );
+    // Notes under each other in a ring are shown, as Notes shows them.
+    let ring = placed(&[("x", Some("y")), ("y", Some("x"))]);
+    assert!(hidden(&ring).is_empty());
 }

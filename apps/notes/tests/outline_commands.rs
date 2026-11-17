@@ -9,15 +9,18 @@ fn open() -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&create_page_action(page, None, "Outline")).unwrap())
-        .unwrap();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&create_page_action(page, None, "Outline")).unwrap(),
+    )
+    .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
     (app, page)
 }
 
 fn rows(app: &TestApp<NotesShell>, page: PageId) -> Vec<(String, String, u8)> {
-    app.read_document(|doc| {
+    crate::framework_support::notes_doc(app, |doc| {
         read::page_blocks(doc, page)
             .into_iter()
             .map(|block| (block.id, block.text, block.nesting))
@@ -94,7 +97,7 @@ fn backspace_outdents_before_joining_and_keeps_both_blocks_formatting() {
     let joined = rows(&app, page);
     assert_eq!(joined.len(), 1);
     assert_eq!(joined[0].1, "Parenté😀 child");
-    app.read_document(|doc| {
+    crate::framework_support::notes_doc(&app, |doc| {
         let blocks = read::page_blocks(doc, page);
         assert!(
             blocks[0].marks.iter().any(|span| {
@@ -115,7 +118,7 @@ fn nesting_survives_concurrent_text_and_markdown_roundtrip_and_refuses_viewers()
     app.harness().key("Enter");
     app.harness().type_text("Child");
     let before = rows(&app, page);
-    let mut peer = app.peer_document();
+    let (part, mut peer) = crate::framework_support::peer_part(&app, page);
     crate::component_support::edit_page_body(
         &mut peer,
         page,
@@ -130,12 +133,12 @@ fn nesting_survives_concurrent_text_and_markdown_roundtrip_and_refuses_viewers()
     .unwrap();
     peer.commit();
     app.harness().key("Tab");
-    app.merge_peer(&mut peer).unwrap();
+    crate::framework_support::merge_part(&mut app, &part, &mut peer);
     assert_eq!(
         rows(&app, page)[1],
         (before[1].0.clone(), "同僚 Child".into(), 1)
     );
-    app.read_document(|doc| {
+    crate::framework_support::notes_doc(&app, |doc| {
         assert_eq!(read::page_blocks(doc, page), read::page_blocks(&peer, page));
         let mut editor = ui::widget::BlockEditor::new();
         editor.present_blocks(&read::page_blocks(doc, page));

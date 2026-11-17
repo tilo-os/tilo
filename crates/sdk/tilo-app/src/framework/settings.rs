@@ -418,7 +418,7 @@ impl ViewStorage {
     /// The view operations the records kept beside the app's own publish,
     /// on themselves or on what they hold (a note's body opened in an
     /// editor): the window handles them as it does its own record's.
-    pub(crate) fn record_view_types(&self) -> std::collections::HashSet<String> {
+    pub(crate) fn view_types_beside(&self) -> std::collections::HashSet<String> {
         fn collect(
             resource: &tilo_actions::ResourceSpec,
             views: &mut std::collections::HashSet<String>,

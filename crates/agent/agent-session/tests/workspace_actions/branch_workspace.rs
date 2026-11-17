@@ -83,29 +83,41 @@ pub(super) async fn person(on_relay: &OnRelay, name: &str) -> (SigningKey, Strin
     (root, token)
 }
 
-/// The notebook of `workspace` as its host keeps it, loaded.
-async fn notebook(workspaces: &Workspaces, workspace: &str) -> Option<automerge::AutoCommit> {
-    let bytes = workspaces
-        .resource_document(workspace, "so.tilo.notes", "")
-        .await
-        .ok()??;
-    automerge::AutoCommit::load(&bytes).ok()
+/// Each part of the notes of `workspace` as its host keeps them, loaded: from the first,
+/// as many as there are in a row.
+async fn note_parts(workspaces: &Workspaces, workspace: &str) -> Vec<automerge::AutoCommit> {
+    let mut parts = Vec::new();
+    for index in 0.. {
+        let record = notes::part::chain().part(index);
+        let Some(bytes) = workspaces
+            .resource_document(workspace, "so.tilo.notes", record.as_str())
+            .await
+            .ok()
+            .flatten()
+        else {
+            break;
+        };
+        let Ok(doc) = automerge::AutoCommit::load(&bytes) else {
+            break;
+        };
+        parts.push(doc);
+    }
+    parts
 }
 
 /// The titles of the notes in `workspace`, as its host keeps them.
 async fn titles(workspaces: &Workspaces, workspace: &str) -> BTreeSet<String> {
-    let Some(doc) = notebook(workspaces, workspace).await else {
-        return BTreeSet::new();
-    };
-    <notes::notebook::Notebook as ui::tilo_resource::Resource>::read(&doc)
-        .map(|notebook| {
-            notebook
-                .pages
-                .values()
-                .map(|note| note.title.clone())
-                .collect()
+    note_parts(workspaces, workspace)
+        .await
+        .iter()
+        .filter_map(|doc| <notes::PagePart as ui::tilo_resource::Resource>::read(doc).ok())
+        .flat_map(|part| {
+            part.pages
+                .iter()
+                .map(|(_, note)| note.title.clone())
+                .collect::<Vec<_>>()
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// Wait until `workspace`'s host keeps a note titled `title`.
@@ -182,7 +194,7 @@ async fn template(key: &Key<'_>, name: &str) -> String {
     key.did(&format!("{notes}/actions/open"), &json!({})).await;
     let note = key
         .did(
-            &format!("{notes}/Notebook/actions/new-note"),
+            &format!("{notes}/Notes/actions/new-note"),
             &json!({"title": "Checklist draft"}),
         )
         .await["result"]["page"]
@@ -190,7 +202,7 @@ async fn template(key: &Key<'_>, name: &str) -> String {
         .unwrap()
         .to_owned();
     key.did(
-        &format!("{notes}/Notebook/actions/rename"),
+        &format!("{notes}/Notes/actions/rename"),
         &json!({"page": note, "title": "Checklist"}),
     )
     .await;
@@ -287,9 +299,10 @@ async fn a_customers_branch_holds_the_template_and_goes_on_apart() {
         people(&workspaces, &on_relay, &source).await,
         BTreeSet::from([ada, rosa])
     );
-    let history: Vec<automerge::ChangeHash> = notebook(&workspaces, &source)
+    // The template's note is kept in the first part of its notes.
+    let history: Vec<automerge::ChangeHash> = note_parts(&workspaces, &source)
         .await
-        .unwrap()
+        .swap_remove(0)
         .get_changes(&[])
         .iter()
         .map(automerge::Change::hash)
@@ -354,11 +367,11 @@ async fn a_customers_branch_holds_the_template_and_goes_on_apart() {
 
     // The note came along with every change of its history.
     assert!(titles(&workspaces, &branch).await.contains("Checklist"));
-    let kept = notebook(&workspaces, &branch).await.unwrap();
+    let kept = note_parts(&workspaces, &branch).await.swap_remove(0);
     for change in &history {
         assert!(
             kept.clone().get_change_by_hash(change).is_some(),
-            "the branch's notebook lacks the template's change {change}"
+            "the branch's notes lack the template's change {change}"
         );
     }
     // The form's bytes read in the branch, byte for byte.
@@ -386,13 +399,13 @@ async fn a_customers_branch_holds_the_template_and_goes_on_apart() {
     assert!(workspaces.owns(&ada, &branch));
 
     // From here on each goes its own way.
-    let in_branch = format!("/v1/workspaces/{branch}/resources/notes/Notebook/actions/new-note");
+    let in_branch = format!("/v1/workspaces/{branch}/resources/notes/Notes/actions/new-note");
     backend
         .did(&in_branch, &json!({"title": "Acme's contacts"}))
         .await;
     backend
         .did(
-            &format!("{base}/resources/notes/Notebook/actions/new-note"),
+            &format!("{base}/resources/notes/Notes/actions/new-note"),
             &json!({"title": "Next customer's checklist"}),
         )
         .await;
@@ -426,7 +439,7 @@ async fn a_customers_branch_holds_the_template_and_goes_on_apart() {
         token: minted["token"].as_str().unwrap().to_owned(),
     };
     let (status, read) = agent
-        .get(&format!("/v1/workspaces/{branch}/resources/notes/Notebook"))
+        .get(&format!("/v1/workspaces/{branch}/resources/notes/Notes"))
         .await;
     assert_eq!(status, 200, "{read}");
     assert!(read.to_string().contains("Checklist"), "{read}");

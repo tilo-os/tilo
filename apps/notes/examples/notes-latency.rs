@@ -299,9 +299,12 @@ fn body(note: usize, blocks: usize) -> String {
 /// Apply `action` through the window's local action actions, as the palette or
 /// an agent does.
 fn apply(app: &mut App, action: &notes::actions::Action) -> Result<(), Failure> {
-    let invoke = ui::tilo_resource::Invoke::<notes::Notebook>::apply(action)?;
-    app.invoke_local_resource_action(&invoke.address(), &invoke.arguments)
-        .map_err(|error| format!("{}: {error:?}", invoke.id))?;
+    let invoke = ui::tilo_resource::Invoke::<notes::PagePart>::apply(action)?;
+    app.invoke_local_resource_action(
+        &invoke.address_on(notes::part::chain_resource()),
+        &invoke.arguments,
+    )
+    .map_err(|error| format!("{}: {error:?}", invoke.id))?;
     Ok(())
 }
 

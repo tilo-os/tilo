@@ -24,7 +24,7 @@
 "apps/music/src/app.rs" = 5500
 "apps/music/src/app/render.rs" = 4500
 "apps/music/src/app/tests.rs" = 4500
-"apps/notes/src/app.rs" = 5000
+"apps/notes/src/app.rs" = 4500
 "apps/osk/src/widget.rs" = 3500
 "apps/pdf-viewer/src/app.rs" = 5500
 "apps/pdf-viewer/src/app/tests.rs" = 4000

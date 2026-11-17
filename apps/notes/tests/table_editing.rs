@@ -137,7 +137,7 @@ fn table_cell_editing_survives_echo_undo_and_reload() {
         assert_eq!(f.value(0, 1, 0), " a|b\nC\\D & <br> ");
 
         let mut state = ui::State::new();
-        notes::read::initialize(&mut state.doc);
+        notes::read::initialize_part(&mut state.doc);
         let page = uuid::Uuid::new_v4();
         crate::component_support::upsert_page(
             &mut state.doc,
@@ -325,7 +325,7 @@ fn table_focus_is_exclusive_and_survives_shape_changes() {
         app.harness().key("ArrowLeft");
         app.harness().set_modifiers(&[]);
         let current = body(&app, page)[0].clone();
-        app.merge_peer_edit(|doc| {
+        crate::framework_support::part_edit(&mut app, page, |doc| {
             crate::component_support::edit_body(
                 doc,
                 page,

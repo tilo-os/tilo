@@ -27,13 +27,10 @@ fn app() -> TestApp<NotesShell> {
 }
 
 fn kept(app: &TestApp<NotesShell>) -> Vec<String> {
-    app.read_document(|doc| {
-        notes::read::notebook(doc)
-            .images
-            .iter()
-            .map(|(digest, _)| digest.clone())
-            .collect()
-    })
+    notes::part::images(&crate::framework_support::parts(app))
+        .iter()
+        .map(|(digest, _)| digest.clone())
+        .collect()
 }
 
 #[test]
@@ -45,11 +42,16 @@ fn a_picture_larger_than_inline_arguments_is_kept_by_reference() {
     let digest = app.content().put(&picture).unwrap();
     let reference = format!("tilo.content:{digest}");
 
-    app.call("keep-image", json!({ "bytes": reference }))
-        .unwrap_or_else(|error| panic!("keep-image refused: {error:?}"));
+    app.call_on(
+        &notes::part::chain_resource(),
+        "keep-image",
+        json!({ "bytes": reference }),
+    )
+    .unwrap_or_else(|error| panic!("keep-image refused: {error:?}"));
     assert_eq!(kept(&app), std::slice::from_ref(&digest));
 
-    app.call(
+    app.call_on(
+        &notes::part::chain_resource(),
         "import-markdown",
         json!({
             "title": "Trip",
@@ -71,7 +73,11 @@ fn a_reference_to_content_the_workspace_does_not_hold_is_refused() {
     let reference = format!("tilo.content:{digest}");
 
     let refused = app
-        .call("keep-image", json!({ "bytes": reference }))
+        .call_on(
+            &notes::part::chain_resource(),
+            "keep-image",
+            json!({ "bytes": reference }),
+        )
         .expect_err("a reference the workspace cannot read is refused");
     let said = format!("{refused:?}");
     assert!(

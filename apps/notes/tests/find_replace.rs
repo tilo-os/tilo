@@ -6,8 +6,11 @@ use ui::window_toolbar::SearchOpening;
 fn fixture() -> (TestApp<notes::NotesShell>, notes::PageId) {
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke(Invoke::apply(&actions::create_page_action(page, None, "Replace")).unwrap())
-        .unwrap();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&actions::create_page_action(page, None, "Replace")).unwrap(),
+    )
+    .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
     app.harness().type_text("Ä😀 alpha ALPHA");
@@ -17,7 +20,7 @@ fn fixture() -> (TestApp<notes::NotesShell>, notes::PageId) {
 }
 
 fn blocks(app: &TestApp<notes::NotesShell>, page: notes::PageId) -> Vec<ui::widget::BlockContent> {
-    app.read_document(|doc| read::page_blocks(doc, page))
+    crate::framework_support::part_doc(app, page, |doc| read::page_blocks(doc, page))
 }
 
 fn texts(app: &TestApp<notes::NotesShell>, page: notes::PageId) -> Vec<String> {
@@ -53,7 +56,8 @@ fn link(
         },
     ))
     .unwrap();
-    app.invoke(invoke).unwrap();
+    app.invoke_child::<notes::PagePart>(&notes::part::chain_resource(), invoke)
+        .unwrap();
 }
 
 fn peer_splice(
@@ -61,8 +65,8 @@ fn peer_splice(
     page: notes::PageId,
     block: &str,
     ins: &str,
-) -> ui::tilo_resource::Doc {
-    let mut peer = app.peer_document();
+) -> (ui::resource::DocumentId, ui::tilo_resource::Doc) {
+    let (part, mut peer) = crate::framework_support::peer_part(app, page);
     crate::component_support::edit_page_body(
         &mut peer,
         page,
@@ -76,7 +80,7 @@ fn peer_splice(
     )
     .unwrap();
     peer.commit();
-    peer
+    (part, peer)
 }
 
 #[test]
@@ -106,9 +110,9 @@ fn replacement_undo_preserves_concurrent_peer_text() {
     let (mut app, page) = fixture();
     search(&mut app, "alpha");
     let before = blocks(&app, page);
-    let mut peer = peer_splice(&app, page, &before[0].id, "Peer ");
+    let (part, mut peer) = peer_splice(&app, page, &before[0].id, "Peer ");
     app.harness().replace_in_window("β", false);
-    app.merge_peer(&mut peer).unwrap();
+    crate::framework_support::merge_part(&mut app, &part, &mut peer);
     assert_eq!(blocks(&app, page), read::page_blocks(&peer, page));
     assert!(app.undo());
     let after = blocks(&app, page);
@@ -122,8 +126,8 @@ fn a_peer_edit_under_the_search_replaces_the_match_where_it_now_is() {
     let (mut app, page) = fixture();
     search(&mut app, "alpha");
     let before = blocks(&app, page);
-    let mut peer = peer_splice(&app, page, &before[0].id, "Peer ");
-    app.merge_peer(&mut peer).unwrap();
+    let (part, mut peer) = peer_splice(&app, page, &before[0].id, "Peer ");
+    crate::framework_support::merge_part(&mut app, &part, &mut peer);
     assert!(app.harness().replace_in_window("β", false));
     assert_eq!(
         texts(&app, page),
@@ -199,9 +203,9 @@ fn replace_all_undo_preserves_peer_text() {
     let (mut app, page) = fixture();
     search(&mut app, "alpha");
     let before = blocks(&app, page);
-    let mut peer = peer_splice(&app, page, &before[0].id, "Peer alpha ");
+    let (part, mut peer) = peer_splice(&app, page, &before[0].id, "Peer alpha ");
     app.harness().replace_in_window("β", true);
-    app.merge_peer(&mut peer).unwrap();
+    crate::framework_support::merge_part(&mut app, &part, &mut peer);
     assert_eq!(blocks(&app, page), read::page_blocks(&peer, page));
     assert!(app.undo());
     let after = blocks(&app, page);
@@ -214,7 +218,7 @@ fn replace_all_reaches_a_block_a_peer_added_under_the_search() {
     let (mut app, page) = fixture();
     search(&mut app, "alpha");
     let before = blocks(&app, page);
-    let mut peer = app.peer_document();
+    let (part, mut peer) = crate::framework_support::peer_part(&app, page);
     crate::component_support::edit_page_body(
         &mut peer,
         page,
@@ -225,7 +229,7 @@ fn replace_all_reaches_a_block_a_peer_added_under_the_search() {
     )
     .unwrap();
     peer.commit();
-    app.merge_peer(&mut peer).unwrap();
+    crate::framework_support::merge_part(&mut app, &part, &mut peer);
     let expected = blocks(&app, page);
     app.harness().replace_in_window("alphaβ", true);
     assert_eq!(

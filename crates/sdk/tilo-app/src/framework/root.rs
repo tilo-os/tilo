@@ -1755,7 +1755,7 @@ impl RootModel for ResourceRoot {
             }
         }
         handlers.extend(self.nested_views().iter().cloned());
-        handlers.extend(self.storage.record_view_types());
+        handlers.extend(self.storage.view_types_beside());
         handlers
     }
 

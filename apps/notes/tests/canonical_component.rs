@@ -14,14 +14,14 @@ fn canonical_component_starts_empty_projects_existing_resources_read_only() {
         let mut b = component(&f, 12, LaunchTarget::New);
         assert_ne!(a.record().id, b.record().id);
         for checkout in [a.record(), b.record()] {
-            f.records
-                .read(&checkout.id, |doc| {
-                    let workspace = read::project(doc).unwrap();
-                    assert!(workspace.pages().is_empty());
-                    assert!(workspace.tags().is_empty());
-                })
+            f.store
+                .read(&checkout.id, |doc| assert!(read::list_tags(doc).is_empty()))
                 .unwrap();
         }
+        assert!(
+            f.store.read(&f.part(), |_| ()).is_none(),
+            "no note is kept before one is made"
+        );
         assert_closed(&a.close());
         assert_closed(&b.close());
     }
@@ -50,16 +50,16 @@ fn canonical_component_starts_empty_projects_existing_resources_read_only() {
         let checkout = notebook(&f);
         // The accepted importer preserves one blank Markdown paragraph. Exercise
         // the canonical empty-list state after explicitly deleting that block.
-        f.records
-            .with(&checkout.id, |doc| {
+        f.store
+            .with(&f.part(), |doc| {
                 let block_id = read::page_block_snapshots(doc, f.empty)[0].0.clone();
                 remove_block(doc, f.empty, &block_id);
                 doc.commit();
             })
             .unwrap();
         let heads = f
-            .records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .store
+            .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap();
         let mut a = TileHost::from_component(component(&f, 11, existing(&checkout)));
         let mut b = TileHost::from_component(component(&f, 12, existing(&checkout)));
@@ -78,8 +78,8 @@ fn canonical_component_starts_empty_projects_existing_resources_read_only() {
                 &notes::actions::page_resource_id(page)
             ));
         }
-        f.records
-            .read(&checkout.id, |doc| {
+        f.store
+            .read(&f.part(), |doc| {
                 assert_eq!(read::page_block_snapshots(doc, f.empty).len(), 0);
                 assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
             })
@@ -98,7 +98,7 @@ fn canonical_component_starts_empty_projects_existing_resources_read_only() {
         let mut live = driver(&f, 11, &checkout);
         let address = ui::bound_dispatch::BoundActionAddress {
             instance_id: 11,
-            address: notes::Notebook::DELETE.on(notes::actions::page_resource_id(f.root)),
+            address: notes::PagePart::DELETE.on(notes::actions::page_resource_id(f.root)),
         };
         // Undo takes a deleted page back, so deleting asks nothing.
         live.invoke_bound_action(&address, &serde_json::Map::new())
@@ -119,16 +119,16 @@ fn canonical_component_starts_empty_projects_existing_resources_read_only() {
         assert_eq!(revision(&f, &checkout), 3);
         close_driver(&mut live);
         drop(live);
-        f.records.try_flush().unwrap();
+        f.store.try_flush().unwrap();
         let f = f.reopen();
         let mut tile = TileHost::from_component(component(&f, 11, existing(&checkout)));
         let heads = f
-            .records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .store
+            .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap();
         tile.sync(&AutoCommit::new(), &ROOT);
-        f.records
-            .read(&checkout.id, |doc| {
+        f.store
+            .read(&f.part(), |doc| {
                 assert!(read::project(doc).unwrap().pages().is_empty());
                 assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
             })
@@ -147,7 +147,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         use automerge::transaction::Transactable;
         use ui::resource::ResourceSaveStatus;
         let mut doc = AutoCommit::new();
-        read::initialize(&mut doc);
+        read::initialize_part(&mut doc);
         doc.commit();
         let before = (doc.base_heads(), doc.pending_ops());
         let mut app =
@@ -178,8 +178,8 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
     );
     {
         let f = NotebookFixture::rich();
-        let checkout = notebook(&f);
-        let mut doc = f.records.read(&checkout.id, Clone::clone).unwrap();
+        notebook(&f);
+        let mut doc = f.store.read(&f.part(), Clone::clone).unwrap();
         let before = (doc.base_heads(), doc.pending_ops());
         let mut app = notes::NotesApp::from_document(&doc, &f.author).unwrap();
         assert_eq!(app.selected_for_test(), Some(f.root));
@@ -196,7 +196,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         assert_eq!((doc.base_heads(), doc.pending_ops()), before);
         assert!(
             app.main_panel_mut()
-                .bind_canonical_page(&doc, uuid::Uuid::new_v4(), "wrong")
+                .bind_canonical_page(&doc, uuid::Uuid::new_v4(), None, "wrong")
                 .is_err()
         );
         assert_eq!(app.main_panel_mut().page_id(), Some(f.child));
@@ -258,7 +258,6 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         assert_eq!((doc.base_heads(), doc.pending_ops()), deleted);
         tilo_actions::Action::apply(&notes::actions::delete_page_action(f.empty), &mut doc)
             .unwrap();
-        tilo_actions::Action::apply(&notes::actions::delete_tag_action(f.tag), &mut doc).unwrap();
         doc.commit();
         let emptied = (doc.base_heads(), doc.pending_ops());
         app.sync(&doc, &ROOT);
@@ -283,8 +282,8 @@ fn native_bound_open_binds_the_editor_after_the_worker_has_settled() {
         "native worker settles before navigation"
     );
     let before = f
-        .records
-        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+        .store
+        .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
         .unwrap();
     app.refresh_semantic_tree();
     let target = app
@@ -315,8 +314,8 @@ fn native_bound_open_binds_the_editor_after_the_worker_has_settled() {
     assert_eq!(observed["selected_page"], f.child.to_string());
     assert_projection_observation(&observed, f.child);
     let body = f
-        .records
-        .read(&checkout.id, |doc| {
+        .store
+        .read(&f.part(), |doc| {
             read::page_block_snapshots(doc, f.child)
                 .into_iter()
                 .map(|(_, text)| text)
@@ -332,8 +331,8 @@ fn native_bound_open_binds_the_editor_after_the_worker_has_settled() {
     assert_eq!(observed["body_chars"], body.chars().count());
     assert!(observed["rendered_body_chars"].as_u64().unwrap() > 0);
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+        f.store
+            .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap(),
         before,
         "opening binds the real canonical body without writing it"
@@ -359,8 +358,8 @@ fn native_accessibility_page_activation_binds_an_empty_note_without_another_inpu
     app.init_layout();
     assert!(!app.controlled_hosted_model_for_test());
     let before = f
-        .records
-        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+        .store
+        .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
         .unwrap();
     let nodes = app.build_a11y_tree_update(1.0).nodes;
     // The page tree's rows are tree items that name their page: the one a reader
@@ -390,8 +389,8 @@ fn native_accessibility_page_activation_binds_an_empty_note_without_another_inpu
     assert_eq!(observed["body_chars"], 0);
     assert!(!app.controlled_hosted_model_for_test());
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+        f.store
+            .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap(),
         before
     );

@@ -56,7 +56,7 @@ impl NotesApp {
         let adds = self.may_add_notes();
         // New note heads the page tree it adds to, pressing the notebook's own
         // action: the notebook's actions arrive after the shell is built.
-        let tree_new_note = adds && self.notebook_actions.is_some();
+        let tree_new_note = adds && self.notes.is_some();
         let mut changed = false;
         if hosted != self.header_in_bar || tree_new_note != self.tree_offers_new_note {
             self.header_in_bar = hosted;
@@ -64,7 +64,7 @@ impl NotesApp {
             self.shell.set_sidebar_toggle_in_window_bar(hosted);
             // New note is the page tree's, hosted or not.
             let tree_actions = if adds {
-                Self::page_tree_header_actions(self.notebook_actions.as_ref())
+                Self::page_tree_header_actions(self.notes.as_ref().map(|notes| &notes.actions))
             } else {
                 Vec::new()
             };

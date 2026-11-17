@@ -44,9 +44,12 @@ fn typed_notebook_of(directory: &std::path::Path, keystrokes: usize) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::open_data_dir(directory).unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&create_page_action(page, None, "Bugs")).unwrap())
-        .unwrap();
-    let mut peer = app.peer_document();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&create_page_action(page, None, "Bugs")).unwrap(),
+    )
+    .unwrap();
+    let (part, mut peer) = crate::framework_support::peer_part(&app, page);
     let block = read::page_block_snapshots(&peer, page)[0].0.clone();
     let line = "the sidebar flickers when a note is renamed twice ";
     for (at, ch) in line.chars().cycle().take(keystrokes).enumerate() {
@@ -64,9 +67,9 @@ fn typed_notebook_of(directory: &std::path::Path, keystrokes: usize) {
         .unwrap();
         ui::tilo_resource::history::commit_stamped(&mut peer);
     }
-    app.merge_peer(&mut peer).unwrap();
+    crate::framework_support::merge_part(&mut app, &part, &mut peer);
     app.flush().unwrap();
-    assert!(app.versions().len() >= keystrokes);
+    assert!(crate::framework_support::versions(&app).len() >= keystrokes);
 }
 
 /// How long opening the notebook in `directory` takes.

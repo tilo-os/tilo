@@ -166,7 +166,7 @@ tilo_test_env::scenario! {
         assert!(csv_table("").is_none());
     }
 
-    phase the_whole_import_is_one_action_group;
+    phase the_whole_import_is_one_action;
     {
         let pages = vec![
             ImportedPage {
@@ -181,12 +181,8 @@ tilo_test_env::scenario! {
             },
         ];
         let invoke = import_action(&pages);
-        assert!(invoke.is_group());
-        let members = invoke
-            .arguments
-            .get(ui::tilo_resource::GROUP_PARAM)
-            .unwrap();
-        let members = members.as_array().unwrap();
-        assert_eq!(members.len(), 2);
+        assert_eq!(invoke.id, "import-notes");
+        let notes = invoke.arguments["notes"].as_array().unwrap();
+        assert_eq!(notes.len(), 2);
     }
 }

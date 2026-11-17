@@ -25,6 +25,7 @@ pub(super) const OWN_KINDS: &[(&str, &str)] = &[
     ("so.tilo.mail", "mail.trusted-senders"),
     ("so.tilo.maps", "maps.offline-areas"),
     ("so.tilo.messages", "messages.drafts"),
+    ("so.tilo.notes", "tilo.chain-unsent"),
     ("so.tilo.osk", "osk.learned"),
     ("so.tilo.pdf-viewer", "pdf.signature-profile"),
     ("so.tilo.settings", "settings.root"),

@@ -272,7 +272,7 @@ fn table_context_commands_edit_only_the_current_table() {
             let (_, canonical_source) = first_block(&mut app);
             let changed = canonical_source.replace("| Before |\n", "");
             assert_ne!(changed, canonical_source);
-            app.merge_peer_edit(|doc| {
+            crate::framework_support::part_edit(&mut app, page, |doc| {
                 crate::component_support::replace_block_text(doc, page, &id, &changed);
             });
             assert_eq!(
@@ -282,7 +282,7 @@ fn table_context_commands_edit_only_the_current_table() {
                     .focused_table_cell()),
                 Some((id, 2, 0))
             );
-            let heads = app.peer_document().get_heads();
+            let heads = crate::framework_support::stored(&app);
             // Exercise both Cut and Add row. The same coordinate now addresses
             // a different row; neither captured command may touch it.
             for _ in 0..selection_steps {
@@ -294,7 +294,7 @@ fn table_context_commands_edit_only_the_current_table() {
             }
             dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Enter));
             assert!(!menu_open(&mut app));
-            assert_eq!(app.peer_document().get_heads(), heads);
+            assert_eq!(crate::framework_support::stored(&app), heads);
             assert_eq!(first_block(&mut app).1, changed);
         }
     }
@@ -355,7 +355,10 @@ fn table_context_commands_edit_only_the_current_table() {
             let page = crate::framework_support::shown(&app).pages()[0].id;
             let reopened = app.reopen().unwrap();
             assert_eq!(
-                reopened.read_document(|doc| notes::read::page_block_snapshots(doc, page))[0].1,
+                crate::framework_support::part_doc(&reopened, page, |doc| {
+                    notes::read::page_block_snapshots(doc, page)
+                })[0]
+                    .1,
                 expected
             );
         }

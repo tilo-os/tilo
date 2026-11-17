@@ -49,16 +49,12 @@ fn notes_held(
     reader: &Browser,
     workspace: &str,
 ) -> Option<BTreeMap<String, (String, Option<String>)>> {
-    let bytes = reader
-        .peer
-        .engine()
-        .record(workspace, "so.tilo.notes", "")
-        .ok()??;
-    let doc = automerge::AutoCommit::load(&bytes).ok()?;
-    let notebook = <notes::notebook::Notebook as ui::tilo_resource::Resource>::read(&doc).ok()?;
+    let parts = super::resource_support::notes_parts(reader.peer.engine(), workspace);
+    if parts.is_empty() {
+        return None;
+    }
     Some(
-        notebook
-            .pages
+        notes::Pages::of(&parts)
             .iter()
             .map(|(id, note)| {
                 (
@@ -97,7 +93,7 @@ async fn a_new_page_reads_a_notebook_an_agent_rearranged_through_the_api() {
         &json!({}),
     )
     .await;
-    let notebook = format!("{base}/resources/notes/Notebook/actions");
+    let notebook = format!("{base}/resources/notes/Notes/actions");
     let act = |action: &str, args: Value| {
         let path = format!("{notebook}/{action}");
         let (api, token) = (&api, &token);
@@ -238,7 +234,7 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
     post(
         &api,
         &token,
-        &format!("{base}/resources/notes/Notebook/actions/new-note"),
+        &format!("{base}/resources/notes/Notes/actions/new-note"),
         &json!({"title": "Supplier contract"}),
     )
     .await;
@@ -272,6 +268,18 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
         .send(Cmd::OpenDocumentAt(
             WorkspaceId::parse(&workspace).unwrap(),
             ask.clone(),
+        ))
+        .unwrap();
+    // And the newest part of its notes, which the window's chain asks for by
+    // the chain's head.
+    reader
+        .peer
+        .send(Cmd::OpenDocumentAt(
+            WorkspaceId::parse(&workspace).unwrap(),
+            tilo_peer_state::document_frame::DocumentRoute {
+                document: notes::part::chain().chain_head().as_str().to_owned(),
+                ..ask.clone()
+            },
         ))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -311,23 +319,18 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
 
 /// Note `title`'s body as the notebook `reader` holds it, as Markdown.
 fn note_body(reader: &Browser, workspace: &str, title: &str) -> Option<String> {
-    let bytes = reader
-        .peer
-        .engine()
-        .record(workspace, "so.tilo.notes", "")
-        .ok()??;
-    let doc = automerge::AutoCommit::load(&bytes).ok()?;
-    let notebook = <notes::notebook::Notebook as ui::tilo_resource::Resource>::read(&doc).ok()?;
-    let (id, _) = notebook
-        .pages
-        .iter()
-        .find(|(_, note)| note.title == title)?;
-    let body = notes::notebook::body_object(&doc, notes::notebook::page_of(id)?)?;
-    let containers = tilo_doc::model::open(&doc, &body).ok()?;
+    let docs = super::resource_support::notes_part_docs(reader.peer.engine(), workspace);
+    let (page, doc) = docs.iter().find_map(|(_, doc)| {
+        let part = <notes::PagePart as ui::tilo_resource::Resource>::read(doc).ok()?;
+        let (id, _) = part.pages.iter().find(|(_, note)| note.title == title)?;
+        Some((notes::notebook::page_of(id)?, doc))
+    })?;
+    let body = notes::part::body_object(doc, page)?;
+    let containers = tilo_doc::model::open(doc, &body).ok()?;
     let markdown = tilo_doc_codecs::provider_for_ext("md")?
         .export(
             tilo_doc::DocRef {
-                doc: &doc,
+                doc,
                 c: &containers,
             },
             &tilo_content::NoContent,
@@ -358,7 +361,7 @@ async fn an_agents_write_note_changes_the_notes_body() {
         &json!({}),
     )
     .await;
-    let notebook = format!("{base}/resources/notes/Notebook/actions");
+    let notebook = format!("{base}/resources/notes/Notes/actions");
     let made = post(
         &api,
         &token,

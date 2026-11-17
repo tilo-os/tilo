@@ -1,6 +1,6 @@
 //! A workspace's notes as `.md` files in its folder.
 //!
-//! Every note of the workspace's notebook is also a file, `Notes/<title>.md`, in the
+//! Every note of the workspace's notes is also a file, `Notes/<title>.md`, in the
 //! workspace's folder (its Files record, the tree every member mounts), so an agent, a
 //! script or any program reads and writes notes as plain files. The note record is the
 //! source of truth and the file its projection; there is one copy of each, kept in step:
@@ -20,6 +20,11 @@
 //! a note that reads otherwise was changed in Notes, and the host's own writes read as
 //! agreed, so nothing it writes comes back to it as a change. When both moved, the note
 //! wins and the file is written from it.
+//!
+//! Notes keeps its notes in parts, each a record of its own beside the notebook
+//! ([`notes::PagePart`]): the host follows each part it holds on its own, so a note's edit
+//! reads and writes that note's part and file alone. A note under one deleted from another
+//! part is not shown, and its file goes to the trash with it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -101,25 +106,25 @@ pub(super) struct Note {
     pub(super) markdown: Vec<u8>,
 }
 
-/// The notebook's pages in `doc`, by the ids they are stored under.
+/// The notes the part `doc` keeps, by the ids they are stored under.
 pub(super) fn page_keys(doc: &AutoCommit) -> Vec<String> {
     use automerge::ReadDoc as _;
-    notes::Notebook::paths()
+    notes::PagePart::paths()
         .pages
         .object(doc)
         .map(|pages| doc.keys(&pages).collect())
         .unwrap_or_default()
 }
 
-/// The pages of the notebook `doc` that changed between its heads `before` and `after`:
-/// made, deleted, renamed, moved or written. Only they are read again, so a pass costs the
-/// notes that changed, never the notebook.
+/// The notes of the part `doc` that changed between its heads `before` and `after`: made,
+/// deleted, renamed, moved or written. Only they are read again, so a pass costs the notes
+/// that changed, never the part, let alone the notebook.
 pub(super) fn pages_changed(
     doc: &mut AutoCommit,
     before: &[automerge::ChangeHash],
     after: &[automerge::ChangeHash],
 ) -> BTreeSet<String> {
-    let Some(pages) = notes::Notebook::paths().pages.object(doc) else {
+    let Some(pages) = notes::PagePart::paths().pages.object(doc) else {
         return BTreeSet::new();
     };
     doc.diff(before, after)
@@ -140,14 +145,40 @@ pub(super) fn pages_changed(
         .collect()
 }
 
-/// The note stored under `id` in the notebook `doc`, with its body as Markdown; `None` once
-/// it is gone.
-pub(super) fn note(doc: &AutoCommit, id: &str) -> Option<Note> {
+/// The object note `id` is kept in, in the part `doc`; `None` when the part keeps no such
+/// note.
+fn page_object(doc: &AutoCommit, id: &str) -> Option<(notes::PageId, automerge::ObjId)> {
     let page = notes::notebook::page_of(&ui::tilo_resource::Id::from(id))?;
-    let object = notes::Notebook::paths()
+    let object = notes::PagePart::paths()
         .pages
         .item_path(&notes::notebook::page_id(page))
         .object(doc)?;
+    Some((page, object))
+}
+
+/// The note note `id` is under in the part `doc` (`None` for a top-level note); `None`
+/// when the part keeps no such note.
+#[allow(
+    clippy::option_option,
+    reason = "whether the part keeps the note, then whether it is under another"
+)]
+pub(super) fn parent_in(doc: &AutoCommit, id: &str) -> Option<Option<String>> {
+    let (_, object) = page_object(doc, id)?;
+    Some(match automerge::ReadDoc::get(doc, &object, "parent") {
+        Ok(Some((value, at))) => {
+            <Option<ui::tilo_resource::Id> as ui::tilo_resource::Model>::load(doc, &value, &at)
+                .ok()
+                .flatten()
+                .map(|parent| parent.as_str().to_owned())
+        }
+        _ => None,
+    })
+}
+
+/// The note stored under `id` in the part `doc`, with its body as Markdown; `None` once it
+/// is gone.
+pub(super) fn note(doc: &AutoCommit, id: &str) -> Option<Note> {
+    let (page, object) = page_object(doc, id)?;
     // A title is kept as text, or as a string a field edit wrote whole.
     let title = match automerge::ReadDoc::get(doc, &object, "title") {
         Ok(Some((value, at))) => {
@@ -162,10 +193,48 @@ pub(super) fn note(doc: &AutoCommit, id: &str) -> Option<Note> {
     })
 }
 
+/// Where each note is kept and what it is under: the part, and its parent's id.
+pub(super) type Placed = HashMap<String, (u64, Option<String>)>;
+
+/// The notes of `placed` that are not shown: those under a note no part keeps (deleted in
+/// its own part while they are kept in another). Notes that sit under each other in a ring
+/// are shown, as Notes shows them at the top.
+pub(super) fn hidden(placed: &Placed) -> BTreeSet<String> {
+    let mut shown: HashMap<&str, bool> = HashMap::new();
+    for start in placed.keys() {
+        let mut path: Vec<&str> = Vec::new();
+        let mut at = start.as_str();
+        let verdict = loop {
+            if let Some(known) = shown.get(at) {
+                break *known;
+            }
+            if path.contains(&at) {
+                break true;
+            }
+            path.push(at);
+            match placed.get(at) {
+                None => break false,
+                Some((_, None)) => break true,
+                Some((_, Some(parent))) => at = parent,
+            }
+        };
+        for id in path {
+            if placed.contains_key(id) {
+                shown.insert(id, verdict);
+            }
+        }
+    }
+    shown
+        .into_iter()
+        .filter(|(_, shown)| !shown)
+        .map(|(id, _)| id.to_owned())
+        .collect()
+}
+
 /// Note `page`'s body in `doc` as Markdown, written by the same codec the folder writes
 /// its `.md` files with, so the two read alike.
 fn body_markdown(doc: &AutoCommit, page: notes::PageId) -> Option<Vec<u8>> {
-    let body = notes::notebook::body_object(doc, page)?;
+    let body = notes::part::body_object(doc, page)?;
     let containers = tilo_doc::model::open(doc, &body).ok()?;
     tilo_doc_codecs::provider_for_ext("md")?
         .export(
@@ -494,7 +563,7 @@ impl Worker {
                 invocation: InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: record_provider(notes_route),
-                    address: ActionAddress::new("", edit.action),
+                    address: ActionAddress::new(notes::part::chain_resource(), edit.action),
                 },
                 argument: InvokeArgument::Json(edit.arguments),
                 context: None,
@@ -528,11 +597,13 @@ impl Worker {
     }
 
     /// Bring `workspace_id`'s notes and their files in its folder into step
-    /// ([module docs](self)). Run whenever either record of the workspace takes a write.
+    /// ([module docs](self)). Run whenever a record of the workspace's notes or its tree
+    /// takes a write.
     ///
-    /// The notebook and the tree are kept between passes ([`Followed`]): a pass merges
-    /// only the changes since the last, and reads, renders and writes only the notes and
-    /// files they touched, so one note's edit costs that note in a notebook of thousands.
+    /// The parts of the notes and the tree are kept between passes ([`Followed`]): a pass
+    /// merges only the changes since the last, and reads, renders and writes only the notes
+    /// and files they touched, so one note's edit costs that note in a notebook of
+    /// thousands.
     pub(super) fn project_notes(&mut self, workspace_id: WorkspaceId) -> Result<(), String> {
         let tree_name = tree_document();
         let notes_route = DocumentRoute {
@@ -557,26 +628,28 @@ impl Worker {
                 },
             )
             .map_err(|error| error.to_string())?;
+        let parts = part_routes(&state, &notes_route);
+        self.ask_for_missing_parts(workspace_id, &state, &parts)?;
         let workspace = workspace_id.to_string();
         // What failed part way is read whole again by the next pass.
         let held = self.notes_followed.remove(&workspace_id);
         let caught_up = if let Some(held) = held {
-            self.catch_up(held, &state, &notes_route, workspace_id)?
+            self.catch_up(held, &state, &parts, workspace_id)?
         } else {
             None
         };
         let (mut followed, dirty) = if let Some(caught_up) = caught_up {
             caught_up
         } else {
-            // A workspace that has no notebook yet has no notes to show; one whose folder
+            // A workspace that has no notes yet has nothing to show; one whose folder
             // nobody wrote yet gets one when the first note is made.
-            let Ok((notebook, notebook_heads)) = state.document(&notes_route) else {
+            if parts.is_empty() {
                 return Ok(());
-            };
+            }
             let (tree, chunks) = self
                 .tree_with_heads(workspace_id, &workspace)
                 .map_err(outcome_text)?;
-            let Some(read) = Followed::read(&notebook, notebook_heads, tree, chunks)? else {
+            let Some(read) = Followed::read(&state, &parts, tree, chunks)? else {
                 return Ok(());
             };
             read
@@ -584,7 +657,7 @@ impl Worker {
         let dirty: BTreeMap<String, Option<Note>> = dirty
             .into_iter()
             .map(|page| {
-                let note = note(&followed.notebook, &page);
+                let note = followed.note(&page);
                 (page, note)
             })
             .collect();
@@ -630,30 +703,63 @@ impl Worker {
         applied
     }
 
-    /// Merge what the notebook and the tree took since `followed` read them: the notes whose
-    /// note or file changed. The tree is followed record by record, a chunk the tree's own
-    /// record lists anew read whole. `None` when the notebook is no longer where it was read
-    /// from (started anew), or a tree appeared where there was none, to be read whole.
+    /// Ask for each part of the notes `state` does not hold yet. Which note is shown needs
+    /// every part: a note under one in a part not here yet would read as one whose parent is
+    /// gone, and its file be put in the trash. An error names how many are missing.
+    fn ask_for_missing_parts(
+        &mut self,
+        workspace_id: WorkspaceId,
+        state: &super::WorkspaceState,
+        parts: &BTreeMap<u64, DocumentRoute>,
+    ) -> Result<(), String> {
+        let missing: Vec<DocumentRoute> = parts
+            .iter()
+            .filter(|(_, route)| state.document(route).is_err())
+            .map(|(_, route)| route.clone())
+            .collect();
+        if !missing.is_empty() {
+            for route in &missing {
+                let _ = self.refresh(
+                    workspace_id,
+                    Needs::Read {
+                        app_id: NOTES_APP,
+                        record: &route.document,
+                    },
+                );
+                if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
+                    workspace.ask(
+                        workspace_id,
+                        Needs::Read {
+                            app_id: NOTES_APP,
+                            record: &route.document,
+                        },
+                    );
+                }
+            }
+            return Err(format!(
+                "{} of the notes' {} parts are not here yet",
+                missing.len(),
+                parts.len()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Merge what the parts of the notes and the tree took since `followed` read them: the
+    /// notes whose note or file changed, and those shown or hidden since. The tree is
+    /// followed record by record, a chunk the tree's own record lists anew read whole.
+    /// `None` when a part is no longer where it was read from (started anew), or a tree
+    /// appeared where there was none, to be read whole.
     fn catch_up(
         &mut self,
         mut followed: Followed,
         state: &super::WorkspaceState,
-        notes_route: &DocumentRoute,
+        parts: &BTreeMap<u64, DocumentRoute>,
         workspace_id: WorkspaceId,
     ) -> Result<Option<(Followed, BTreeSet<String>)>, String> {
-        let mut dirty = BTreeSet::new();
-        match state.update(notes_route, Some(&followed.notebook_heads))? {
-            None => {}
-            Some((DocumentMutation::Incremental(change), heads)) => {
-                let before = followed.notebook.get_heads();
-                tilo_automerge::ApplyIncoming::load_incoming(&mut followed.notebook, &change)
-                    .map_err(|error| error.to_string())?;
-                let after = followed.notebook.get_heads();
-                dirty.extend(pages_changed(&mut followed.notebook, &before, &after));
-                followed.notebook_heads = heads;
-            }
-            Some((DocumentMutation::Snapshot(_), _)) => return Ok(None),
-        }
+        let Some(mut dirty) = followed.parts_caught_up(state, parts)? else {
+            return Ok(None);
+        };
         let workspace = workspace_id.to_string();
         let Some(chunks) = followed.chunks.as_mut() else {
             if self
@@ -732,8 +838,42 @@ fn outcome_text(outcome: super::Outcome) -> String {
     }
 }
 
-/// How many workspaces' notebooks and folders a worker keeps between passes: those whose
-/// notes moved last. One past them is read whole by its next pass.
+/// The parts of the notes the workspace keeps beside the notebook at `notes_route`, by
+/// number: every part from the first to the newest it holds, whether it holds each yet or
+/// not.
+pub(super) fn part_routes(
+    state: &super::WorkspaceState,
+    notes_route: &DocumentRoute,
+) -> BTreeMap<u64, DocumentRoute> {
+    let chain = notes::part::chain();
+    let newest = state
+        .records
+        .iter()
+        .filter(|route| {
+            route.app_id == notes_route.app_id && route.cluster_id == notes_route.cluster_id
+        })
+        .filter_map(|route| ui::resource::DocumentId::parse(&route.document)?.chain_part())
+        .filter(|(of, _)| *of == chain)
+        .map(|(_, index)| index)
+        .max();
+    newest
+        .map(|newest| {
+            (0..=newest)
+                .map(|index| {
+                    let route = DocumentRoute {
+                        app_id: notes_route.app_id.clone(),
+                        cluster_id: notes_route.cluster_id.clone(),
+                        document: chain.part(index).as_str().to_owned(),
+                    };
+                    (index, route)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// How many workspaces' notes and folders a worker keeps between passes: those whose notes
+/// moved last. One past them is read whole by its next pass.
 const MOST_FOLLOWED: usize = 32;
 
 impl Worker {
@@ -754,13 +894,21 @@ impl Worker {
     }
 }
 
-/// What the host holds of a workspace's notebook and the tree its folder is, between passes
-/// over them ([`Worker::project_notes`]): both as it merged them last, and which file is
-/// each note's.
+/// One part of the notes as the host merged it last.
+struct HeldPart {
+    doc: AutoCommit,
+    /// The part record's heads it merged last.
+    heads: Vec<[u8; 32]>,
+}
+
+/// What the host holds of a workspace's notes and the tree its folder is, between passes
+/// over them ([`Worker::project_notes`]): each part of the notes and the tree as it merged
+/// them last, where each note is kept and which notes are not shown, and which file is each
+/// note's.
 pub(super) struct Followed {
-    notebook: AutoCommit,
-    /// The notebook record's heads it merged last.
-    notebook_heads: Vec<[u8; 32]>,
+    parts: BTreeMap<u64, HeldPart>,
+    placed: Placed,
+    hidden: BTreeSet<String>,
     tree: Namespace,
     /// Each record of the tree it holds, the tree's own (0) and its chunks, with the heads
     /// it merged last; `None` while the workspace has no tree.
@@ -771,33 +919,135 @@ pub(super) struct Followed {
 }
 
 impl Followed {
-    /// Take the notebook and the tree as read whole: every note and every note file is to be
-    /// brought into step. `None` when there is nothing to project: neither a note nor a
-    /// folder.
+    /// Read the parts of the notes whole and take the tree as read whole: every note and
+    /// every note file is to be brought into step. `None` when there is nothing to project:
+    /// neither a note nor a folder.
     fn read(
-        notebook: &[u8],
-        notebook_heads: Vec<[u8; 32]>,
+        state: &super::WorkspaceState,
+        parts: &BTreeMap<u64, DocumentRoute>,
         tree: Namespace,
         chunks: Option<HeldChunks>,
     ) -> Result<Option<(Self, BTreeSet<String>)>, String> {
-        let notebook = AutoCommit::load(notebook).map_err(|error| error.to_string())?;
-        let pages = page_keys(&notebook);
-        if chunks.is_none() && pages.is_empty() {
+        let mut followed = Self {
+            parts: BTreeMap::new(),
+            placed: Placed::new(),
+            hidden: BTreeSet::new(),
+            tree,
+            chunks,
+            files: Files::new(),
+            last: 0,
+        };
+        let mut dirty = BTreeSet::new();
+        for (index, route) in parts {
+            dirty.extend(followed.read_part(state, *index, route)?);
+        }
+        if followed.chunks.is_none() && dirty.is_empty() {
             return Ok(None);
         }
-        let files = files_of(&tree);
-        let dirty = pages.into_iter().chain(files.keys().cloned()).collect();
-        Ok(Some((
-            Self {
-                notebook,
-                notebook_heads,
-                tree,
-                chunks,
-                files,
-                last: 0,
-            },
-            dirty,
-        )))
+        followed.files = files_of(&followed.tree);
+        followed.hidden = hidden(&followed.placed);
+        dirty.extend(followed.files.keys().cloned());
+        Ok(Some((followed, dirty)))
+    }
+
+    /// Read part `index` at `route` whole and place each of its notes: the notes it keeps.
+    fn read_part(
+        &mut self,
+        state: &super::WorkspaceState,
+        index: u64,
+        route: &DocumentRoute,
+    ) -> Result<BTreeSet<String>, String> {
+        let (bytes, heads) = state.document(route)?;
+        let doc = AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+        let pages: BTreeSet<String> = page_keys(&doc).into_iter().collect();
+        for page in &pages {
+            if let Some(parent) = parent_in(&doc, page) {
+                self.placed.insert(page.clone(), (index, parent));
+            }
+        }
+        self.parts.insert(index, HeldPart { doc, heads });
+        Ok(pages)
+    }
+
+    /// Note `id` as its file shows it; `None` when no part keeps it or it is not shown.
+    fn note(&self, id: &str) -> Option<Note> {
+        if self.hidden.contains(id) {
+            return None;
+        }
+        let (index, _) = self.placed.get(id)?;
+        note(&self.parts.get(index)?.doc, id)
+    }
+
+    /// Place note `page`, which part `index` changed, as the part keeps it now: whether
+    /// where it sits in the tree of notes changed (made, deleted or moved).
+    fn replace(&mut self, index: u64, page: &str) -> bool {
+        let now = self
+            .parts
+            .get(&index)
+            .and_then(|part| parent_in(&part.doc, page));
+        match now {
+            Some(parent) => self
+                .placed
+                .insert(page.to_owned(), (index, parent.clone()))
+                .is_none_or(|(_, before)| before != parent),
+            None => {
+                if self
+                    .placed
+                    .get(page)
+                    .is_some_and(|(held, _)| *held == index)
+                {
+                    self.placed.remove(page);
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    /// Merge what the parts of the notes took since they were read: the notes that changed,
+    /// and those shown or hidden since. `None` when a part is no longer where it was read
+    /// from (started anew), to be read whole.
+    fn parts_caught_up(
+        &mut self,
+        state: &super::WorkspaceState,
+        parts: &BTreeMap<u64, DocumentRoute>,
+    ) -> Result<Option<BTreeSet<String>>, String> {
+        let mut dirty = BTreeSet::new();
+        let mut moved = false;
+        for (index, route) in parts {
+            let Some(part) = self.parts.get_mut(index) else {
+                // A part started since: every note it keeps is new.
+                let pages = self.read_part(state, *index, route)?;
+                moved |= !pages.is_empty();
+                dirty.extend(pages);
+                continue;
+            };
+            match state.update(route, Some(&part.heads))? {
+                None => {}
+                Some((DocumentMutation::Incremental(change), heads)) => {
+                    let before = part.doc.get_heads();
+                    tilo_automerge::ApplyIncoming::load_incoming(&mut part.doc, &change)
+                        .map_err(|error| error.to_string())?;
+                    let after = part.doc.get_heads();
+                    let changed = pages_changed(&mut part.doc, &before, &after);
+                    part.heads = heads;
+                    for page in &changed {
+                        moved |= self.replace(*index, page);
+                    }
+                    dirty.extend(changed);
+                }
+                Some((DocumentMutation::Snapshot(_), _)) => return Ok(None),
+            }
+        }
+        if moved {
+            // Which notes are shown follows what is kept where: a deleted note hides the
+            // notes under it in other parts, and brought back, shows them again.
+            let hidden = hidden(&self.placed);
+            dirty.extend(hidden.symmetric_difference(&self.hidden).cloned());
+            self.hidden = hidden;
+        }
+        Ok(Some(dirty))
     }
 }
 

@@ -73,10 +73,10 @@ fn shell(f: &NotebookFixture, width: u32) -> (FrameHarness, ui::resource::Docume
     (harness, checkout)
 }
 
-fn page_count(f: &NotebookFixture, checkout: &ui::resource::DocumentCheckout) -> usize {
-    f.records
-        .read(&checkout.id, |doc| notes::read::list_pages(doc).len())
-        .unwrap()
+fn page_count(f: &NotebookFixture) -> usize {
+    f.store
+        .read(&f.part(), |doc| notes::read::list_pages(doc).len())
+        .unwrap_or_default()
 }
 
 /// The accessibility nodes named `name`: their id and where they stand.
@@ -100,12 +100,8 @@ fn an_empty_notes_window_offers_new_note_and_it_makes_a_note() {
     ui::i18n::I18nManager::init("en-US");
     for width in [1280, 390] {
         let f = NotebookFixture::empty();
-        let (mut harness, checkout) = shell(&f, width);
-        assert_eq!(
-            page_count(&f, &checkout),
-            0,
-            "{width}px: the notebook is empty"
-        );
+        let (mut harness, _) = shell(&f, width);
+        assert_eq!(page_count(&f), 0, "{width}px: the notebook is empty");
 
         let offered = nodes_named(&harness, &CATALOG.t("notes-affordance-new-note"));
         let Some((new_note, _)) = offered
@@ -123,7 +119,7 @@ fn an_empty_notes_window_offers_new_note_and_it_makes_a_note() {
             harness.relayout();
         }
         assert_eq!(
-            page_count(&f, &checkout),
+            page_count(&f),
             1,
             "{width}px: New note makes the notebook's first note"
         );

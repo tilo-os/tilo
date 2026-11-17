@@ -148,3 +148,42 @@ pub(super) fn part_route(
         document: record.as_str().to_owned(),
     }
 }
+
+/// Each part of the notes the replica `engine` holds of `workspace`, oldest first, as
+/// its document.
+pub(super) fn notes_part_docs(
+    engine: &tilo_session_client::engine::Engine,
+    workspace: &str,
+) -> Vec<(u64, automerge::AutoCommit)> {
+    let chain = notes::part::chain();
+    let mut parts: Vec<(u64, automerge::AutoCommit)> = engine
+        .records(workspace)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(app, _)| app == ui::apps::NOTES)
+        .filter_map(|(_, record)| {
+            let (of, index) = ui::resource::DocumentId::parse(&record)?.chain_part()?;
+            if of != chain {
+                return None;
+            }
+            let bytes = engine.record(workspace, ui::apps::NOTES, &record).ok()??;
+            Some((index, automerge::AutoCommit::load(&bytes).ok()?))
+        })
+        .collect();
+    parts.sort_by_key(|(index, _)| *index);
+    parts
+}
+
+/// Each part of the notes the replica `engine` holds of `workspace`, oldest first, read.
+pub(super) fn notes_parts(
+    engine: &tilo_session_client::engine::Engine,
+    workspace: &str,
+) -> Vec<(u64, std::rc::Rc<notes::PagePart>)> {
+    notes_part_docs(engine, workspace)
+        .into_iter()
+        .filter_map(|(index, doc)| {
+            let part = <notes::PagePart as ui::tilo_resource::Resource>::read(&doc).ok()?;
+            Some((index, std::rc::Rc::new(part)))
+        })
+        .collect()
+}

@@ -1,14 +1,9 @@
 //! One notebook per workspace: every Notes window in a workspace shows the same
-//! pages, and the notebooks Notes kept per window before are brought into
-//! it exactly once.
+//! pages.
 
-use crate::framework_support::{add_note, body, notes, open, shown, surface};
-use notes::actions::{
-    create_page_action, new_tag_action, set_tag_assignment_action, write_body_action,
-};
-use notes::{MainPanel, NotesShell, PageId};
-use ui::framework::testing::{TestApp, window_resource};
-use ui::resource::DocumentId;
+use crate::framework_support::{add_note, body, deliver, notes, open, shown, surface};
+use notes::NotesShell;
+use ui::framework::testing::TestApp;
 
 fn titles(app: &TestApp<NotesShell>) -> Vec<String> {
     shown(app)
@@ -41,6 +36,9 @@ fn a_second_open_window_updates_live_with_what_the_first_writes() {
     let mut first = notes();
     let inbox = add_note(&mut first, "Inbox", "Call the dentist");
     open(&mut first, inbox);
+    // The part the note is kept in is on disk when the second window opens,
+    // as a window opened later finds what an earlier one saved.
+    first.flush().unwrap();
     let mut second = first.open_window().unwrap();
     assert_eq!(
         second.record(),
@@ -54,7 +52,7 @@ fn a_second_open_window_updates_live_with_what_the_first_writes() {
     first.harness().click_at(editor.x0 + 20.0, editor.y0 + 10.0);
     first.harness().key("End");
     first.harness().type_text(" today");
-    assert!(first.deliver_changes_to(&mut second).unwrap());
+    assert!(deliver(&mut first, &mut second));
     let shown_text = surface(&mut second, |notes| notes.editor_text_for_test());
     assert!(
         shown_text.contains("Call the dentist today"),
@@ -63,7 +61,7 @@ fn a_second_open_window_updates_live_with_what_the_first_writes() {
 
     // A note the second window adds appears in the first window's tree.
     let later = add_note(&mut second, "Later", "Read the paper");
-    assert!(second.deliver_changes_to(&mut first).unwrap());
+    assert!(deliver(&mut second, &mut first));
     let tree = surface(&mut first, |notes| {
         notes
             .workspace_pages_for_test()
@@ -74,77 +72,4 @@ fn a_second_open_window_updates_live_with_what_the_first_writes() {
     assert_eq!(tree, ["Inbox", "Later"]);
     assert_eq!(body(&first, later), ["Read the paper"]);
     assert_eq!(body(&second, inbox), ["Call the dentist today"]);
-}
-
-#[test]
-fn the_workspace_notebook_adopts_each_window_notebook_exactly_once() {
-    ui::i18n::I18nManager::init("en-US");
-    let inbox = PageId::new_v4();
-    let child = PageId::new_v4();
-    let ideas = PageId::new_v4();
-    let tag = PageId::new_v4();
-    let blocks = |markdown: &str| MainPanel::seed_blocks(markdown, |_| None);
-    let first = window_resource::<NotesShell>(
-        0x41,
-        &[
-            create_page_action(inbox, None, "Inbox"),
-            write_body_action(inbox, &blocks("Call the dentist")),
-            create_page_action(child, Some(inbox), "Errands"),
-            write_body_action(child, &blocks("- milk\n- bread")),
-        ],
-    )
-    .unwrap();
-    let second = window_resource::<NotesShell>(
-        0x42,
-        &[
-            create_page_action(ideas, None, "Ideas"),
-            write_body_action(ideas, &blocks("A **bold** idea")),
-            new_tag_action(tag, "later"),
-            set_tag_assignment_action(ideas, tag, true),
-        ],
-    )
-    .unwrap();
-    // Most windows were opened and closed without a note.
-    let empty = window_resource::<NotesShell>(0x43, &[]).unwrap();
-    let originals = [&first, &second, &empty].map(|doc| doc.clone().get_heads());
-    let app = TestApp::<NotesShell>::with_window_resources(&mut [second, empty, first]).unwrap();
-    assert!(app.record().is_package_primary());
-
-    // Every page, in resource order, with its tree, body and tag.
-    let state = shown(&app);
-    let roots = state
-        .children_of(None)
-        .iter()
-        .map(|page| page.id)
-        .collect::<Vec<_>>();
-    assert_eq!(roots, [inbox, ideas]);
-    assert_eq!(state.pages().len(), 3);
-    assert_eq!(state.get(child).unwrap().parent, Some(inbox));
-    assert_eq!(body(&app, inbox), ["Call the dentist"]);
-    assert_eq!(body(&app, child), ["milk", "bread"]);
-    assert_eq!(body(&app, ideas), ["A bold idea"]);
-    assert_eq!(
-        state
-            .tags_for_page(ideas)
-            .iter()
-            .map(|tag| tag.name.clone())
-            .collect::<Vec<_>>(),
-        ["later"]
-    );
-
-    // Opening Notes again, in this window or another, adopts nothing more.
-    let app = app.reopen().unwrap();
-    assert_eq!(shown(&app).pages().len(), 3);
-    let app = app.another_window().unwrap();
-    assert_eq!(shown(&app).pages().len(), 3);
-
-    // The per-window resources are still there, untouched.
-    let windows = app.window_resources();
-    assert_eq!(
-        windows.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
-        [0x41, 0x42, 0x43].map(DocumentId::window_default)
-    );
-    for ((_, doc), heads) in windows.iter().zip(originals) {
-        assert_eq!(doc.clone().get_heads(), heads);
-    }
 }

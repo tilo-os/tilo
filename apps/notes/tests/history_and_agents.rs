@@ -2,7 +2,7 @@
 //! the note it acts on or a field edit at a path — and what it did reads back
 //! as the app's own sentences, naming the notes as they were called.
 
-use notes::{Notebook, NotesShell, PageId};
+use notes::{NotesShell, PageId};
 use tilo_document::RichTextAction;
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::ActionInvoker;
@@ -21,7 +21,8 @@ fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let agent = ActionInvoker::agent("claude").acting_for("ada");
-    let kind = <Notebook as ui::tilo_resource::Resource>::KIND;
+    let pages = notes::part::chain_resource();
+    let kind = pages.as_str();
     let call = |app: &mut TestApp<NotesShell>, resource: &str, id: &str, args| {
         app.call_by(agent.clone(), resource, id, args)
             .unwrap_or_else(|error| panic!("{id}: {error:?}"));
@@ -35,7 +36,7 @@ fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
     );
     let plan = note_titled(&app, "Plan");
     let item = notes::actions::page_resource_id(plan);
-    let body = Notebook::paths()
+    let body = notes::PagePart::paths()
         .pages
         .item(&notes::notebook::page_id(plan))
         .body
@@ -55,6 +56,9 @@ fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
         "new-child",
         serde_json::json!({ "title": "Step one" }),
     );
+    // The person made the tag the agent tags with.
+    app.call("new-tag", serde_json::json!({ "name": "Release" }))
+        .unwrap();
     call(
         &mut app,
         &item,
@@ -83,15 +87,16 @@ fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
     assert_eq!(shown.children_of(Some(plan)).len(), 1);
     assert_eq!(shown.tags_for_page(plan)[0].name, "Release");
     assert_eq!(
-        app.read_document(|doc| notes::read::page_block_snapshots(doc, plan))
-            .into_iter()
-            .map(|(_, text)| text)
-            .collect::<Vec<_>>(),
+        crate::framework_support::part_doc(&app, plan, |doc| notes::read::page_block_snapshots(
+            doc, plan
+        ))
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect::<Vec<_>>(),
         ["Ship it"]
     );
 
-    let entries: Vec<_> = app
-        .history()
+    let entries: Vec<_> = crate::framework_support::history(&app)
         .into_iter()
         .filter(|entry| {
             entry
@@ -129,10 +134,15 @@ fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
 fn a_note_made_for_someone_through_another_app_is_one_step_of_theirs() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.call("new-note", serde_json::json!({ "title": "Groceries" }))
-        .unwrap();
-    let kind = <Notebook as ui::tilo_resource::Resource>::KIND;
-    let before = app.versions().len();
+    app.call_on(
+        &notes::part::chain_resource(),
+        "new-note",
+        serde_json::json!({ "title": "Groceries" }),
+    )
+    .unwrap();
+    let pages = notes::part::chain_resource();
+    let kind = pages.as_str();
+    let before = crate::framework_support::versions(&app).len();
     let agent = ActionInvoker::agent("scribe").acting_for("ada");
 
     let made = app
@@ -148,10 +158,10 @@ fn a_note_made_for_someone_through_another_app_is_one_step_of_theirs() {
     assert_eq!(made.resources.first(), Some(&resource), "{made:?}");
     assert_eq!(
         ui::tilo_resource::items::item_kind(&resource).as_deref(),
-        Some("notes.notebook.pages")
+        Some("notes.pages.pages")
     );
 
-    let versions = app.versions();
+    let versions = crate::framework_support::versions(&app);
     assert_eq!(versions.len(), before + 1, "one step: {versions:?}");
     let by = versions
         .last()
@@ -164,7 +174,8 @@ fn a_note_made_for_someone_through_another_app_is_one_step_of_theirs() {
     );
     assert_eq!(by.acting.acted_for_person(), Some("ada"));
 
-    app.call_by(agent, kind, "undo", serde_json::json!({}))
+    // Their undo takes back their step in the part the note is kept in.
+    app.call_by(agent, kind, "undo", serde_json::json!({ "part": 0 }))
         .unwrap();
     let titles: Vec<String> = crate::framework_support::shown(&app)
         .pages()

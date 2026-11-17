@@ -4,7 +4,7 @@ use notes::{markdown, read};
 /// A panel showing `page` of `doc`, as a person opening it sees it.
 fn panel(doc: &automerge::AutoCommit, page: notes::PageId, title: &str) -> notes::MainPanel {
     let mut panel = notes::MainPanel::new();
-    panel.bind_canonical_page(doc, page, title).unwrap();
+    panel.bind_canonical_page(doc, page, None, title).unwrap();
     panel
 }
 
@@ -25,8 +25,8 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
         let source = "1. Parent A\n\n  Paragraph child\n\n  ```python\n  first()\n  second()\n  ```\n\n  - [x] Child task\n    1. Grandchild\n\n2. Parent B\n";
         let f = NotebookFixture::rich();
         f.write_page(f.child, source.as_bytes());
-        let checkout = notebook(&f);
-        let mut original = f.records.read(&checkout.id, Clone::clone).unwrap();
+        notebook(&f);
+        let mut original = f.store.read(&f.part(), Clone::clone).unwrap();
         let reopened = automerge::AutoCommit::load(&original.save()).unwrap();
         for doc in [&original, &reopened] {
             let panel = panel(doc, f.child, "Mixed content");
@@ -82,8 +82,8 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
         f.write_page(f.child, b"1. Parent\n\n  Explanation\n\n  ```python\n  first()\n  second()\n  ```\n\n2. Next item\n");
         let checkout = notebook(&f);
         let rows = f
-            .records
-            .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
+            .store
+            .read(&f.part(), |doc| read::page_block_snapshots(doc, f.child))
             .unwrap();
         let mut live = driver(&f, 93, &checkout);
         open_note(&mut live, 93, f.child, None);
@@ -96,8 +96,8 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
         .unwrap();
         assert_eq!(revision(&f, &checkout), before_revision + 1);
         let indented = f
-            .records
-            .read(&checkout.id, |doc| exported(doc, f.child))
+            .store
+            .read(&f.part(), |doc| exported(doc, f.child))
             .unwrap();
         assert!(
             indented.contains("    ```python\n    first()\n    second()\n    ```"),
@@ -107,8 +107,8 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
         live.key("z");
         live.set_modifiers(&[]);
         let restored = f
-            .records
-            .read(&checkout.id, |doc| exported(doc, f.child))
+            .store
+            .read(&f.part(), |doc| exported(doc, f.child))
             .unwrap();
         assert!(
             restored.contains("  ```python\n  first()\n  second()\n  ```"),
@@ -120,8 +120,8 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
         live.key("]");
         live.set_modifiers(&[]);
         let indented = f
-            .records
-            .read(&checkout.id, |doc| exported(doc, f.child))
+            .store
+            .read(&f.part(), |doc| exported(doc, f.child))
             .unwrap();
         assert!(
             indented.contains("    ```python\n    first()\n    second()\n    ```"),
@@ -134,8 +134,8 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
         live.click_at(rect.x0 + 8.0, rect.center().y);
         live.key("Tab");
         let indented = f
-            .records
-            .read(&checkout.id, |doc| exported(doc, f.child))
+            .store
+            .read(&f.part(), |doc| exported(doc, f.child))
             .unwrap();
         assert!(indented.contains("    Explanation"), "{indented}");
         live.set_modifiers(&["shift".into()]);
@@ -148,10 +148,8 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
         live.set_modifiers(&[]);
         live.key("Enter");
         let outside = f
-            .records
-            .read(&checkout.id, |doc| {
-                read::page_blocks(doc, f.child)[4].nesting
-            })
+            .store
+            .read(&f.part(), |doc| read::page_blocks(doc, f.child)[4].nesting)
             .unwrap();
         assert_eq!(outside, 0);
         live.set_modifiers(&["ctrl".into()]);
@@ -160,12 +158,12 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
         live.type_text("Still inside the item");
         close_driver(&mut live);
         drop(live);
-        f.records.try_flush().unwrap();
+        f.store.try_flush().unwrap();
         let f = f.reopen();
         let mut reopened = driver(&f, 94, &checkout);
         let actual = f
-            .records
-            .read(&checkout.id, |doc| exported(doc, f.child))
+            .store
+            .read(&f.part(), |doc| exported(doc, f.child))
             .unwrap();
         assert!(actual.contains("  Explanation"), "{actual}");
         assert!(actual.contains("  Still inside the item"), "{actual}");
@@ -181,8 +179,8 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
         let expected = markdown::serialize(&markdown::parse(source));
         let f = NotebookFixture::rich();
         f.write_page(f.child, source.as_bytes());
-        let checkout = notebook(&f);
-        let mut original = f.records.read(&checkout.id, Clone::clone).unwrap();
+        notebook(&f);
+        let mut original = f.store.read(&f.part(), Clone::clone).unwrap();
         let reopened = automerge::AutoCommit::load(&original.save()).unwrap();
         for doc in [&original, &reopened] {
             notes::read::validate(doc).unwrap();
@@ -208,8 +206,8 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
         let source = "```python\nfirst()\nkept()\n```\n\n```python\nsecond()\n```\n";
         let f = NotebookFixture::rich();
         f.write_page(f.child, source.as_bytes());
-        let checkout = notebook(&f);
-        let mut doc = f.records.read(&checkout.id, Clone::clone).unwrap();
+        notebook(&f);
+        let mut doc = f.store.read(&f.part(), Clone::clone).unwrap();
         let first = read::page_block_snapshots(&doc, f.child)[0].0.clone();
         remove_block(&mut doc, f.child, &first);
         let expected = "```python\nkept()\n```\n\n```python\nsecond()\n```\n";
@@ -271,8 +269,8 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
         );
         let checkout = notebook(&f);
         let rows = f
-            .records
-            .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
+            .store
+            .read(&f.part(), |doc| read::page_block_snapshots(doc, f.child))
             .unwrap();
         let mut live = driver(&f, 96, &checkout);
         open_note(&mut live, 96, f.child, None);
@@ -356,7 +354,7 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
         assert_eq!(copy_targets(&live), targets);
         close_driver(&mut live);
         drop(live);
-        f.records.try_flush().unwrap();
+        f.store.try_flush().unwrap();
         let f = f.reopen();
         let mut live = driver(&f, 96, &checkout);
         open_note(&mut live, 96, f.child, None);

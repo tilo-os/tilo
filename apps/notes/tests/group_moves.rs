@@ -35,8 +35,8 @@ fn moving_a_table_during_cell_composition_is_refused_without_losing_the_commit()
     );
     let checkout = notebook(&f);
     let before = f
-        .records
-        .read(&checkout.id, |doc| snapshot(doc, f.child))
+        .store
+        .read(&f.part(), |doc| snapshot(doc, f.child))
         .unwrap();
     let mut live = driver(&f, 88, &checkout);
     open_note(&mut live, 88, f.child, Some(&before[0].0));
@@ -59,8 +59,8 @@ fn moving_a_table_during_cell_composition_is_refused_without_losing_the_commit()
         .is_err()
     );
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| snapshot(doc, f.child))
+        f.store
+            .read(&f.part(), |doc| snapshot(doc, f.child))
             .unwrap(),
         before
     );
@@ -68,8 +68,8 @@ fn moving_a_table_during_cell_composition_is_refused_without_losing_the_commit()
         ui::winit::event::Ime::Commit("日本".into()),
     ));
     let after = f
-        .records
-        .read(&checkout.id, |doc| snapshot(doc, f.child))
+        .store
+        .read(&f.part(), |doc| snapshot(doc, f.child))
         .unwrap();
     assert_eq!(after.len(), 2);
     assert_eq!(after[0].0, before[0].0);
@@ -84,8 +84,8 @@ fn empty_selected_root_stays_in_the_batch_at_the_end_of_the_document() {
     f.write_page(f.child, b"- A\n- \n- C\n");
     let checkout = notebook(&f);
     let before = f
-        .records
-        .read(&checkout.id, |doc| snapshot(doc, f.child))
+        .store
+        .read(&f.part(), |doc| snapshot(doc, f.child))
         .unwrap();
     assert_eq!(before.len(), 3);
     assert!(before[1].1.is_empty());
@@ -102,15 +102,15 @@ fn empty_selected_root_stays_in_the_batch_at_the_end_of_the_document() {
     move_selection(&mut live, false, true);
     let expected: Rows = [2, 0, 1].iter().map(|&i| before[i].clone()).collect();
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| snapshot(doc, f.child))
+        f.store
+            .read(&f.part(), |doc| snapshot(doc, f.child))
             .unwrap(),
         expected
     );
     move_selection(&mut live, true, true);
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| snapshot(doc, f.child))
+        f.store
+            .read(&f.part(), |doc| snapshot(doc, f.child))
             .unwrap(),
         before
     );
@@ -118,8 +118,8 @@ fn empty_selected_root_stays_in_the_batch_at_the_end_of_the_document() {
     move_selection(&mut live, false, false);
     let focused_only: Rows = [0, 2, 1].iter().map(|&i| before[i].clone()).collect();
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| snapshot(doc, f.child))
+        f.store
+            .read(&f.part(), |doc| snapshot(doc, f.child))
             .unwrap(),
         focused_only
     );
@@ -134,8 +134,11 @@ fn movement_app() -> (
     use ui::tilo_resource::Invoke;
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke(Invoke::apply(&actions::create_page_action(page, None, "Move")).unwrap())
-        .unwrap();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&actions::create_page_action(page, None, "Move")).unwrap(),
+    )
+    .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
     for text in ["A", "B"] {
@@ -158,7 +161,7 @@ fn batch_movement_refuses_composition_and_viewers_and_preserves_peer_text_on_und
             },
         )
         .unwrap();
-    let before = app.read_document(|doc| read::page_blocks(doc, page));
+    let before = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(before.len(), 3);
     app.harness().send(&ui::winit::event::WindowEvent::Ime(
         ui::winit::event::Ime::Preedit("日本".into(), Some((6, 6))),
@@ -174,7 +177,7 @@ fn batch_movement_refuses_composition_and_viewers_and_preserves_peer_text_on_und
             .is_err()
     );
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before
     );
     app.harness().send(&ui::winit::event::WindowEvent::Ime(
@@ -192,7 +195,7 @@ fn batch_movement_refuses_composition_and_viewers_and_preserves_peer_text_on_und
             .is_err()
     );
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page)),
         before
     );
     app.set_role(ui::permissions::Role::Editor);
@@ -205,7 +208,7 @@ fn batch_movement_refuses_composition_and_viewers_and_preserves_peer_text_on_und
             },
         )
         .unwrap();
-    let mut peer = app.peer_document();
+    let (part, mut peer) = crate::framework_support::peer_part(&app, page);
     edit(
         &mut peer,
         page,
@@ -219,8 +222,8 @@ fn batch_movement_refuses_composition_and_viewers_and_preserves_peer_text_on_und
     );
     peer.commit();
     move_selection(app.harness(), false, true);
-    app.merge_peer(&mut peer).unwrap();
-    let moved = app.read_document(|doc| read::page_blocks(doc, page));
+    crate::framework_support::merge_part(&mut app, &part, &mut peer);
+    let moved = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(
         moved
             .iter()
@@ -230,7 +233,7 @@ fn batch_movement_refuses_composition_and_viewers_and_preserves_peer_text_on_und
     );
     assert_eq!(moved, read::page_blocks(&peer, page));
     assert!(app.undo());
-    let undone = app.read_document(|doc| read::page_blocks(doc, page));
+    let undone = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(
         undone
             .iter()
@@ -260,8 +263,8 @@ fn selected_sibling_subtrees_move_atomically_and_keep_the_batch_selected() {
         );
         let checkout = notebook(&f);
         let before = f
-            .records
-            .read(&checkout.id, |doc| snapshot(doc, f.child))
+            .store
+            .read(&f.part(), |doc| snapshot(doc, f.child))
             .unwrap();
         assert_eq!(before.len(), 6);
         let mut live = driver(&f, 88, &checkout);
@@ -286,8 +289,8 @@ fn selected_sibling_subtrees_move_atomically_and_keep_the_batch_selected() {
             .collect();
         assert_eq!(revision(&f, &checkout), prior.checked_add(1).unwrap());
         assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| snapshot(doc, f.child))
+            f.store
+                .read(&f.part(), |doc| snapshot(doc, f.child))
                 .unwrap(),
             expected
         );
@@ -296,8 +299,8 @@ fn selected_sibling_subtrees_move_atomically_and_keep_the_batch_selected() {
         live.key("z");
         live.set_modifiers(&[]);
         assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| snapshot(doc, f.child))
+            f.store
+                .read(&f.part(), |doc| snapshot(doc, f.child))
                 .unwrap(),
             before
         );
@@ -305,8 +308,8 @@ fn selected_sibling_subtrees_move_atomically_and_keep_the_batch_selected() {
         live.key("z");
         live.set_modifiers(&[]);
         assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| snapshot(doc, f.child))
+            f.store
+                .read(&f.part(), |doc| snapshot(doc, f.child))
                 .unwrap(),
             expected
         );
@@ -316,15 +319,15 @@ fn selected_sibling_subtrees_move_atomically_and_keep_the_batch_selected() {
             .map(|&i| before[i].clone())
             .collect();
         assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| snapshot(doc, f.child))
+            f.store
+                .read(&f.part(), |doc| snapshot(doc, f.child))
                 .unwrap(),
             twice
         );
         move_selection(&mut live, true, semantic);
         assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| snapshot(doc, f.child))
+            f.store
+                .read(&f.part(), |doc| snapshot(doc, f.child))
                 .unwrap(),
             expected
         );
@@ -385,8 +388,8 @@ fn move_group_and_verify(source: &str, order: &[usize], keyboard: bool) {
     f.write_page(f.child, source.as_bytes());
     let checkout = notebook(&f);
     let before = f
-        .records
-        .read(&checkout.id, |doc| snapshot(doc, f.child))
+        .store
+        .read(&f.part(), |doc| snapshot(doc, f.child))
         .unwrap();
     assert_eq!(before.len(), order.len());
     let expected: Rows = order.iter().map(|&index| before[index].clone()).collect();
@@ -414,8 +417,8 @@ fn move_group_and_verify(source: &str, order: &[usize], keyboard: bool) {
         "a whole group is one undoable action"
     );
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| snapshot(doc, f.child))
+        f.store
+            .read(&f.part(), |doc| snapshot(doc, f.child))
             .unwrap(),
         expected
     );
@@ -424,8 +427,8 @@ fn move_group_and_verify(source: &str, order: &[usize], keyboard: bool) {
     live.key("z");
     live.set_modifiers(&[]);
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| snapshot(doc, f.child))
+        f.store
+            .read(&f.part(), |doc| snapshot(doc, f.child))
             .unwrap(),
         before
     );
@@ -434,21 +437,21 @@ fn move_group_and_verify(source: &str, order: &[usize], keyboard: bool) {
     live.key("z");
     live.set_modifiers(&[]);
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| snapshot(doc, f.child))
+        f.store
+            .read(&f.part(), |doc| snapshot(doc, f.child))
             .unwrap(),
         expected
     );
     assert_visible_order(&live, &expected);
     close_driver(&mut live);
     drop(live);
-    f.records.try_flush().unwrap();
+    f.store.try_flush().unwrap();
     let f = f.reopen();
     let mut reopened = driver(&f, 89, &checkout);
     open_note(&mut reopened, 89, f.child, None);
     assert_visible_order(&reopened, &expected);
-    f.records
-        .read(&checkout.id, |doc| {
+    f.store
+        .read(&f.part(), |doc| {
             notes::read::validate(doc).unwrap();
             assert_eq!(snapshot(doc, f.child), expected);
         })
@@ -512,8 +515,8 @@ fn concurrent_moves_and_order_upgrades_converge_without_replacing_text() {
     {
         let f = NotebookFixture::rich();
         f.write_page(f.child, b"**First**\n\nSecond\n");
-        let checkout = notebook(&f);
-        let mut local = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
+        notebook(&f);
+        let mut local = f.store.read(&f.part(), AutoCommit::clone).unwrap();
         let before = read::page_block_snapshots(&local, f.child);
         assert_eq!(before.len(), 2);
         let mut peer = local.fork();
@@ -567,8 +570,8 @@ fn concurrent_moves_and_order_upgrades_converge_without_replacing_text() {
     {
         let f = NotebookFixture::rich();
         f.write_page(f.child, b"Before\n\nAfter\n");
-        let checkout = notebook(&f);
-        let mut local = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
+        notebook(&f);
+        let mut local = f.store.read(&f.part(), AutoCommit::clone).unwrap();
         let before = read::page_block_snapshots(&local, f.child);
         let mut peer = local.fork();
         for (doc, name) in [(&mut local, "Local"), (&mut peer, "Peer")] {
@@ -609,8 +612,8 @@ fn concurrent_moves_and_order_upgrades_converge_without_replacing_text() {
     {
         let f = NotebookFixture::rich();
         f.write_page(f.child, b"A\n\nB\n\nC\n\nD\n");
-        let checkout = notebook(&f);
-        let mut local = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
+        notebook(&f);
+        let mut local = f.store.read(&f.part(), AutoCommit::clone).unwrap();
         let before = read::page_block_snapshots(&local, f.child);
         let mut peer = local.fork();
         for (doc, index) in [(&mut local, 0), (&mut peer, 3)] {
@@ -644,8 +647,8 @@ fn concurrent_moves_and_order_upgrades_converge_without_replacing_text() {
     {
         let f = NotebookFixture::rich();
         f.write_page(f.child, b"Before\n\nAfter\n");
-        let checkout = notebook(&f);
-        let mut doc = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
+        notebook(&f);
+        let mut doc = f.store.read(&f.part(), AutoCommit::clone).unwrap();
         let rows = read::page_block_snapshots(&doc, f.child);
         let mut predecessor = rows[0].0.clone();
         let mut expected = vec![rows[0].1.clone()];

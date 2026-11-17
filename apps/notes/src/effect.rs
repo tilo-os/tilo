@@ -7,11 +7,12 @@ use ui::prelude::Effect;
 use ui::tilo_resource;
 use uuid::Uuid;
 
-use crate::resource::Notebook;
-
 /// Invoke `effect` through `dispatcher`, as the control that offers it does.
 /// What acts on one note is offered on that note, the rest on the notebook.
-pub(crate) fn request(dispatcher: &Dispatcher<Notebook>, effect: &NotesEffect) {
+pub(crate) fn request<R: tilo_resource::Resource>(
+    dispatcher: &Dispatcher<R>,
+    effect: &NotesEffect,
+) {
     match effect {
         NotesEffect::CopyLink { page }
         | NotesEffect::ExportMarkdown { page }

@@ -434,7 +434,7 @@ StopArgs = TypedDict("StopArgs", {
 
 class Tracker(Resource):
     """Tasks — `tasks.tracker`."""
-    __surface__ = "so.tilo.tasks@6528ebcbb74478c7"
+    __surface__ = "so.tilo.tasks@4ab250169f786ba9"
     areas: list[Entry[TrackerArea]]
 
     def create_area(self,
@@ -526,7 +526,7 @@ class Tracker(Resource):
 
 class Issues(Resource):
     """Issues — `tasks.issues`."""
-    __surface__ = "so.tilo.tasks@6528ebcbb74478c7"
+    __surface__ = "so.tilo.tasks@4ab250169f786ba9"
     issues: list[Entry[Issue]]
     @property
     def before(self) -> int:

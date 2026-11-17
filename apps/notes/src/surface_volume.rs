@@ -121,15 +121,19 @@ fn a_many_note_notebook_publishes_a_small_surface_and_an_edit_only_its_note() {
         rich < 56 * 1024,
         "the rich-text catalogue takes {rich} bytes"
     );
+    // The notebook (its tags) and the notes (kept in parts) are two records,
+    // each publishing the generic edits every record offers: a fixed cost,
+    // whatever the number of notes.
     assert!(
-        first_bytes - rich < 100 * 1024,
+        first_bytes - rich < 128 * 1024,
         "a 45-note notebook publishes {first_bytes} bytes, {rich} of them the rich-text catalogue"
     );
 
-    app.merge_peer_edit(|doc| {
-        let action = crate::actions::rename_page_action(target, "Renamed");
-        tilo_actions::apply_local(doc, &action, crate::actions::encode(&action)).unwrap();
-    });
+    super::cpu_profile::arrives(
+        &mut app,
+        &crate::actions::rename_page_action(target, "Renamed"),
+    );
+    app.harness().relayout();
     let after = tilo_actions::api::survey(&app.harness().resources());
     let (second, _) = SurfacePublication::next(Some((&state, &before)), &after);
     let second_bytes = wire_bytes(&second);

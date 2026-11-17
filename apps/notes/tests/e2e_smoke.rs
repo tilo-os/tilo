@@ -45,7 +45,8 @@ fn full_lifecycle_round_trips_through_the_resource() {
         .cloned()
         .expect("Test Page still in the notebook");
     assert_eq!(page.title, "Test Page");
-    let stored = app.read_document(|doc| read::page_blocks(doc, target));
+    let stored =
+        crate::framework_support::part_doc(&app, target, |doc| read::page_blocks(doc, target));
     assert_eq!(stored.len(), 4, "{stored:?}");
 
     surface(&mut app, |notes| notes.navigate_to(target));

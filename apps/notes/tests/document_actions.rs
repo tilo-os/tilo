@@ -15,7 +15,7 @@ fn call(app: &mut TestApp<NotesShell>, resource: &str, action: &str, arguments: 
 }
 
 fn read(app: &mut TestApp<NotesShell>, page: &str) -> Value {
-    call(app, "notes.notebook", "read", json!({ "item": page }))
+    call(app, page, "read", json!({}))
 }
 
 /// The page body as lines, ids left off.
@@ -63,13 +63,17 @@ fn ids(note: &Value) -> Vec<String> {
 fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.call("new-note", json!({ "title": "Groceries" }))
-        .unwrap();
+    app.call_on(
+        &notes::part::chain_resource(),
+        "new-note",
+        json!({ "title": "Groceries" }),
+    )
+    .unwrap();
 
     // A page with a title and a Markdown body.
     let created = call(
         &mut app,
-        "notes.notebook",
+        &notes::part::chain_resource(),
         "create-page",
         json!({ "title": "Todo", "markdown": "# Todo\n\nbuy milk\n\nbuy eggs\n\ncall mum" }),
     );
@@ -188,8 +192,8 @@ fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
     assert_eq!(found["pages"][0]["title"], "Todo today");
 
     // Every edit was one undo step: the last one goes, the page holds the rest.
-    app.call("undo", json!({})).unwrap();
-    app.call("undo", json!({})).unwrap();
+    undo(&mut app);
+    undo(&mut app);
     app.settle();
     let note = read(&mut app, &resource);
     assert_eq!(
@@ -197,7 +201,7 @@ fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
         ["- [x] buy milk", "- [ ] buy a dozen eggs", "- [ ] call mum"],
         "undo takes back the rename and the added item, one step each"
     );
-    let titles = app.read_document(|doc| {
+    let titles = crate::framework_support::notes_doc(&app, |doc| {
         notes::read::list_pages(doc)
             .into_iter()
             .map(|page| page.title)
@@ -212,19 +216,19 @@ fn a_bad_block_is_refused_by_name_and_writes_nothing() {
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let created = call(
         &mut app,
-        "notes.notebook",
+        &notes::part::chain_resource(),
         "create-page",
         json!({ "title": "Todo", "markdown": "one" }),
     );
     let resource = created["resource"].as_str().unwrap().to_owned();
     let note = read(&mut app, &resource);
     let body = note["body"].as_str().unwrap().to_owned();
-    let before = app.read_document(|doc| doc.clone().get_heads());
+    let before = crate::framework_support::written(&app);
     let refused = app
         .call_on(&body, "set-block-kind", json!({ "block": "nope" }))
         .expect_err("an unknown block");
     assert!(format!("{refused:?}").contains("no block"), "{refused:?}");
-    assert_eq!(app.read_document(|doc| doc.clone().get_heads()), before);
+    assert_eq!(crate::framework_support::written(&app), before);
 }
 
 #[test]
@@ -236,7 +240,7 @@ fn a_selection_in_a_note_is_shared_as_the_place_replace_range_edits() {
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let created = call(
         &mut app,
-        "notes.notebook",
+        &notes::part::chain_resource(),
         "create-page",
         json!({ "title": "Ideas", "markdown": "# Ideas\nsee the search docs for xy\n\nlast line" }),
     );
@@ -304,7 +308,7 @@ fn a_selection_in_a_note_is_shared_as_the_place_replace_range_edits() {
     assert!(ranges.iter().any(|range| range.block == spanned_place.item));
 
     // The agent passes the place back: exactly those words become a link.
-    let before = app.read_document(|doc| doc.clone().get_heads());
+    let before = crate::framework_support::written(&app);
     let answer = call(
         &mut app,
         &body,
@@ -324,38 +328,50 @@ fn a_selection_in_a_note_is_shared_as_the_place_replace_range_edits() {
             "last line"
         ]
     );
-    assert_ne!(app.read_document(|doc| doc.clone().get_heads()), before);
+    assert_ne!(crate::framework_support::written(&app), before);
 
     // One undo step takes it back.
-    app.call("undo", json!({})).unwrap();
+    undo(&mut app);
     app.settle();
     let note = read(&mut app, &resource);
     assert_eq!(lines(&note), ["see the search docs for xy", "last line"]);
 }
 
-/// The titles of the notebook's top-level notes as its read lists them.
-fn top_level_titles(app: &mut TestApp<NotesShell>) -> Vec<String> {
-    let notebook = call(app, "notes.notebook", "read", json!({}));
-    notebook["pages"]
-        .as_array()
-        .expect("the notebook's notes")
+/// Take back the person's last step in the part the notes are kept in.
+fn undo(app: &mut TestApp<NotesShell>) {
+    call_quiet(
+        app,
+        &notes::part::chain_resource(),
+        "undo",
+        json!({ "part": 0 }),
+    );
+}
+
+fn call_quiet(app: &mut TestApp<NotesShell>, resource: &str, action: &str, arguments: Value) {
+    app.call_on(resource, action, arguments)
+        .unwrap_or_else(|error| panic!("{action} on {resource} refused: {error:?}"));
+}
+
+/// The titles of the notebook's top-level notes, in order.
+fn top_level_titles(app: &TestApp<NotesShell>) -> Vec<String> {
+    let shown = crate::framework_support::shown(app);
+    shown
+        .children_of(None)
         .iter()
-        .filter(|page| page["parent"].is_null())
-        .map(|page| page["title"].as_str().unwrap_or_default().to_owned())
+        .map(|page| page.title.clone())
         .collect()
 }
 
-/// The resource the notebook's read lists the note titled `title` as.
-fn listed_item(app: &mut TestApp<NotesShell>, title: &str) -> String {
-    let notebook = call(app, "notes.notebook", "read", json!({}));
-    notebook["pages"]
-        .as_array()
-        .expect("the notebook's notes")
+/// The resource the note titled `title` is published as.
+fn listed_item(app: &TestApp<NotesShell>, title: &str) -> String {
+    let shown = crate::framework_support::shown(app);
+    let page = shown
+        .pages()
         .iter()
-        .find(|page| page["title"] == title)
-        .and_then(|page| page["item"].as_str())
-        .unwrap_or_else(|| panic!("no note titled {title:?}: {notebook}"))
-        .to_owned()
+        .find(|page| page.title == title)
+        .unwrap_or_else(|| panic!("no note titled {title:?}"))
+        .id;
+    notes::actions::page_resource_id(page)
 }
 
 #[test]
@@ -364,7 +380,7 @@ fn an_agent_makes_converts_and_ticks_checklist_items_and_reads_them_back_in_orde
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let created = call(
         &mut app,
-        "notes.notebook",
+        &notes::part::chain_resource(),
         "create-page",
         json!({ "title": "Errands", "markdown": "pack bags\n\nbook train\n\nwater plants" }),
     );
@@ -423,7 +439,7 @@ fn an_agent_makes_converts_and_ticks_checklist_items_and_reads_them_back_in_orde
     );
     assert_eq!(note["blocks"], 4, "{note}");
     assert_eq!(ids(&note)[..2], [water, pack]);
-    let read_body = call(&mut app, "notes.notebook", "read", json!({ "item": body }));
+    let read_body = call(&mut app, &body, "read", json!({}));
     assert_eq!(read_body["markdown"], note["markdown"]);
 }
 
@@ -434,7 +450,7 @@ fn the_notebook_read_lists_sibling_notes_in_order_and_its_ids_move_them() {
     for title in ["Alpha", "Beta", "Gamma"] {
         call(
             &mut app,
-            "notes.notebook",
+            &notes::part::chain_resource(),
             "create-page",
             json!({ "title": title }),
         );
@@ -445,27 +461,21 @@ fn the_notebook_read_lists_sibling_notes_in_order_and_its_ids_move_them() {
             .filter(|title| ["Alpha", "Beta", "Gamma"].contains(&title.as_str()))
             .collect()
     };
-    assert_eq!(ours(top_level_titles(&mut app)), ["Alpha", "Beta", "Gamma"]);
+    assert_eq!(ours(top_level_titles(&app)), ["Alpha", "Beta", "Gamma"]);
 
     // An agent moves a note before another by the ids the read gave it.
-    let alpha = listed_item(&mut app, "Alpha");
-    let gamma = listed_item(&mut app, "Gamma");
+    let alpha = listed_item(&app, "Alpha");
+    let gamma = listed_item(&app, "Gamma");
     app.call_on(&gamma, "move-note", json!({ "before": alpha }))
         .unwrap();
     app.settle();
-    assert_eq!(ours(top_level_titles(&mut app)), ["Gamma", "Alpha", "Beta"]);
+    assert_eq!(ours(top_level_titles(&app)), ["Gamma", "Alpha", "Beta"]);
 
     // And under another note, where the read names its parent.
     app.call_on(&alpha, "move-note", json!({ "parent": gamma }))
         .unwrap();
     app.settle();
-    assert_eq!(ours(top_level_titles(&mut app)), ["Gamma", "Beta"]);
-    let notebook = call(&mut app, "notes.notebook", "read", json!({}));
-    let moved = notebook["pages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|page| page["title"] == "Alpha")
-        .expect("the moved note");
-    assert_eq!(moved["parent"], gamma.as_str(), "{notebook}");
+    assert_eq!(ours(top_level_titles(&app)), ["Gamma", "Beta"]);
+    let moved = read(&mut app, &alpha);
+    assert_eq!(moved["parent"], gamma.as_str(), "{moved}");
 }

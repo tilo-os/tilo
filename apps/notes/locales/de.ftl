@@ -37,7 +37,7 @@ notes-page-tags = { $op ->
    *[other] Schlagwort von { $item } entfernt
 }
 notes-tag-name = Schlagwort { $old } in { $new } umbenannt
-notes-notebook-pages = { $op ->
+notes-pages-pages = { $op ->
     [insert] Notiz hinzugefügt
     [remove] Notiz entfernt
    *[other] Notiz verschoben
@@ -219,27 +219,31 @@ notes-effect-open-resource = Verknüpften Eintrag öffnen
 notes-effect-open-note = Notiz öffnen
 notes-effect-reveal-block-range = Textstelle zeigen
 notes-effect-open-tag = Notizen mit Schlagwort anzeigen
+notes-pages = Notizen
+notes-pages-new-note = Neue Notiz
+notes-pages-new-child = Untergeordnete Notiz anlegen
+notes-pages-rename = Notiz umbenennen
+notes-pages-relabel-links = Links auf eine Notiz umbenennen
+notes-pages-delete = Notiz löschen
+notes-pages-move-note = Notiz verschieben
+notes-pages-move-up = Notiz nach oben verschieben
+notes-pages-move-down = Notiz nach unten verschieben
+notes-pages-indent = Notiz einrücken
+notes-pages-outdent = Notiz ausrücken
+notes-pages-duplicate = Notiz duplizieren
+notes-pages-tag = Notiz verschlagworten
+notes-pages-keep-image = Bild übernehmen
+notes-pages-place-image = Bild platzieren
+notes-pages-show-image = Bild zeigen
+notes-pages-create-page = Notiz aus Markdown anlegen
+notes-pages-import-markdown = Markdown importieren
+notes-pages-import-markdown-files = Markdown-Dateien importieren
+notes-pages-import-notes = Notizen importieren
+notes-pages-append-to-note = An Notiz anhängen
+notes-pages-write-note = Notiz schreiben
 notes-notebook = Notizbuch
-notes-notebook-new-note = Neue Notiz
-notes-notebook-new-child = Untergeordnete Notiz anlegen
-notes-notebook-rename = Notiz umbenennen
-notes-notebook-delete = Notiz löschen
-notes-notebook-move-note = Notiz verschieben
-notes-notebook-move-up = Notiz nach oben verschieben
-notes-notebook-move-down = Notiz nach unten verschieben
-notes-notebook-indent = Notiz einrücken
-notes-notebook-outdent = Notiz ausrücken
-notes-notebook-duplicate = Notiz duplizieren
 notes-notebook-new-tag = Neues Schlagwort
-notes-notebook-tag = Notiz verschlagworten
 notes-notebook-delete-tag = Schlagwort löschen
-notes-notebook-keep-image = Bild übernehmen
-notes-notebook-place-image = Bild platzieren
-notes-notebook-create-page = Notiz aus Markdown anlegen
-notes-notebook-import-markdown = Markdown importieren
-notes-notebook-import-markdown-files = Markdown-Dateien importieren
-notes-notebook-append-to-note = An Notiz anhängen
-notes-notebook-write-note = Notiz schreiben
 
 ## Wie die App in einem Fenster und im Starter heißt
 notes-app-title = Notizen

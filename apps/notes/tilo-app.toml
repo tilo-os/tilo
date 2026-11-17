@@ -21,7 +21,8 @@ aarch64 = "aarch64"
 optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "settings", "threads", "notifications", "open-uri"]
 
 [resources]
-kinds = ["notes.notebook", "tilo.rich-text"]
+own = ["tilo.chain-unsent"]
+kinds = ["notes.notebook", "tilo.rich-text", "notes.pages", "tilo.chain-unsent"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

@@ -303,23 +303,36 @@ fn json(value: serde_json::Value) -> InvokeArgument {
     InvokeArgument::Json(map)
 }
 
-/// The titles of the notes the record at `notes` holds, as `browser` has
-/// received it.
+/// The titles of the notes kept beside the record at `notes`, in the parts of its notes,
+/// as `browser` has received them.
 fn note_titles(browser: &mut Browser, notes: &DocumentRoute) -> Vec<String> {
-    browser
-        .mount(notes)
-        .read(|doc| {
-            <notes::Notebook as ui::tilo_resource::Resource>::read(doc)
-                .map(|notebook| {
-                    notebook
-                        .pages
-                        .iter()
-                        .map(|(_, page)| page.title.clone())
-                        .collect()
+    let mut titles = Vec::new();
+    for index in 0.. {
+        let part = DocumentRoute {
+            document: ::notes::part::chain().part(index).as_str().to_owned(),
+            ..notes.clone()
+        };
+        browser.pump();
+        if !browser.documents.contains_key(&part) {
+            break;
+        }
+        titles.extend(
+            browser
+                .mount(&part)
+                .read(|doc| {
+                    <::notes::PagePart as ui::tilo_resource::Resource>::read(doc)
+                        .map(|held| {
+                            held.pages
+                                .iter()
+                                .map(|(_, page)| page.title.clone())
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
                 })
-                .unwrap_or_default()
-        })
-        .unwrap_or_default()
+                .unwrap_or_default(),
+        );
+    }
+    titles
 }
 
 /// Wait until the host's own person's note `marker` reached `browser`, then
@@ -329,7 +342,7 @@ async fn titles_after(browser: &mut Browser, notes: &DocumentRoute, marker: &str
     let made = browser
         .invoke_settled(request(
             &provider,
-            ActionAddress::new("notes.notebook", "new-note"),
+            ActionAddress::new(notes::part::chain_resource(), "new-note"),
             json(serde_json::json!({"title": marker})),
         ))
         .await;
@@ -450,7 +463,7 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     let new_note = |title: &str| {
         request(
             &notes_provider,
-            ActionAddress::new("notes.notebook", "new-note"),
+            ActionAddress::new(notes::part::chain_resource(), "new-note"),
             json(serde_json::json!({"title": title})),
         )
     };

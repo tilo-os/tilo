@@ -19276,158 +19276,6 @@
         ],
         "description": ""
       },
-      "notes.notebook.new-note.Arguments": {
-        "type": "object",
-        "properties": {
-          "title": {
-            "type": "string"
-          },
-          "parent": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "title"
-        ],
-        "description": ""
-      },
-      "notes.notebook.new-note.Result": {
-        "type": "object"
-      },
-      "notes.notebook.new-child.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page",
-          "title"
-        ],
-        "description": ""
-      },
-      "notes.notebook.new-child.Result": {
-        "type": "object"
-      },
-      "notes.notebook.rename.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page",
-          "title"
-        ],
-        "description": ""
-      },
-      "notes.notebook.delete.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.notebook.move-note.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "parent": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "before": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.notebook.move-up.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.notebook.move-down.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.notebook.indent.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.notebook.outdent.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.notebook.duplicate.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
       "notes.notebook.new-tag.Arguments": {
         "type": "object",
         "properties": {
@@ -19436,22 +19284,6 @@
           }
         },
         "required": [
-          "name"
-        ],
-        "description": ""
-      },
-      "notes.notebook.tag.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page",
           "name"
         ],
         "description": ""
@@ -19468,7 +19300,462 @@
         ],
         "description": ""
       },
-      "notes.notebook.keep-image.Arguments": {
+      "notes.notebook.export-markdown-content.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {},
+          "title": {}
+        },
+        "required": [],
+        "description": ""
+      },
+      "notes.pages.new-note.Arguments": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rank": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "description": ""
+      },
+      "notes.pages.new-note.Result": {
+        "type": "object"
+      },
+      "notes.pages.new-child.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "rank": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page",
+          "title"
+        ],
+        "description": ""
+      },
+      "notes.pages.new-child.Result": {
+        "type": "object"
+      },
+      "notes.pages.rename.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "page",
+          "title"
+        ],
+        "description": ""
+      },
+      "notes.pages.delete.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "description": ""
+      },
+      "notes.pages.move-note.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "before": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "place": {
+            "additionalProperties": false,
+            "properties": {
+              "parent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rank": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "rank"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "description": ""
+      },
+      "notes.pages.move-up.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "place": {
+            "additionalProperties": false,
+            "properties": {
+              "parent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rank": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "rank"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "description": ""
+      },
+      "notes.pages.move-down.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "place": {
+            "additionalProperties": false,
+            "properties": {
+              "parent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rank": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "rank"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "description": ""
+      },
+      "notes.pages.indent.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "place": {
+            "additionalProperties": false,
+            "properties": {
+              "parent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rank": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "rank"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "description": ""
+      },
+      "notes.pages.outdent.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "place": {
+            "additionalProperties": false,
+            "properties": {
+              "parent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rank": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "rank"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "description": ""
+      },
+      "notes.pages.duplicate.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "copies": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "blocks": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "align": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "attrs": {
+                        "type": "object"
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "level": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "marks": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "end": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "start": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "value": {
+                              "oneOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "Bool": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "Bool"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "Int": {
+                                      "type": "integer"
+                                    }
+                                  },
+                                  "required": [
+                                    "Int"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "Str": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "Str"
+                                  ],
+                                  "type": "object"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "start",
+                            "end",
+                            "name",
+                            "value"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "ordered": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "text",
+                      "marks"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "parent": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "rank": {
+                  "type": "string"
+                },
+                "tags": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "title",
+                "rank",
+                "blocks"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "description": ""
+      },
+      "notes.pages.duplicate.Result": {
+        "type": "object"
+      },
+      "notes.pages.tag.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tag": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page",
+          "name"
+        ],
+        "description": ""
+      },
+      "notes.pages.keep-image.Arguments": {
         "type": "object",
         "properties": {
           "bytes": {
@@ -19509,7 +19796,7 @@
         ],
         "description": ""
       },
-      "notes.notebook.place-image.Arguments": {
+      "notes.pages.place-image.Arguments": {
         "type": "object",
         "properties": {
           "page": {
@@ -19560,7 +19847,7 @@
         ],
         "description": ""
       },
-      "notes.notebook.create-page.Arguments": {
+      "notes.pages.create-page.Arguments": {
         "type": "object",
         "properties": {
           "title": {
@@ -19622,6 +19909,27 @@
               "object",
               "null"
             ]
+          },
+          "rank": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "links": {
+            "additionalProperties": false,
+            "properties": {
+              "paths": {
+                "type": "object"
+              },
+              "titles": {
+                "type": "object"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -19629,10 +19937,10 @@
         ],
         "description": ""
       },
-      "notes.notebook.create-page.Result": {
+      "notes.pages.create-page.Result": {
         "type": "object"
       },
-      "notes.notebook.import-markdown.Arguments": {
+      "notes.pages.import-markdown.Arguments": {
         "type": "object",
         "properties": {
           "title": {
@@ -19736,6 +20044,36 @@
               "object",
               "null"
             ]
+          },
+          "reads": {
+            "additionalProperties": false,
+            "properties": {
+              "imported": {
+                "type": "boolean"
+              },
+              "links": {
+                "additionalProperties": false,
+                "properties": {
+                  "paths": {
+                    "type": "object"
+                  },
+                  "titles": {
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              },
+              "rank": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "rank"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -19745,7 +20083,7 @@
         ],
         "description": ""
       },
-      "notes.notebook.import-markdown-files.Arguments": {
+      "notes.pages.import-markdown-files.Arguments": {
         "type": "object",
         "properties": {
           "files": {
@@ -19821,6 +20159,30 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "ranks": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "links": {
+            "additionalProperties": false,
+            "properties": {
+              "paths": {
+                "type": "object"
+              },
+              "titles": {
+                "type": "object"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -19828,7 +20190,7 @@
         ],
         "description": ""
       },
-      "notes.notebook.append-to-note.Arguments": {
+      "notes.pages.append-to-note.Arguments": {
         "type": "object",
         "properties": {
           "title": {
@@ -19839,6 +20201,27 @@
           },
           "markdown": {
             "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "links": {
+            "additionalProperties": false,
+            "properties": {
+              "paths": {
+                "type": "object"
+              },
+              "titles": {
+                "type": "object"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -19846,10 +20229,10 @@
         ],
         "description": ""
       },
-      "notes.notebook.append-to-note.Result": {
+      "notes.pages.append-to-note.Result": {
         "type": "object"
       },
-      "notes.notebook.write-note.Arguments": {
+      "notes.pages.write-note.Arguments": {
         "type": "object",
         "properties": {
           "page": {
@@ -19857,21 +20240,27 @@
           },
           "markdown": {
             "type": "string"
+          },
+          "links": {
+            "additionalProperties": false,
+            "properties": {
+              "paths": {
+                "type": "object"
+              },
+              "titles": {
+                "type": "object"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
           "page",
           "markdown"
         ],
-        "description": ""
-      },
-      "notes.notebook.export-markdown-content.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {},
-          "title": {}
-        },
-        "required": [],
         "description": ""
       },
       "osk.keyboard.set-layout.Arguments": {
@@ -26567,7 +26956,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "notes.notebook.pages",
+            "resource_kind": "notes.pages.pages",
             "type": "object"
           }
         },
@@ -32450,74 +32839,8 @@
     {
       "app": "so.tilo.notes",
       "resource": "notes.notebook",
-      "action": "new-note",
-      "arguments": "#/components/schemas/notes.notebook.new-note.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "new-child",
-      "arguments": "#/components/schemas/notes.notebook.new-child.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "rename",
-      "arguments": "#/components/schemas/notes.notebook.rename.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "delete",
-      "arguments": "#/components/schemas/notes.notebook.delete.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "move-note",
-      "arguments": "#/components/schemas/notes.notebook.move-note.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "move-up",
-      "arguments": "#/components/schemas/notes.notebook.move-up.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "move-down",
-      "arguments": "#/components/schemas/notes.notebook.move-down.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "indent",
-      "arguments": "#/components/schemas/notes.notebook.indent.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "outdent",
-      "arguments": "#/components/schemas/notes.notebook.outdent.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "duplicate",
-      "arguments": "#/components/schemas/notes.notebook.duplicate.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
       "action": "new-tag",
       "arguments": "#/components/schemas/notes.notebook.new-tag.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "tag",
-      "arguments": "#/components/schemas/notes.notebook.tag.Arguments"
     },
     {
       "app": "so.tilo.notes",
@@ -32528,50 +32851,116 @@
     {
       "app": "so.tilo.notes",
       "resource": "notes.notebook",
-      "action": "keep-image",
-      "arguments": "#/components/schemas/notes.notebook.keep-image.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "place-image",
-      "arguments": "#/components/schemas/notes.notebook.place-image.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "create-page",
-      "arguments": "#/components/schemas/notes.notebook.create-page.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "import-markdown",
-      "arguments": "#/components/schemas/notes.notebook.import-markdown.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "import-markdown-files",
-      "arguments": "#/components/schemas/notes.notebook.import-markdown-files.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "append-to-note",
-      "arguments": "#/components/schemas/notes.notebook.append-to-note.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "write-note",
-      "arguments": "#/components/schemas/notes.notebook.write-note.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
       "action": "export-markdown-content",
       "arguments": "#/components/schemas/notes.notebook.export-markdown-content.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "new-note",
+      "arguments": "#/components/schemas/notes.pages.new-note.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "new-child",
+      "arguments": "#/components/schemas/notes.pages.new-child.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "rename",
+      "arguments": "#/components/schemas/notes.pages.rename.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "delete",
+      "arguments": "#/components/schemas/notes.pages.delete.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "move-note",
+      "arguments": "#/components/schemas/notes.pages.move-note.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "move-up",
+      "arguments": "#/components/schemas/notes.pages.move-up.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "move-down",
+      "arguments": "#/components/schemas/notes.pages.move-down.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "indent",
+      "arguments": "#/components/schemas/notes.pages.indent.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "outdent",
+      "arguments": "#/components/schemas/notes.pages.outdent.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "duplicate",
+      "arguments": "#/components/schemas/notes.pages.duplicate.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "tag",
+      "arguments": "#/components/schemas/notes.pages.tag.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "keep-image",
+      "arguments": "#/components/schemas/notes.pages.keep-image.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "place-image",
+      "arguments": "#/components/schemas/notes.pages.place-image.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "create-page",
+      "arguments": "#/components/schemas/notes.pages.create-page.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "import-markdown",
+      "arguments": "#/components/schemas/notes.pages.import-markdown.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "import-markdown-files",
+      "arguments": "#/components/schemas/notes.pages.import-markdown-files.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "append-to-note",
+      "arguments": "#/components/schemas/notes.pages.append-to-note.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "write-note",
+      "arguments": "#/components/schemas/notes.pages.write-note.Arguments"
     },
     {
       "app": "so.tilo.osk",

@@ -1518,14 +1518,14 @@ mod tests {
 
         // The app makes a change of its own while that one waits.
         let mut arguments = serde_json::Map::new();
-        arguments.insert("title".into(), "Made while another waited".into());
+        arguments.insert("name".into(), "Made while another waited".into());
         replica
             .invoke(
-                &ActionAddress::new("notes.notebook", "new-note"),
+                &ActionAddress::new("notes.notebook", "new-tag"),
                 &arguments,
                 false,
             )
-            .expect("the app makes a note");
+            .expect("the app makes a tag");
 
         let taken = replica
             .take_mutation()

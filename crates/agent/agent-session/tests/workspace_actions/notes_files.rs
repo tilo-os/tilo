@@ -101,7 +101,7 @@ async fn a_note_written_rewrites_its_own_file_and_no_other() {
         &json!({}),
     )
     .await;
-    let notebook = format!("{base}/resources/notes/Notebook/actions");
+    let notebook = format!("{base}/resources/notes/Notes/actions");
     let mut pages = Vec::new();
     for title in ["Terms", "Plan", "Minutes"] {
         let made = post(

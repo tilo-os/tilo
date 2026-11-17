@@ -1215,7 +1215,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// Read the document of `id` as this window holds it, without a copy:
     /// its own record, or one it keeps beside it (a part of a chain).
-    pub fn read_record<T>(
+    pub fn read_document_of<T>(
         &self,
         id: &DocumentId,
         read: impl FnOnce(&tilo_resource::Doc) -> T,
@@ -2074,10 +2074,10 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// A copy of `id`, a record the app keeps beside its own (a part of a
-    /// chain), written by another participant: a member's replica, for a
-    /// test to edit and [`Self::merge_peer_record`] back. `None` while the
+    /// chain), written by another member: their's replica, for a
+    /// test to edit and [`Self::merge_peer_document_of`] back. `None` while the
     /// record is not open here.
-    pub fn peer_record(&self, id: &DocumentId) -> Option<tilo_resource::Doc> {
+    pub fn peer_document_of(&self, id: &DocumentId) -> Option<tilo_resource::Doc> {
         // What the window has written and not committed yet is its own,
         // committed here, before the member's replica starts.
         self.records.with(id, tilo_resource::Doc::fork)
@@ -2086,7 +2086,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// [`Self::merge_peer`] for `id`, a record the app keeps beside its own
     /// (a part of a chain): the peer's edits arrive in the running app, and
     /// the app's edits arrive in `peer`.
-    pub fn merge_peer_record(
+    pub fn merge_peer_document_of(
         &mut self,
         id: &DocumentId,
         peer: &mut tilo_resource::Doc,
@@ -2181,15 +2181,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// What each version of the record `id` did through an action, oldest
     /// first: a record the app keeps beside its own, such as a part of a
     /// chain, as this window holds it.
-    pub fn record_history(&self, id: &DocumentId) -> Vec<tilo_actions::ActionContext> {
-        self.record_versions(id)
+    pub fn history_of(&self, id: &DocumentId) -> Vec<tilo_actions::ActionContext> {
+        self.versions_of(id)
             .into_iter()
             .filter_map(|version| version.context)
             .collect()
     }
 
-    /// The versions of the record `id`, oldest first ([`Self::record_history`]).
-    pub fn record_versions(&self, id: &DocumentId) -> Vec<tilo_resource::history::Version> {
+    /// The versions of the record `id`, oldest first ([`Self::history_of`]).
+    pub fn versions_of(&self, id: &DocumentId) -> Vec<tilo_resource::history::Version> {
         self.records
             .read(id, |doc| tilo_resource::history::versions(&mut doc.clone()))
             .unwrap_or_default()

@@ -141,7 +141,7 @@ fn every_block_is_a_named_item_and_a_checklist_box_ticks_it() {
         Some(Toggled::True),
         "the box reads done"
     );
-    let done = app.read_document(|doc| {
+    let done = crate::framework_support::notes_doc(&app, |doc| {
         notes::read::page_stored_blocks(doc, groceries)
             .into_iter()
             .any(|block| {

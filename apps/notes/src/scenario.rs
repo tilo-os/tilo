@@ -8,7 +8,7 @@ use ui::headless::{FrameHarness, SemanticExpectation};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton};
 
-use crate::actions::{self, Action};
+use crate::actions::{self, Action, TagAction};
 use crate::main_panel::MainPanel;
 use crate::model::{PageId, TagId};
 
@@ -304,9 +304,51 @@ fn launch_body(scenario: Option<&str>) -> String {
     }
 }
 
-/// The notebook `scenario` shows, written with the notebook's own actions:
-/// a handful of notes in a tree, two tags on the launch checklist, and the
-/// note a typing scenario types into.
+/// The scenario a capture shows, for the window to write its notes into the
+/// parts as it opens ([`fill`]).
+#[derive(Clone, Debug, Default)]
+pub struct Scene(pub Option<String>);
+
+/// Write the notes of `scene` into the notes' `chain`, through their own
+/// actions, unless it holds notes already.
+pub fn fill(scene: &Scene, chain: &ui::framework::Chain<crate::part::PagePart>) {
+    if !chain.parts().is_empty() {
+        return;
+    }
+    let scenario = scene.0.as_deref();
+    let invokes: Vec<ui::tilo_resource::Invoke<crate::part::PagePart>> =
+        if scenario == Some("migrated") {
+            crate::import_inbox::migrated_scenario()
+        } else {
+            actions(scenario)
+                .iter()
+                .filter_map(|action| ui::tilo_resource::Invoke::apply(action).ok())
+                .chain(reactions(scenario))
+                .collect()
+        };
+    for invoke in invokes {
+        if let Err(error) = chain.invoke(&invoke) {
+            tracing::warn!(%error, "notes: a scenario's note was not written");
+        }
+    }
+}
+
+/// The tags `scenario` shows, written with the notebook's own actions.
+#[must_use]
+pub fn tag_actions(scenario: Option<&str>) -> Vec<TagAction> {
+    if matches!(scenario, Some("first_note" | "migrated" | "page_tree")) {
+        return Vec::new();
+    }
+    // Tags are notebook metadata, not syntax hidden in the note body.
+    [(tag(1), "Release"), (tag(2), "Writing")]
+        .into_iter()
+        .map(|(id, name)| actions::new_tag_action(id, name))
+        .collect()
+}
+
+/// The notes `scenario` shows, written with their own actions: a handful of
+/// notes in a tree, two tags on the launch checklist, and the note a typing
+/// scenario types into.
 #[must_use]
 pub fn actions(scenario: Option<&str>) -> Vec<Action> {
     if matches!(scenario, Some("first_note" | "migrated")) {
@@ -369,9 +411,8 @@ pub fn actions(scenario: Option<&str>) -> Vec<Action> {
             Vec::new(),
         ));
     }
-    // Tags are notebook metadata, not syntax hidden in the note body.
-    for (id, name) in [(tag(1), "Release"), (tag(2), "Writing")] {
-        out.push(actions::new_tag_action(id, name));
+    // The tags `tag_actions` makes, on the launch checklist.
+    for id in [tag(1), tag(2)] {
         out.push(actions::set_tag_assignment_action(launch, id, true));
     }
     out
@@ -411,13 +452,11 @@ fn page_tree_actions() -> Vec<Action> {
 /// The reactions `scenario` adds to the launch checklist: the person's own,
 /// under the note's tags.
 #[must_use]
-pub fn reactions(
-    scenario: Option<&str>,
-) -> Vec<ui::tilo_resource::Invoke<crate::resource::Notebook>> {
+pub fn reactions(scenario: Option<&str>) -> Vec<ui::tilo_resource::Invoke<crate::part::PagePart>> {
     if scenario != Some("reactions") {
         return Vec::new();
     }
-    let field = crate::resource::Notebook::paths()
+    let field = crate::part::PagePart::paths()
         .pages
         .item(&crate::notebook::page_id(page(3)))
         .reactions;
