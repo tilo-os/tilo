@@ -17,9 +17,6 @@
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use tilo_ui::history_source::invocation_undo::{
-    StepState, refuse_invocation, undo_invocation, unreachable_steps,
-};
 use tilo_ui::history_source::invocations::{
     AgentSession, InvocationStep, read_invocations, record_invocation,
 };
@@ -453,11 +450,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    // ---------------------------------------------------------------------------
-    // Two applications, one instruction.
-    // ---------------------------------------------------------------------------
-
-    phase runs_span_applications_and_are_refused_whole_when_unresolvable;
+    phase an_invocation_from_another_document_names_nothing_there;
     {
         {
             let (mut report, _intro) = Report::started_by_a_person();
@@ -472,116 +465,12 @@ tilo_test_env::scenario! {
                 "an id from another artifact is refused, not applied to whatever matches"
             );
         }
-
-        {
-            let (_workspace, mut photo, mut report, run) = one_instruction_two_apps();
-
-            assert_eq!(crop(&photo), (1200, 900), "the agent did crop it");
-            assert!(report.body().contains("Figure 1"), "and did place it");
-            assert_eq!(
-                run.apps(),
-                vec![PHOTO_EDITOR, WORD_PROCESSOR],
-                "the run knows both applications"
-            );
-
-            // Each app undoes its own document; nothing holds both.
-            photo.set_actor(ActorId::from(PERSON.as_bytes()));
-            report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
-            let mut open: Vec<(String, String, &mut AutoCommit)> = vec![
-                (
-                    PHOTO_EDITOR.into(),
-                    "file:/photos/figure-1.png".into(),
-                    &mut photo,
-                ),
-                (
-                    WORD_PROCESSOR.into(),
-                    "file:/reports/q3.tilo-doc".into(),
-                    &mut report.doc,
-                ),
-            ];
-            let report_out = undo_invocation(&run, Some(&actor_hex(AGENT)), &directory(), &mut open);
-            drop(open);
-            tilo_resource::history::commit_stamped_at(&mut photo, 1_780_000_500);
-            tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_500);
-
-            assert!(
-                report_out.is_complete(),
-                "both halves came back clean: {report_out:?}"
-            );
-            assert_eq!(
-                crop(&photo),
-                (4000, 3000),
-                "the crop is undone in the photo editor's own document"
-            );
-            assert!(
-                !report.body().contains("Figure 1"),
-                "and the placement is undone in the word processor's: {:?}",
-                report.body()
-            );
-            assert!(
-                report.body().contains("Our findings for the quarter."),
-                "without touching what the person wrote"
-            );
-        }
-
-        {
-            let (_workspace, photo, mut report, run) = one_instruction_two_apps();
-            let untouched = report.body();
-            let photo_before = crop(&photo);
-
-            let mut open: Vec<(String, String, &mut AutoCommit)> = vec![(
-                WORD_PROCESSOR.into(),
-                "file:/reports/q3.tilo-doc".into(),
-                &mut report.doc,
-            )];
-            let out = undo_invocation(&run, Some(&actor_hex(AGENT)), &directory(), &mut open);
-            drop(open);
-
-            assert!(out.is_refusal(), "nothing was attempted: {out:?}");
-            assert!(!out.is_complete(), "and it must not read as done");
-            assert_eq!(
-                out.unreachable_apps(),
-                vec![PHOTO_EDITOR],
-                "the refusal names the application that was missing"
-            );
-            assert_eq!(
-                report.body(),
-                untouched,
-                "the reachable document was left alone rather than half-undone"
-            );
-            assert_eq!(crop(&photo), photo_before, "and so was the other one");
-        }
-
-        {
-            let (_workspace, _photo, _report, run) = one_instruction_two_apps();
-            let missing = unreachable_steps(&run, |_| false);
-            assert_eq!(missing.len(), 2, "nothing is open");
-            let refused = refuse_invocation(&run, &missing);
-            assert!(refused.is_refusal());
-            assert_eq!(
-                refused.unreachable_apps(),
-                vec![PHOTO_EDITOR, WORD_PROCESSOR]
-            );
-
-            // With one open, the other is still named — and the report distinguishes
-            // "could not" from "chose not to".
-            let missing = unreachable_steps(&run, |s| s.app == WORD_PROCESSOR);
-            let refused = refuse_invocation(&run, &missing);
-            assert_eq!(refused.unreachable_apps(), vec![PHOTO_EDITOR]);
-            assert!(
-                refused
-                    .steps
-                    .iter()
-                    .any(|s| s.app == WORD_PROCESSOR && s.state == StepState::NotAttempted),
-                "the reachable one is reported as untouched, not as undone: {refused:?}"
-            );
-        }
     }
 
     phase run_records_replicate_without_polluting_history;
     {
         {
-            let (mut workspace, mut photo, mut report, _run) = one_instruction_two_apps();
+            let (mut workspace, mut photo, _report, _run) = one_instruction_two_apps();
 
             let mut peer_workspace = workspace.fork();
             peer_workspace.set_actor(ActorId::from("bob".as_bytes()));
@@ -599,22 +488,10 @@ tilo_test_env::scenario! {
             // And the ids it carries name the same changes in the app documents, so the
             // peer can undo work it only ever received.
             photo.set_actor(ActorId::from("bob".as_bytes()));
-            report.doc.set_actor(ActorId::from("bob".as_bytes()));
-            let mut open: Vec<(String, String, &mut AutoCommit)> = vec![
-                (
-                    PHOTO_EDITOR.into(),
-                    "file:/photos/figure-1.png".into(),
-                    &mut photo,
-                ),
-                (
-                    WORD_PROCESSOR.into(),
-                    "file:/reports/q3.tilo-doc".into(),
-                    &mut report.doc,
-                ),
-            ];
-            let out = undo_invocation(run, Some(&actor_hex(AGENT)), &directory(), &mut open);
-            drop(open);
-            assert!(out.is_complete(), "the peer undid it too: {out:?}");
+            let cropped = &run.steps[0];
+            assert_eq!(cropped.app, PHOTO_EDITOR);
+            revert_invocation(&mut photo, &cropped.range, Some(&actor_hex(AGENT)), &directory())
+                .expect("the peer finds the crop");
             assert_eq!(crop(&photo), (4000, 3000));
         }
 

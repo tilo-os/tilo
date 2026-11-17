@@ -221,7 +221,7 @@ pub fn is_bookkeeping(patch: &Patch) -> bool {
     root_key(patch).is_some_and(|key| key.starts_with(BOOKKEEPING_PREFIX))
 }
 
-fn kind_of(doc: &AutoCommit, version: &Version) -> Kind {
+pub(crate) fn kind_of(doc: &AutoCommit, version: &Version) -> Kind {
     classified(doc.committed_document(), version)
 }
 
