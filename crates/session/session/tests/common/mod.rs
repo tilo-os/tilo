@@ -41,7 +41,6 @@ use tilo_service::{Questions, Service as _, Started};
 use tilo_session::{ActionPlane, Options, Session};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::records_service::RecordService;
-use tilolang_tilo::runtime::Principal;
 
 /// The canvas, as assistive technology names it: the map the framed style draws its places
 /// on. What a test waits for to know the canvas is up, since nothing else stands on an empty one.
@@ -594,7 +593,12 @@ pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
 /// [`notebook`] as kept by `person`, whom the notes are theirs and every step of it is theirs:
 /// the id a session acts as on a device that has an identity of its own.
 pub fn notebook_of(person: &str, titles: &[&str]) -> (RecordService, Vec<String>) {
-    let host = Host::new(&tilo_resource::Doc::new(), Principal::new(person), || None).unwrap();
+    let host = Host::new(
+        &tilo_resource::Doc::new(),
+        tilo_actions::Actor::from(tilo_actions::MemberId::person(person)),
+        || None,
+    )
+    .unwrap();
     host.load_builtin(
         include_str!("../../../../../apps/tl/discussion/app.tl"),
         include_str!("../../../../../apps/tl/discussion/app.ids"),
