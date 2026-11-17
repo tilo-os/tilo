@@ -911,7 +911,7 @@ impl Widget for MessageList {
             let part = cx.part(&format!("row{index}"), "MessageRow", rect);
             part.tag = Some("li");
             part.own = Some(ui::composition::Own::Text(ui::composition::TextLook::new(
-                format!("{} — {}\n{}", text.sender, text.subject, text.when),
+                format!("{}\n{}\n{}", text.sender, text.subject, text.when),
                 &style,
                 Some(theme.tokens.colors.text_primary),
             )));
@@ -1445,9 +1445,10 @@ mod tests {
             })
             .collect();
         assert!(!rows.is_empty(), "the sample mailbox lists its messages");
-        assert!(
-            rows[0].contains(" — "),
-            "a row says its sender and its subject: {rows:?}"
+        assert_eq!(
+            rows[0].lines().count(),
+            3,
+            "a row says its sender, its subject and when, a line each: {rows:?}"
         );
     }
 }
