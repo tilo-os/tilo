@@ -648,5 +648,71 @@ final class AsksHoldTests: XCTestCase {
             self.supervisions.last?.logins.count == 1 && self.scheduled.last?.count == 1
         }
     }
+
+    func testWordThatSheSawAThingWhichHerServerDidNotTakeIsSaidAgainUntilItIsHeard() async throws {
+        try await start(Self.assistant)
+        try await enter("window.plan = {'tilo.telling acknowledge': ['lost']}")
+        try await signedIn()
+        try await inPage(Self.reminderComes)
+        try await isReminder()
+        await source.seen(held[0].id, in: .main)
+        try await until("her server heard that she saw it") {
+            (try? await self.page("return JSON.stringify(window.acknowledged)")) == #"["turn:ws-1:m_ask_1:0 opened"]"#
+        }
+    }
+
+    /// As a server whose own write does not finish in time, and one that takes the word and loses it.
+    func testWordThatSheSawAThingIsSaidAgainAfterAFailedAndAfterALostAnswerAndStandsOnceOnHerServer() async throws {
+        try await start(Self.assistant)
+        source.firstPause = .milliseconds(100)
+        try await enter("window.plan = {'tilo.telling acknowledge': ['failed', 'lost']}")
+        try await signedIn()
+        try await inPage(Self.reminderComes)
+        try await isReminder()
+        await source.seen(held[0].id, in: .main)
+        try await until("her server heard that she saw it") {
+            (try? await self.page("return JSON.stringify(window.acknowledged)")) == #"["turn:ws-1:m_ask_1:0 opened"]"#
+        }
+        let asks = try await asked("tilo.telling acknowledge")
+        XCTAssertEqual(asks, 3)
+    }
+
+    func testWordThatSheSawAThingIsNotSaidAgainOnceHerServersLogSaysSheSawItElsewhere() async throws {
+        try await start(Self.assistant)
+        source.firstPause = .milliseconds(600)
+        try await enter("window.plan = {'tilo.telling acknowledge': ['lost']}")
+        try await signedIn()
+        try await inPage(Self.reminderComes)
+        try await isReminder()
+        await source.seen(held[0].id, in: .main)
+        // Her other device said so meanwhile: her server's log moves, and says the thing is settled.
+        try await inPage("tell({...window.told[0], seq: 2, acknowledged: {atMs: 1794900300000, device: 'phone', by: 'opened'}})")
+        try await Task.sleep(for: .milliseconds(1500))
+        let asks = try await asked("tilo.telling acknowledge")
+        XCTAssertEqual(asks, 1, "her server was told again of what it knows already")
+    }
+
+    func testWordOfWhatShePressedUnderANoticeWhichHerServerDidNotTakeIsSaidAgainUntilItIsHeard() async throws {
+        try await start(Self.assistant)
+        source.firstPause = .milliseconds(200)
+        try await enter("window.plan = {'tilo.telling acknowledge': ['lost']}")
+        try await signedIn()
+        // Her reminder comes due, and her server offers one thing to press with it.
+        try await inPage(Self.reminderMessages + """
+
+            tell({seq: 1, id: 'turn:ws-1:m_ask_1:0', atMs: 1794900000000, kind: 'reminder', title: 'Stretch', words: 'said',
+              about: {workspace: 'ws-1', app: 'so.tilo.chat', resource: 'chat.messages/messages/m_ask_1'},
+              mark: {important: false, why: {code: 'reminder'}}, reaches: true,
+              actions: [{id: 'done', label: 'Done', main: true, target: {app: 'so.tilo.chat', resource: 'chat.workspace', action: 'send'},
+                arguments: {text: 'Done.'}}]})
+            """)
+        try await until("the reminder offers what her server offers") { self.held.first?.offers.map(\.title) == ["Done"] }
+        try await source.take("done", of: held[0].id, in: .main)
+        try await until("her server heard what she pressed") {
+            (try? await self.page("return JSON.stringify(window.acknowledged)")) == #"["turn:ws-1:m_ask_1:0 done"]"#
+        }
+        let sent = try await page("return JSON.stringify(window.sent)")
+        XCTAssertEqual(sent, #"["Done."]"#, "what she pressed was done once")
+    }
 }
 #endif
