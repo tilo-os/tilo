@@ -186,16 +186,18 @@ impl PdfApp {
         let answer = match effect {
             PdfEffect::OpenPdf { path } => self.open_effect(path, cx),
             PdfEffect::SaveAs => self.save_as_effect(cx),
-            PdfEffect::ReadText { from_page, to_page } => {
-                self.read_text(from_page, to_page).map(Effected::value)
-            }
+            PdfEffect::ReadText { from_page, to_page } => self
+                .read_text(cx.live().get().pinned_source().as_ref(), from_page, to_page)
+                .map(Effected::value),
             PdfEffect::ReadFormFields => {
                 self.read_form_fields(&cx.live().get()).map(Effected::value)
             }
             PdfEffect::InsertPages { path, at, pages } => {
                 self.insert_pages(&path, at, pages, || cx.reply())
             }
-            PdfEffect::LookPage { page, size } => self.look_page(page, size).map(Effected::Done),
+            PdfEffect::LookPage { page, size } => self
+                .look_page(cx.live().get().pinned_source().as_ref(), page, size)
+                .map(Effected::Done),
             PdfEffect::ImportPdfContent { content, name } => self
                 .import_pdf_content(&content, name.as_deref(), cx)
                 .map(Effected::value),

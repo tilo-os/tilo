@@ -703,7 +703,7 @@ impl Replica {
         // it. A listing reads the view laid out.
         if (query.target.is_some() || query.resource_name.is_some()) && !self.view.laid_out() {
             let standing =
-                self.survey_page_of(&self.view.published_standing(), true, query, window);
+                self.survey_page_of(&self.view.published_without_layout(), true, query, window);
             if standing.0 > 0 {
                 return standing;
             }
@@ -1031,7 +1031,10 @@ impl Replica {
             return Ok(false);
         }
         if !descriptor.contract.reaches_agents()
-            || !self.offers(&descriptor, &chain_resources(&self.view.published()))
+            || !self.offers(
+                &descriptor,
+                &chain_resources(&self.view.published_without_layout()),
+            )
         {
             return Err(not_offered(&descriptor));
         }

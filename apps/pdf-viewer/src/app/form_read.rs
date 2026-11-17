@@ -15,37 +15,19 @@ use crate::markup::{PagePlanEntry, PdfMarkup};
 use crate::model::{FormEntry, FormFieldKind, FormFieldRow, FormFields};
 
 impl PdfApp {
-    /// The form fields of the PDF the resource marks up, with the values
-    /// `markup` holds for them: the fields this window's PDF owner read
-    /// when it opened the document, the ones its pages draw; else what the
-    /// in-process engine reads of the resource's PDF
-    /// ([`Self::reading_document`]), so a caller with no screen gets the
-    /// form too. A PDF whose form lists no field is refused, never answered
-    /// as having none.
+    /// The form fields of the PDF the resource marks up, as the engine
+    /// reads that PDF ([`Self::reading_document`]), with the values `markup`
+    /// holds for them: what the resource says, never what a window shows of
+    /// it. A PDF whose form lists no field is refused, never answered as
+    /// having none.
     pub(crate) fn read_form_fields(&self, markup: &PdfMarkup) -> Result<serde_json::Value, String> {
-        let shown = self.raster_document.is_some() && !self.form_fields.is_empty();
-        let (file, fields) = if shown {
-            let file = self
-                .record_source
-                .as_ref()
-                .map(|source| source.name.clone())
-                .or_else(|| {
-                    self.source_path
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                })
-                .unwrap_or_default();
-            (file, self.form_fields.clone())
-        } else {
-            let (file, document) = self.reading_document()?;
-            let fields = document
-                .form_fields()
-                .map_err(|error| format!("the form cannot be read: {error}"))?;
-            if fields.is_empty() && document.info().has_form {
-                return Err(format!("the form in {file} names no field to read"));
-            }
-            (file, fields)
-        };
+        let (file, document) = self.reading_document(markup.pinned_source().as_ref())?;
+        let fields = document
+            .form_fields()
+            .map_err(|error| format!("the form cannot be read: {error}"))?;
+        if fields.is_empty() && document.info().has_form {
+            return Err(format!("the form in {file} names no field to read"));
+        }
         let plan = markup.page_plan();
         let fields: Vec<FormFieldRow> = fields
             .iter()
@@ -274,27 +256,25 @@ mod tests {
     #[test]
     fn a_window_with_no_pdf_owner_reads_the_form() {
         let content = tilo_content::ContentStore::memory();
-        let mut app = crate::app::PdfApp::empty_with_content(content.clone());
-        let pin = |app: &mut crate::app::PdfApp, fixture: &str| {
+        let app = crate::app::PdfApp::empty_with_content(content.clone());
+        let pin = |fixture: &str| {
             let bytes = std::fs::read(std::path::Path::new(env!("OUT_DIR")).join(fixture))
                 .expect("the fixture");
-            app.record_source = Some(crate::markup::PinnedSource {
+            crate::markup::PdfMarkup {
                 source: ui::tilo_resource::Bytes::kept_as(
                     &bytes,
                     &content.put(&bytes).expect("stored"),
                 ),
-                name: fixture.into(),
-            });
+                source_name: fixture.into(),
+                ..crate::markup::PdfMarkup::default()
+            }
         };
-        let markup = crate::markup::PdfMarkup::default();
-        pin(&mut app, "sample.pdf");
         let read = app
-            .read_form_fields(&markup)
+            .read_form_fields(&pin("sample.pdf"))
             .expect("a PDF without a form reads");
         assert_eq!(read["fields"], serde_json::json!([]));
-        pin(&mut app, "form.pdf");
         let read = app
-            .read_form_fields(&markup)
+            .read_form_fields(&pin("form.pdf"))
             .expect("a form reads where no window shows it");
         assert_eq!(read["file"], "form.pdf");
         let fields = read["fields"].as_array().expect("a list of fields");
@@ -333,17 +313,18 @@ mod tests {
     #[test]
     fn a_form_listing_no_field_is_refused() {
         let content = tilo_content::ContentStore::memory();
-        let mut app = crate::app::PdfApp::empty_with_content(content.clone());
+        let app = crate::app::PdfApp::empty_with_content(content.clone());
         let bytes = empty_form_pdf();
-        app.record_source = Some(crate::markup::PinnedSource {
+        let markup = crate::markup::PdfMarkup {
             source: ui::tilo_resource::Bytes::kept_as(
                 &bytes,
                 &content.put(&bytes).expect("stored"),
             ),
-            name: "empty-form.pdf".into(),
-        });
+            source_name: "empty-form.pdf".into(),
+            ..crate::markup::PdfMarkup::default()
+        };
         let refused = app
-            .read_form_fields(&crate::markup::PdfMarkup::default())
+            .read_form_fields(&markup)
             .expect_err("a form is not answered as empty");
         assert!(refused.contains("names no field"), "{refused}");
     }

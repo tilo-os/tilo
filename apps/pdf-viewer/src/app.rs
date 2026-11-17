@@ -4960,17 +4960,21 @@ impl PdfApp {
         Err(error)
     }
 
-    fn reading_document(&self) -> Result<(String, tilo_pdf::Document), String> {
+    /// The PDF `pinned` names (the one the resource pins, read from the
+    /// document), or else the file this window opened, as the engine reads it:
+    /// never what the view shows of it.
+    pub(crate) fn reading_document(
+        &self,
+        pinned: Option<&crate::markup::PinnedSource>,
+    ) -> Result<(String, tilo_pdf::Document), String> {
         let engine = tilo_pdf::Engine::portable();
-        let pinned = self
-            .record_source
-            .as_ref()
-            .and_then(|source| Some((source, source.bytes(&self.content)?)));
+        let source = pinned;
+        let pinned = source.and_then(|source| Some((source, source.bytes(&self.content)?)));
         let (file, document) = match (pinned, self.source_path.as_deref()) {
             (Some((source, bytes)), _) => (source.name.clone(), engine.open_bytes(&bytes)),
             (None, Some(path)) => (path.display().to_string(), engine.open_path(path)),
             (None, None) => {
-                return Err(match &self.record_source {
+                return Err(match source {
                     Some(source) => format!("{} is not on this device yet", source.name),
                     None => content_import::NO_PDF.to_owned(),
                 });
@@ -4982,10 +4986,11 @@ impl PdfApp {
 
     pub(crate) fn read_text(
         &self,
+        pinned: Option<&crate::markup::PinnedSource>,
         from_page: Option<usize>,
         to_page: Option<usize>,
     ) -> Result<serde_json::Value, String> {
-        let (file, document) = self.reading_document()?;
+        let (file, document) = self.reading_document(pinned)?;
         let count = document.page_count();
         let first = from_page.unwrap_or(1).max(1);
         if first > count {
@@ -5028,6 +5033,7 @@ impl PdfApp {
 
     pub(crate) fn look_page(
         &self,
+        pinned: Option<&crate::markup::PinnedSource>,
         page: usize,
         size: Option<u32>,
     ) -> Result<ui::tilo_actions::ActionOutput, String> {
@@ -5035,7 +5041,7 @@ impl PdfApp {
         if !(64..=1536).contains(&size) {
             return Err("size must be within 64..=1536".into());
         }
-        let (_, document) = self.reading_document()?;
+        let (_, document) = self.reading_document(pinned)?;
         let count = document.page_count();
         if page == 0 || page > count {
             return Err(format!("the PDF has {count} pages"));

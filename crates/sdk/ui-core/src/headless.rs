@@ -2979,6 +2979,12 @@ impl FrameHarness {
     pub fn persist_tick(&mut self) -> bool {
         self.invalidate_local();
         self.pump_component_wakes();
+        self.write_out_documents()
+    }
+
+    /// [`Self::persist_tick`] without taking up a wake first: a wake asks for
+    /// a frame, which writing out lays none of.
+    fn write_out_documents(&mut self) -> bool {
         if let Some(wake) = &self.component_wake {
             if let Err(error) = wake.binding.records.tick() {
                 tracing::error!(%error, "headless record persistence failed");
@@ -6487,6 +6493,15 @@ impl FrameHarness {
     ///    the composition again. A host that skipped this left the wake
     ///    queued for ever, so the window never came to rest.
     fn idle_control_tick(&mut self) {
+        self.dispatch_and_poll_controls();
+        self.service_idle_owner_models();
+    }
+
+    /// Steps 1 to 3 of [`Self::idle_control_tick`]: what was submitted is
+    /// dispatched, the jobs under way are polled and undo takes it in, leaving the
+    /// owner models a worker woke to the next frame, as serving them retires
+    /// the layout this reads.
+    fn dispatch_and_poll_controls(&mut self) {
         let _running = self.running();
         // This original action sweep dereferences the mapped tree. Standalone
         // model work leaves it unavailable until fresh composition admission.
@@ -6516,7 +6531,6 @@ impl FrameHarness {
                 &author,
             );
         }
-        self.service_idle_owner_models();
     }
 
     /// Serve what a mounted component's workers woke its owner model for, as

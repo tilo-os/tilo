@@ -292,10 +292,9 @@ mod tests {
             .expect("the resource's source");
         assert_eq!(pinned.hash(), tilo_content::hash_bytes(&bytes));
 
-        let mut app = PdfApp::empty_with_content(writer.clone());
-        app.record_source = Some(pinned.clone());
+        let app = PdfApp::empty_with_content(writer.clone());
         let read = app
-            .read_text(None, Some(1))
+            .read_text(Some(&pinned), None, Some(1))
             .expect("the pinned PDF reads on the device it was kept on");
         assert_eq!(read["file"], "report.pdf");
 
@@ -304,22 +303,21 @@ mod tests {
         assert_ne!(carried, bytes, "the ciphertext is not the PDF");
         let member = tilo_content::ContentStore::memory_in_workspace();
         member.put_public(&carried).expect("kept as carried");
-        let mut reader = PdfApp::empty_with_content(member);
-        reader.record_source = Some(pinned);
+        let reader = PdfApp::empty_with_content(member);
         let read = reader
-            .read_text(None, Some(1))
+            .read_text(Some(&pinned), None, Some(1))
             .expect("the member opens it");
         assert_eq!(read["file"], "report.pdf");
 
         let plain = tilo_content::ContentStore::memory_in_workspace();
         let hash = plain.put(&bytes).expect("kept in the clear");
-        let mut earlier = PdfApp::empty_with_content(plain);
-        earlier.record_source = Some(crate::markup::PinnedSource {
+        let earlier = PdfApp::empty_with_content(plain);
+        let pin = crate::markup::PinnedSource {
             source: Bytes::kept_as(&bytes, &hash),
             name: "report.pdf".into(),
-        });
+        };
         let read = earlier
-            .read_text(None, Some(1))
+            .read_text(Some(&pin), None, Some(1))
             .expect("an earlier pin reads");
         assert_eq!(read["file"], "report.pdf");
     }

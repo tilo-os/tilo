@@ -177,12 +177,14 @@ fn forty_pages_read_in_one_call_and_a_page_without_text_is_named() {
     let pdf = pdf_saying(&pages);
     let content = ContentStore::memory();
     let hash = content.put(&pdf).expect("the store keeps the PDF");
-    let mut app = PdfApp::empty_with_content(content);
-    app.record_source = Some(crate::markup::PinnedSource {
+    let app = PdfApp::empty_with_content(content);
+    let pinned = crate::markup::PinnedSource {
         source: ui::tilo_resource::Bytes::kept_as(&pdf, &hash),
         name: "report.pdf".into(),
-    });
-    let read = app.read_text(None, None).expect("the report reads");
+    };
+    let read = app
+        .read_text(Some(&pinned), None, None)
+        .expect("the report reads");
     assert_eq!(read["page_count"], 41, "{read}");
     let read_pages = read["pages"].as_array().expect("the pages read");
     assert_eq!(read_pages.len(), 41, "one read answers every page");
@@ -198,7 +200,9 @@ fn forty_pages_read_in_one_call_and_a_page_without_text_is_named() {
         serde_json::json!([41]),
         "the page that draws no words is named: {read}"
     );
-    let look = app.look_page(41, Some(200)).expect("the page still draws");
+    let look = app
+        .look_page(Some(&pinned), 41, Some(200))
+        .expect("the page still draws");
     assert!(
         look.value.is_some_and(|value| value["format"] == "png"),
         "what a page without text shows is seen as a picture"
@@ -210,16 +214,18 @@ fn a_pinned_pdf_reads_and_is_seen_from_the_content_store_without_a_file() {
     let bytes = std::fs::read(concat!(env!("OUT_DIR"), "/sample.pdf")).expect("the fixture");
     let content = ContentStore::memory();
     let hash = content.put(&bytes).expect("the store keeps the PDF");
-    let mut app = PdfApp::empty_with_content(content);
+    let app = PdfApp::empty_with_content(content);
     assert_eq!(
-        app.read_text(None, None).unwrap_err(),
+        app.read_text(None, None, None).unwrap_err(),
         content_import::NO_PDF
     );
-    app.record_source = Some(crate::markup::PinnedSource {
+    let mut pinned = crate::markup::PinnedSource {
         source: ui::tilo_resource::Bytes::kept_as(&bytes, &hash),
         name: "report.pdf".into(),
-    });
-    let read = app.read_text(None, Some(1)).expect("the pinned PDF reads");
+    };
+    let read = app
+        .read_text(Some(&pinned), None, Some(1))
+        .expect("the pinned PDF reads");
     assert_eq!(read["file"], "report.pdf");
     assert_eq!(read["pages"][0]["page"], 1);
     assert_eq!(
@@ -231,7 +237,9 @@ fn a_pinned_pdf_reads_and_is_seen_from_the_content_store_without_a_file() {
         !read["pages"][0]["text"].as_str().unwrap().trim().is_empty(),
         "{read}"
     );
-    let look = app.look_page(1, Some(200)).expect("the page draws");
+    let look = app
+        .look_page(Some(&pinned), 1, Some(200))
+        .expect("the page draws");
     let address = look.resources[0].clone();
     let value = look.value.unwrap();
     assert_eq!(value["content"], address.as_str());
@@ -248,15 +256,15 @@ fn a_pinned_pdf_reads_and_is_seen_from_the_content_store_without_a_file() {
         .read(ui::tilo_actions::content_hash(&address).unwrap())
         .expect("the picture is kept as content");
     assert!(picture.starts_with(b"\x89PNG"));
-    assert!(app.look_page(0, None).is_err());
-    assert!(app.look_page(1, Some(4000)).is_err());
-    app.record_source.as_mut().unwrap().source = ui::tilo_resource::Bytes::Blob {
+    assert!(app.look_page(Some(&pinned), 0, None).is_err());
+    assert!(app.look_page(Some(&pinned), 1, Some(4000)).is_err());
+    pinned.source = ui::tilo_resource::Bytes::Blob {
         hash: [0; 32],
         len: u64::try_from(bytes.len()).unwrap(),
         sealed: None,
     };
     assert_eq!(
-        app.read_text(None, None).unwrap_err(),
+        app.read_text(Some(&pinned), None, None).unwrap_err(),
         "report.pdf is not on this device yet"
     );
 }

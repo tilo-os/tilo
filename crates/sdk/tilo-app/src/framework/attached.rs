@@ -450,24 +450,12 @@ impl AttachedView {
         Ref::map(self.frame.borrow(), |frame| &**frame)
     }
 
-    /// [`Self::frame`], to act through: what it does may change anything the
-    /// view publishes. An effect or a view acts on what the view shows.
-    fn frame_mut(&mut self) -> &mut FrameHarness {
-        self.moved();
-        let frame = self.frame.get_mut();
-        if self.unsettled.replace(false) {
-            self.merged.set(false);
-            lay_out(frame);
-        }
-        frame
-    }
-
     /// The view's frame as it stands, without laying out what changed since
     /// its last one. The record's resource reads its document as it is now
     /// (an item a change made is there, one it removed is gone), so what an
     /// address names is found here at the cost of that resource, however
     /// much the view would lay out.
-    fn frame_standing(&self) -> Ref<'_, FrameHarness> {
+    fn frame_as_is(&self) -> Ref<'_, FrameHarness> {
         Ref::map(self.frame.borrow(), |frame| &**frame)
     }
 
@@ -475,9 +463,9 @@ impl AttachedView {
     /// out, when it has anything left to lay out: something only a frame
     /// shows (an item a surface publishes once it has synced) is found then.
     fn found<T>(&self, find: impl Fn(&FrameHarness) -> Option<T>) -> Option<T> {
-        let standing = find(&self.frame_standing());
-        if standing.is_some() || !self.unsettled.get() {
-            return standing;
+        let found_now = find(&self.frame_as_is());
+        if found_now.is_some() || !self.unsettled.get() {
+            return found_now;
         }
         find(&self.frame())
     }
@@ -552,8 +540,8 @@ impl AttachedView {
     /// record's own resource reads its document as it is now; only what a
     /// frame of the view would add is not there yet ([`Self::laid_out`]).
     #[must_use]
-    pub fn published_standing(&self) -> Rc<Vec<tilo_actions::ResourceSpec>> {
-        self.permitted_tree(&self.tree_of(self.frame_standing()))
+    pub fn published_without_layout(&self) -> Rc<Vec<tilo_actions::ResourceSpec>> {
+        self.permitted_tree(&self.tree_of(self.frame_as_is()))
     }
 
     /// Whether the view has laid out everything that changed: nothing it
@@ -801,9 +789,9 @@ impl AttachedView {
         confirmed: bool,
     ) -> Result<ActionOutput, ApiError> {
         let (_, started) = self.start_as(invoker, address, arguments, confirmed)?;
-        // It answers once what it caused in the app has landed: a reply the
-        // app asked a worker for in turn is applied as part of it, not of
-        // whatever is invoked next. A job it started answers by itself.
+        // It answers once what it submitted is applied to the document; what
+        // the view makes of that is made when the view is next read. A job
+        // it started answers by itself.
         self.settle_acted();
         Ok(started.completed().unwrap_or_default())
     }
@@ -831,19 +819,14 @@ impl AttachedView {
             self.settle_acted();
             return Ok(output);
         }
-        let ended = |frame: &FrameHarness| {
-            frame
-                .job_updates(invocation)
-                .iter()
-                .find(|update| update.is_terminal())
-                .cloned()
-        };
-        let frame = self.frame_mut();
-        if frame.wait_until(within, |frame| ended(frame).is_some()) {
-            // What the job's end caused is applied before it answers too.
-            frame.settle_owed();
-        }
-        match ended(frame) {
+        // The job takes its input from the resource and its arguments: its
+        // end is waited for without laying the view out, and what it caused
+        // is laid out when someone reads the view.
+        self.moved();
+        let frame = &mut **self.frame.get_mut();
+        let ended = frame.await_job(invocation, within);
+        self.unsettle();
+        match ended {
             Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
             Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
                 Err(ApiError::Failed(error.message))
@@ -853,7 +836,7 @@ impl AttachedView {
                 address.action
             ))),
             None => {
-                let _ = frame.cancel_job(invocation);
+                let _ = self.frame.get_mut().cancel_job(invocation);
                 Err(ApiError::Failed(format!(
                     "{} did not finish within {} seconds",
                     address.action,
@@ -863,15 +846,14 @@ impl AttachedView {
         }
     }
 
-    /// After an action: take up what it left the view owed (a reply it asked
-    /// a worker for, one that already landed), or else leave the view to lay
-    /// out what it did when it is next read. An action never waits for a
-    /// frame of everything the view shows; whoever looks lays that out.
+    /// After an action: dispatch what it submitted, laying nothing out
+    /// ([`FrameHarness::take_up_acted`]), and leave the view to lay out what
+    /// it did when it is next read. An action never waits for a frame of
+    /// everything the view shows; whoever looks lays that out.
     fn settle_acted(&mut self) {
         self.moved();
-        if self.frame.get_mut().settle_if_owed() != ui_core::headless::OwedSettle::Framed {
-            self.unsettle();
-        }
+        self.frame.get_mut().take_up_acted();
+        self.unsettle();
     }
 
     /// Start the operation `address` names for `invoker`, as
@@ -889,9 +871,9 @@ impl AttachedView {
         ),
         ApiError,
     > {
-        let descriptor = self
-            .descriptor(address)
-            .ok_or_else(|| ApiError::Unknown(address.clone()))?;
+        if self.descriptor(address).is_none() {
+            return Err(ApiError::Unknown(address.clone()));
+        }
         self.landed.0.borrow_mut().clear();
         // History names the app the view is of, as its window does, within
         // whatever task the member carries out.
@@ -899,15 +881,12 @@ impl AttachedView {
             &tilo_actions::ActionContext::default()
                 .with_app(self.definition.app_id(), self.definition.title()),
         );
-        // A document operation is the record's: it acts on the document as it
-        // is, through the frame as it stands. An effect or a view acts on
-        // what the view shows, laid out first.
-        let frame = if descriptor.kind == tilo_actions::OperationKind::Document {
-            self.moved();
-            &mut **self.frame.get_mut()
-        } else {
-            self.frame_mut()
-        };
+        // An operation acts on the resource as it is and on the arguments it
+        // was given, through the frame as it stands: a document operation,
+        // an effect and its job alike. A view operation moves what the view
+        // shows, which whoever next reads the view lays out.
+        self.moved();
+        let frame = &mut **self.frame.get_mut();
         frame.start_bound_job_within(
             Some(invoker),
             Some(&ambient),
@@ -1150,7 +1129,7 @@ impl AttachedView {
             .collect();
         for chain in &chains {
             let _ = self
-                .frame_standing()
+                .frame_as_is()
                 .resource(&super::chain_resource_id(chain));
         }
         self.records.wanted_resources()
