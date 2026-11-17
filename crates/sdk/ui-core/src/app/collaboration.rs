@@ -666,6 +666,7 @@ impl App {
         for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
             self.collaboration.manager.send(request);
         }
+        any |= self.apply_heard_elsewhere();
         self.pump_document_content();
         let (drained, action_surface_may_have_changed) = self.drain_collab_presence_events();
         any |= drained;
@@ -1247,6 +1248,30 @@ impl App {
     /// host-assigned name; it never enters the roster itself.
     fn apply_collab_context(&mut self, members: Vec<crate::collaboration::Member>) {
         self.presence_ctx.apply_members(members);
+    }
+
+    /// Show what the connection of an app that runs elsewhere heard of the people at it, as what
+    /// this window's own connection hears is shown: the member list names them, and a step of
+    /// an agent's action outlines the control it stands for.
+    pub(crate) fn apply_heard_elsewhere(&mut self) -> bool {
+        use crate::component_lifecycle::Heard;
+        let heard = crate::component_lifecycle::take_heard(self.root_widget.as_mut());
+        let any = !heard.is_empty();
+        for heard in heard {
+            match heard {
+                Heard::Members(members) => self.apply_collab_context(members),
+                Heard::Interaction {
+                    member,
+                    key,
+                    interaction,
+                } => self.apply_remote_presence(
+                    member,
+                    key,
+                    crate::collaboration::PresencePayload::Interaction(Box::new(interaction)),
+                ),
+            }
+        }
+        any
     }
 
     /// Bypasses the collab manager's socket/poll path — for tests using a

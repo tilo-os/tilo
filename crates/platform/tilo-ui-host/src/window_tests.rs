@@ -2332,3 +2332,28 @@ fn an_entry_the_app_clears_after_its_submit_takes_the_next_item() {
         "the cleared entry takes the next item"
     );
 }
+
+/// What the app's connection heard of the people at it reaches the window's toolkit once, in the
+/// order it was heard; what does not read leaves the window showing the app.
+#[test]
+fn what_the_app_heard_of_people_reaches_the_toolkit_once() {
+    use ui::component_lifecycle::Heard;
+    let (mut app, mut window) = window();
+    let members = Heard::Members(vec![ui::collaboration::Member::named(
+        ui::permissions::MemberId::agent("scout"),
+        "Scout",
+    )]);
+    let heard = |heard: &Heard| ToUi::Heard(serde_json::to_vec(heard).expect("encodes"));
+    send(
+        &mut app,
+        &[heard(&members), ToUi::Heard(b"not json".to_vec())],
+    );
+    send(&mut app, &titled_page());
+    window.receive();
+    assert_eq!(window.take_heard(), vec![members]);
+    assert!(window.take_heard().is_empty(), "taken once");
+    assert!(
+        window.composed().is_some(),
+        "the window still shows the app"
+    );
+}

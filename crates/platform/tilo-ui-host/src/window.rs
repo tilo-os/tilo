@@ -326,6 +326,9 @@ pub struct AppWindow {
     search_total: Option<usize>,
     /// Whether the person's changes are saved, as the window's bar says it ([`ToUi::Kept`]).
     save: ui::SaveStatusSurface,
+    /// What the app's connection heard of the people at the app ([`ToUi::Heard`]), until the
+    /// window's toolkit takes it ([`Self::take_heard`]).
+    heard: Vec<ui::component_lifecycle::Heard>,
 }
 
 impl AppWindow {
@@ -431,6 +434,7 @@ impl AppWindow {
             actions: Vec::new(),
             search_total: None,
             save: ui::SaveStatusSurface::new(),
+            heard: Vec::new(),
         }
     }
 
@@ -488,6 +492,13 @@ impl AppWindow {
     /// taken yet ([`ToUi::ShowRun`]): the host shows it where the system keeps its log.
     pub fn take_shown_run(&mut self) -> Option<String> {
         (!self.shown_runs.is_empty()).then(|| self.shown_runs.remove(0))
+    }
+
+    /// What the app's connection heard of the people at the app since this was last asked
+    /// ([`ToUi::Heard`]): the window's toolkit shows it as it shows what a connection of its own
+    /// hears.
+    pub fn take_heard(&mut self) -> Vec<ui::component_lifecycle::Heard> {
+        std::mem::take(&mut self.heard)
     }
 
     pub fn receive(&mut self) -> bool {
@@ -569,6 +580,11 @@ impl AppWindow {
                 ToUi::ShowRun { run } => self.shown_runs.push(run),
                 ToUi::Speak(language) => ui::i18n::I18nManager::set_locale(&language),
                 ToUi::Kept(kept) => self.kept(kept),
+                // What the window shows of people never stops it showing the app.
+                ToUi::Heard(heard) => match serde_json::from_slice(&heard) {
+                    Ok(heard) => self.heard.push(heard),
+                    Err(error) => tracing::warn!(%error, "what the app heard does not read"),
+                },
                 ToUi::Open {
                     lane,
                     target,

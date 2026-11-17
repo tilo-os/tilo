@@ -15,8 +15,10 @@
 use std::collections::HashMap;
 
 use collaboration::{CollabEvent, CollabRequest, PresencePayload};
+use tilo_render_protocol::patch::ToUi;
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::value::ResourceRef;
+use ui::component_lifecycle::Heard;
 use ui::permissions::MemberId;
 use ui::presence::{DraftSaid, PresenceCtx, PresenceKey};
 
@@ -31,6 +33,10 @@ pub struct Presence {
     said_composing: DraftSaid,
     /// Whether the member list changed since the instance was last told what people are called.
     renamed: bool,
+    /// What the window shows of the people here as a window with a connection of its own does,
+    /// waiting to be sent to it: the member list, and each step of an action taken on a resource
+    /// of the app, which outlines the control the action stands for.
+    for_window: Vec<Heard>,
 }
 
 impl Presence {
@@ -48,6 +54,7 @@ impl Presence {
             said_at: None,
             said_composing: DraftSaid::default(),
             renamed: true,
+            for_window: Vec::new(),
         }
     }
 
@@ -61,11 +68,30 @@ impl Presence {
                 key,
                 payload,
             } => {
+                if let PresencePayload::Interaction(interaction) = payload
+                    && matches!(key, PresenceKey::Resource { app, .. } if *app == self.app)
+                {
+                    self.for_window.push(Heard::Interaction {
+                        member: member.clone(),
+                        key: key.clone(),
+                        interaction: (**interaction).clone(),
+                    });
+                }
                 self.heard
                     .apply_remote_presence(member.clone(), key.clone(), payload.clone());
                 true
             }
             CollabEvent::Context { members, .. } => {
+                // The window names people and wears their colours; their pictures stay here.
+                self.for_window.push(Heard::Members(
+                    members
+                        .iter()
+                        .map(|member| collaboration::Member {
+                            avatar: None,
+                            ..member.clone()
+                        })
+                        .collect(),
+                ));
                 self.heard.apply_members(members.clone());
                 if self.heard.self_id().is_none() {
                     // A list without the person: their own frames are still theirs.
@@ -109,6 +135,21 @@ impl Presence {
                 .collect()
         });
         instance.set_peers_and_composers(self.peers(), &composing);
+        for heard in self.take_for_window() {
+            instance.say(ToUi::Heard(heard));
+        }
+    }
+
+    /// What the window is to show of the people here, as it is sent ([`ToUi::Heard`]).
+    fn take_for_window(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.for_window)
+            .iter()
+            .filter_map(|heard| {
+                serde_json::to_vec(heard)
+                    .inspect_err(|error| tracing::warn!(%error, "what was heard does not encode"))
+                    .ok()
+            })
+            .collect()
     }
 
     /// Say where `instance`'s person is, when that changed since it was last said, and whether
@@ -196,6 +237,87 @@ mod tests {
             key: channel(),
             payload,
         });
+    }
+
+    /// An agent's step of `action` on `resource`, of kind `kind`, of the app `app`.
+    fn step(app: &str, resource: &str, kind: &str) -> (PresenceKey, PresencePayload) {
+        let interaction = tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation: tilo_actions::InvocationId::new(),
+            sequence: 1,
+            actor: tilo_actions::Acting::agent("scout"),
+            phase: tilo_actions::InteractionPhase::Applying,
+            action: tilo_actions::InteractionAction {
+                id: "check".into(),
+                label: "Check".into(),
+                app: None,
+                step: None,
+                creates: None,
+                did: None,
+            },
+            resource: tilo_actions::ActionResource {
+                id: resource.into(),
+                kind: kind.into(),
+                label: "Plan".into(),
+            },
+            anchor: tilo_actions::InteractionAnchor::Resource,
+            group: None,
+        };
+        (
+            PresenceKey::resource(app, resource, kind),
+            PresencePayload::Interaction(Box::new(interaction)),
+        )
+    }
+
+    /// What `presence` sends its window, as the window reads it.
+    fn sent(presence: &mut Presence) -> Vec<Heard> {
+        presence
+            .take_for_window()
+            .iter()
+            .map(|heard| serde_json::from_slice(heard).expect("the window reads what is sent"))
+            .collect()
+    }
+
+    /// The window of a hosted app has no connection of its own: the steps of an agent's action
+    /// on the app's resources, and the member list that names the agent, reach it from the
+    /// instance's connection, so the control the action stands for is outlined as in any
+    /// window. A step in another app is that app's window's.
+    #[test]
+    fn an_agents_step_on_the_apps_resource_and_the_members_reach_the_window() {
+        let mut presence = Presence::new(APP, "bo");
+        let mut member = collaboration::Member::named(MemberId::agent("scout"), "Scout");
+        member.avatar = Some(collab_types::AvatarBytes(vec![1, 2, 3]));
+        presence.take(&CollabEvent::Context {
+            members: vec![member],
+            permissions: Vec::new(),
+            apps: Vec::new(),
+        });
+        for (app, resource) in [(APP, "channel-1"), ("so.tilo.lang.tasks", "task-1")] {
+            let (key, payload) = step(app, resource, "TextChannel");
+            assert!(presence.take(&CollabEvent::RemotePresenceUpdate {
+                member: MemberId::agent("scout"),
+                key,
+                payload,
+            }));
+        }
+        let heard = sent(&mut presence);
+        let [
+            Heard::Members(members),
+            Heard::Interaction {
+                key, interaction, ..
+            },
+        ] = heard.as_slice()
+        else {
+            panic!("the members, then the step on this app's resource alone: {heard:?}");
+        };
+        assert_eq!(members.len(), 1);
+        assert!(
+            members[0].avatar.is_none(),
+            "pictures stay with the instance"
+        );
+        assert_eq!(key, &channel());
+        assert_eq!(interaction.resource.id, "channel-1");
+        assert!(sent(&mut presence).is_empty(), "each is sent once");
     }
 
     #[test]

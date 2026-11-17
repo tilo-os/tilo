@@ -629,6 +629,16 @@ impl ui::component_lifecycle::HostIntents for HostedWindow {
     }
 }
 
+/// What the instance's connection heard of the people at the app: the window shows it as a window
+/// with a connection of its own does.
+impl ui::component_lifecycle::HearsElsewhere for HostedWindow {
+    fn take_heard(&mut self) -> Vec<ui::component_lifecycle::Heard> {
+        self.connected
+            .as_mut()
+            .map_or_else(Vec::new, |connected| connected.view.take_heard())
+    }
+}
+
 /// The window is named by what it shows: the item it shows as its page, else the page, the record,
 /// the place its instance's composed shell names in its content header. Two windows of the app
 /// read apart in the desktop's tabs, the switcher and assistive technology without either being
@@ -682,6 +692,10 @@ impl ui::widget::Decorator for HostedWindow {
         }
         if request.wants::<dyn ui::undo::LocalUndo>() {
             request.provide::<dyn ui::undo::LocalUndo>(self);
+            return;
+        }
+        if request.wants::<dyn ui::component_lifecycle::HearsElsewhere>() {
+            request.provide::<dyn ui::component_lifecycle::HearsElsewhere>(self);
             return;
         }
         self.content_mut().provide_mut(request);

@@ -644,6 +644,10 @@ pub enum ToUi {
     /// Whether the app holds changes of the person's that the workspace has not taken yet: the
     /// window marks them unsaved and offers to try again ([`ToApp::SaveAgain`]) until it has.
     Kept(bool),
+    /// What the app's connection heard of the people at the app, which the window shows as a
+    /// window with a connection of its own does: the member list, a step of an agent's action.
+    /// Carried as the JSON the window's toolkit reads it as.
+    Heard(#[serde(with = "serde_bytes")] Vec<u8>),
 }
 
 /// What the person did, as the window tells its app.

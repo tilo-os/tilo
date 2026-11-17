@@ -186,6 +186,14 @@ impl<'a> Validator<'a> {
         self.key(&target.ty)
     }
 
+    /// `bytes` a message carries whole, within the limit of a string's; `refused` says it is not.
+    fn carried(&self, bytes: usize, refused: &'static str) -> Result<(), Refused> {
+        if bytes > self.limits.string_bytes as usize {
+            return Err(Refused::invalid(refused));
+        }
+        Ok(())
+    }
+
     fn message(&self, message: &ToUi) -> Result<(), Refused> {
         match message {
             ToUi::Loading
@@ -197,10 +205,10 @@ impl<'a> Validator<'a> {
             | ToUi::Kept(_)
             | ToUi::Took { .. } => Ok(()),
             ToUi::Actions(catalogue) => {
-                if catalogue.bytes() > self.limits.string_bytes as usize {
-                    return Err(Refused::invalid("over the limit of bytes in a catalogue"));
-                }
-                Ok(())
+                self.carried(catalogue.bytes(), "over the limit of bytes in a catalogue")
+            }
+            ToUi::Heard(heard) => {
+                self.carried(heard.len(), "over the limit of bytes in what was heard")
             }
             ToUi::Front {
                 shows: Some((_, target)),

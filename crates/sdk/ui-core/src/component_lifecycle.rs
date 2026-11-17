@@ -202,3 +202,31 @@ pub fn take_host_intent(
 ) -> Option<crate::widget::AppHostIntent> {
     capability_mut::<dyn HostIntents>(widget).and_then(HostIntents::take_host_intent)
 }
+
+/// What the connection of an app that runs elsewhere (a tilolang host's instance) heard of the
+/// people at the app, handed to the window that presents it. That window has no connection of
+/// its own: it shows these as a native app's window shows what its own connection hears.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Heard {
+    /// The workspace's member list: what each member is called and the colour they wear.
+    Members(Vec<crate::collaboration::Member>),
+    /// A step of an action `member` takes on the app's resource `key`.
+    Interaction {
+        member: crate::permissions::MemberId,
+        key: crate::presence::PresenceKey,
+        interaction: tilo_actions::SemanticInteraction,
+    },
+}
+
+/// A presentation whose app runs elsewhere hands over what its app's connection heard of the
+/// people at it ([`Heard`]).
+pub trait HearsElsewhere {
+    /// Consume what arrived since this was last asked, oldest first.
+    fn take_heard(&mut self) -> Vec<Heard>;
+}
+
+/// Consume what `widget` heard of the people at its app ([`HearsElsewhere`]), through its
+/// capability API.
+pub fn take_heard(widget: &mut (impl Widget + ?Sized)) -> Vec<Heard> {
+    capability_mut::<dyn HearsElsewhere>(widget).map_or_else(Vec::new, HearsElsewhere::take_heard)
+}
