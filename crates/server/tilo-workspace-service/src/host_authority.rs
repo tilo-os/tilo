@@ -20,7 +20,7 @@
 //! decided by the handler: a host takes one as its work setting says, or for
 //! an owner of it the host let in ([`crate::workspaces`]). Which hosts hold a
 //! workspace governed here is its owners' choice, made through its governance
-//! (`host.add`, `host.remove`).
+//! (`server.add`, `server.remove`).
 //!
 //! An agent's grant (a key the person certified for a service that acts for
 //! an agent they approved, [`tilo_user_identity::AgentScope`]) is the person

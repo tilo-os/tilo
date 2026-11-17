@@ -959,11 +959,11 @@ args: {role, email?}, workspace}` answers a `link` that signs them in and lands 
 `role` (viewer, commenter, editor or administrator); `workspace/members#list` names who is in it, and \
 `workspace/members#name {name}` sets how it names the key's own person, which is what their \
 invitations say. \
-A workspace can be held by more than one host: `tilo_do {path: \"workspace/hosts#add\", \
-args: {origin: \"https://tilo.sh\"}, workspace}` has that host keep it as well (both keep it, a change \
-on either reaches the other, and its people reach it at either; that host takes it only for an owner \
-it let in), `workspace/hosts#list` names the hosts holding it and `workspace/hosts#remove {host}` \
-lets one go; only its owners choose. \
+A workspace can be kept by more than one server: `tilo_do {path: \"workspace/servers#add\", \
+args: {origin: \"https://tilo.sh\"}, workspace}` has that server keep it as well (both keep it, a \
+change on either reaches the other, and its people reach it at either; that server takes it only \
+for an owner it let in), `workspace/servers#list` names the servers keeping it and \
+`workspace/servers#remove {server}` lets one go; only its owners choose. \
 A command an agent runs in a workspace's Linux machine (`terminal#run`) asks the person each \
 time; `tilo_do {path: \"workspace/unattended#set\", args: {on: true}, workspace}` asks them once \
 to let keys minted for that workspace alone run commands there without asking (and in branches \

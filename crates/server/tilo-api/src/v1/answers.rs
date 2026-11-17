@@ -598,18 +598,18 @@ pub struct NewMember {
     pub name: Option<String>,
 }
 
-/// The hosts holding the workspace (`hosts`, each its `device` key, the
+/// The servers keeping the workspace (`servers`, each its `device` key, the
 /// `person` it runs for, and whether it `governs` the workspace: the one it
-/// was made on, first), and after a removal whether that host confirmed it let
-/// the workspace go (`confirmed`).
+/// was made on, first), and after a removal whether that server confirmed it
+/// let the workspace go (`confirmed`).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Hosts(pub Map<String, Value>);
+pub struct Servers(pub Map<String, Value>);
 
-/// Another host to hold the workspace as well.
+/// Another server to keep the workspace as well.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewHost {
-    /// The host's site, like `https://tilo.sh`. You must be let in there, and
-    /// it may refuse by its own rules.
+pub struct NewServer {
+    /// The server's site, like `https://tilo.sh`. You must be let in there,
+    /// and it may refuse by its own rules.
     pub origin: String,
 }
 
@@ -787,8 +787,8 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         NewInvitation,
         NewMember,
         WaitList,
-        Hosts,
-        NewHost,
+        Servers,
+        NewServer,
         Invitation,
         NewName,
         Program,

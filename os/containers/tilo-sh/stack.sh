@@ -85,14 +85,14 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          default), administrator or owner. Opened in any
                          browser, it makes the person's identity on the spot
                          and lets them in
-  stack.sh tilo workspace hosts add ORIGIN -w WORKSPACE
+  stack.sh tilo workspace servers add ORIGIN -w WORKSPACE
                          the stack's owner has the stack at ORIGIN (its site,
-                         e.g. https://127.0.0.1:34000) hold WORKSPACE as well:
+                         e.g. https://127.0.0.1:34000) keep WORKSPACE as well:
                          both keep it and a change on either reaches the
                          other. That stack takes it only for a person it let
                          in: make this stack's owner one of its people there
                          first (stack.sh owner KEY there, KEY this stack's
-                         $TILO_SH_STATE/owner/key). hosts ls and hosts
+                         $TILO_SH_STATE/owner/key). servers ls and servers
                          remove ORIGIN too
   stack.sh browser       a Chromium on a fresh profile, opened on the local site
   stack.sh check
