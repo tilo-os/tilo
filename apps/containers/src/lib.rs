@@ -1,6 +1,6 @@
 //! Containers: a rootless-podman and distrobox manager. The window has a sidebar of
 //! sections, a container list beside a tabbed detail, a new-container form and a
-//! page per section. The draft is the app's record; the engine snapshot is host data
+//! page per section. The draft is the app's resource; the engine snapshot is host data
 //! mirrored into live rows.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.

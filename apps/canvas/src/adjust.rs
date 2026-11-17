@@ -639,7 +639,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// The `Adjust` record itself: when it is no grade, how two merge, what it refuses.
+        /// The `Adjust` resource itself: when it is no grade, how two merge, what it refuses.
         /// Each case was a test of its own and builds its own fixture; a failure names its phase.
         fn an_adjustment_is_nothing_merges_and_names_its_mistakes;
 

@@ -553,7 +553,7 @@ mod tests {
             }
         }
 
-        phase a_mail_account_from_the_persons_record_reads_back_with_the_devices_password;
+        phase a_mail_account_from_the_persons_resource_reads_back_with_the_devices_password;
         {
             use accounts::person::PersonAccounts;
             let root = temp_root();
@@ -582,7 +582,7 @@ mod tests {
             assert_eq!(shown.accounts, vec![account]);
             assert!(
                 !format!("{person:?}").contains("kept-on-the-device"),
-                "the password never enters the record"
+                "the password never enters the resource"
             );
             std::fs::remove_dir_all(&root).ok();
         }

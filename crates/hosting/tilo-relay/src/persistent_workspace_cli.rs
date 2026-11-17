@@ -962,9 +962,9 @@ fn attachment_limits(
 }
 
 /// [`attachment_limits`] as the workspace's Chat reads them.
-fn workspace_files(persistent: &PersistentArgs) -> chat::record::WorkspaceFiles {
+fn workspace_files(persistent: &PersistentArgs) -> chat::chat::WorkspaceFiles {
     attachment_limits(persistent).map_or_else(Default::default, |limits| {
-        chat::record::WorkspaceFiles {
+        chat::chat::WorkspaceFiles {
             largest: limits.file_bytes,
             member_hourly: limits.member_bytes,
         }
@@ -982,7 +982,7 @@ pub(crate) async fn settle_chat(
     apps: &[String],
     channels: &[String],
     feedback: Option<&str>,
-    files: chat::record::WorkspaceFiles,
+    files: chat::chat::WorkspaceFiles,
     discussions: &[crate::workspace_discussions::Published],
 ) -> anyhow::Result<()> {
     if !apps

@@ -83,12 +83,12 @@ pub(crate) fn alarm_activation(record: Option<&ui::resource::DocumentId>, alarm:
     )
 }
 
-pub(crate) fn activation_record(uri: &str) -> Option<ui::resource::DocumentId> {
+pub(crate) fn activation_resource(uri: &str) -> Option<ui::resource::DocumentId> {
     let path = uri.strip_prefix("tilo-clocks:record/")?;
     let record = path
         .split_once("/alarm/")
         .map_or(path, |(record, _)| record);
-    activation_record_id(record)
+    activation_resource_id(record)
 }
 
 pub(crate) fn activation_alarm(uri: &str) -> Option<&str> {
@@ -96,12 +96,12 @@ pub(crate) fn activation_alarm(uri: &str) -> Option<&str> {
         let (record, alarm) = uri
             .strip_prefix("tilo-clocks:record/")?
             .split_once("/alarm/")?;
-        activation_record_id(record)?;
+        activation_resource_id(record)?;
         Some(alarm)
     })
 }
 
-fn activation_record_id(record: &str) -> Option<ui::resource::DocumentId> {
+fn activation_resource_id(record: &str) -> Option<ui::resource::DocumentId> {
     let primary = ui::resource::DocumentId::package_primary();
     if record == primary.as_str() {
         return Some(primary);

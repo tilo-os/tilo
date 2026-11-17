@@ -28,8 +28,8 @@ use super::kinds::resource_kind;
 /// without depending on a definition having been created: a host that reads a
 /// record of an app that is not running reads it by these.
 fn kinds_of<A: ResourceApp>() -> Kinds {
-    let mut declared = super::Records::declaring();
-    A::records(&mut declared);
+    let mut declared = super::Resources::declaring();
+    A::resources(&mut declared);
     let mut kinds = Kinds::new();
     kinds.insert(resource_kind::<A>());
     for chain in declared.into_chains() {

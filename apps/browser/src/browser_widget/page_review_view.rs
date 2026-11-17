@@ -14,10 +14,10 @@
 //! with the frame each is in.
 //!
 //! Nothing it shows is its own. It asks the engine for the page's forms, its
-//! fields and the tab's record, the reads `read-page-forms`,
+//! fields and the tab's resource, the reads `read-page-forms`,
 //! `read-page-fields` and `read-page-record` make, and draws what they
 //! answered. It asks again when any page action answered, since the tab's
-//! record may have moved; when the page shows another document; and when the
+//! resource may have moved; when the page shows another document; and when the
 //! engine says the page changed a field or a form of itself or a person
 //! typed into one ([`super::page_events`]). Only for an engine that does not
 //! say so is the page read again once a second. Fields read from a document
@@ -80,7 +80,7 @@ enum Shown {
 }
 
 /// One round of reads that is with the engine: the forms, the fields and
-/// the record, each until its answer came.
+/// the resource, each until its answer came.
 struct Round {
     forms: Option<u32>,
     fields: Option<u32>,
@@ -102,7 +102,7 @@ pub(super) struct PageReview {
     url: String,
     record: Record,
     round: Option<Round>,
-    /// Something said the page or its record changed since the last round.
+    /// Something said the page or its resource changed since the last round.
     moved: bool,
     /// When the page is read again if nothing says so sooner.
     due: Option<ui::time::Instant>,
@@ -259,15 +259,15 @@ impl BrowserWidget {
         })
     }
 
-    /// Whether `request_id` is the review's read of the tab's record.
-    pub(super) fn reads_review_record(&self, request_id: u32) -> bool {
+    /// Whether `request_id` is the review's read of the tab's resource.
+    pub(super) fn reads_review_resource(&self, request_id: u32) -> bool {
         self.page_review
             .round
             .as_ref()
             .is_some_and(|round| round.record == Some(request_id))
     }
 
-    /// Something said the page or the tab's record changed: a page request
+    /// Something said the page or the tab's resource changed: a page request
     /// that is not the review's answered, the engine told of a change or of
     /// what a person typed, or the page finished loading. The review reads
     /// again.
@@ -322,7 +322,7 @@ impl BrowserWidget {
             if let Some(data) = &data {
                 let (added, more) = review.record.take(data);
                 changed |= added;
-                // The record goes on past this answer: it is read on.
+                // The resource goes on past this answer: it is read on.
                 review.moved |= more;
             }
         }
@@ -411,7 +411,7 @@ impl BrowserWidget {
 
     /// Send the engine one read for the review, as the tab's one unnamed
     /// actor: the person at this window. A read takes no place in the tab's
-    /// record and tells no other actor anything.
+    /// resource and tells no other actor anything.
     fn ask_page_for_review(&mut self, request: PageRequest) -> u32 {
         self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
         self.engine.send(WebViewCommand::Page {
@@ -529,7 +529,7 @@ fn counted(key: &str, count: usize) -> String {
 /// The name an actor is shown under: an agent by its own name, anyone else
 /// by the name the action API admitted them under, and one that worked
 /// from another of the person's devices with that device, by its name or,
-/// where it has none, the start of its key. One the record says it no
+/// where it has none, the start of its key. One the resource says it no
 /// longer knows the device of (`device_unknown`) is shown as that, never as
 /// an actor on this device. `None` for the tab's one unnamed actor, the
 /// person at this window.
@@ -752,14 +752,14 @@ fn step_row(step: &Step, secrets: &[&str]) -> Element {
         format!("browser.review.step.{}", step.seq),
         step_title(step),
     );
-    // The record holds no secret's text. What was written into a field that
+    // The resource holds no secret's text. What was written into a field that
     // holds one is not shown either way.
     let secret = step
         .target
         .as_deref()
         .is_some_and(|target| secrets.contains(&target));
     if step.secret {
-        // The record says the field was set, and that is what is shown.
+        // The resource says the field was set, and that is what is shown.
         row = row.subtitle(t("browser-review-wrote-secret"));
     } else if !secret && !step.wrote.is_empty() {
         row = row.subtitle(step.wrote.join(", "));
@@ -845,7 +845,7 @@ fn shot_field(
 }
 
 /// The page a screenshot reviews: a visa application as the engine's forms,
-/// fields and record reads answer for it, its actions ending shortly before
+/// fields and resource reads answer for it, its actions ending shortly before
 /// `now` (milliseconds since the Unix epoch).
 #[allow(
     clippy::too_many_lines,

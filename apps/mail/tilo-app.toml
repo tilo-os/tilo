@@ -2,7 +2,7 @@
 #
 # IMAP/SMTP against user-configured servers (feature `live`), so the
 # host set is user data — `mode = "host"`. Reads the person's accounts
-# record; the session's account custody releases it each email account's
+# resource; the session's account custody releases it each email account's
 # secret, and it never opens the vault. Links open through the host opener.
 #
 

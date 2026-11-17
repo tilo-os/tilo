@@ -23,7 +23,7 @@ struct Cli {
     /// The workspace the document lives in — the `TILO_WORKSPACE_ID`
     /// the app was launched with.
     workspace: uuid::Uuid,
-    /// The record the app announced for the document, e.g.
+    /// The resource the app announced for the document, e.g.
     /// `file:/var/workspace/Demo/brief.docx`. Omit for an untitled document.
     record: Option<String>,
     /// The app whose document this is (its manifest package id).
@@ -68,7 +68,7 @@ Usage: tilo-agent --workspace <UUID> [OPTIONS]
 
 Options:
       --workspace <UUID>          The workspace the document lives in
-      --record <RECORD>           The record the app announced for the document
+      --record <RECORD>           The resource the app announced for the document
       --app <APP>                 The app whose document this is [default: so.tilo.word-processor]
       --name <NAME>               The display name instructions address [default: Claude]
       --agent-id <ID>             Stable admitted agent id [default: the name]

@@ -1,6 +1,6 @@
 //! What the calculator does beside changing its record: what the window shows,
 //! recalling a past calculation, and the two graph lists. Only the evaluated
-//! history and the saved graph formulas are in the record; the expression being
+//! history and the saved graph formulas are in the resource; the expression being
 //! typed, the display and the pan/zoom are window state.
 
 use serde::{Deserialize, Serialize};

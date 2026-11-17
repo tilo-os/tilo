@@ -668,7 +668,7 @@ browser-application-forget-form = Forget a remembered form
 browser-application-forget-site-forms = Forget a site’s remembered forms
 browser-application-forget-all-forms = Forget all remembered forms
 browser-application-forget-this-site-forms = Forget this site’s remembered forms
-browser-page-record = Page record
+browser-page-record = Page resource
 browser-page-record-set-down = Set down a page action
 
 ## What the app is called in a window and in the launcher

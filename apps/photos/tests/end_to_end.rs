@@ -1126,12 +1126,12 @@ fn a_photograph_is_kept_sealed_and_a_member_opens_it() {
         .image
         .content
         .reference()
-        .expect("the picture is kept outside the record");
+        .expect("the picture is kept outside the resource");
     assert!(tilo_content::is_sealed(&reference), "{reference}");
     assert_eq!(
         photo.image.hash(),
         tilo_content::hash_bytes(&bytes),
-        "the record names the bytes it was opened from"
+        "the resource names the bytes it was opened from"
     );
     assert!(
         !writer.has(&tilo_content::hash_bytes(&bytes)),

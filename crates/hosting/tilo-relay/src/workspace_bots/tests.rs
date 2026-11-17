@@ -107,7 +107,7 @@ fn chat_of(bytes: &[u8]) -> chat::Chat {
     chat::Chat::read(&AutoCommit::load(bytes).unwrap()).unwrap()
 }
 
-fn texts_by(posts: &[chat::record::Message], person: [u8; 32]) -> Vec<String> {
+fn texts_by(posts: &[chat::chat::Message], person: [u8; 32]) -> Vec<String> {
     let person = hex::encode(person);
     posts
         .iter()
@@ -122,7 +122,7 @@ fn first_part() -> String {
 }
 
 /// The messages of the chat's first part, as the workspace holds it.
-async fn posts(workspaces: &Workspaces, workspace: &str) -> Vec<chat::record::Message> {
+async fn posts(workspaces: &Workspaces, workspace: &str) -> Vec<chat::chat::Message> {
     workspaces
         .resource_document(workspace, CHAT, &first_part())
         .await
@@ -258,7 +258,7 @@ fn flood(
     chat::demo::apply_as(
         doc,
         &hex::encode(governor().1.user_public_key),
-        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+        chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
             name: "general".parse().unwrap(),
             category: None,
             kind: None,
@@ -302,7 +302,7 @@ async fn flood_posts(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert
             chat::demo::apply_as(
                 doc,
                 &ada,
-                chat::Chat::REPORT_MESSAGE.with(chat::record::chat::ReportMessage {
+                chat::Chat::REPORT_MESSAGE.with(chat::chat::chat::ReportMessage {
                     message: spam,
                     author: MemberId::person(mallory),
                     reason: "spam".parse().unwrap(),
@@ -517,7 +517,7 @@ async fn an_installed_bot_answers_a_post_in_the_workspace_once() {
             chat::demo::apply_as(
                 doc,
                 &hex::encode(cert.user_public_key),
-                chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+                chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
                     name: "general".parse().unwrap(),
                     category: None,
                     kind: None,
@@ -589,7 +589,7 @@ async fn chat_workspace(workspaces: &Workspaces, cert: &DeviceCert) -> (String, 
             chat::demo::apply_as(
                 doc,
                 &hex::encode(cert.user_public_key),
-                chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+                chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
                     name: "general".parse().unwrap(),
                     category: None,
                     kind: None,
@@ -2623,7 +2623,7 @@ async fn a_bridge_run_the_workspace_refuses_part_of_finishes_the_import_when_it_
                 chat::demo::apply_as(
                     doc,
                     &owner,
-                    chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+                    chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
                         name: "welcome".parse().unwrap(),
                         category: None,
                         kind: None,

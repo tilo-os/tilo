@@ -141,7 +141,7 @@ pub fn parse_browser_csv(mut reader: impl Read) -> Result<Vec<ImportLogin>, Stri
     }
     let text =
         std::str::from_utf8(&bytes).map_err(|_| "The selected CSV is not UTF-8".to_string())?;
-    let records = parse_records(text)?;
+    let records = parse_resources(text)?;
     let Some(headers) = records.first() else {
         return Err("The selected CSV is empty".into());
     };
@@ -192,7 +192,7 @@ pub fn parse_browser_csv(mut reader: impl Read) -> Result<Vec<ImportLogin>, Stri
     Ok(out)
 }
 
-fn parse_records(text: &str) -> Result<Vec<Vec<String>>, String> {
+fn parse_resources(text: &str) -> Result<Vec<Vec<String>>, String> {
     let mut rows = Vec::new();
     let mut row = Vec::new();
     let mut field = String::new();

@@ -61,7 +61,7 @@ impl OperationNotice {
         }
     }
 
-    /// The notice this outcome is to the system: a record of what happened when nobody
+    /// The notice this outcome is to the system: a resource of what happened when nobody
     /// needs to act, an item waiting for a person when somebody does.
     fn notice(&self) -> ui::attention::Notice {
         if self.success {

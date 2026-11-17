@@ -84,7 +84,7 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_api() {
     chat::demo::apply_as(
         &mut doc,
         "ada",
-        chat::Chat::CREATE_CATEGORY.with(chat::record::chat::CreateCategory {
+        chat::Chat::CREATE_CATEGORY.with(chat::chat::chat::CreateCategory {
             name: "Resource view fixture".parse().unwrap(),
         }),
     )

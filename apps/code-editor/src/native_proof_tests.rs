@@ -229,7 +229,7 @@ fn native_text_continuation_restores_shared_resource_selection_and_view_after_of
     let source_after = editor_snapshot(&mut source);
     assert_eq!(
         after["body_hash"], source_after["body_hash"],
-        "concurrent text converges through production record merges"
+        "concurrent text converges through production resource merges"
     );
     assert_eq!(after["buffer_id"], before["buffer_id"]);
     assert_eq!(

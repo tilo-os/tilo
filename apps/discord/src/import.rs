@@ -21,7 +21,7 @@ use discord_wire::op::{ChannelKind, DiscordOp, DiscordResult};
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, JsonSchema};
 
-use crate::record::{DChannel, Guild, MappedKind, Ownership};
+use crate::guild::{DChannel, Guild, MappedKind, Ownership};
 use crate::slug;
 use crate::tilo::{Channel, WorkspaceChat};
 use std::collections::HashSet;
@@ -364,8 +364,8 @@ pub fn plan(guild: &Guild, workspace: &WorkspaceChat) -> ImportPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::guild::{Mapping, Origin};
     use crate::layout::tests::{dchan, mapping};
-    use crate::record::{Mapping, Origin};
 
     /// The Tilo Discord server as it was when the bridge was added.
     fn tilo_server() -> Guild {

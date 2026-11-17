@@ -90,7 +90,7 @@ fn live_pair_projection_failure_restores_person_metadata_and_keeps_recovery_inte
     let root = root.with_person(record.clone());
     let first = accounts::Account::new("drive", "google-drive");
     let second = accounts::Account::new("ada@example.org", "email");
-    // The live record accepts both edits; only its device projection fails.
+    // The live resource accepts both edits; only its device projection fails.
     std::fs::create_dir_all(dir.path().join("tilo/accounts/store.json")).unwrap();
     let secret = accounts::Secret::password("sealed-credential");
     let error =

@@ -287,7 +287,7 @@ struct MenuRows {
 }
 
 /// A terminal emulator as a `ui` widget: a process behind a PTY, its parser, and the cell grid the
-/// session record shares. A host gives it a region with [`place_at`](Self::place_at) and pumps it
+/// session resource shares. A host gives it a region with [`place_at`](Self::place_at) and pumps it
 /// with [`Widget::sync`].
 #[allow(
     clippy::struct_excessive_bools,
@@ -331,7 +331,7 @@ pub struct TerminalWidget {
     /// The theme's terminal palette, its default background set to the window's background.
     palette: ui::tokens::TerminalPalette,
 
-    /// The process's output and the screen it shows: live, never in the session record.
+    /// The process's output and the screen it shows: live, never in the session resource.
     emulator: crate::emulator::Emulator,
     mirrored: Vec<std::rc::Rc<crate::screen::Line>>,
     emulating: bool,
@@ -401,22 +401,22 @@ pub struct TerminalWidget {
     /// Latched once any output arrived: the empty-state watermark shows only before that.
     ever_nonblank: bool,
 
-    /// Window title from OSC 0/2, in the record so members see it.
+    /// Window title from OSC 0/2, in the resource so members see it.
     title: String,
     links: HashMap<u16, String>,
     content: ContentStore,
     image_placements: Vec<TerminalImagePlacement>,
-    /// Images decode locally from content addresses; the record holds no pixels.
+    /// Images decode locally from content addresses; the resource holds no pixels.
     images: crate::image_loads::ImageLoads,
 
     /// Scopes this pane's presence, so a peer's caret is attributed to this pane.
     pane_id: String,
-    /// The record's dispatcher: the framework's, a parent's, or none (then nothing is recorded).
+    /// The resource's dispatcher: the framework's, a parent's, or none (then nothing is recorded).
     dispatch: Option<ui::framework::Dispatcher<crate::resource::Terminal>>,
 
     /// Wakes the host when the reader has output, so an idle terminal does not poll.
     waker: Arc<Mutex<ui::WakeHandle>>,
-    /// Buttons held while a program has mouse tracking on: local input state, never in the record.
+    /// Buttons held while a program has mouse tracking on: local input state, never in the resource.
     mouse_buttons: u8,
     focused: bool,
     sessions: crate::sessions::Sessions,
@@ -2285,7 +2285,7 @@ impl TerminalWidget {
         edits: &mut ui::widget::Edits<'_>,
     ) {
         for (run, asked) in std::mem::take(&mut self.commands.ended) {
-            // Runs name their output by the content store's reference: a record's content travels sealed.
+            // Runs name their output by the content store's reference: a resource's content travels sealed.
             let output = if run.output.is_empty() {
                 None
             } else {
@@ -2347,7 +2347,7 @@ impl TerminalWidget {
             match &recorded {
                 Ok(()) if job => {}
                 Ok(()) => self.remember(ran),
-                Err(error) => tracing::warn!(%error, "terminal session record refused a run"),
+                Err(error) => tracing::warn!(%error, "terminal session resource refused a run"),
             }
             if let Some(asked) = asked {
                 let answer = crate::resource::CommandAnswer {
@@ -2429,7 +2429,7 @@ impl TerminalWidget {
         };
         for action in std::mem::take(&mut self.pending_actions) {
             if let Err(error) = dispatch.submit_now(edits, action) {
-                tracing::warn!(%error, "terminal session record refused a change");
+                tracing::warn!(%error, "terminal session resource refused a change");
             }
         }
         self.record_commands(&dispatch, edits);
@@ -3078,7 +3078,7 @@ impl Widget for TerminalWidget {
         if let Some(picker) = self.target_picker_accessibility() {
             transcript.children.push(picker);
         }
-        // The prompt: the line input goes in, where a record's run is shown landing. It carries no verb:
+        // The prompt: the line input goes in, where a resource's run is shown landing. It carries no verb:
         // typing reaches the process as keys.
         if self.run_action.is_some() {
             transcript.children.push(
@@ -5962,7 +5962,7 @@ impl TerminalWidget {
         Ok(widget)
     }
 
-    /// Keep program pictures in `content`, the window's store, which carries them to the record's other
+    /// Keep program pictures in `content`, the window's store, which carries them to the resource's other
     /// readers; without it they stay in memory.
     #[must_use]
     pub fn with_content(mut self, content: ContentStore) -> Self {

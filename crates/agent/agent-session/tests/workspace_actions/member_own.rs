@@ -114,12 +114,12 @@ async fn a_member_links_their_discord_account_through_the_host() {
             "so.tilo.discord",
             "",
             |doc| {
-                let mut bot = ui::tilo_resource::Replica::<discord::record::Guild>::from_doc(
+                let mut bot = ui::tilo_resource::Replica::<discord::guild::Guild>::from_doc(
                     std::mem::take(doc),
                 )
                 .as_bot_for("bridge-install", &hex::encode(host.cert.user_public_key));
                 let applied = bot
-                    .apply(discord::record::Guild::SET_SIGN_IN.with(page.to_owned()))
+                    .apply(discord::guild::Guild::SET_SIGN_IN.with(page.to_owned()))
                     .map(drop)
                     .map_err(|error| error.to_string());
                 std::mem::swap(doc, bot.doc_mut());
@@ -176,7 +176,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
             .expect("the governor holds the Discord record");
         let mut doc = automerge::AutoCommit::load(&saved).unwrap();
         let governors =
-            tilo_relay::workspace_bots::opened::<discord::record::Guild>(&mut doc).unwrap();
+            tilo_relay::workspace_bots::opened::<discord::guild::Guild>(&mut doc).unwrap();
         let people: Vec<_> = governors
             .connects
             .iter()

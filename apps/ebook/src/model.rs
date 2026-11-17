@@ -674,7 +674,7 @@ pub struct FontEntry {
     /// The face it resolves to
     pub kind: FontKind,
     /// The name a person gave it, once they rename it; empty while it is
-    /// called what its face is ([`Self::title`]). The record's namesake in
+    /// called what its face is ([`Self::title`]). The resource's namesake in
     /// the published surface; a person reads [`Self::title`].
     #[model(label)]
     pub name: String,
@@ -722,7 +722,7 @@ impl FontEntry {
     }
 
     /// The names this face is kept under before anyone renames it, as every
-    /// language the catalogue ships spells them — a record written in
+    /// language the catalogue ships spells them — a resource written in
     /// another language carries one of those. Empty for a family a person
     /// added, which only ever has the name it was added under.
     fn builtin_names(&self) -> Vec<String> {
@@ -839,7 +839,7 @@ pub struct ColorScheme {
     #[model(readonly)]
     pub id: String,
     /// The name a person gave it, once they rename it; empty while it is
-    /// called what it is ([`Self::title`]). The record's namesake in the
+    /// called what it is ([`Self::title`]). The resource's namesake in the
     /// published surface; a person reads [`Self::title`].
     #[model(label)]
     pub name: String,

@@ -2,16 +2,16 @@
 //!
 //! A server's mail stays outside the mailbox; an agent's confined worker, a seeded scenario or
 //! an injected event has no account and no network, so mail delivered to the workspace itself
-//! is kept in the record ([`HeldMessage`], under [`Mail::held`]), where it replicates, replays
+//! is kept in the resource ([`HeldMessage`], under [`Mail::held`]), where it replicates, replays
 //! and undoes like every other mailbox edit. Each message's folder, read and starred state and
 //! labels are its ordinary [`MessageState`]; it has no server copy, so nothing is queued for a
 //! server and nothing is ever sent from here.
 //!
 //! Mail moved in from another mail program keeps the message as it was sent
-//! ([`HeldMessage::original`], its MIME bytes in the record's content), so its
+//! ([`HeldMessage::original`], its MIME bytes in the resource's content), so its
 //! HTML, attachments and headers are what the window shows, read through the
 //! same parser fetched mail goes through; the text fields stay the message's
-//! words for whoever reads the record without its content.
+//! words for whoever reads the resource without its content.
 
 use std::fmt::Write as _;
 

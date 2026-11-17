@@ -263,7 +263,7 @@ manifest and audited lock before the 107-test Music/native regression run.
 Cargo-deny passed advisories, bans, licences and sources without exceptions.
 The lock introduces no package version and moves no unrelated dependency;
 ten obsolete dependency packages are removed. Vendor `PROVENANCE.md` files
-record archives, checksums, licences and the exact modifications.
+resource archives, checksums, licences and the exact modifications.
 
 The earlier broad proposal to switch TLS providers was rejected by automatic
 approval review and never applied. The user subsequently authorized only this

@@ -14,7 +14,7 @@ use ui::prelude::TestApp;
 use ui::theme::Theme;
 
 #[test]
-fn closed_alarm_activation_reopens_the_same_record_at_the_exact_alarm() {
+fn closed_alarm_activation_reopens_the_same_resource_at_the_exact_alarm() {
     let mut app = TestApp::<ClocksShell>::new().unwrap();
     app.invoke(Clocks::ADD_TIMER.with(("Distractor".to_owned(), 600)))
         .unwrap();
@@ -30,16 +30,16 @@ fn closed_alarm_activation_reopens_the_same_record_at_the_exact_alarm() {
         .unwrap()
         .0
         .clone();
-    let source_record = app.record().clone();
-    let uri = crate::native_timers::alarm_activation(Some(&source_record), id.as_str());
+    let source_resource = app.record().clone();
+    let uri = crate::native_timers::alarm_activation(Some(&source_resource), id.as_str());
     let other_document = ui::resource::DocumentId::minted();
     app.open_here(&[&format!("tilo-clocks:record/{other_document}")])
         .unwrap();
     assert_eq!(app.record(), &other_document);
-    app.invoke(Clocks::ADD_ALARM.with(("Other record".to_owned(), 12, 0, Vec::new())))
+    app.invoke(Clocks::ADD_ALARM.with(("Other resource".to_owned(), 12, 0, Vec::new())))
         .unwrap();
     let mut reopened = app.relaunch(&[&uri]).unwrap();
-    assert_eq!(reopened.record(), &source_record);
+    assert_eq!(reopened.record(), &source_resource);
     assert_eq!(
         reopened.state(),
         before,
@@ -64,7 +64,7 @@ fn closed_alarm_activation_reopens_the_same_record_at_the_exact_alarm() {
 }
 
 #[test]
-fn live_alarm_activation_returns_from_another_record_to_the_source_alarm() {
+fn live_alarm_activation_returns_from_another_resource_to_the_source_alarm() {
     let mut app = TestApp::<ClocksShell>::new().unwrap();
     app.invoke(Clocks::ADD_ALARM.with(("Source".to_owned(), 11, 0, Vec::new())))
         .unwrap();

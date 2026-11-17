@@ -1,4 +1,4 @@
-//! The `discord.guild` record. Its verbs check who calls them and validate
+//! The `discord.guild` resource. Its verbs check who calls them and validate
 //! what they are given; deciding what a change means is the planners' work
 //! (`layout`, `outbound`, `inbound`, `roles`, `import`).
 
@@ -42,7 +42,7 @@ pub struct Guild {
     pub map_roles: bool,
     pub ownership: Ownership,
     /// The secret item holding the bot token in the host's store; the token
-    /// itself never enters the record.
+    /// itself never enters the resource.
     pub token_item: Option<String>,
     /// The bot user's snowflake: its own messages and reactions are echoes.
     pub bot_user: String,
@@ -269,7 +269,7 @@ impl Identified for Link {
 
 /// A Discord account offered for linking, to whoever holds the one-time
 /// token it was offered with: the button `/link` answered with, or the
-/// browser that came back from Discord's consent page. The record keeps
+/// browser that came back from Discord's consent page. The resource keeps
 /// only the token's check ([`discord_wire::event::link_check`]).
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct LinkOffer {
@@ -528,7 +528,7 @@ fn overwrite_for<'a>(
     overwrites?.iter().find(|o| o.id == target)
 }
 
-/// Bring a guild record of version `from` up to this one. Version 1 named
+/// Bring a guild resource of version `from` up to this one. Version 1 named
 /// the Chat workspace the server mirrored; Chat runs in its workspace and keeps
 /// no workspaces now, so the server mirrors the workspace's chat and the name is
 /// dropped. Up to version 2 a channel's kind and permission overwrites were
@@ -538,7 +538,7 @@ fn overwrite_for<'a>(
 /// from a one-time token now and a pending code could no longer be used.
 ///
 /// # Errors
-/// When `from` is not a version this record was, or a stored kind or
+/// When `from` is not a version this resource was, or a stored kind or
 /// overwrite list does not read.
 fn migrate(
     doc: &mut ui::tilo_resource::Doc,
@@ -569,12 +569,12 @@ fn migrate(
 }
 
 impl Guild {
-    /// What the record holds: one bridged Discord server — its channels, roles and emojis, and
+    /// What the resource holds: one bridged Discord server — its channels, roles and emojis, and
     /// the mapping between them and the workspace's.
     ///
     /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
+    /// with no window open reads the resource as it reads any app's resource, and
+    /// a named item is read from the resource's table or by the read its own
     /// type gives it.
     pub fn read_document(
         &self,
@@ -594,7 +594,7 @@ impl Guild {
 impl Guild {
     /// Connect a Discord server.
     ///
-    /// Binds this record to one server, mirrored in the workspace's chat.
+    /// Binds this resource to one server, mirrored in the workspace's chat.
     /// The server's layout stays the truth until the import has run.
     #[action(housekeeping)]
     pub fn connect(
@@ -610,7 +610,9 @@ impl Guild {
     ) -> Result<(), Refusal> {
         guard::person(cx)?;
         if !self.guild_id.is_empty() {
-            return Err(Refusal::new("this record is already connected to a server"));
+            return Err(Refusal::new(
+                "this resource is already connected to a server",
+            ));
         }
         let snowflake = |id: &str| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit());
         if !snowflake(&guild_id) || !only_channel.as_deref().is_none_or(snowflake) {
@@ -1049,7 +1051,7 @@ impl Guild {
 
     /// Start linking your Discord account from Tilo.
     ///
-    /// Records the hash of the state your trip through Discord's consent
+    /// Resources the hash of the state your trip through Discord's consent
     /// page carries, so what comes back is linked to you alone. Good for
     /// ten minutes.
     #[action(housekeeping)]
@@ -1559,7 +1561,7 @@ pub const MAX_PROBLEM_CHARS: usize = 300;
 
 /// Discord's limit for a bot's or webhook's upload.
 pub const MAX_UPLOAD_BYTES: u64 = 10 * 1024 * 1024;
-/// Chat's attachment limit (`chat::record::MAX_ATTACHMENT_BYTES`).
+/// Chat's attachment limit (`chat::chat::MAX_ATTACHMENT_BYTES`).
 pub const MAX_FETCH_BYTES: u64 = 32 * 1024 * 1024;
 /// Discord's message length limit, in characters.
 pub const MAX_CONTENT_CHARS: usize = 2000;

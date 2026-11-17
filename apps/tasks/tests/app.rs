@@ -23,7 +23,7 @@ fn only(app: &TestApp<App>) -> Id {
     held(app).ids().into_iter().next().expect("an issue")
 }
 
-/// A workspace host that says where its record is served, so a link to a
+/// A workspace host that says where its resource is served, so a link to a
 /// resource of it can be made: what its web entry renders.
 fn served() -> ui::tilo_actions::remote::TestHost {
     ui::tilo_actions::remote::TestHost::new().with_catalogue(|_, query| {
@@ -412,9 +412,9 @@ tilo_test_env::scenario! {
     }
 
     phase a_link_opens_in_the_record_it_names;
-    // A link names the record of the app that keeps what it links to, and
-    // opens it there; a link made before links named a record opens the app's
-    // own record of the workspace.
+    // A link names the resource of the app that keeps what it links to, and
+    // opens it there; a link made before links named a resource opens the app's
+    // own document of the workspace.
     {
         let mut env = tilo_test_env::ScopedEnv::new();
         let workspace = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
@@ -450,7 +450,7 @@ tilo_test_env::scenario! {
             .collect();
         assert_eq!(links[0].record.as_deref(), Some("/launch"));
         assert_eq!(links[1].record, None);
-        // What a link stored before it named a record reads as naming none.
+        // What a link stored before it named a resource reads as naming none.
         let old = <tasks::model::Link as ui::tilo_resource::Model>::from_json(&json!({
             "label": "Old", "app": "so.tilo.notes", "kind": "notes.page", "resource": "notes.page:1",
         }))
@@ -524,7 +524,7 @@ tilo_test_env::scenario! {
         assert_eq!(assignee(&app).as_deref(), Some("bob"));
         assert!(
             app.harness().a11y_node_named("Assignee: Bob").is_some(),
-            "the chip says the person's name, never the record's spelling"
+            "the chip says the person's name, never the resource's spelling"
         );
         pick(&mut app, "tasks-issue-assignee-agent-scribe");
         assert_eq!(assignee(&app).as_deref(), Some("agent:scribe"));
@@ -566,13 +566,13 @@ tilo_test_env::scenario! {
         assert_eq!(
             held(&app).get(&issue).unwrap().assigned_person(),
             Some(root),
-            "the record keeps the bare root, not a prefixed spelling"
+            "the resource keeps the bare root, not a prefixed spelling"
         );
         app.call_on(&issue_resource(&issue), "open", json!({}))
             .expect("open the issue");
         assert!(
             app.harness().a11y_node_named("Assignee: Ada").is_some(),
-            "the roster names the id the record stores"
+            "the roster names the id the resource stores"
         );
         assert!(
             app.call_on(

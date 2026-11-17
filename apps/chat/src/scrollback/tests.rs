@@ -8,8 +8,8 @@ use ui::tilo_resource::Id;
 use ui::tilo_resource::MemberId;
 
 use crate::ChatShell;
+use crate::chat::{CHAT_CHANNEL, MAX_MESSAGE_TEXT_BYTES, chat};
 use crate::parts::{ChatPart, PART_TEXT_BYTES, ReadMark};
-use crate::record::{CHAT_CHANNEL, MAX_MESSAGE_TEXT_BYTES, chat};
 use crate::resource::Chat;
 
 type Window = TestApp<ChatShell>;
@@ -413,7 +413,7 @@ fn an_earlier_part_the_workspace_lacks_ends_in_a_final_state(ada: &mut Window) {
     assert_eq!(shown(&mut bo), ["0.0", "0.1", "1.0", "1.1", "2.0", "2.1"]);
 }
 
-/// A window that has not chosen its channel yet (its chat record still on
+/// A window that has not chosen its channel yet (its chat resource still on
 /// its way when the head is taken up) shows no timeline, and reads nothing
 /// back for it.
 fn no_channel_in_view_reads_nothing_back(ada: &mut Window) {

@@ -3,7 +3,7 @@
 //!
 //! What only this window knows (the page, navigation, downloads, extensions) is
 //! published from the view's live rows and effects; the visit log and address book
-//! are the person's own records.
+//! are the person's own documents.
 
 use std::rc::Rc;
 
@@ -43,7 +43,7 @@ pub struct Browser {
 }
 
 impl Browser {
-    /// What the record holds: the bookmarks, the preferences that follow the person to every
+    /// What the resource holds: the bookmarks, the preferences that follow the person to every
     /// window, and the sites tracker protection is off for.
     pub fn read_document(
         &self,
@@ -559,7 +559,7 @@ pub(crate) fn browser_view(cx: &ViewCx<Browser>, mut window: BrowserWindow) -> E
 }
 
 /// Lend `window` what it keeps from the host: the API for its edits, the content
-/// store, and in a live window the person's records, this device's settings and the
+/// store, and in a live window the person's resources, this device's settings and the
 /// engine's wakes.
 fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     // The person's account custody (their website accounts, saved addresses, the
@@ -609,7 +609,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     {
         window.attach_history(history);
     }
-    // What operated this tab's page is a record of Browser's in the
+    // What operated this tab's page is a resource of Browser's in the
     // workspace, each action a change of it by whoever acted: History, a
     // recording and the person's other devices read it there. A private
     // window keeps none.
@@ -618,7 +618,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     {
         window
             .page_mut()
-            .attach_page_record(record, cx.device().unwrap_or_default());
+            .attach_page_resource(record, cx.device().unwrap_or_default());
     }
     if custody && let Some(person) = cx.me().and_then(ui::tilo_resource::MemberId::person_id) {
         window

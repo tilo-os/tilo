@@ -401,7 +401,7 @@ impl JournalLoadError {
     }
 }
 
-/// One read of the journal: its records, oldest first, and the cursor of the last one in
+/// One read of the journal: its resources, oldest first, and the cursor of the last one in
 /// the journal's order, where the next tail read starts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Page {
@@ -423,7 +423,7 @@ pub fn read_args(after: Option<&str>, limit: usize) -> Vec<String> {
     args
 }
 
-/// Run `journalctl -o json` and parse the most recent `limit` records.
+/// Run `journalctl -o json` and parse the most recent `limit` resources.
 ///
 /// An empty successful result remains distinct from a failed read so the UI can offer
 /// recovery.
@@ -436,7 +436,7 @@ pub fn load_live(limit: usize) -> Result<Page, JournalLoadError> {
     read(None, limit)
 }
 
-/// The records written after `cursor`, at most `limit` of them: what live tail reads each
+/// The resources written after `cursor`, at most `limit` of them: what live tail reads each
 /// second, so a quiet journal costs an empty answer rather than the whole page parsed
 /// again.
 ///
@@ -515,7 +515,7 @@ pub fn parse_json_stream(text: &str) -> Vec<LogEntry> {
 }
 
 /// Parse a `journalctl -o json` stream into a [`Page`]: its entries sorted oldest → newest,
-/// and the cursor of the last record as journalctl wrote them.
+/// and the cursor of the last resource as journalctl wrote them.
 pub fn parse_page(text: &str) -> Page {
     let mut cursor = None;
     let mut entries: Vec<LogEntry> = text
@@ -668,7 +668,7 @@ pub fn sample_entries() -> Vec<LogEntry> {
 
     let mut entries = Vec::new();
 
-    // A handful of records from the previous boot, so the boot filter has two distinct
+    // A handful of resources from the previous boot, so the boot filter has two distinct
     // boots to switch between.
     let prev_base = base - 9_000_000_000; // ~2.5h earlier
     for row in prev {
@@ -768,8 +768,8 @@ mod tests {
         }
 
         phase a_page_keeps_the_last_cursor_and_a_tail_read_starts_after_it;
-        // A tail read starts after the newest record's cursor, which a page takes from the
-        // last record journalctl wrote.
+        // A tail read starts after the newest resource's cursor, which a page takes from the
+        // last resource journalctl wrote.
         {
             let stream = concat!(
                 r#"{"__CURSOR":"s=a;i=1","__REALTIME_TIMESTAMP":"20","MESSAGE":"one"}"#,

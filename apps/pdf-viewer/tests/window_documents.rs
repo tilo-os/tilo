@@ -7,14 +7,14 @@ use pdf_viewer::PdfViewerShell;
 use pdf_viewer::app::{PdfApp, WorkspaceDocument};
 use pdf_viewer::markup::PdfMarkup;
 
-fn markup_record(path: &str) -> ui::resource::DocumentId {
+fn markup_resource(path: &str) -> ui::resource::DocumentId {
     ui::resource::DocumentId::derived("annotations", &ui::resource::DocumentId::for_file(path))
 }
 
 fn paper(pages: usize, hash: [u8; 32], len: u64, name: &str) -> ui::tilo_resource::Doc {
     let mut doc = ui::tilo_resource::Doc::new();
     <PdfMarkup as ui::tilo_resource::Resource>::initialize(&mut doc)
-        .expect("an empty markup record");
+        .expect("an empty markup resource");
     let source = ui::tilo_resource::Bytes::Blob {
         hash,
         len,
@@ -37,7 +37,9 @@ fn absent_hash() -> [u8; 32] {
 
 fn apply(doc: &mut ui::tilo_resource::Doc, action: ui::tilo_resource::Invoke<PdfMarkup>) {
     let mut replica = ui::tilo_resource::Replica::<PdfMarkup>::from_doc(std::mem::take(doc));
-    replica.apply(action).expect("the record takes the action");
+    replica
+        .apply(action)
+        .expect("the resource takes the action");
     *doc = std::mem::take(replica.doc_mut());
 }
 
@@ -48,7 +50,7 @@ fn application_pdf() -> (
 ) {
     (
         "application.pdf",
-        markup_record("/papers/application.pdf"),
+        markup_resource("/papers/application.pdf"),
         paper(3, absent_hash(), 4096, "application.pdf"),
     )
 }
@@ -87,7 +89,7 @@ fn the_empty_reader_offers_the_workspaces_pdf_and_a_click_opens_it() {
     assert_eq!(
         target.as_deref(),
         Some(format!("pdf.empty.document:{}", id.uri()).as_str()),
-        "the row opens its own record"
+        "the row opens its own document"
     );
     app.harness().click_at(at.x, at.y);
     app.settle();
@@ -95,7 +97,7 @@ fn the_empty_reader_offers_the_workspaces_pdf_and_a_click_opens_it() {
     assert_eq!(
         app.record(),
         &id,
-        "the click opened the paper in this window, on its own markup record"
+        "the click opened the paper in this window, on its own markup resource"
     );
 }
 
@@ -126,7 +128,7 @@ fn capture_the_empty_state_with_and_without_the_workspaces_documents() {
         (name, id, doc),
         (
             "contract-2026.pdf",
-            markup_record("/papers/contract-2026.pdf"),
+            markup_resource("/papers/contract-2026.pdf"),
             paper(12, [0xc0; 32], 96_512, "contract-2026.pdf"),
         ),
     ])

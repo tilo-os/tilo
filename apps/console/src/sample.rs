@@ -91,7 +91,7 @@ fn action(n: u8, minutes_ago: i64, summary: &str, view: wire::ActionView) -> wir
     }
 }
 
-/// A command Claude Code ran in the Storefront shell, as the shell's execution record serves it:
+/// A command Claude Code ran in the Storefront shell, as the shell's execution resource serves it:
 /// its last lines, the rest one read away, and how it ended `minutes_ago`, after `took_ms`
 /// (`None`: still running).
 fn command(

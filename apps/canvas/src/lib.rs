@@ -178,7 +178,7 @@ impl ResourceApp for App {
     ];
     const ARGUMENTS: usize = 1;
 
-    /// A file named on the command line opens a record of its own, the same one
+    /// A file named on the command line opens a resource of its own, the same one
     /// each time; a picture gets an artwork derived from it, edits and all.
     fn launch_resource(input: &LaunchInput<'_>) -> Option<DocumentId> {
         let path = std::path::Path::new(input.argument()?);
@@ -193,7 +193,7 @@ impl ResourceApp for App {
             .then(|| DocumentId::derived("artwork", &DocumentId::identify_file(path)))
     }
 
-    /// The file, in the record it opened: an artwork file is that artwork, a
+    /// The file, in the resource it opened: an artwork file is that artwork, a
     /// picture a new artwork sized to it with the picture as its first mark. A
     /// file handed to the window's artwork (no path) replaces it as one step,
     /// Undo away from what was there.

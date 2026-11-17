@@ -1,11 +1,11 @@
-//! The chat record: the workspace's categories and channels, the people in the
+//! The chat resource: the workspace's categories and channels, the people in the
 //! workspace, each person's read marks, reviewed feedback and moderation. Chat's
-//! record is the chat of one Tilo workspace and holds no workspaces of its
-//! own: every channel of the record is the workspace's. The channels'
+//! resource is the chat of one Tilo workspace and holds no workspaces of its
+//! own: every channel of the resource is the workspace's. The channels'
 //! messages are kept in parts beside it
-//! ([`crate::parts`], [`crate::messages`]), so the record stays small
+//! ([`crate::parts`], [`crate::messages`]), so the resource stays small
 //! however long the chat runs. What someone is writing and has not sent
-//! is theirs, not the workspace's: it is kept in their own record
+//! is theirs, not the workspace's: it is kept in their own document
 //! ([`crate::drafts`]).
 //!
 //! Plain changes are the built-in field edits every path offers: renaming a
@@ -139,14 +139,14 @@ fn open_workspace(channels: &mut Collection<Conversation>) {
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Chat {
     /// The workspace's channel categories, in sidebar order: made, ordered and
-    /// removed only by the record's actions, which keep them to those who
+    /// removed only by the resource's actions, which keep them to those who
     /// keep the workspace's layout. A generic insert, move or removal would let
     /// anyone who may edit the workspace (a public workspace's visitor) rearrange it.
     #[model(readonly)]
     pub categories: Collection<Category>,
     /// The workspace's conversations, in sidebar order within their category:
-    /// made, ordered and removed only by the record's actions, for the same
-    /// reason as [`Self::categories`]. The field keeps the name records have
+    /// made, ordered and removed only by the resource's actions, for the same
+    /// reason as [`Self::categories`]. The field keeps the name resources have
     /// always kept them by: a channel is a conversation the whole workspace
     /// has, named and listed; a direct conversation is one a set of
     /// members has, named by them and never stored
@@ -291,7 +291,7 @@ pub struct Message {
     /// Who the text refers to, resolved when it was written.
     #[model(readonly)]
     pub mentions: Vec<crate::mention::Mention>,
-    /// What it carries besides its words: the records and parts of records
+    /// What it carries besides its words: the resources and parts of resources
     /// it was written by sharing, the words it quotes, and the files it
     /// posts, each in the terms of the app that keeps it.
     #[model(readonly)]
@@ -299,7 +299,7 @@ pub struct Message {
     /// Pinned messages are listed for everyone (`pin`).
     #[model(readonly)]
     pub pinned: bool,
-    /// An agent's record of what it is doing with the message this one
+    /// An agent's resource of what it is doing with the message this one
     /// answers.
     #[model(readonly)]
     pub work: Option<Work>,
@@ -382,7 +382,7 @@ impl Message {
 
 /// A window shared live into a channel: everyone who reads the channel sees
 /// the resource as it is now, drawn by its own app from their own copy of
-/// its record, and opens it with the access the sharer gave.
+/// its resource, and opens it with the access the sharer gave.
 #[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowShare {
     /// What the people who open it may do there.
@@ -419,7 +419,7 @@ pub enum ShareAccess {
 }
 
 impl ShareAccess {
-    /// Its name in an action's argument and in the record.
+    /// Its name in an action's argument and in the resource.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -533,7 +533,7 @@ impl Identified for Person {
     }
 }
 
-/// The key the record keeps `member`'s person and read marks under.
+/// The key the resource keeps `member`'s person and read marks under.
 #[must_use]
 pub fn member_slot(member: &MemberId) -> Id {
     Id::from_raw(ui::tilo_resource::text::author_mark(member))
@@ -562,7 +562,7 @@ pub struct Quote {
 }
 
 impl Quote {
-    /// Whether the span a reply quotes is one this record may keep: its words are some and
+    /// Whether the span a reply quotes is one this resource may keep: its words are some and
     /// bounded, and its span is ordered and inside a message of at most
     /// [`MAX_MESSAGE_TEXT_BYTES`].
     #[must_use]
@@ -574,7 +574,7 @@ impl Quote {
     }
 }
 
-/// An agent's record of its work on a message, written by that agent.
+/// An agent's resource of its work on a message, written by that agent.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Work {
     /// Incremental provider output.
@@ -584,7 +584,7 @@ pub struct Work {
     pub state: Option<Transition>,
     /// One row per operation it dispatched, rewritten when the app answers.
     pub trace: Keyed<Step>,
-    /// The run's working record of a failure, for whoever debugs it later: the
+    /// The run's working resource of a failure, for whoever debugs it later: the
     /// transport's error, the partial answer, the provider's exposed reasoning.
     /// Never the reply's words, and shown only behind a disclosure.
     pub failure_detail: Option<String>,
@@ -675,7 +675,7 @@ pub struct Triage {
     pub update: Option<crate::feedback::TriageUpdate>,
 }
 
-/// What an agent records of its work, as a verb takes it.
+/// What an agent resources of its work, as a verb takes it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkUpdate {
     /// `taken`, `waiting`, `doing`, `done`, `refused`, or a `provider_` terminal outcome.
@@ -692,7 +692,7 @@ pub struct WorkUpdate {
     /// The operations dispatched so far, each by the id minted when it was.
     #[serde(default)]
     pub trace: Vec<StepUpdate>,
-    /// The run's working record of a failure, for whoever debugs it later;
+    /// The run's working resource of a failure, for whoever debugs it later;
     /// never the reply's words. Absent when nothing failed.
     #[serde(default)]
     pub detail: Option<String>,
@@ -868,7 +868,7 @@ fn valid_anchor(anchor: Option<&tilo_reference::Anchor>) -> bool {
     }
 }
 
-/// An existing record of an existing app, and the resource inside it. The
+/// An existing resource of an existing app, and the resource inside it. The
 /// host resolves and authorizes it; storing this address neither admits a
 /// member nor grants Read.
 pub(crate) fn valid_resource_at(at: &tilo_reference::ResourceAt) -> bool {
@@ -884,7 +884,7 @@ pub(crate) fn valid_resource_at(at: &tilo_reference::ResourceAt) -> bool {
 }
 
 /// The id of `agent`'s reply to the message `summons`: the same on every
-/// replica and for every record of its work, so the agent never needs to be
+/// replica and for every resource of its work, so the agent never needs to be
 /// told the id of what it wrote.
 ///
 /// It is the reply of the first attempt. A message a person asked again
@@ -929,7 +929,7 @@ pub(crate) struct Posting {
     pub question: Option<crate::question::Question>,
     /// What started the turn it asks for, when a person did not type it.
     pub cause: Option<crate::cause::Cause>,
-    /// Who the text refers to, as the chat record resolved it where the
+    /// Who the text refers to, as the chat resource resolved it where the
     /// message was written.
     pub mentions: Vec<crate::mention::Mention>,
     /// Where it was first written, when it was moved here from elsewhere.
@@ -958,7 +958,7 @@ impl Chat {
         id.as_str().starts_with(DIRECT_CONVERSATION_PREFIX)
     }
 
-    /// The conversation `id` names: a channel the record keeps, or the
+    /// The conversation `id` names: a channel the resource keeps, or the
     /// direct conversation with the members its id names. `None` for an
     /// id that names neither.
     #[must_use]
@@ -984,10 +984,10 @@ impl Chat {
     }
 
     /// Whether the conversation `id` takes messages now: a text channel of
-    /// the record, or a direct conversation, named by its members.
+    /// the resource, or a direct conversation, named by its members.
     ///
     /// A member is one by being named as one: the workspace's member list and
-    /// its record of its agents say who exists, and the chat does not list
+    /// its resource of its agents say who exists, and the chat does not list
     /// them a second time, so a conversation with someone who never opened
     /// Chat takes the first message to them.
     #[must_use]
@@ -1475,7 +1475,7 @@ impl Chat {
 
     /// Decide on a report.
     ///
-    /// Records what was done about a person and why, settling their
+    /// Resources what was done about a person and why, settling their
     /// reports; the workspace's governance and history carry it out.
     #[action(moderation, audience = "agents")]
     pub fn decide_reports(
@@ -1541,7 +1541,7 @@ impl Chat {
     /// answering for the same agent keep the further of the two.
     ///
     /// The conversation is a plain argument and comes last: a conversation with an agent is no
-    /// channel this record lists, so the verb names no item of it.
+    /// channel this resource lists, so the verb names no item of it.
     #[action(housekeeping, audience = "agents")]
     pub fn keep_summary(
         &mut self,

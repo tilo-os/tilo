@@ -56,7 +56,7 @@ pub enum PermissionsEffect {
         #[param("Whether the application may use saved secrets")]
         allowed: bool,
     },
-    /// Remove an application's saved secrets and its record.
+    /// Remove an application's saved secrets and its resource.
     #[effect(job)]
     ForgetSecrets {
         #[param("The application identity the secret store recorded")]

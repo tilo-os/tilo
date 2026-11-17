@@ -5,9 +5,9 @@ use ui::{Widget, application::LaunchTarget, widget::TileHost};
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn canonical_component_starts_empty_projects_existing_records_read_only() {
+fn canonical_component_starts_empty_projects_existing_resources_read_only() {
     // Catches accidental starter pages, shared New identities, and legacy-source effects.
-    eprintln!("phase new_is_empty_schema_ready_and_instances_have_distinct_records");
+    eprintln!("phase new_is_empty_schema_ready_and_instances_have_distinct_resources");
     {
         let f = NotebookFixture::rich();
         let mut a = component(&f, 11, LaunchTarget::New);
@@ -26,8 +26,8 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
         assert_closed(&b.close());
     }
 
-    // Catches mount/sync writes, empty-list seeding, or using disk data instead of the record.
-    eprintln!("phase existing_rich_record_projects_real_resources_without_writing");
+    // Catches mount/sync writes, empty-list seeding, or using disk data instead of the resource.
+    eprintln!("phase existing_rich_resource_projects_real_resources_without_writing");
     {
         fn collect(
             widget: &dyn Widget,
@@ -140,7 +140,9 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn canonical_component_status_and_binding_hydrate_without_touching_the_document() {
-    eprintln!("phase delivered_record_status_updates_real_notes_status_without_touching_document");
+    eprintln!(
+        "phase delivered_resource_status_updates_real_notes_status_without_touching_document"
+    );
     {
         use automerge::transaction::Transactable;
         use ui::resource::ResourceSaveStatus;

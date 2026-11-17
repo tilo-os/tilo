@@ -1,5 +1,5 @@
 //! The system preferences Settings' panes edit: the section models are
-//! [`settings_sections`]', which the session keeps as records too; what is here
+//! [`settings_sections`]', which the session keeps as resources too; what is here
 //! words them for the panes.
 
 pub use settings_sections::desktop::*;

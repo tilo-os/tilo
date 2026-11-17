@@ -82,7 +82,7 @@ impl ConnectionSeed<'_> {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "fixture data: one named record per sample machine"
+    reason = "fixture data: one named resource per sample machine"
 )]
 fn with_sample_seeds<T>(read: impl FnOnce(Vec<(u128, ConnectionSeed<'_>)>) -> T) -> T {
     let studio = SecretKey::from_bytes(&[17; 32]).public().to_string();

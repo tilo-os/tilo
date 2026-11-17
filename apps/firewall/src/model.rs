@@ -507,7 +507,7 @@ impl Firewall {
         Id::from_raw(id.to_string())
     }
 
-    /// The configuration the record holds: stock zones in order, each membership sorted,
+    /// The configuration the resource holds: stock zones in order, each membership sorted,
     /// rules in order without the deleted ones.
     pub fn config(&self) -> FirewallConfig {
         let zones = ZoneKind::ALL

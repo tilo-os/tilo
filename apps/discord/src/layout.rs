@@ -14,7 +14,7 @@ use discord_wire::op::{ChannelKind, ChannelSpec, CreateWebhookOp, DeleteChannelO
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Id, JsonSchema};
 
-use crate::record::{DChannel, Guild, MappedKind, Mapping, Origin, Ownership};
+use crate::guild::{DChannel, Guild, MappedKind, Mapping, Origin, Ownership};
 use crate::slug;
 use crate::tilo::{Channel, WorkspaceChat};
 

@@ -1,4 +1,4 @@
-//! The app's record, which sessions Agents shows: its type and verb are `console-model`'s.
+//! The app's resource, which sessions Agents shows: its type and verb are `console-model`'s.
 
 pub use console_model::Console;
 use ui::tilo_actions::remote::workspace_activity as wire;

@@ -4,17 +4,17 @@
 //!
 //! All of it is read from the engine. The forms read names the questions,
 //! the fields read says what each holds now and who set it, and the tab's
-//! record says who did what. This is the shape the review view draws of
+//! resource says who did what. This is the shape the review view draws of
 //! those answers, built anew from each one: it is no state of its own, and a
 //! secret's text never enters it.
 
 use serde_json::Value;
 
 /// How many of the tab's actions the review keeps: as many as the tab's own
-/// record holds.
+/// resource holds.
 const MAX_STEPS: usize = 1000;
 
-/// Another of the person's devices an actor worked from, as the tab's record
+/// Another of the person's devices an actor worked from, as the tab's resource
 /// keeps it: the device the MCP server verified the actor's connection came
 /// from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub(crate) struct Device {
 }
 
 impl Device {
-    /// The device `said` names beside an actor (a record entry, or who set a
+    /// The device `said` names beside an actor (a resource entry, or who set a
     /// field); `None` for an actor on the device that runs the page.
     fn read(said: &Value) -> Option<Self> {
         let id = text(said, "device").trim();
@@ -52,7 +52,7 @@ impl Device {
 pub(crate) enum SetBy {
     /// An actor's action: the name the action API admitted it under, empty
     /// for the person at the window, the other device it worked from, and
-    /// the action's place in the record. `device_unknown` says the answer
+    /// the action's place in the resource. `device_unknown` says the answer
     /// names no device because the window no longer knows where the actor
     /// worked from, not because it worked on the device that runs the page.
     Action {
@@ -479,7 +479,7 @@ impl Fields {
     }
 }
 
-/// What a step of the tab's record is: an actor's action on the page, or
+/// What a step of the tab's resource is: an actor's action on the page, or
 /// something no action made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StepKind {
@@ -519,7 +519,7 @@ pub(crate) enum HoldStep {
 }
 
 impl HoldStep {
-    /// What the record's `action` says of a hold.
+    /// What the resource's `action` says of a hold.
     fn read(action: &str) -> Self {
         match action {
             "submit" => Self::Submit,
@@ -544,10 +544,10 @@ impl HoldStep {
 }
 
 /// One step of the tab's record: an action that operated the page, or what
-/// no action made, as the record keeps it.
+/// no action made, as the resource keeps it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Step {
-    /// Its place in the record.
+    /// Its place in the resource.
     pub(crate) seq: u64,
     /// Who asked: the name the action API admitted them under, empty for
     /// the person at the window.
@@ -555,7 +555,7 @@ pub(crate) struct Step {
     /// The other device they worked from; `None` on the device that runs the
     /// page.
     pub(crate) device: Option<Device>,
-    /// The record names no device because where they worked from is not
+    /// The resource names no device because where they worked from is not
     /// known: the window had forgotten whom it admitted under their name.
     pub(crate) device_unknown: bool,
     /// What was asked, by the engine's name for it (`fill`, `click`); empty
@@ -563,11 +563,11 @@ pub(crate) struct Step {
     pub(crate) action: String,
     /// What it is: an action, what a person typed, or a hold.
     pub(crate) kind: StepKind,
-    /// Of a hold, what the page was about to send, as the record says it:
+    /// Of a hold, what the page was about to send, as the resource says it:
     /// its method and where it would go, and of a download the file. Never
     /// what it carried.
     pub(crate) leaving: String,
-    /// It wrote into a secret field: the record says the field was set and
+    /// It wrote into a secret field: the resource says the field was set and
     /// holds none of what was written.
     pub(crate) secret: bool,
     pub(crate) ok: bool,
@@ -638,7 +638,7 @@ impl Step {
     }
 }
 
-/// What was done in the tab, in order, as far as the record was read.
+/// What was done in the tab, in order, as far as the resource was read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Record {
     pub(crate) steps: Vec<Step>,
@@ -652,14 +652,14 @@ impl Record {
         self.next
     }
 
-    /// Take the engine's answer to a read of the record from
+    /// Take the engine's answer to a read of the resource from
     /// [`Self::since`]: the actions after that place join the ones kept.
-    /// Returns whether it changed what is kept, and whether the record goes
+    /// Returns whether it changed what is kept, and whether the resource goes
     /// on past this answer.
     pub(crate) fn take(&mut self, data: &Value) -> (bool, bool) {
         let next = whole(data.get("next")).unwrap_or(self.next);
         let mut changed = false;
-        // A record that stands before the place already read is another
+        // A resource that stands before the place already read is another
         // tab's: the engine behind this window was replaced.
         if next < self.next {
             self.steps.clear();
@@ -994,10 +994,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_record_is_read_as_steps_that_say_what_happened;
+        fn the_resource_is_read_as_steps_that_say_what_happened;
 
         phase a_step_says_that_it_was_typed_and_that_it_wrote_a_secret;
-        // The record says of an entry that it was typed straight into the
+        // The resource says of an entry that it was typed straight into the
         // page, and that it wrote into a secret field: of that one nothing
         // written is read, whatever the entry carries.
         {
@@ -1020,7 +1020,7 @@ mod tests {
         }
 
         phase a_step_says_what_was_held_and_how_it_ended;
-        // The record says of an entry that the window held something the page
+        // The resource says of an entry that the window held something the page
         // was about to send, and how that ended: what it was, and who answered.
         {
             let mut record = Record::default();
@@ -1054,7 +1054,7 @@ mod tests {
         }
 
         phase a_step_says_why_what_was_held_was_dropped;
-        // The record says why what waited was dropped, and the review reads
+        // The resource says why what waited was dropped, and the review reads
         // each reason as what it is.
         {
             let mut record = Record::default();
@@ -1074,7 +1074,7 @@ mod tests {
             assert_eq!(said, ["Hold(Dropped)", "Hold(TooMany)", "Hold(Gone)"]);
         }
 
-        phase the_record_is_read_on_in_order_and_never_twice;
+        phase the_resource_is_read_on_in_order_and_never_twice;
         {
             let mut record = Record::default();
             let first = json!({"entries": [
@@ -1103,7 +1103,7 @@ mod tests {
                 record.steps.iter().map(|step| step.seq).collect::<Vec<_>>(),
                 [1, 2, 3]
             );
-            // A record that starts over is another tab's.
+            // A resource that starts over is another tab's.
             let other = json!({"entries": [{"seq": 1, "actor": "agent:cy", "action": "click"}],
                 "next": 1, "more": false});
             assert_eq!(record.take(&other), (true, false));

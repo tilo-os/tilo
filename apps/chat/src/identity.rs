@@ -37,7 +37,7 @@ impl LocalIdentity {
     }
 
     /// Member `id` as this device shows its own person: the display
-    /// name of the person's public identity record.
+    /// name of the person's public identity resource.
     pub fn for_member(id: &MemberId) -> Self {
         let name = ui::local_identity::own_name().unwrap_or_else(|| unnamed_label(id));
         Self {

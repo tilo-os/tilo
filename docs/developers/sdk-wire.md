@@ -144,8 +144,8 @@ One action:
 action's output value as the app typed it (absent when it gave none); `resources` are the
 resources the answer says it touched; `edited_by_person` is there when the person changed the
 arguments before allowing the action, and holds what actually ran. `link` is there when the
-action changed a record the workspace serves: the record link a person copies in the app
-(`share-link` on the record's root), which opens the record in its app for the workspace's
+action changed a resource the workspace serves: the resource link a person copies in the app
+(`share-link` on the resource's root), which opens the resource in its app for the workspace's
 members and carries no secret, so someone else must be invited first. A read answers none. A
 failure also carries the `action` row, so a caller can see what it takes.
 
@@ -160,7 +160,7 @@ Several actions (`calls`) answer one step each, in order:
 ```
 
 Steps before the failed one stay applied, as the text says. A batch also answers `links`: the
-`link` of every step that has one, each record once, in the order first changed.
+`link` of every step that has one, each resource once, in the order first changed.
 
 `tilo_status` answers the same shape for one invocation, `link` included once a change it
 follows finished, and with `cancel: true` stops it.
@@ -173,7 +173,7 @@ follows finished, and with `cancel: true` stops it.
 ```
 
 The link to whatever `path` names: the resource's own `share-link` when it offers one (a
-message, a range of a text), else its record's. `mode` (`app`, the default, or `desktop`)
+message, a range of a text), else its resource's. `mode` (`app`, the default, or `desktop`)
 chooses how it opens.
 
 ### tilo_find

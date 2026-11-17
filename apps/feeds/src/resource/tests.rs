@@ -1026,7 +1026,7 @@ fn the_catalog_resolves_the_link_messages() {
 }
 
 fn window_library(instance: u64, urls: &[&str]) -> ui::tilo_resource::Doc {
-    let doc = ui::framework::testing::window_record::<FeedsShell>(instance, &[]).unwrap();
+    let doc = ui::framework::testing::window_resource::<FeedsShell>(instance, &[]).unwrap();
     let mut library = Replica::<Library>::from_doc(doc);
     for url in urls {
         subscribe(&mut library, url, None);
@@ -1095,7 +1095,7 @@ fn earlier_windows_libraries_merge_into_the_workspace_library() {
         assert_eq!(
             doc.clone().get_heads(),
             heads,
-            "window records are untouched"
+            "window resources are untouched"
         );
     }
 }

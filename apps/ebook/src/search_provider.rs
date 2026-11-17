@@ -1058,7 +1058,7 @@ mod tests {
                 let (provider, hit) =
                     assert_late_hit_reachable(|corpus| late_hit_library(corpus, false), 3_000);
                 assert_eq!(hit.kind, BOOK_KIND);
-                assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+                assert_eq!(hit.title, format!("ordinary resource 2999 {LATE_HIT_NEEDLE}"));
                 let address = hit.action_id;
                 assert_eq!(address, crate::resource::book_place_resource("book:002999"));
                 assert!(provider.books.resolve(&address).is_some());

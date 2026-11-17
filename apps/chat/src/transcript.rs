@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 
 use ui::tilo_resource::Id;
 
-use crate::record::Message;
+use crate::chat::Message;
 
 /// The id of a message delivered into `channel` by `author` at `ts`
 /// saying `body`: the same delivery always names the same message. Two

@@ -78,7 +78,7 @@ async fn round(seed: u64) {
                     doc,
                     "operator",
                     chat::Chat::CREATE_CHANNEL_WITH_ID.with(
-                        chat::record::chat::CreateChannelWithId {
+                        chat::chat::chat::CreateChannelWithId {
                             id: "c_general".into(),
                             name: "general".parse().expect("a channel name"),
                             category: None,

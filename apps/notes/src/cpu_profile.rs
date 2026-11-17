@@ -441,7 +441,7 @@ fn mounted_text_note_wheel_avoids_editor_projection_and_still_edits() {
     assert_ne!(
         app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
         before,
-        "the real edit reaches the canonical record"
+        "the real edit reaches the canonical resource"
     );
     assert!(
         app.surface(|notes: &mut crate::NotesApp| notes.editor_text_for_test())
@@ -633,7 +633,7 @@ fn owned_notebook() -> (
     for section in 0..OWNED_LONG_SECTIONS {
         writeln!(
             body,
-            "## Section {section}\n\nParagraph {section} records ordinary findings with **bold** \
+            "## Section {section}\n\nParagraph {section} resources ordinary findings with **bold** \
              words, `inline code` and a link to [[Meeting {}-{}]] among enough prose to wrap. \
              {}\n\n- observation {section}\n- follow-up {section}\n",
             section % OWNED_FOLDERS,

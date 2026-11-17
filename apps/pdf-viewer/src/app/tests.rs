@@ -341,7 +341,7 @@ fn highlight_on_first_page() -> ui::tilo_resource::Invoke<crate::PdfMarkup> {
 
 #[serial(pdfium)]
 #[test]
-fn each_document_keeps_its_markup_in_a_record_of_its_own() {
+fn each_document_keeps_its_markup_in_a_resource_of_its_own() {
     eprintln!("phase launching_on_another_document_shows_none_of_the_first");
     {
         let (_dir, a, b) = two_documents();
@@ -349,26 +349,30 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
         app.invoke(highlight_on_first_page())
             .expect("the owner annotates");
         assert_eq!(app.state().annotations.len(), 1);
-        let a_record = app.record().clone();
+        let a_resource = app.record().clone();
         assert_eq!(
             app.state().pinned_source().map(|source| source.name),
             Some("a.pdf".to_string()),
-            "the record pins the document it marks up"
+            "the resource pins the document it marks up"
         );
 
         let other = settled(app.relaunch(&[b.to_str().unwrap()]).unwrap());
-        assert_ne!(other.record(), &a_record, "b.pdf is a record of its own");
+        assert_ne!(
+            other.record(),
+            &a_resource,
+            "b.pdf is a resource of its own"
+        );
         assert!(
             other.state().annotations.is_empty(),
             "a.pdf's markup is not b.pdf's"
         );
 
         let again = settled(other.relaunch(&[a.to_str().unwrap()]).unwrap());
-        assert_eq!(again.record(), &a_record);
+        assert_eq!(again.record(), &a_resource);
         assert_eq!(again.state().annotations.len(), 1, "a.pdf keeps its markup");
 
         let mut bare = again.reopen().unwrap();
-        assert_eq!(bare.record(), &a_record);
+        assert_eq!(bare.record(), &a_resource);
         assert!(
             bare.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| {
@@ -378,7 +382,7 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
         );
     }
 
-    eprintln!("phase the_apps_open_shows_the_chosen_document_on_its_own_record");
+    eprintln!("phase the_apps_open_shows_the_chosen_document_on_its_own_resource");
     {
         let open = |path: &std::path::Path| PdfEffect::OpenPdf {
             path: Some(path.try_into().expect("an absolute path")),
@@ -387,7 +391,7 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
         let mut app = launched(&a);
         app.invoke(highlight_on_first_page())
             .expect("the owner annotates");
-        let a_record = app.record().clone();
+        let a_resource = app.record().clone();
 
         app.effect_confirmed(&open(&b))
             .expect("the app opens another document");
@@ -395,20 +399,20 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
         app.harness().relayout();
         assert_ne!(
             app.record(),
-            &a_record,
-            "b.pdf shows on a record of its own"
+            &a_resource,
+            "b.pdf shows on a resource of its own"
         );
         assert!(app.state().annotations.is_empty(), "without a.pdf's markup");
         assert_eq!(
             app.state().pinned_source().map(|source| source.name),
             Some("b.pdf".to_string())
         );
-        let b_record = app.record().clone();
+        let b_resource = app.record().clone();
 
         app.effect_confirmed(&open(&a)).expect("and back");
         settle_document(&mut app);
         app.harness().relayout();
-        assert_eq!(app.record(), &a_record);
+        assert_eq!(app.record(), &a_resource);
         assert_eq!(app.state().annotations.len(), 1, "a.pdf kept its markup");
 
         let missing = a.with_file_name("gone.pdf");
@@ -420,7 +424,7 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
             "the operation fails with the reason: {failure}"
         );
         app.harness().relayout();
-        assert_eq!(app.record(), &a_record, "the window keeps its record");
+        assert_eq!(app.record(), &a_resource, "the window keeps its resource");
         let note = app
             .with_surface::<PdfApp, _>(|pdf| pdf.status_note.get().cloned())
             .flatten()
@@ -438,7 +442,7 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
         bare.effect_confirmed(&open(&b))
             .expect("the bare window opens b.pdf");
         bare.harness().relayout();
-        assert_eq!(bare.record(), &b_record);
+        assert_eq!(bare.record(), &b_resource);
     }
 
     eprintln!("phase the_reader_on_its_own_opens_the_chosen_document_itself");
@@ -447,7 +451,7 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
         let mut app = PdfApp::empty();
         let mut st = crate::scenarios::record_state();
         app.open_chosen(&a);
-        settle_record(&mut app, &mut st);
+        settle_resource(&mut app, &mut st);
         assert!(app.has_document);
         assert_eq!(
             PdfMarkup::of(&st.doc)
@@ -456,7 +460,7 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
             app.source_blob
                 .as_ref()
                 .map(|source| hex::encode(source.hash())),
-            "the window's record now marks up the chosen document"
+            "the window's resource now marks up the chosen document"
         );
     }
 }
@@ -630,7 +634,7 @@ pub(super) fn app_with_state() -> (PdfApp, ui::State) {
 }
 
 #[test]
-fn opening_seeds_the_record_once_not_every_frame() {
+fn opening_seeds_the_resource_once_not_every_frame() {
     let mut app = crate::scenarios::sample_reader();
     let mut st = crate::scenarios::record_state();
     sync_fixture(&mut app, &mut st);
@@ -650,7 +654,7 @@ fn opening_seeds_the_record_once_not_every_frame() {
     assert_eq!(
         st.doc.get_heads(),
         seeded,
-        "a record that has its plan gets nothing more when writing is allowed again"
+        "a resource that has its plan gets nothing more when writing is allowed again"
     );
 }
 
@@ -763,7 +767,7 @@ fn semantic_targets_and_global_search_address_stable_pages() {
         assert!(resolve(&app, &state.doc, &hit).is_some());
 
         let markup = <crate::PdfMarkup as ui::tilo_resource::Resource>::read(&state.doc)
-            .expect("the record reads");
+            .expect("the resource reads");
         let entries = <crate::PdfMarkup as ui::tilo_resource::Resource>::search(&markup);
         let markup_hit = |needle: &str| {
             entries
@@ -884,7 +888,7 @@ fn pdf_bookmarks_are_globally_searchable() {
         return;
     };
     let mut state = crate::scenarios::record_state();
-    settle_record(&mut app, &mut state);
+    settle_resource(&mut app, &mut state);
     assert!(!app.doc.outline.is_empty(), "the fixture has bookmarks");
     let provider = searched(&app);
     let bookmark_address = provider
@@ -1105,7 +1109,7 @@ fn worker_reader_says_when_imported_page_bytes_are_missing() {
         return;
     };
     let mut state = crate::scenarios::record_state();
-    settle_record(&mut app, &mut state);
+    settle_resource(&mut app, &mut state);
     app.perform_action(
         &mut Edits::lend(&mut state.doc),
         crate::actions::import_pages_action(
@@ -2585,7 +2589,7 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
         assert_eq!(
             thread.comment.author,
             member("test-author"),
-            "the record keeps the member"
+            "the resource keeps the member"
         );
         assert_eq!(
             app.comment_author_name(&thread.comment.author),
@@ -2612,7 +2616,7 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
                 .expect("the reader for a person");
         let record = host
             .person::<crate::signature::SignatureProfile>()
-            .expect("the person's signature record");
+            .expect("the person's signature resource");
         let (mut app, mut st) = app_with_state();
         app.attach_signature(record.clone());
         app.begin_edit(EditTarget::Signer, "");
@@ -2672,7 +2676,7 @@ fn the_signatures_panel_reads_stored_days_in_the_windows_language() {
     );
     assert!(
         !heard.contains(&format!("Signed {} on page", placed.date)),
-        "the panel never speaks the record's ISO spelling"
+        "the panel never speaks the resource's ISO spelling"
     );
 }
 
@@ -2710,7 +2714,7 @@ fn open_raster_sample() -> Option<PdfApp> {
 pub(crate) fn open_sample_review() -> Option<(PdfApp, ui::State)> {
     let mut app = open_raster_sample()?;
     let mut st = crate::scenarios::sample_state();
-    settle_record(&mut app, &mut st);
+    settle_resource(&mut app, &mut st);
     app.apply_stage(None);
     app.read_text_for_search();
     settle_until(&mut app, &mut st, |app| !app.search_text_pending());
@@ -2740,7 +2744,7 @@ pub(super) fn settle_until(
     }
 }
 
-pub(super) fn settle_record(app: &mut PdfApp, st: &mut ui::State) {
+pub(super) fn settle_resource(app: &mut PdfApp, st: &mut ui::State) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         app.sync_settled(&mut st.doc, &st.root);
@@ -2752,7 +2756,7 @@ pub(super) fn settle_record(app: &mut PdfApp, st: &mut ui::State) {
         }
         assert!(
             ui::time::now() < deadline,
-            "the record never took the document over ({:?})",
+            "the resource never took the document over ({:?})",
             app.status_note
         );
         std::thread::sleep(Duration::from_millis(5));

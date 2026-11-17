@@ -840,7 +840,7 @@ fn import_entry() -> tilo_cloud_files::cloud::ImportEntry {
 // Cloud import stages through descriptor-relative paths only Linux provides.
 #[cfg(target_os = "linux")]
 #[test]
-fn cloud_import_queues_on_its_device_and_undo_reverts_its_record() {
+fn cloud_import_queues_on_its_device_and_undo_reverts_its_resource() {
     // The service socket is this test's alone: other tests run at the same time.
     let _home = tilo_test_env::TestHome::new().unwrap();
     let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
@@ -1144,7 +1144,7 @@ tilo_test_env::scenario! {
         assert!(!folder.join("Google.docx").exists());
     }
 
-    phase mounted_import_record_verifies_offline_without_host_or_source;
+    phase mounted_import_resource_verifies_offline_without_host_or_source;
     {
         use ui::tilo_actions::ActionRegistry;
         let root = tempfile::tempdir().unwrap();

@@ -135,7 +135,7 @@ pub(crate) fn view(
         crate::categories::Category::AgentModels => person_settings::providers_view(cx, app),
         crate::categories::Category::Billing => billing::view(cx, app),
         // The page lists the person's devices and agents too: its host keeps
-        // the record they are read from (the page's own identity api).
+        // the resource they are read from (the page's own identity api).
         crate::categories::Category::DevicesAccess => devices_access::view(cx, app),
         #[cfg(not(feature = "tilo-os"))]
         _ => None,

@@ -1,6 +1,6 @@
 //! End-to-end spine guard: create a note the way the tree does, type every
 //! block kind into it, and find all of it again after the notebook reopens.
-//! Breaks when Markdown shortcuts, the body's actions, the record or the
+//! Breaks when Markdown shortcuts, the body's actions, the resource or the
 //! reload path do.
 
 use crate::framework_support::{notes, surface};
@@ -8,7 +8,7 @@ use notes::read;
 use ui::widget::BlockKind;
 
 #[test]
-fn full_lifecycle_round_trips_through_the_record() {
+fn full_lifecycle_round_trips_through_the_resource() {
     let mut app = notes();
     surface(&mut app, |notes| {
         notes.new_note_for_test(None);

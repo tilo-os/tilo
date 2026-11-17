@@ -29,9 +29,9 @@ startup with an error; it is never replaced with an empty one.
 
 ## What the framework provides
 
-- **Storage and sync:** the note is a record whose text is collaborative;
+- **Storage and sync:** the note is a resource whose text is collaborative;
   concurrent edits merge character by character.
-- **Undo and history:** each edit is one undo step, attributed in the record's
+- **Undo and history:** each edit is one undo step, attributed in the resource's
   history; History mode previews a past version with the app's own view.
 - **Actions and permissions:** `scratchpad.note/edit` is what the editor, the
   Ctrl+K palette, agents and scripts invoke. A viewer's edits are refused.

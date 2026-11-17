@@ -1,7 +1,7 @@
 //! A person's own instructions for the resources they pick: what they want
 //! done with a book, a folder of invoices, a page of notes.
 //!
-//! A skill is not a setting of one app. It is the person's own record, kept
+//! A skill is not a setting of one app. It is the person's own document, kept
 //! in their workspace, holding a name, the resources it is for
 //! ([`Selector`]: the kinds and the
 //! fields that pick them out), the instruction that goes to the model, the
@@ -9,7 +9,7 @@
 //! accepted and rejected, the model to ask, and whether asking it does the
 //! one thing, works on the task or leaves the choice to the agent.
 //!
-//! What a skill holds is data, and the record is the skill's one home: the
+//! What a skill holds is data, and the resource is the skill's one home: the
 //! composer that offers it and the agent that reads it both read here, and a
 //! skill changes where a person changes anything else of theirs, with the
 //! same history and undo.

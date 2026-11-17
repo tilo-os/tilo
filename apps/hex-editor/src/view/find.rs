@@ -161,7 +161,7 @@ impl Editor {
         }
     }
 
-    /// Replace `spans` with `with` as one action of the record, one undo step.
+    /// Replace `spans` with `with` as one action of the resource, one undo step.
     fn replace_spans(&mut self, spans: &[(usize, usize)], with: &str) -> usize {
         let Some(bytes) = self.replacement(with) else {
             self.problem(

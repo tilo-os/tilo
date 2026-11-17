@@ -1,13 +1,13 @@
 //! Markup that was already in the PDF, taken over as edit records: the file's
 //! highlights, notes with their replies, free text, ink and form values become ordinary
-//! records, drawn from there on and never from the page image. Each remembers where it
+//! resources, drawn from there on and never from the page image. Each remembers where it
 //! came from and a fingerprint of its thread, so an export keeps an unchanged one, and
 //! no export shows a piece of markup twice.
 //!
-//! Imported records get ids from the source hash and their address in it, so two peers
-//! importing the same bytes produce the same records, which merge. A saved export is a
-//! new file with a record of its own: opening it takes the markup over once, since an
-//! annotation whose `/NM` is already a record is recognised as its own export.
+//! Imported resources get ids from the source hash and their address in it, so two peers
+//! importing the same bytes produce the same resources, which merge. A saved export is a
+//! new file with a resource of its own: opening it takes the markup over once, since an
+//! annotation whose `/NM` is already a resource is recognised as its own export.
 
 use std::collections::{HashMap, HashSet};
 use ui::tilo_resource;

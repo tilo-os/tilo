@@ -434,7 +434,7 @@ impl OccurrenceOverrideData {
             original_date: value.original_date.to_string(),
             original_time: value.original_time.map_or_else(String::new, |time| {
                 ui::format::machine!(
-                    "the override's stored time of day, as the record keeps it",
+                    "the override's stored time of day, as the resource keeps it",
                     time.format("%H:%M:%S").to_string()
                 )
             }),

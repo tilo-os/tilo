@@ -4,7 +4,7 @@
 //! The keyboard edits no document of its own. This person's keyboard
 //! preferences (letter layout, suggestions, personalization, recent emoji)
 //! are their settings ([`OskPreferences`]), which follow them to their other
-//! devices; what typing teaches it is their person record
+//! devices; what typing teaches it is their person resource
 //! ([`crate::learned::Learned`]). What is typed is never part of either: the
 //! word being composed, the key under a finger and the field's purpose live
 //! in the keyboard surface and are published nowhere, so the palette, agents
@@ -272,7 +272,7 @@ mod tests {
             !published.contains("secret") && !published.contains("Composing"),
             "neither the word being typed nor what was learned reaches a palette, agent or script: {published}"
         );
-        // The person's record of what was learned offers changing it and
+        // The person's resource of what was learned offers changing it and
         // taking a change back, never a way to read what it holds.
         let surface = app.agent_surface();
         let learned: Vec<&serde_json::Value> = surface
@@ -415,7 +415,7 @@ mod tests {
     fn learned(app: &mut TestApp<OskShell>) -> crate::learned::Learned {
         let record = app
             .person::<crate::learned::Learned>()
-            .expect("the person's record of what the keyboard learned");
+            .expect("the person's resource of what the keyboard learned");
         (*record.get()).clone()
     }
 
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn the_learned_records_history_reads_as_sentences() {
+    fn the_learned_resources_history_reads_as_sentences() {
         let mut app = keyboard();
         for key in ["h", "i", "Space"] {
             tap(&mut app, key);
@@ -470,10 +470,10 @@ mod tests {
         app.settle();
         let record = app
             .person::<crate::learned::Learned>()
-            .expect("the person's record of what the keyboard learned");
-        let document = record.record().document().expect("the record's document");
+            .expect("the person's resource of what the keyboard learned");
+        let document = record.record().document().expect("the resource's document");
         let mut replica = ui::tilo_resource::Replica::<crate::learned::Learned>::load(&document)
-            .expect("the record reads as what the keyboard learned");
+            .expect("the resource reads as what the keyboard learned");
         let english = include_str!("../locales/en-US.ftl");
         let catalogue = tilo_history::Catalogue::new("en-US", &[english]);
         let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);

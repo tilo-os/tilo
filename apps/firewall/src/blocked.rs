@@ -236,7 +236,7 @@ pub fn parse(text: &str, window_minutes: u32) -> BlockedReport {
         read_at: now,
         window_minutes,
         note: skipped.then(|| {
-            "Some journal records did not name a source address; they are counted without one."
+            "Some journal resources did not name a source address; they are counted without one."
                 .to_owned()
         }),
     }
@@ -268,9 +268,9 @@ struct Drop {
     source: Option<String>,
 }
 
-/// Read netfilter's `key=value` record, when `message` is one.
+/// Read netfilter's `key=value` resource, when `message` is one.
 fn parse_drop(message: &str) -> Option<Drop> {
-    // Netfilter's LOG record may or may not spell `DROP=1`; the stable shape is the
+    // Netfilter's LOG resource may or may not spell `DROP=1`; the stable shape is the
     // packet's own fields.
     let looks_like_packet = (message.contains("PROTO=") || message.contains("DPT="))
         && (message.contains("SRC=")
@@ -391,7 +391,7 @@ mod tests {
             assert_eq!(tcp.buckets.iter().sum::<u32>(), 2);
         }
 
-        phase a_record_without_a_source_is_counted_and_disclosed;
+        phase a_resource_without_a_source_is_counted_and_disclosed;
         {
             let report = parse(
                 r#"{"MESSAGE":"IN=wlan0 OUT= MAC=00:11 LEN=60 PROTO=TCP DPT=22 DROP=1","__REALTIME_TIMESTAMP":"1792918422528049"}"#,

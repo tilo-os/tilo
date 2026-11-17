@@ -403,7 +403,7 @@ impl Mail {
     }
 
     /// Messages fetched or found: each joins the mailbox with the flags its
-    /// source reports, and a fetched one records what its server holds. What
+    /// source reports, and a fetched one resources what its server holds. What
     /// the mailbox already says wins, except where the server changed since
     /// it last reported (another mail client read the message).
     #[action(external)]
@@ -1189,7 +1189,7 @@ impl Mail {
     /// Show the reader's flags, folders and labels on the loaded mail, and
     /// drop what was deleted for good. The mail's content is the engine's;
     /// what the reader did with it is the mailbox's.
-    /// Whether the record knows message `id`.
+    /// Whether the resource knows message `id`.
     pub(crate) fn knows(&self, id: &str) -> bool {
         self.messages.get(&Id::from_raw(id.to_owned())).is_some()
     }
@@ -2654,16 +2654,16 @@ mod reach_tests {
 
 #[cfg(test)]
 mod own_resource_tests {
-    /// A window naming no record opens the person's own mailbox, never the
+    /// A window naming no resource opens the person's own mailbox, never the
     /// workspace's: a reader of the workspace keeps their own mail like
     /// anyone else, and no other member reads it.
     #[test]
-    fn mail_opens_the_persons_own_record() {
+    fn mail_opens_the_persons_own_resource() {
         let definition = ui::framework::definition::<super::MailShell>();
         let person = ui::permissions::MemberId::person("ad".repeat(32));
         let own = definition
             .member_resource_of(&person)
-            .expect("each member keeps their own Mail record");
+            .expect("each member keeps their own Mail resource");
         assert_eq!(
             own.id,
             ui::resource::DocumentId::of_member(person.id(), "mail.mailbox").unwrap()

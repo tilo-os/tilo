@@ -52,7 +52,7 @@ fn harness() -> (
     (frame, records, checkout)
 }
 #[test]
-fn canonical_host_input_and_ime_commit_mutate_the_actual_writer_record() {
+fn canonical_host_input_and_ime_commit_mutate_the_actual_writer_resource() {
     let (mut frame, records, checkout) = harness();
     frame
         .perform_named("word_processor", &ui::a11y::Action::Focus)

@@ -90,11 +90,11 @@ tilo_test_env::scenario! {
         clippy::arithmetic_side_effects,
         reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
     )]
-    fn the_notebook_reads_publishes_and_merges_as_one_record;
+    fn the_notebook_reads_publishes_and_merges_as_one_resource;
 
     phase an_unnamed_note_is_offered_under_the_word_for_one;
     // A note nobody named is offered under the word for one, never under its own body's first line: a
-    // list and the tools that read it aloud then say the same name, and the record holds no title.
+    // list and the tools that read it aloud then say the same name, and the resource holds no title.
     {
         let mut notebook = Replica::<Notebook>::new();
         let made = note(&mut notebook, "", None);

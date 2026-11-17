@@ -1,4 +1,4 @@
-//! Records an app keeps beside its own as a chain of parts: what grows
+//! Resources an app keeps beside its own as a chain of parts: what grows
 //! without end — a chat's messages, a log — kept as numbered records of
 //! another resource type ([`DocumentId::part`]) in the workspace the app's record
 //! lives in.
@@ -70,7 +70,7 @@ use ui_core::resource::{
 use super::dispatch::Dispatcher;
 use super::history::{PART_EDIT_TYPE, PartEdit};
 use super::live::Live;
-use super::record::ResourceApi;
+use super::resources::ResourceApi;
 
 mod listing;
 
@@ -668,7 +668,7 @@ impl ChainCore {
             super::history::part_edit_specs()
                 .into_iter()
                 .filter(|spec| !own.contains(&spec.id))
-                .map(|spec| super::record::route_operation(spec, CHAIN_ACTION_TYPE, &self.id)),
+                .map(|spec| super::resources::route_operation(spec, CHAIN_ACTION_TYPE, &self.id)),
         );
         published
     }
@@ -1543,7 +1543,7 @@ impl<P: Chained> ChainState<P> {
                 Write::Done(index, created) => {
                     // Only what the window's person did themselves: an
                     // agent's step is its own to take back.
-                    if super::record::acts_for(invoker, &self.core.workspace.me) {
+                    if super::resources::acts_for(invoker, &self.core.workspace.me) {
                         self.written.borrow_mut().push(index);
                         self.undone.borrow_mut().clear();
                     }
@@ -2070,7 +2070,7 @@ fn route_at(
         .into_iter()
         .filter_map(|spec| {
             if spec.kind == OperationKind::Document {
-                Some(super::record::route_operation(
+                Some(super::resources::route_operation(
                     spec,
                     CHAIN_ACTION_TYPE,
                     chain,
@@ -2143,7 +2143,7 @@ impl<P: Chained> ResourceApi for ChainState<P> {
                 tilo_actions::decode_payload(&action.type_id, &action.payload)
                     .map_err(|error| error.to_string())?;
             for member in &group.actions {
-                super::record::not_by_app::<P>(member)?;
+                super::resources::not_by_app::<P>(member)?;
             }
             let resources = match self
                 .try_apply_group(&group, invoker)
@@ -2162,7 +2162,7 @@ impl<P: Chained> ResourceApi for ChainState<P> {
         }
         let action: P::Action =
             tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
-        super::record::not_by_app::<P>(&action)?;
+        super::resources::not_by_app::<P>(&action)?;
         // One that waits for its part creates its items once it is written.
         let resources = self
             .apply_as(&action, invoker, &mut None)
@@ -2187,22 +2187,22 @@ pub struct Chain<P: Chained> {
 /// ([`Chain::part_record`]).
 pub struct PartRecord<P: Chained> {
     chain: Rc<ChainState<P>>,
-    held: Rc<super::record::Held<P>>,
+    held: Rc<super::resources::Held<P>>,
 }
 
-impl<P: Chained> super::record::sealed::Hold<P> for PartRecord<P> {
+impl<P: Chained> super::resources::sealed::Hold<P> for PartRecord<P> {
     fn held(
         &self,
-        _storage: super::record::sealed::Storage<'_>,
-    ) -> Option<Rc<super::record::Held<P>>> {
+        _storage: super::resources::sealed::Storage<'_>,
+    ) -> Option<Rc<super::resources::Held<P>>> {
         Some(Rc::clone(&self.held))
     }
 
     fn api(
         &self,
-        _storage: super::record::sealed::Storage<'_>,
-    ) -> Option<super::record::sealed::Api> {
-        Some(super::record::sealed::Api(
+        _storage: super::resources::sealed::Storage<'_>,
+    ) -> Option<super::resources::sealed::Api> {
+        Some(super::resources::sealed::Api(
             Rc::clone(&self.chain) as Rc<dyn ResourceApi>
         ))
     }
@@ -2212,20 +2212,20 @@ impl<P: Chained> super::record::sealed::Hold<P> for PartRecord<P> {
 /// ([`ViewCx::resource_actions`](super::ViewCx::resource_actions)): its verbs and
 /// every held part's items, carried out on the part each names, whether or
 /// not a part is held yet (a first issue made in an empty tracker).
-impl<P: Chained> super::record::sealed::Hold<P> for Chain<P> {
+impl<P: Chained> super::resources::sealed::Hold<P> for Chain<P> {
     fn held(
         &self,
-        storage: super::record::sealed::Storage<'_>,
-    ) -> Option<Rc<super::record::Held<P>>> {
+        storage: super::resources::sealed::Storage<'_>,
+    ) -> Option<Rc<super::resources::Held<P>>> {
         let head = self.head()?;
         self.part_record(head)?.held(storage)
     }
 
     fn api(
         &self,
-        _storage: super::record::sealed::Storage<'_>,
-    ) -> Option<super::record::sealed::Api> {
-        Some(super::record::sealed::Api(
+        _storage: super::resources::sealed::Storage<'_>,
+    ) -> Option<super::resources::sealed::Api> {
+        Some(super::resources::sealed::Api(
             Rc::clone(&self.state) as Rc<dyn ResourceApi>
         ))
     }
@@ -2280,7 +2280,7 @@ impl<P: Chained> Chain<P> {
         let live = live_of::<P>(&**self.state.core.parts.borrow().get(&index)?)?.clone();
         let syncing = Rc::downgrade(&self.state);
         let applying = Rc::downgrade(&self.state);
-        let held = super::record::Held::new(
+        let held = super::resources::Held::new(
             self.state.core.id.clone(),
             P::LABEL.to_owned(),
             true,
@@ -2350,7 +2350,7 @@ impl<P: Chained> Chain<P> {
     }
 
     /// Apply `action` as the window's person, or whoever the invocation
-    /// carried out here is for ([`super::record::acting`]), to the part it changes. The
+    /// carried out here is for ([`super::resources::acting`]), to the part it changes. The
     /// part's number; `None` while that part is on its way from the
     /// workspace: the action waits for it, shows in [`Self::unwritten`]
     /// meanwhile, and is written once it is here, in the order asked.
@@ -2361,7 +2361,7 @@ impl<P: Chained> Chain<P> {
     pub fn apply(&self, action: &P::Action) -> Result<Option<u64>, ActionError> {
         let me = self.dispatch.me().unwrap_or(&self.state.core.workspace.me);
         self.state
-            .apply_as(action, &super::record::acting(me), &mut None)
+            .apply_as(action, &super::resources::acting(me), &mut None)
             .map(|written| written.map(|(index, _)| index))
     }
 
@@ -2377,12 +2377,12 @@ impl<P: Chained> Chain<P> {
             )
             .map_err(ActionError::Refused)?;
             for member in &group.actions {
-                super::record::not_by_app::<P>(member).map_err(ActionError::Refused)?;
+                super::resources::not_by_app::<P>(member).map_err(ActionError::Refused)?;
             }
             let me = self.dispatch.me().unwrap_or(&self.state.core.workspace.me);
             return self
                 .state
-                .try_apply_group(&group, &super::record::acting(me))
+                .try_apply_group(&group, &super::resources::acting(me))
                 .map(|written| match written {
                     Write::Done(index, _) => Some(index),
                     Write::Arriving => None,
@@ -2411,7 +2411,7 @@ impl<P: Chained> Chain<P> {
         let mut later: Option<Later> = Some(Box::new(then));
         let answer = match self
             .state
-            .apply_as(&action, &super::record::acting(me), &mut later)
+            .apply_as(&action, &super::resources::acting(me), &mut later)
         {
             Ok(None) => return,
             Ok(Some((index, _))) => Ok(index),
@@ -2756,7 +2756,7 @@ pub(crate) fn dispatching<P: Chained>(
         });
         // Whoever the invocation carried out here is for (an agent's call
         // of an effect that writes here), else the window's person.
-        let invoker = super::record::acting(&me);
+        let invoker = super::resources::acting(&me);
         state.apply_as(action, &invoker, &mut Some(later)).map(drop)
     }));
     let _ = told.set(dispatch.refused());
@@ -2943,7 +2943,7 @@ impl Chains {
         payload: &[u8],
         live: &mut ui_core::widget::Edits<'_>,
     ) -> Result<tilo_actions::ActionOutput, String> {
-        let request: super::record::ResourceAction =
+        let request: super::resources::ResourceAction =
             tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
         let api = self
             .apis

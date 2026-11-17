@@ -468,7 +468,7 @@ pub async fn run() {
                                 )
                                 .unwrap();
                         }
-                        let messages: Vec<chat::record::Message> = source
+                        let messages: Vec<chat::chat::Message> = source
                             .read_resource(&part, chat::messages::read_part)
                             .unwrap()
                             .messages

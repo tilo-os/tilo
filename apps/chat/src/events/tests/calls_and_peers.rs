@@ -118,7 +118,7 @@ fn text_only_workspace() -> (ChatApp, crate::testing::Workspace) {
         &mut doc,
         model::ME,
         Chat::DELETE_CHANNEL.with(chat::DeleteChannel {
-            channel: item(crate::record::VOICE_CHANNEL),
+            channel: item(crate::chat::VOICE_CHANNEL),
         }),
     )
     .unwrap();
@@ -297,7 +297,7 @@ fn peer(id: &str, name: &str, initials: &str, color: usize) -> ChatApp {
         "so.tilo.chat",
         &app.me.id.clone(),
     ));
-    app.active_channel = crate::record::CHAT_CHANNEL.into();
+    app.active_channel = crate::chat::CHAT_CHANNEL.into();
     app.thread_open = None;
     app.focus = Focus::Main;
     app

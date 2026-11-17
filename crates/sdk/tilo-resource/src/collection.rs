@@ -1449,7 +1449,7 @@ pub(crate) fn label_of(item: &ModelTable, id: &Id, value: &dyn Any) -> String {
         record.label.is_some() || record.label_with.is_some() || !record.label_parts.is_empty()
     });
     if names_itself {
-        return crate::word!("record-unnamed-item").read();
+        return crate::word!("resource-unnamed-item").read();
     }
     let mut text = Vec::new();
     (item.ops.collect_text)(item, value, &mut text);

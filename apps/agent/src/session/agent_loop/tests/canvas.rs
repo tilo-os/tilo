@@ -7,12 +7,12 @@
 use super::*;
 
 /// The session's own surface: the layout, two places standing, and the person's viewing
-/// record whose `show-style` switches the style.
+/// resource whose `show-style` switches the style.
 const SESSION_PEER: u64 = 31;
 /// The desktop's opens of the host programs installed on this computer.
 const HOST_PEER: u64 = 32;
 /// The tilolang apps' records the session serves: Tasks and Mail.
-const RECORDS_PEER: u64 = 33;
+const RESOURCES_PEER: u64 = 33;
 /// Notes, which publishes its open.
 const NOTES_PEER: u64 = 34;
 /// The session's api for a task's programs.
@@ -61,7 +61,7 @@ fn surface(peer: u64, app: &str, actions: Vec<ExportedAction>) -> BrokerActionSu
     }
 }
 
-/// The session's canvas, the tilolang apps' records, a setting of the session's that is no
+/// The session's canvas, the tilolang apps' resources, a setting of the session's that is no
 /// arranging, and the opens of host programs.
 pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
     // Notes' own open, by its title: a request naming Notes asks for something of it.
@@ -91,14 +91,14 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
     )];
     vec![
         surface(SESSION_PEER, "so.tilo.session", session_actions()),
-        surface(RECORDS_PEER, "so.tilo.session", resource_actions()),
+        surface(RESOURCES_PEER, "so.tilo.session", resource_actions()),
         surface(NOTES_PEER, "so.tilo.lang.notes", notes),
         surface(HOST_PEER, "so.tilo.desktop", host_actions()),
         surface(API_PEER, "so.tilo.agent", api),
     ]
 }
 
-/// The session's own actions: the layout's, two places' steps, the viewing record's
+/// The session's own actions: the layout's, two places' steps, the viewing resource's
 /// `show-style`, the chrome's `open-app` and a network setting.
 fn session_actions() -> Vec<ExportedAction> {
     let text = |name: &'static str| ActionParam::optional(name, ParamType::Text, name);
@@ -328,7 +328,7 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
     let offered = tool_names(&bodies[0]);
     drop(bodies);
     let canvas_at = first.find("The canvas: where the person sees things.");
-    // The apps' records are reached by programs, so the hundreds of operations their windows
+    // The apps' resources are reached by programs, so the hundreds of operations their windows
     // publish are not listed: one line says where they are.
     let applications_at = first.find("Other applications' operations");
     assert!(
@@ -370,7 +370,7 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
     assert!(first.contains(&format!("{MAIL} — Mail")), "{first}");
     // No app's window is open, yet programs reach every app the session serves through its api.
     assert!(
-        first.contains("- `tasks`: its record is a `tasks.Tasks`"),
+        first.contains("- `tasks`: its resource is a `tasks.Tasks`"),
         "the apps a program can use, open or not: {first}"
     );
     assert!(

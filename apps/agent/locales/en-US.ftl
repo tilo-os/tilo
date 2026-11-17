@@ -68,7 +68,7 @@ agent-fail-spend-limit = { $agent } has used today's { $spent }; ask its keeper 
 # of what happened, in their own terms, and where there is a setting to look
 # at, which one. The transport's error, the partial answer, the provider's
 # exposed reasoning and the recovery instruction the agent follows are the
-# run's working record, never this copy.
+# run's working resource, never this copy.
 agent-failure-unavailable = The model's service is unavailable right now.
 agent-failure-no-provider = No model is set up. Choose one in Settings, under Agent models.
 agent-failure-authentication = The model's provider did not accept its credential. Check it in Settings.

@@ -3,12 +3,12 @@
 //!
 //! Notes makes the note through its own published action and the tracker
 //! links it through its own, both for whoever asked: the person at the
-//! palette, an agent working on the issue, another member. Each app records
+//! palette, an agent working on the issue, another member. Each app resources
 //! its part once in its own history, where that person's undo takes it
 //! back, and the host decides each part with that person's grants. Nothing
 //! here knows how Notes keeps a note.
 //!
-//! The effect vocabulary is the record's ([`crate::model::TasksEffect`]),
+//! The effect vocabulary is the resource's ([`crate::model::TasksEffect`]),
 //! shared with whatever else reads the tracker; this module is where Tasks
 //! answers it.
 

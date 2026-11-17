@@ -1083,7 +1083,7 @@ impl Performer {
         let blob = blake3::hash(&bytes).to_hex().to_string();
         let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if op.inline {
-            // A picture a record keeps as it is: only an image type a
+            // A picture a resource keeps as it is: only an image type a
             // profile may carry.
             let kind = content_type.split(';').next().unwrap_or_default().trim();
             if !matches!(kind, "image/png" | "image/jpeg" | "image/webp") {

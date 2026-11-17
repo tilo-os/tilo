@@ -130,7 +130,7 @@ tilo_test_env::scenario! {
             "a bounded number of turns, not {turns}"
         );
         // The person reads one sentence of what happened in their terms — never
-        // the parser's own words about the model's call, which are the record kept
+        // the parser's own words about the model's call, which are the resource kept
         // beside it (`Failure`, `agent_loop::failure`).
         assert!(
             matches!(
@@ -141,14 +141,14 @@ tilo_test_env::scenario! {
             "the run ends and the conversation shows why, in a person's sentence: {:?}",
             terminal(&f.sent.borrow())
         );
-        // The parser's reason is the run's record, not its reply: whoever debugs
+        // The parser's reason is the run's resource, not its reply: whoever debugs
         // the failure still reads what was wrong with the call.
         assert!(
             f.session
                 .failure_detail
                 .as_deref()
                 .is_some_and(|detail| detail.contains("missing operation")),
-            "the record keeps why the call was refused: {:?}",
+            "the resource keeps why the call was refused: {:?}",
             f.session.failure_detail
         );
     }

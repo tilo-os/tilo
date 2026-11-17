@@ -7,7 +7,7 @@ use crate::model::{LatLon, Place};
 use ui::search::MatchTier;
 
 /// Two candidates closer together than this (metres) with the same normalised name are treated as
-/// the *same* place and de-duplicated. Comfortably larger than the jitter between two OSM records
+/// the *same* place and de-duplicated. Comfortably larger than the jitter between two OSM resources
 /// for one feature, yet far smaller than the gap between genuine namesakes in different towns.
 const DEDUPE_RADIUS_M: f64 = 150.0;
 

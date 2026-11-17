@@ -236,7 +236,7 @@ fn add_sms_route(app: &mut TestApp<MessagesShell>) -> String {
         .expect("read-only accounts")
         .record()
         .merge_peer_document(owner.record().document().expect("owner document"))
-        .expect("original record sync");
+        .expect("original resource sync");
     app.shared_person::<ContactDirectory>()
         .expect("contacts")
         .invoke(&ContactDirectory::CONFIRM_ACCOUNT.with((
@@ -815,7 +815,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_direct_conversation_reads_from_chats_messages;
-    // The conversation with a person reads from Chat's messages as the record api answers
+    // The conversation with a person reads from Chat's messages as the resource api answers
     // them: only theirs with this person, in each part's order, the person's as incoming.
     {
         use ui::tilo_resource::{MemberId, PersonId};

@@ -17,4 +17,4 @@ example-backups-restore = Restore a snapshot
 
 # The name an item nobody named is offered under: the label field it has none of is the record's
 # own, so the word stands in wherever the item is listed, in the reading person's language.
-record-unnamed-item = Untitled
+resource-unnamed-item = Untitled

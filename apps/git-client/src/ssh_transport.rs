@@ -208,7 +208,7 @@ impl client::Handler for HostVerifier {
     ) -> Result<bool, Self::Error> {
         let key = key.public_key();
         // russh's checker supports hashed entries but does not process marker
-        // records. Honor explicit key revocation before accepting a plain entry.
+        // resources. Honor explicit key revocation before accepting a plain entry.
         let entries = std::fs::read_to_string(&self.known_hosts)
             .context("cannot read ~/.ssh/known_hosts; trust the server explicitly first")?;
         for line in entries.lines() {

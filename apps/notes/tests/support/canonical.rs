@@ -1,4 +1,4 @@
-//! One canonical notebook record, written with the notebook's own actions,
+//! One canonical notebook resource, written with the notebook's own actions,
 //! and the storage owner that holds it. No app/widget construction.
 use notes::{
     PageId, Workspace,
@@ -146,7 +146,7 @@ impl NotebookFixture {
         out
     }
 
-    /// Write the notebook into its record, the workspace's default, once, and
+    /// Write the notebook into its resource, the workspace's default, once, and
     /// make it durable.
     pub fn write_notebook(&self) -> DocumentCheckout {
         let checkout = DocumentCheckout::new(

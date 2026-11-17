@@ -163,7 +163,7 @@ tilo_test_env::scenario! {
 
 /// An answer naming several things is set to be read (canvas.md §7, "An answer reads like an
 /// answer"): the turn's prompt asks for short paragraphs and a bulleted list, and a reply written
-/// so keeps its lines, list and all, as the words the conversation records.
+/// so keeps its lines, list and all, as the words the conversation resources.
 #[test]
 fn an_answer_naming_several_things_is_a_list() {
     let reply = "Nothing is due this week. Eleven tasks are overdue:\n\n\

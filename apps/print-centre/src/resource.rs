@@ -46,7 +46,7 @@ impl Default for PrintDefaults {
 }
 
 impl PrintDefaults {
-    /// What the record holds: how the person prints and scans unless they choose otherwise
+    /// What the resource holds: how the person prints and scans unless they choose otherwise
     /// for one document.
     pub fn read_document(
         &self,

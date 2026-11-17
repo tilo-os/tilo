@@ -60,9 +60,9 @@ fn children_of_kind<'a>(tree: &'a Published, kind: &str) -> Vec<&'a Published> {
 }
 
 tilo_test_env::scenario! {
-    fn the_session_record_opens_resolves_merges_and_publishes_its_changes;
+    fn the_session_resource_opens_resolves_merges_and_publishes_its_changes;
 
-    phase opening_and_resolving_a_merge_goes_through_the_record;
+    phase opening_and_resolving_a_merge_goes_through_the_resource;
     {
         let mut session = opened_merge();
         let hunk = conflict(&session);

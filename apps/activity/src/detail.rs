@@ -204,7 +204,7 @@ fn agent_session(provider: &Provider, range: &wire::Range, run: &wire::Session) 
             })
             .collect();
         parts.push(Box::new(Section::titled(
-            tr("activity-affected-records"),
+            tr("activity-affected-resources"),
             rows,
         )));
     }

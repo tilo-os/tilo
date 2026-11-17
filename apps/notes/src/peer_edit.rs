@@ -13,7 +13,7 @@ pub struct PeerEdit<'a> {
 }
 
 /// The changes `edits` make to `notebook`, in order, each as the incremental
-/// bytes the author's replica sends: what a record merges when they arrive.
+/// bytes the author's replica sends: what a resource merges when they arrive.
 /// Stops at the first edit that cannot be made (a notebook with no note).
 #[must_use]
 pub fn peer_edit_changes(notebook: &automerge::AutoCommit, edits: &[PeerEdit<'_>]) -> Vec<Vec<u8>> {

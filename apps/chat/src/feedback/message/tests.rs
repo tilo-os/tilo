@@ -129,7 +129,7 @@ tilo_test_env::scenario! {
     /// The message a filed report shows as.
     /// Each case was a test of its own, on a fixture of its own; a failure
     /// names the cases that failed.
-    fn a_filed_report_reads_as_a_message_with_its_picture_reactions_and_record;
+    fn a_filed_report_reads_as_a_message_with_its_picture_reactions_and_resource;
 
     phase a_picked_report_reads_out_its_picks_notes_actions_and_timings;
     {
@@ -153,7 +153,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(row.body.len(), lines.len(), "a paragraph per line");
         assert!(row.attachments.is_empty());
-        // The record keeps the structured report the person reviewed, not the
+        // The resource keeps the structured report the person reviewed, not the
         // sentences read out of it.
         assert_eq!(
             crate::feedback::report(&doc, &submission.id)
@@ -199,11 +199,11 @@ tilo_test_env::scenario! {
         assert_eq!(rows[0].reactions[0].count(), 2);
     }
 
-    phase a_bot_reading_the_record_through_the_api_reads_the_report_out;
+    phase a_bot_reading_the_resource_through_the_api_reads_the_report_out;
     {
         use ui::tilo_resource::Model as _;
         let (mut doc, submission) = picked(true);
-        // What the record api answers every reader: the record as plain data.
+        // What the resource api answers every reader: the resource as plain data.
         let read = ui::tilo_actions::remote::ResourceCopy::Document(doc.save())
             .readable()
             .unwrap();
@@ -212,7 +212,7 @@ tilo_test_env::scenario! {
             .unwrap()
             .values()
             .find(|filed| filed["v"]["submission"]["id"] == submission.id.as_str())
-            .expect("the report is in the record");
+            .expect("the report is in the resource");
         let read_back = Submission::from_json(&filed["v"]["submission"]).unwrap();
         assert_eq!(
             read_back.destination.channel,

@@ -121,7 +121,7 @@ impl BrowserWidget {
                 row = row.on_action(binding);
             }
             // One page can be forgotten without losing the rest, through the same verb that
-            // clears all of them. A window that keeps no history record offers no removal.
+            // clears all of them. A window that keeps no history resource offers no removal.
             let forget: Vec<Button> = self
                 .unit_binding(&id, "forget-visit")
                 .map(|binding| {
@@ -153,7 +153,7 @@ impl BrowserWidget {
             .collect()
     }
 
-    /// Forget one visited page in the person's record, and show the history it leaves: the
+    /// Forget one visited page in the person's resource, and show the history it leaves: the
     /// same verb the Settings row clears all of them with, for one page.
     pub(super) fn forget_visit(&mut self, url: &str) -> Result<(), String> {
         let record = self

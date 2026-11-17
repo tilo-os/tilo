@@ -140,7 +140,7 @@ fn settle_until(app: &mut App, done: impl Fn(&Terminal) -> bool) {
         .with_surface(|terminal: &mut crate::TerminalView| terminal.inspect_session())
         .unwrap();
     panic!(
-        "the session record never got there: {:#?} {inspected}",
+        "the session resource never got there: {:#?} {inspected}",
         app.state()
     );
 }

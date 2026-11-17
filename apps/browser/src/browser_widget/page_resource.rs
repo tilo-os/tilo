@@ -1,4 +1,4 @@
-//! The tab's record, kept in Browser's resource of page actions
+//! The tab's resource, kept in Browser's resource of page actions
 //! ([`crate::page_resource`]).
 //!
 //! The engine sets an operating action down as it ends and says so in the
@@ -6,7 +6,7 @@
 //! last looked and writes each action into the resource, as its actor. What
 //! a person types straight into the page no answer carries: the engine says
 //! it set that down, and the window writes it as the person's. A
-//! read of the tab's record answers from the resource, so it answers the
+//! read of the tab's resource answers from the resource, so it answers the
 //! same after the engine started again, and adds what only the engine knows
 //! at that moment: what is running and how many wait.
 
@@ -20,9 +20,9 @@ use super::{BrowserWidget, PAGE_OPERATION_TIMEOUT};
 use crate::page_resource::PageResource;
 
 impl BrowserWidget {
-    /// Keep this tab's record in `record`, Browser's record of page actions
+    /// Keep this tab's resource in `record`, Browser's resource of page actions
     /// in the workspace it is open in, as a tab of the device `device`.
-    pub(crate) fn attach_page_record(
+    pub(crate) fn attach_page_resource(
         &mut self,
         record: ui::framework::PersonResource<PageResource>,
         device: &str,
@@ -30,9 +30,9 @@ impl BrowserWidget {
         self.page_resource.attach(record, device);
     }
 
-    /// The page a window saves to show again, with the tab whose record it
+    /// The page a window saves to show again, with the tab whose resource it
     /// goes on with when it reopens on this device.
-    pub(crate) fn saved_with_page_record(&self, saved: Vec<u8>) -> Vec<u8> {
+    pub(crate) fn saved_with_page_resource(&self, saved: Vec<u8>) -> Vec<u8> {
         let Some(tab) = self.page_resource.tab() else {
             return saved;
         };
@@ -43,8 +43,8 @@ impl BrowserWidget {
         serde_json::to_vec(&page).unwrap_or(saved)
     }
 
-    /// Go on with the record of the tab a reopened window showed.
-    pub(crate) fn restore_page_record(&mut self, saved: &[u8]) {
+    /// Go on with the resource of the tab a reopened window showed.
+    pub(crate) fn restore_page_resource(&mut self, saved: &[u8]) {
         if let Ok(page) = serde_json::from_slice::<serde_json::Value>(saved)
             && let Some(tab) = page.get("tab").and_then(serde_json::Value::as_str)
         {
@@ -81,7 +81,7 @@ impl BrowserWidget {
 
     /// The page actions of named actors that run or wait their turn in this
     /// tab, each with the name the engine keeps its actor under: what the
-    /// engine sets down for them is still to come, so the tab's record does
+    /// engine sets down for them is still to come, so the tab's resource does
     /// not forget whom they were admitted as
     /// ([`crate::page_resource::TabRecorder::acts_as`]).
     pub(super) fn working_in_page(&self) -> Vec<crate::page_resource::Working> {
@@ -124,13 +124,13 @@ impl BrowserWidget {
                 .as_ref()
                 .is_ok_and(|reply| self.page_resource.set_down(reply.data.as_ref()));
             if more || self.page_resource.take_again() {
-                self.pull_page_record();
+                self.pull_page_resource();
             }
             return None;
         }
-        // A caller's own read of the record is answered from the resource
-        // ([`Self::page_record_reply`]).
-        if self.reads_page_record(request_id) {
+        // A caller's own read of the resource is answered from the resource
+        // ([`Self::page_resource_reply`]).
+        if self.reads_page_resource(request_id) {
             return Some(result);
         }
         // The engine set the action that holds the tab down as it answered
@@ -151,16 +151,16 @@ impl BrowserWidget {
             self.page_resource.owes(operation.invocation, actor, seq);
         }
         let (mut result, news) = self.page_resource.placed(result);
-        // The review screen draws the tab's record from the engine's own
+        // The review screen draws the tab's resource from the engine's own
         // list of it, which names actors and no device: the window says the
-        // device each worked from, as the record keeps it.
-        if self.reads_review_record(request_id)
+        // device each worked from, as the resource keeps it.
+        if self.reads_review_resource(request_id)
             && let Ok(reply) = &mut result
         {
             self.page_resource.name_devices(reply.data.as_mut());
         }
         if news {
-            self.pull_page_record();
+            self.pull_page_resource();
         }
         Some(result)
     }
@@ -168,22 +168,22 @@ impl BrowserWidget {
     /// The engine set `entry` down at its place `seq` and no action's
     /// answer carries it: what a person typed straight into the page, or
     /// what the window held the page from sending and how that ended. It
-    /// joins the tab's record in its place, as its actor's, and as the
+    /// joins the tab's resource in its place, as its actor's, and as the
     /// person's when it names none.
-    pub(super) fn hear_page_record(&mut self, seq: u64, entry: &serde_json::Value) {
+    pub(super) fn hear_page_resource(&mut self, seq: u64, entry: &serde_json::Value) {
         if self.page_resource.attached() {
             self.page_resource.engine_is(self.page_engine());
             if self.page_resource.heard(seq, entry) {
-                self.pull_page_record();
+                self.pull_page_resource();
             }
         }
-        // The tab's record moved under the page's review.
+        // The tab's resource moved under the page's review.
         self.page_review_moved();
     }
 
     /// Ask the engine what it set down since this window last read it. It
     /// reads nothing of the page, so it takes no turn.
-    fn pull_page_record(&mut self) {
+    fn pull_page_resource(&mut self) {
         let now = Instant::now();
         if self.page_resource.pulling(now) {
             return;
@@ -203,7 +203,7 @@ impl BrowserWidget {
     /// What the engine is asked for a caller's read of the tab's record:
     /// what it set down since this window last read it, whatever place the
     /// caller reads on from. The caller's place is answered by the resource.
-    pub(super) fn page_record_request(&mut self, asked: PageRequest) -> PageRequest {
+    pub(super) fn page_resource_request(&mut self, asked: PageRequest) -> PageRequest {
         if !self.page_resource.attached() || !matches!(asked, PageRequest::Ledger { .. }) {
             return asked;
         }
@@ -213,13 +213,13 @@ impl BrowserWidget {
         }
     }
 
-    /// The answer to a caller's read of the tab's record, `asked`, from the
+    /// The answer to a caller's read of the tab's resource, `asked`, from the
     /// resource: what the engine listed is written first, then the caller's
-    /// part of the record is read there. What only the engine knows now
+    /// part of the resource is read there. What only the engine knows now
     /// (the action running, how many wait behind it) is taken from its
-    /// answer. An engine that did not answer leaves the record as readable
+    /// answer. An engine that did not answer leaves the resource as readable
     /// as it was.
-    pub(super) fn page_record_reply(
+    pub(super) fn page_resource_reply(
         &mut self,
         asked: &PageRequest,
         engine: Result<PageReply, PageFailure>,
@@ -235,7 +235,7 @@ impl BrowserWidget {
             .as_ref()
             .is_ok_and(|reply| self.page_resource.set_down(reply.data.as_ref()));
         if more {
-            self.pull_page_record();
+            self.pull_page_resource();
         }
         let Some(serde_json::Value::Object(mut data)) = self.page_resource.read(*since, more)
         else {

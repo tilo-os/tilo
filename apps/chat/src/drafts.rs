@@ -1,4 +1,4 @@
-//! What is being written and has not been sent: a record of Chat's beside
+//! What is being written and has not been sent: a resource of Chat's beside
 //! the conversation, kept in the workspace Chat is open in.
 //!
 //! A draft is never part of the conversation's record: keystrokes never
@@ -12,7 +12,7 @@ use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::search_index::{IndexKind, IndexPerson};
 use ui::tilo_resource::{self, Demand, Doc, Id, Model, ModelError, Refusal, SearchEntry};
 
-use crate::record::Chat;
+use crate::chat::Chat;
 
 /// The person's unsent messages, by channel or thread.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -48,7 +48,7 @@ impl ChatDrafts {
     /// What search finds in the person's drafts: the words they have not
     /// sent, opening the conversation they are writing in.
     ///
-    /// The record is theirs, not the workspace's, and it is read like any
+    /// The resource is theirs, not the workspace's, and it is read like any
     /// other record: a device that never opened Chat finds the draft in it,
     /// and one they send stops being found with it.
     #[must_use]
@@ -80,7 +80,7 @@ impl ChatDrafts {
     }
 
     /// The words of every draft, read from `doc`: a draft is nothing but what
-    /// the person typed, so a read of the record reads them however little of
+    /// the person typed, so a read of the resource reads them however little of
     /// it the reader asked for — its order says nothing without them.
     fn load_drafts(&mut self, doc: &Doc, _demand: &Demand) -> Result<(), ModelError> {
         let whole = Demand::range(0..usize::MAX);

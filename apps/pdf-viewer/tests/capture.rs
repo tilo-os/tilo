@@ -44,7 +44,7 @@ fn capture_waits_for_production_visual_work() {
     let pinned = app
         .state()
         .pinned_source()
-        .expect("the record pins the bytes its markup is made against");
+        .expect("the resource pins the bytes its markup is made against");
     assert_eq!(pinned.hash(), tilo_content::hash_bytes(&opened));
     let content = ContentStore::in_dir(profile.path().join("content"));
     assert_eq!(

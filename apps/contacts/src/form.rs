@@ -193,7 +193,7 @@ fn type_options(current: &str) -> Vec<(String, String)> {
     options
 }
 
-/// The editing state: the record when the editor opened, the draft with its
+/// The editing state: the resource when the editor opened, the draft with its
 /// repeated rows, and every field's text.
 pub(crate) struct EditForm {
     pub base: Contact,

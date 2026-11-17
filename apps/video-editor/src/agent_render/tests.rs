@@ -160,7 +160,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             placed_content(&project),
             vec!["AB".repeat(32)],
-            "the reference the record names, once"
+            "the reference the resource names, once"
         );
     }
 

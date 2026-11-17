@@ -1,5 +1,5 @@
 //! What scrolling a long note repaints in a window of its own: the real
-//! Notes window and record, driven through `App::surface_input` and painted
+//! Notes window and resource, driven through `App::surface_input` and painted
 //! by `App::surface_frame_with_damage` for a host that keeps its last frame
 //! (`SurfaceDamage::copying`), as the native window presents.
 //!

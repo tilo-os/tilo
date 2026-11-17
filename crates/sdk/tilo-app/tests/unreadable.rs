@@ -180,8 +180,8 @@ impl ResourceApp for LearnedApp {
     const ID: &'static str = "so.tilo.test-unreadable-person";
     const TITLE: &'static str = "Memo";
 
-    fn records(records: &mut Records<'_>) {
-        records.person::<Learned>();
+    fn resources(resources: &mut Resources<'_>) {
+        resources.person::<Learned>();
     }
 
     fn view(cx: &mut ViewCx<Memo>) -> Element {

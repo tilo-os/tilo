@@ -1,4 +1,4 @@
-//! The address book's own record, the places its contacts are published
+//! The address book's own document, the places its contacts are published
 //! under, and the app.
 //!
 //! The contacts are kept in numbered parts beside the book
@@ -168,8 +168,8 @@ impl ResourceApp for ContactsShell {
     }
 
     /// The contacts, kept in parts beside the book.
-    fn records(records: &mut ui::framework::Records<'_>) {
-        records.chain::<ContactPart>();
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        resources.chain::<ContactPart>();
     }
 
     /// What a capture stages of the book, provided before the window is

@@ -32,7 +32,7 @@ pub struct Library {
 }
 
 impl Library {
-    /// What the record holds: the likes, the shared watch queue, the subscriptions, and the
+    /// What the resource holds: the likes, the shared watch queue, the subscriptions, and the
     /// comment likes and replies.
     pub fn read_document(
         &self,

@@ -163,7 +163,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn a_notice_waits_acts_once_and_records_outcomes;
+        fn a_notice_waits_acts_once_and_resources_outcomes;
 
         phase a_notice_waits_with_its_button_and_acting_takes_it_down;
         {

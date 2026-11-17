@@ -1,17 +1,17 @@
-//! The window's own record of the workspace. It holds nothing: the assistant is an item of
+//! The window's own document of the workspace. It holds nothing: the assistant is an item of
 //! the workspace's agents, its thread is a Chat conversation, its work is issues in Tasks
-//! and its standing work is Shortcuts. The window shows those records and keeps no copy.
+//! and its standing work is Shortcuts. The window shows those resources and keeps no copy.
 
 use ui::prelude::*;
 
-/// The Assistant window's record of the workspace.
+/// The Assistant window's resource of the workspace.
 #[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
 pub struct Window {}
 
 impl Window {
-    /// What the record holds: nothing of its own. It answers through
+    /// What the resource holds: nothing of its own. It answers through
     /// [`fields`](tilo_resource::read::fields), so a caller with no window open reads it as
-    /// it reads any app's record.
+    /// it reads any app's resource.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

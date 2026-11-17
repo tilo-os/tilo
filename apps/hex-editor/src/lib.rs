@@ -1,4 +1,4 @@
-//! Hex: a hex editor whose bytes are the [`HexEditor`] record, so every edit,
+//! Hex: a hex editor whose bytes are the [`HexEditor`] resource, so every edit,
 //! whoever makes it, syncs, shows in history and is undone per author. The view is
 //! the offset gutter, hex columns and ASCII column with one cursor across them,
 //! plus a data inspector, find and go to offset.

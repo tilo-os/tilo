@@ -145,7 +145,7 @@ pub enum PdfEffect {
     /// The text of the PDF's pages, at most 50 at a time: read on from `next`.
     /// A page that holds no text, as a scanned page does, is named in
     /// `without_text`: `look-page` answers a picture of it.
-    /// Reads the PDF the record pinned; changes nothing.
+    /// Reads the PDF the resource pinned; changes nothing.
     #[effect(kind = "read", returns = crate::model::PdfText, idempotent)]
     ReadText {
         #[param("The first page to read, 1-based; the first page when omitted")]
@@ -171,8 +171,8 @@ pub enum PdfEffect {
     },
     /// Open PDF from content
     ///
-    /// Pins a PDF the workspace keeps as content as the document this record
-    /// marks up. A record marks up one PDF: another is refused.
+    /// Pins a PDF the workspace keeps as content as the document this resource
+    /// marks up. A resource marks up one PDF: another is refused.
     #[effect(kind = "undoable", returns, idempotent, audience = "agents")]
     ImportPdfContent {
         #[param(content, "The PDF's content reference, `tilo.content:<reference>`")]
@@ -202,7 +202,7 @@ pub enum PdfEffect {
     CopySelection,
     /// Open PDF
     ///
-    /// Opens a PDF on its own markup record, in this window.
+    /// Opens a PDF on its own markup resource, in this window.
     #[effect(job, cancellable, destructive)]
     #[effect(label = "pdf-empty-open")]
     OpenPdf {

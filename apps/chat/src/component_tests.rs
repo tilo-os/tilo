@@ -368,7 +368,7 @@ fn idle_chat_asks_no_frame_to_solve_its_layout() {
 
 #[test]
 fn a_mounted_chat_at_rest_is_no_frames_layout_requester() {
-    let (mut frame, _records, _checkout) = semantic_component_harness("chat-layout-at-rest");
+    let (mut frame, _resources, _checkout) = semantic_component_harness("chat-layout-at-rest");
     for _ in 0..6 {
         let _ = frame.poll_frame().unwrap();
     }
@@ -418,7 +418,7 @@ fn canonical_composer_semantics_follow_the_actual_editor_focus() {
         node.semantics.as_ref().map_or(0, access)
             + node.children.iter().map(focused_count).sum::<usize>()
     }
-    let (mut frame, _records, _checkout) = semantic_component_harness("chat-focused-composer");
+    let (mut frame, _resources, _checkout) = semantic_component_harness("chat-focused-composer");
 
     let inspection = frame.inspection();
     let composer = inspect(&inspection.root, "chat.composer")
@@ -912,7 +912,7 @@ fn consecutive_typed_sends_leave_an_empty_composer_each_time() {
 
 /// The browser demo: a visitor and an agent mount of one workspace. The agent
 /// finds the visitor's message among the chat's messages, reads it, and
-/// replies and records its work in one call to the record's `record-work`;
+/// replies and records its work in one call to the resource's `record-work`;
 /// its reply is an agent's, by name.
 #[test]
 #[allow(
@@ -939,7 +939,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         serde_json::json!({"channel": "c_chat", "text": "Where does Odysseus wake up?"}),
     );
 
-    // The agent introduces itself, and the chat's own record names it by the row it writes.
+    // The agent introduces itself, and the chat's own document names it by the row it writes.
     let (mut agent, _, _) = component_mount_as(
         &cache,
         MemberId::agent("reading"),
@@ -980,7 +980,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     };
     let listed = messages(&agent);
     let question = listed.last().unwrap().clone();
-    // An agent reads the conversation from the chat's record and its parts.
+    // An agent reads the conversation from the chat's resource and its parts.
     let asked = crate::testing::messages_in(&records, "c_chat")
         .pop()
         .unwrap();
@@ -1036,7 +1036,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         })
         .unwrap();
     assert_eq!(author, MemberId::agent("reading"));
-    // Each records only its own work: nobody rewrites the agent's.
+    // Each resources only its own work: nobody rewrites the agent's.
     visitor.wait_until(ui::time::Duration::ZERO, |_| true);
     let shown = visitor.bound_resources(Some(&reply)).unwrap();
     let presentation = shown[0].presentation.clone().unwrap_or_default();
@@ -1430,7 +1430,7 @@ fn catalogue_poll_cannot_deliver_queued_media_after_its_owner_closes() {
     );
 }
 
-/// A change to the record from elsewhere: one field written, not committed.
+/// A change to the resource from elsewhere: one field written, not committed.
 fn remote_change(doc: &mut AutoCommit, key: &str, value: &str) {
     ui::tilo_resource::write_key(doc, &ROOT, key, &ui::tilo_resource::Atom(value.into())).unwrap();
 }
@@ -1616,7 +1616,7 @@ fn a_new_message_leaves_the_window_at_rest(frame: &mut ui::headless::FrameHarnes
             .map_or(0, |(_, calls, _)| *calls);
         assert!(
             misses <= 1,
-            "the post rediscovers the bound components once, where the record changed: {report}"
+            "the post rediscovers the bound components once, where the resource changed: {report}"
         );
         assert!(
             frames.len() <= 2,
@@ -1635,7 +1635,7 @@ tilo_test_env::scenario! {
 
     steps;
     {
-        let (mut frame, _records, _checkout) = semantic_component_harness("chat-long-channel");
+        let (mut frame, _resources, _checkout) = semantic_component_harness("chat-long-channel");
         let chain = crate::testing::chain();
         for index in 0..300 {
             frame
@@ -1777,7 +1777,7 @@ fn a_secondary_click_in_the_composer_offers_the_text_menu_where_it_is_drawn() {
     use ui::winit::dpi::PhysicalPosition;
     use ui::winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 
-    let (mut frame, _records, _checkout) = semantic_component_harness("chat-composer-text-menu");
+    let (mut frame, _resources, _checkout) = semantic_component_harness("chat-composer-text-menu");
     let inspection = frame.inspection();
     let composer = semantic_target_rect(&inspection.root, "chat.composer")
         .expect("the composer is drawn")
@@ -1856,10 +1856,10 @@ fn a_secondary_click_in_the_composer_offers_the_text_menu_where_it_is_drawn() {
 /// An agent's send is the action the composer's send button presses: the
 /// marker drawn for it rests on that button, never on a place it guessed. An
 /// agent names the action the way its listing shows it — `send` on the chat's
-/// own record — so that is the address the button has to answer.
+/// own document — so that is the address the button has to answer.
 #[test]
 fn an_agents_send_lands_on_the_composers_send_button() {
-    let (mut frame, _records, _checkout) = semantic_component_harness("chat-agent-send");
+    let (mut frame, _resources, _checkout) = semantic_component_harness("chat-agent-send");
     let button = semantic_target_rect(&frame.inspection().root, "chat.send")
         .expect("the composer's send button is drawn");
     let locus = frame

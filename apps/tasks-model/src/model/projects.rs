@@ -116,13 +116,13 @@ impl Tracker {
         )))
     }
 
-    /// What the record holds: the projects and areas.
+    /// What the resource holds: the projects and areas.
     ///
     /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record.
+    /// with no window open reads the resource as it reads any app's resource.
     ///
     /// # Errors
-    /// Refuses an item the record does not hold.
+    /// Refuses an item the resource does not hold.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

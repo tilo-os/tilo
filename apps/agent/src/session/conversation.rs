@@ -7,11 +7,11 @@
 //! step, and how it ended, by invoking chat's `record-work` as a step of the
 //! turn. The reply is the message its id and
 //! the summons derive (chat keeps that rule), so nothing here has to be
-//! stored to find it, and the conversation needs no record of its own.
+//! stored to find it, and the conversation needs no resource of its own.
 //!
-//! What the run records is what a person reads: its state, the operations it
+//! What the run resources is what a person reads: its state, the operations it
 //! dispatched, and — once, when it ends — its answer. How the run was planned
-//! stays in the run's own record. Every record a run makes lands in one group,
+//! stays in the run's own document. Every resource a run makes lands in one group,
 //! so its turn is undone whole.
 
 use anyhow::Result;
@@ -20,7 +20,7 @@ use serde_json::{Map, Value, json};
 use super::{Asked, Session, TaskAction, TaskActionStop, TurnUpdate};
 
 /// What a conversation's address in the workspace starts with: the chat
-/// record's kind and the collection its conversations are kept in.
+/// resource's kind and the collection its conversations are kept in.
 const CONVERSATION_PREFIX: &str = "chat.workspace/channels/";
 /// What separates a message's own id from its conversation's address.
 const MESSAGES: &str = "/messages/";
@@ -64,7 +64,7 @@ impl Cause {
 pub(super) struct Record {
     cause: Cause,
     /// The operations dispatched so far, each keyed by the id it was given
-    /// when it was dispatched; every record repeats them whole.
+    /// when it was dispatched; every resource repeats them whole.
     pub(super) steps: Vec<Value>,
     /// The words the run answers with, when it has any: the reply's text.
     answer: Option<String>,
@@ -111,7 +111,7 @@ impl Session {
     }
 
     /// End `run` as done: `answer` is the reply's text, and the run's own
-    /// record says `done` when there is no answer. A run with neither — a
+    /// resource says `done` when there is no answer. A run with neither — a
     /// model-planned run that ended with nothing said — is not reported as a
     /// success with a line nobody wrote: the person reads that the agent
     /// finished without answering.
@@ -144,7 +144,7 @@ impl Session {
     pub(super) fn show_turn(&mut self, run: &Asked, update: &TurnUpdate) -> Result<()> {
         match update {
             TurnUpdate::Accepted => self.record_state(run, "taken", json!({}), None),
-            // Progress narrates the run to its own record; the reply shows
+            // Progress narrates the run to its own document; the reply shows
             // the operations it dispatched instead. What a run spent is its
             // keeper's count. Neither is a state of the turn.
             TurnUpdate::Progress { .. } | TurnUpdate::Spent { .. } => Ok(()),
@@ -158,7 +158,7 @@ impl Session {
             TurnUpdate::Failed { message } => {
                 // What the host heard is the failure's sentence for a person —
                 // what happened, and at most what to do — and the run keeps the
-                // failure's record beside it for whoever debugs it later.
+                // failure's resource beside it for whoever debugs it later.
                 let detail = self.failure_detail.clone();
                 self.record_state_with_detail(
                     run,
@@ -234,7 +234,7 @@ impl Session {
             }
         }
         // An action whose label asks for what completes it ("Show as…") is about the value it
-        // was given ("Show as…: so.tilo.shell:strips"), never the record it changed, whose title
+        // was given ("Show as…: so.tilo.shell:strips"), never the resource it changed, whose title
         // still reads what it was before.
         if action.label.trim_end().ends_with('…')
             && action.arguments.len() == 1
@@ -281,8 +281,8 @@ impl Session {
     }
 
     /// A program's change as the person reads it: the action in its app's words (what it
-    /// declares it did, else its label) with the title of the record it changed, as the app
-    /// publishes both. A program names a change by its action's name and the record's id
+    /// declares it did, else its label) with the title of the resource it changed, as the app
+    /// publishes both. A program names a change by its action's name and the resource's id
     /// ("check" on `tl:…/i…-12`), and the person read "check", never "Complete: Book a haircut".
     fn change_line(&mut self, action: &str, resource: &str, label: &str) -> String {
         let catalogue = self.task_catalogue();
@@ -332,8 +332,8 @@ impl Session {
             .changes
             .first()
             .map(|row| {
-                // A change on an app's root record made something in it ("New task" on Tasks):
-                // the step is about what it made, the record the program's answer shows.
+                // A change on an app's root resource made something in it ("New task" on Tasks):
+                // the step is about what it made, the resource the program's answer shows.
                 let root = crate::tools::canvas::tilolang_app_of(&row.resource.reference.id)
                     .and_then(|app| {
                         row.resource
@@ -342,7 +342,7 @@ impl Session {
                             .strip_prefix(&format!("tl:{app}:"))
                     })
                     .is_some_and(|record| !record.contains('/'));
-                // The title the program gave it says what it made, whatever the record's label read
+                // The title the program gave it says what it made, whatever the resource's label read
                 // when the answer was taken ("Note" for a note titled in the same call).
                 let made = root
                     .then(|| titled_in(&step.program))
@@ -388,7 +388,7 @@ impl Session {
         report: &crate::tools::InvokeReport,
     ) -> Result<()> {
         // The same vocabulary the person is told the step in, said as done: the
-        // record says what happened, the note what is under way.
+        // resource says what happened, the note what is under way.
         let (resource, label) = match call {
             crate::tools::web::Call::Search { query, .. } => (
                 "web.search",
@@ -439,7 +439,7 @@ impl Session {
     /// Invoke chat's `record-work` on the reply to the turn's message, in
     /// `state` with `fields`, and with `say` for the words the reply gets
     /// when it has none yet. A state that ends the turn is only started: the
-    /// run is over, and following the record would read that as its
+    /// run is over, and following the resource would read that as its
     /// cancellation.
     fn record_state(
         &mut self,
@@ -451,7 +451,7 @@ impl Session {
         self.record_state_with_detail(run, state, fields, say, None)
     }
 
-    /// [`Self::record_state`], with the run's working record of a failure kept
+    /// [`Self::record_state`], with the run's working resource of a failure kept
     /// on the reply's work beside the words a person reads: the transport's
     /// error, the partial answer, the provider's exposed reasoning — for
     /// whoever debugs it later, never the reply's own sentence.
@@ -487,7 +487,7 @@ impl Session {
         let started = self.start_task_invocation(run, &child, &arguments);
         match started? {
             Ok(following) if ENDS.contains(&state) => {
-                // Started, not followed: the record ends the turn, and the host
+                // Started, not followed: the resource ends the turn, and the host
                 // reads a turn that ended as its answer's cancellation.
                 drop(following);
                 Ok(())
@@ -511,7 +511,7 @@ impl Session {
         }
     }
 
-    /// The chat action that records work on the reply to the turn's message,
+    /// The chat action that resources work on the reply to the turn's message,
     /// as the broker publishes it to this agent, once it does: an agent started
     /// for the turn may read the catalogue before Chat republished the message.
     /// Absent when the workspace offers no `record-work` on that reply, which
@@ -596,7 +596,7 @@ mod tests {
     /// A step that made a task on Tasks' root is about the task, by the title the program gave
     /// it: "New task: Call mum", never "New task: Tasks".
     #[test]
-    fn a_made_record_is_named_by_the_title_its_program_gave_it() {
+    fn a_made_resource_is_named_by_the_title_its_program_gave_it() {
         assert_eq!(
             titled_in("tasks.new_task(tasks.tasks, title: \"Call mum\", due: 2026-11-18)"),
             Some("Call mum".to_owned())

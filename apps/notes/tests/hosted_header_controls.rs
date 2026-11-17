@@ -19,7 +19,7 @@ fn page_count(f: &NotebookFixture, checkout: &ui::resource::DocumentCheckout) ->
 }
 
 /// Answers with a notice until its component arrives, as the browser
-/// desktop does while a tab's record is still loading.
+/// desktop does while a tab's resource is still loading.
 struct Arriving(Rc<RefCell<Option<AppComponent>>>);
 impl TileSource for Arriving {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
@@ -114,7 +114,7 @@ fn hosted_header_plus_creates_a_page_in_a_desktop_tab_built_late() {
     harness.attach_owner_wake_queue(wakes.clone()).unwrap();
     harness.relayout();
 
-    // The record arrives after the desktop is already running.
+    // The resource arrives after the desktop is already running.
     let mut component = component_support::component(&f, 7, component_support::existing(&checkout));
     component.mount_with_owner_queue(&wakes, |_| {}).unwrap();
     *arriving.borrow_mut() = Some(component);

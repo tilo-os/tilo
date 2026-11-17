@@ -60,7 +60,7 @@ impl CreateField {
         CreateField::Volumes,
         CreateField::Command,
     ];
-    /// Where the field's text is in the record.
+    /// Where the field's text is in the resource.
     pub fn path(self) -> Path<Containers, String> {
         let draft = Containers::paths().draft;
         match self {

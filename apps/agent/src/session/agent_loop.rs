@@ -22,7 +22,7 @@
 //!   truncated or malformed turns cannot dispatch tools;
 //! * an `invoke` the model marks `standalone` (independent of the steps
 //!   before it) is started without waiting for them to settle in their applications when
-//!   it acts on another record than every step still running
+//!   it acts on another resource than every step still running
 //!   ([`Session::start_independent`]); everything else waits for them first,
 //!   so a step that reads what an earlier one wrote stays after it;
 //! * the turn's running steps are followed by asks their host holds until a
@@ -72,7 +72,7 @@ mod progress;
 /// also says how many turns are left and asks the model to act.
 const DISCOVERY_NUDGE: usize = 3;
 /// After an open, the most to wait for the opened application's operations
-/// to be published (its window starts and binds a new record). The wait
+/// to be published (its window starts and binds a new resource). The wait
 /// ends on the catalogue that carries them, at once when they already are.
 const OPEN_SETTLE: Duration = Duration::from_secs(8);
 /// Most newly available operations an open lists.
@@ -168,7 +168,7 @@ pub(super) struct ActiveTurn {
     ready: VecDeque<StreamedCall>,
     /// The turn's end, once it has one: the model's complete body, or the
     /// failure it ended in, split into the sentence a person reads and the
-    /// record kept for debugging.
+    /// resource kept for debugging.
     finished: Option<Result<String, Failure>>,
     presentation: agent_provider_config::protocol::StreamState,
     /// Completed calls seen (`tool_call` frames): calls below this index
@@ -772,7 +772,7 @@ impl LoopState {
     }
 
     /// Count a successful operation as done in its app: the app that published it, and the
-    /// tilolang app whose record it acted on. A tilolang app's record is published under the
+    /// tilolang app whose resource it acted on. A tilolang app's resource is published under the
     /// session that serves it (`tl:<app>:<record>`): a step on it is a step in that app, which
     /// is how the model names the part it does.
     fn did_in(&mut self, offer: &surface::Offer) {
@@ -1292,8 +1292,8 @@ impl Session {
                 tools::MOST_SUMMARISED,
             );
         }
-        // The apps' own records are read and changed by programs, whose apps the first turn lists
-        // with their types and actions: the operations every open window and record publishes
+        // The apps' own documents are read and changed by programs, whose apps the first turn lists
+        // with their types and actions: the operations every open window and resource publishes
         // beside them (hundreds, under long ids) would only make the first answer slower to come,
         // and are a `list_operations` away for the request that needs one.
         if catalogue.offers.iter().any(|offer| {
@@ -1313,7 +1313,7 @@ impl Session {
 
     /// Stop the turn in flight, keeping what it streamed in the record: `said`
     /// is what a person reads, in their own terms, and `reason` — a timeout,
-    /// the task's time running out, a person's Stop — is kept in the record.
+    /// the task's time running out, a person's Stop — is kept in the resource.
     fn interrupt_turn(&mut self, reason: &str, said: &str, cancelled: bool) -> Failure {
         if let Some(turn) = &mut self.turn {
             use agent_provider_config::protocol::{ErrorKind, ModelError};
@@ -1328,7 +1328,7 @@ impl Session {
             turn.finished = Some(Err(Failure::spoken(said, reason)));
         }
         // The person reads what happened, in their terms; the reason the loop
-        // stopped the turn is the record kept beside it.
+        // stopped the turn is the resource kept beside it.
         let failure = Failure::spoken(said, reason);
         match self.turn.take() {
             Some(turn) => turn.retained_failure(&failure),
@@ -1336,7 +1336,7 @@ impl Session {
         }
     }
 
-    /// One model turn: stream it, validate its complete batch, execute and record
+    /// One model turn: stream it, validate its complete batch, execute and resource
     /// the results. `Some` ends the loop. A turn that ends early (cancelled,
     /// out of time, a broken model turn) asks the host to stop every
     /// independent invoke it left running.
@@ -1403,7 +1403,7 @@ impl Session {
             self.pump_turn_waiting(Duration::from_millis(50));
             self.absorb_catalogue_updates();
             if self.task_cancelled(run) {
-                // The person stopped it: the record needs no sentence beside
+                // The person stopped it: the resource needs no sentence beside
                 // the one their own Stop gave it.
                 let reason = self.interrupt_turn(
                     &crate::i18n::t("agent-cancel-thinking"),
@@ -1452,7 +1452,7 @@ impl Session {
                         // failure stays for a turn that cannot be answered,
                         // which the loop judges below. The person's sentence is
                         // the catalogue's, never the parser's own words ("invoke:
-                        // missing operation"): those are the record kept beside
+                        // missing operation"): those are the resource kept beside
                         // it, for whoever debugs the run.
                         Err(error) => {
                             let failure = Failure::unusable(&error).retained(
@@ -1545,7 +1545,7 @@ impl Session {
                     && state.malformed_turns < MOST_MALFORMED_TURNS
                 {
                     state.malformed_turns += 1;
-                    // What the model sent, as it sent it: the record of a refused call is the
+                    // What the model sent, as it sent it: the resource of a refused call is the
                     // call, not only the parser's reason.
                     let sent = conversation
                         .read_calls(raw)
@@ -1664,7 +1664,7 @@ impl Session {
             Err(error) => {
                 // A turn that called tools right after an answer was cut off
                 // is not that answer's continuation: the joined text is the
-                // record, and the run carries on with a fresh answer.
+                // resource, and the run carries on with a fresh answer.
                 conversation.continued();
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
@@ -1683,7 +1683,7 @@ impl Session {
                 }
                 // The person reads one clean sentence of what happened; the
                 // parser's own reason (a turn with neither a call nor a word,
-                // a call the loop cannot read) is the record kept beside it,
+                // a call the loop cannot read) is the resource kept beside it,
                 // never the reply's words.
                 return Ok(Some(LoopEnd::Failed(Failure::spoken(
                     &crate::i18n::t("agent-failure-invalid-response"),
@@ -2259,7 +2259,7 @@ impl Session {
     /// Run one of the agent's own web tools. The search or the read happens
     /// here, as this step of the run, and its answer is the call's result: the
     /// person was told what it is about as the step began, and the turn's
-    /// record keeps what it asked and what came of it beside every other step.
+    /// resource keeps what it asked and what came of it beside every other step.
     fn run_web(
         &mut self,
         run: &Asked,
@@ -2435,7 +2435,7 @@ impl Session {
         let view = offer.descriptor.kind == tilo_actions::OperationKind::View;
         let mut note = None;
         if let Some((app, opened_before)) = &opened {
-            let records = opened_records(outcome.output.value.as_ref(), app);
+            let records = opened_resources(outcome.output.value.as_ref(), app);
             let appeared = self.settle_opened(app, opened_before, &records, OPEN_SETTLE)?;
             let new_window = self
                 .app_windows(app)
@@ -2491,7 +2491,7 @@ impl Session {
     /// results.
     ///
     /// Only a plain invocation qualifies — a Task Center action or a native
-    /// task's child — on a record no running step acts on: an open, a view
+    /// task's child — on a resource no running step acts on: an open, a view
     /// change (both change what is published next) and a step taking the
     /// previous step's result all run in order.
     fn start_independent(
@@ -2668,7 +2668,7 @@ impl Session {
 
     /// The windows of `app` the task catalogue publishes operations for, as
     /// `(broker peer, record)`: each window is its own connection serving
-    /// its own record, so a second window is told apart from the first even
+    /// its own document, so a second window is told apart from the first even
     /// when it publishes the same resource ids.
     fn app_windows(&mut self, app: &str) -> HashSet<(u64, String)> {
         let peers: HashSet<u64> = self
@@ -2688,7 +2688,7 @@ impl Session {
 
     /// After an open of `app`, wait up to `wait` for the opened window's
     /// operations, ending on the catalogue that brings them: a window for
-    /// every record the open's result names (`records`), or else any window
+    /// every resource the open's result names (`records`), or else any window
     /// of `app` not in `before`. Returns at once when they are already
     /// published, as for an open that lands on a window already there.
     /// Whether they are.
@@ -2796,12 +2796,12 @@ impl Session {
     }
 }
 
-/// The records of `app` an open's result names as the windows it opened:
+/// The resources of `app` an open's result names as the windows it opened:
 /// the desktop's command receipt lists them under `opened`, each with its
 /// `app_id` and `document_id` (`tilo_desktop_model::commands::OpenedWindow`).
 /// Empty when the result names none — an owner that does not report its
 /// windows, or an open that is not the desktop's.
-fn opened_records(value: Option<&Value>, app: &str) -> Vec<String> {
+fn opened_resources(value: Option<&Value>, app: &str) -> Vec<String> {
     value
         .and_then(|value| value.get("opened"))
         .and_then(Value::as_array)

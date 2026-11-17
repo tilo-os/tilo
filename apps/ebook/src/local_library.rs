@@ -2,7 +2,7 @@
 //!
 //! A source path is a local portal grant on one device, not part of the
 //! shared library: each device keeps its grants and watched folders as its
-//! own entry in a record beside the library ([`BookFiles`]), so reopening a
+//! own entry in a resource beside the library ([`BookFiles`]), so reopening a
 //! book or watching a folder survives restart without putting a path into
 //! the library's document.
 
@@ -28,7 +28,7 @@ pub struct Stored {
 
 tilo_resource::json_model!(Stored);
 
-/// Where each device opens the library's books from, by device: a record
+/// Where each device opens the library's books from, by device: a resource
 /// Books keeps beside the library in the workspace. A path names a file on
 /// one device, so each device reads and writes only its own entry.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
@@ -37,11 +37,11 @@ pub struct BookFiles {
 }
 
 impl BookFiles {
-    /// What the record holds: where each device opens the library's books from.
+    /// What the resource holds: where each device opens the library's books from.
     ///
     /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
+    /// with no window open reads the resource as it reads any app's resource, and
+    /// a named item is read from the resource's table or by the read its own
     /// type gives it.
     pub fn read_document(
         &self,
@@ -74,7 +74,7 @@ impl BookFiles {
 
 #[derive(Clone, Default)]
 pub(crate) struct LocalLibrary {
-    /// Where the grants are kept: the [`BookFiles`] record and this
+    /// Where the grants are kept: the [`BookFiles`] resource and this
     /// device's id. `None` keeps them in memory only.
     store: Option<(PersonResource<BookFiles>, String)>,
     pub(crate) books: HashMap<String, PathBuf>,

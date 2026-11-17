@@ -122,10 +122,10 @@ fn a_chat_reads_and_lists_the_messages_of_every_part_its_host_holds() {
     // a part's worth of text: the posts that fill it, and then the part the
     // chain starts next, which is the head from then on.
     let mut filled = 0;
-    while filled * chat::record::MAX_MESSAGE_TEXT_BYTES <= chat::parts::PART_TEXT_BYTES {
+    while filled * chat::chat::MAX_MESSAGE_TEXT_BYTES <= chat::parts::PART_TEXT_BYTES {
         let text = format!(
             "{filled}: {}",
-            "x".repeat(chat::record::MAX_MESSAGE_TEXT_BYTES.saturating_sub(4))
+            "x".repeat(chat::chat::MAX_MESSAGE_TEXT_BYTES.saturating_sub(4))
         );
         post(&held, &text);
         filled = filled.saturating_add(1);

@@ -57,7 +57,7 @@ enum Drawing {
 pub struct FileChooser {
     content: Element,
     tools: Tools,
-    /// The recent artworks record and this device's id, in a live window.
+    /// The recent artworks resource and this device's id, in a live window.
     recents: Option<(PersonResource<ArtworkRecents>, String)>,
     live: Live<Artwork>,
     dispatch: Dispatcher<Artwork>,
@@ -513,9 +513,9 @@ impl FileChooser {
         );
     }
 
-    /// Change this device's recent artworks: in the record through the
+    /// Change this device's recent artworks: in the resource through the
     /// action `edit` makes for the device, or with `change` where there is
-    /// no record. Best effort: a failed write leaves the list as it was.
+    /// no resource. Best effort: a failed write leaves the list as it was.
     fn keep_recents(
         &self,
         edit: impl FnOnce(String) -> Invoke<ArtworkRecents>,

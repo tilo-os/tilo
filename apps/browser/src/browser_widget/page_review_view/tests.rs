@@ -129,13 +129,13 @@ fn agent(name: &str) -> ActionInvoker {
 /// holds, and who the engine says set that (`Value::Null` for no one).
 type Answer<'a> = (&'a str, &'a str, &'a str, Value);
 
-/// Set by `actor`'s action at place `seq` of the tab's record.
+/// Set by `actor`'s action at place `seq` of the tab's resource.
 fn by(actor: &str, seq: u64) -> Value {
     json!({"how": "action", "by": actor, "seq": seq})
 }
 
-/// The page holds `answers` and the tab's record `record` from now on: what
-/// the engine's forms, fields and record reads answer, in their own shapes,
+/// The page holds `answers` and the tab's resource `record` from now on: what
+/// the engine's forms, fields and resource reads answer, in their own shapes,
 /// until the page changes again.
 fn page_holds(engine: &TestEngine, answers: &[Answer<'_>], record: &[Value]) {
     let mut asked = Vec::new();
@@ -230,7 +230,7 @@ fn the_review_opens_for_a_person_and_for_an_agent_and_closes_to_the_page() {
         before
             .iter()
             .all(|ask| *ask == (None, PageRequest::Forms { frame: None })),
-        "no field and no record is read of a page nobody reviews: {before:?}"
+        "no field and no resource is read of a page nobody reviews: {before:?}"
     );
 
     let said = invoke(&mut app, None, &BrowserEffect::ReviewPage);
@@ -556,14 +556,14 @@ fn a_field_changed_after_it_was_set_is_marked_and_the_review_follows_the_page() 
     assert_eq!(
         row(&mut app, "Filled Arrival").as_deref(),
         Some("2027-02-03, By ada"),
-        "the record keeps what each wrote, oldest first"
+        "the resource keeps what each wrote, oldest first"
     );
 }
 
-/// What a person typed straight into the page stands in the tab's record
+/// What a person typed straight into the page stands in the tab's resource
 /// among the actions, said as typing and under no agent's name. What was
 /// written into a secret field, typed or by an action, shows as set and
-/// never as text, whatever the record's entry carries.
+/// never as text, whatever the resource's entry carries.
 #[test]
 fn what_a_person_typed_is_listed_as_typing_and_a_secret_only_as_set() {
     let (engine, mut app) = window();
@@ -592,7 +592,7 @@ fn what_a_person_typed_is_listed_as_typing_and_a_secret_only_as_set() {
     assert_eq!(
         row(&mut app, "Typed into Portal password").as_deref(),
         Some("Set, not shown, Direct input"),
-        "the record says the field was set"
+        "the resource says the field was set"
     );
     assert_eq!(
         row(&mut app, "Pressed a key in Card PIN").as_deref(),
@@ -716,7 +716,7 @@ fn what_was_dropped_is_listed_with_why() {
 #[test]
 fn a_secrets_text_is_never_in_the_reviews_accessibility_tree() {
     let (engine, mut app) = window();
-    // A read that carried a secret's text, and a record that kept it: the
+    // A read that carried a secret's text, and a resource that kept it: the
     // engine sends neither, and the review would not show them if it did.
     let leaked = json!({"seq": 1, "actor": "agent:ada", "action": "fill", "ok": true,
         "target": {"role": "textbox", "name": "Portal password"}, "text": "hunter2-secret"});

@@ -26,7 +26,7 @@ fn diagnostics_cache_reuses_only_identical_committed_inputs() {
 }
 
 #[test]
-fn diagnostics_switching_retains_exact_results_with_bounded_inactive_records() {
+fn diagnostics_switching_retains_exact_results_with_bounded_inactive_resources() {
     let (mut app, mut doc, first) = fixture();
     let first_node = app.session.active_buffer().unwrap().node;
     let other = app

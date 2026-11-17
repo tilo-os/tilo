@@ -702,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_dial_follows_record_changes_and_clearing_results() {
+    fn completed_dial_follows_resource_changes_and_clearing_results() {
         let mut results = measurements("complete");
         results.insert(
             0,
@@ -715,7 +715,7 @@ mod tests {
         let done = model(&complete(), &Reading::default(), &results);
         assert_eq!(done.readings.download, Some(123.0));
         assert_eq!(done.readings.location.as_deref(), Some("Another server"));
-        assert_eq!(done.history.len(), 3, "only the dial's record is omitted");
+        assert_eq!(done.history.len(), 3, "only the dial's resource is omitted");
         assert!(done.history[0].download.total_cmp(&642.7).is_eq());
 
         let cleared = model(&complete(), &Reading::default(), &[]);

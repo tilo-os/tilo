@@ -1,11 +1,11 @@
-//! Chat as every host runs it: the [`Chat`] record, what it answers to
+//! Chat as every host runs it: the [`Chat`] resource, what it answers to
 //! search and to a read, and the window over it.
 //!
-//! The record's verbs and storage are in [`crate::record`]. What the window
+//! The resource's verbs and storage are in [`crate::chat`]. What the window
 //! adds to the published tree is not document state: the effects it offers
 //! on the items it shows (open a conversation, reveal or read a message,
 //! join a voice channel's call), as live rows merged into the item
-//! resources the record publishes ([`crate::effects`]).
+//! resources the resource publishes ([`crate::effects`]).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -18,23 +18,23 @@ use ui::tilo_resource::{Id, Invoke, SearchEntry};
 use ui::widget::Element;
 
 use crate::app::{ChatApp, ChatRuntime, ChatWindow, SharedChat};
+pub use crate::chat::Chat;
+use crate::chat::chat;
 use crate::effects::ChatEffect;
 use crate::identity::LocalIdentity;
 #[cfg(feature = "samples")]
 use crate::messages::chat_part;
 #[cfg(feature = "samples")]
 use crate::parts::ChatPart;
-pub use crate::record::Chat;
-use crate::record::chat;
 
 impl Chat {
     /// What search finds in the chat record: the workspace's channels,
     /// conversations, categories, reviewed reports and people, each opening
     /// the item it names.
     ///
-    /// The messages are the messages' own record to offer
+    /// The messages are the messages' own document to offer
     /// ([`ChatPart::search`](crate::parts::ChatPart::search)): they are kept
-    /// in parts beside this record, and a device that never opened Chat finds
+    /// in parts beside this resource, and a device that never opened Chat finds
     /// them there.
     #[must_use]
     pub fn search(&self) -> Vec<SearchEntry> {
@@ -44,7 +44,7 @@ impl Chat {
             .iter()
             .filter(|(_, channel)| channel.is_channel())
             .map(|(id, channel)| conversation_entry(id, &channel.name, &channel.topic));
-        // A conversation the record holds as an item: a group of people, or a person and an
+        // A conversation the resource holds as an item: a group of people, or a person and an
         // agent. What it is called is its own name, which a kept one is made with, else what its
         // members are called; the row shows those members beside it.
         let conversations = self
@@ -76,7 +76,7 @@ impl Chat {
             Some(SearchEntry::new(&message.text, "Feedback").anchored(anchor("feedback", id)))
         });
         let people = self.people.iter().map(|person| {
-            let person_anchor = anchor("people", &crate::record::member_slot(&person.id));
+            let person_anchor = anchor("people", &crate::chat::member_slot(&person.id));
             SearchEntry::new(&person.name, "")
                 .anchored(person_anchor.clone())
                 .of_kind(IndexKind::Person)
@@ -103,20 +103,20 @@ impl Chat {
             .map(|member| IndexPerson {
                 name: self
                     .people
-                    .find(&crate::record::member_slot(&member))
+                    .find(&crate::chat::member_slot(&member))
                     .map(|person| person.name.trim().to_owned())
                     .unwrap_or_default(),
-                anchor: item_resource_id::<Self>("people", &crate::record::member_slot(&member)),
+                anchor: item_resource_id::<Self>("people", &crate::chat::member_slot(&member)),
                 identity: member.id().to_owned(),
                 agent: !member.is_person(),
             })
             .collect()
     }
 
-    /// What the chat record holds, for a caller that reads it: with no item,
+    /// What the chat resource holds, for a caller that reads it: with no item,
     /// the workspace's channels; with a channel, what it is about. Its messages
     /// are kept in parts beside the record: a caller reads them from the
-    /// chain the window publishes, or through the record api.
+    /// chain the window publishes, or through the resource api.
     pub fn content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let Some(item) = item else {
             return Ok(serde_json::json!({
@@ -147,15 +147,15 @@ impl Chat {
 }
 
 /// Chat as every host runs and mounts it: the chat widget is the window
-/// over [`Chat`], kept by the workspace as its own record.
+/// over [`Chat`], kept by the workspace as its own document.
 pub struct ChatShell;
 
 /// The glyph a conversation leads with when the row has no face of its own.
 const CONVERSATION_ICON: &str = "message-circle";
 
 /// The row that opens conversation `id`, as the window names it: its name and topic, among the
-/// record's conversations. The record's own search and the window's entries (a direct conversation
-/// the record keeps no row for) are one row, so a hit opens the conversation by one anchor.
+/// resource's conversations. The resource's own search and the window's entries (a direct conversation
+/// the resource keeps no row for) are one row, so a hit opens the conversation by one anchor.
 pub(crate) fn conversation_entry(id: &Id, name: &str, topic: &str) -> SearchEntry {
     SearchEntry::new(name.to_owned(), topic.to_owned())
         .anchored(item_resource_id::<Chat>("channels", id))
@@ -223,21 +223,21 @@ impl ResourceApp for ChatShell {
     const ICON: Option<&'static str> = Some("chat");
     const WORKSPACE_RESOURCE: bool = true;
 
-    /// The chat's messages, kept in parts beside the workspace's chat record.
-    fn records(records: &mut ui::framework::Records<'_>) {
-        records.chain::<crate::parts::ChatPart>();
-        // What the person is writing and has not sent: their own record in
+    /// The chat's messages, kept in parts beside the workspace's chat resource.
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        resources.chain::<crate::parts::ChatPart>();
+        // What the person is writing and has not sent: their own document in
         // the workspace, so a window that shows Chat and a device that only
-        // reads its records find the drafts alike.
-        records.person::<crate::drafts::ChatDrafts>();
+        // reads its resources find the drafts alike.
+        resources.person::<crate::drafts::ChatDrafts>();
         // What the person's agents learned about them: theirs alone here, as their drafts are,
         // and Chat's to keep because it serves every agent they keep in the workspace.
-        records.person::<ui::tilo_workspace_agent::learned::Learned>();
+        resources.person::<ui::tilo_workspace_agent::learned::Learned>();
         // The workspace's emoji and its agents are Chat's: every app of the
         // workspace opens them, and their changes are decided against Chat's
         // surface.
-        records.shared_workspace::<ui::tilo_workspace_emoji::WorkspaceEmoji>();
-        records.shared_workspace::<ui::tilo_workspace_agent::WorkspaceAgents>();
+        resources.shared_workspace::<ui::tilo_workspace_emoji::WorkspaceEmoji>();
+        resources.shared_workspace::<ui::tilo_workspace_agent::WorkspaceAgents>();
     }
 
     fn view(cx: &mut ViewCx<Chat>) -> Element {
@@ -272,7 +272,7 @@ impl ResourceApp for ChatShell {
         } else {
             ui::models::Models::default()
         };
-        // What the person is writing is theirs: kept in their own record.
+        // What the person is writing is theirs: kept in their own document.
         let drafts = cx.person::<crate::drafts::ChatDrafts>();
         let app = ChatApp::new(identity, runtime, content)
             .with_models(models)
@@ -280,14 +280,14 @@ impl ResourceApp for ChatShell {
             // The window's actions: its composer's send button is where Chat's
             // `send` lands, the action an agent's send runs too.
             .with_send_action(&cx.actions())
-            // The workspace's agents, as its own record of them names them: an agent is a
-            // member, and its name reads from the same record in every app of the workspace.
-            .with_agents_record(
+            // The workspace's agents, as its own document of them names them: an agent is a
+            // member, and its name reads from the same resource in every app of the workspace.
+            .with_agents_resource(
                 cx.shared_workspace::<ui::tilo_workspace_agent::WorkspaceAgents>(
                     ui::tilo_workspace_agent::OWNER,
                 ),
             )
-            .with_agents_opener(cx.record_opener(ui::tilo_workspace_agent::OWNER));
+            .with_agents_opener(cx.resource_opener(ui::tilo_workspace_agent::OWNER));
         // A search hit, or an agent's `open`, shows the item it names.
         cx.on_open(app.opener());
         // The shell keeps the workspace's channels as its sidebar, their width,
@@ -324,7 +324,7 @@ impl ResourceApp for ChatShell {
             .status(move || statuses.borrow().effect_statuses());
         let rows = Rc::clone(&chat);
         let row = Rc::clone(&chat);
-        // What the window lists that the record keeps no row for: a direct conversation a send
+        // What the window lists that the resource keeps no row for: a direct conversation a send
         // opened, an agent's among them, named by what the workspace calls its agents. The
         // sidebar lists the same conversations, so search and the sidebar never name one
         // differently.
@@ -333,7 +333,7 @@ impl ResourceApp for ChatShell {
             Publishes::new()
                 // The effects offered on the channels, categories, messages,
                 // reports and people the window shows: merged into the item
-                // resources the record publishes.
+                // resources the resource publishes.
                 .live_rows(move || rows.borrow().published_rows())
                 .live_row(move |id| row.borrow().published_row(id))
                 .search_entries(move || unrecorded.borrow().unrecorded_conversation_entries()),
@@ -433,10 +433,10 @@ impl ResourceApp for ChatShell {
         })]
     }
 
-    /// A new record's creator, and the workspace's first channels, `#chat` and
+    /// A new resource's creator, and the workspace's first channels, `#chat` and
     /// `#voice`, when it has none: under fixed ids and with the same values
     /// on every device, so concurrent first opens on several devices
-    /// converge on exactly those two. A capture's record is its scenario's
+    /// converge on exactly those two. A capture's resource is its scenario's
     /// instead.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Chat>> {
         if cx.host().is_some_and(|host| host.capture().is_some()) {
@@ -512,7 +512,7 @@ pub(crate) fn part_scenario(
 /// `long-thread`: three days of messages in the design crit, from the workspace's
 /// people, before the conversation the demo shows.
 #[cfg(feature = "samples")]
-fn long_thread_posts(me: &str) -> Vec<(Id, crate::record::Message)> {
+fn long_thread_posts(me: &str) -> Vec<(Id, crate::chat::Message)> {
     let people = ["u_aria", "u_milo", "u_sora", "u_devon"];
     let count = 240_usize;
     // The newest of them ends where the demo conversation begins.
@@ -542,7 +542,7 @@ fn long_thread_posts(me: &str) -> Vec<(Id, crate::record::Message)> {
             };
             (
                 Id::from_raw(format!("m_long_{index:03}")),
-                crate::record::Message::new(
+                crate::chat::Message::new(
                     Id::from_raw("c_crit"),
                     ui::tilo_resource::MemberId::person(author),
                     newest.saturating_sub(ago),
@@ -602,16 +602,16 @@ pub(crate) fn provider_stream_scenario(scenario: &str) -> Vec<Invoke<ChatPart>> 
 /// `channels`: a message elsewhere that mentions the reader, which the
 /// sidebar badges on its channel.
 #[cfg(feature = "samples")]
-fn mention_post() -> (Id, crate::record::Message) {
+fn mention_post() -> (Id, crate::chat::Message) {
     let text = "@You could you check the hover states on the new sidebar before standup?";
-    let post = crate::record::Message {
+    let post = crate::chat::Message {
         mentions: vec![crate::mention::Mention {
             user: ui::tilo_resource::MemberId::person(crate::model::ME),
             start: 0,
             len: "@You".len(),
             is_agent: false,
         }],
-        ..crate::record::Message::new(
+        ..crate::chat::Message::new(
             Id::from_raw("c_frontend"),
             ui::tilo_resource::MemberId::person("u_aria"),
             crate::demo::NOW - 30,
@@ -628,18 +628,18 @@ const DEMO_BRIDGE: &str = "5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1";
 /// `bridged`: a bridge's post of a line someone wrote on Discord, shown
 /// under their name and picture while it stays the bridge's.
 #[cfg(feature = "samples")]
-fn bridged_post() -> (Id, crate::record::Message) {
-    let post = crate::record::Message {
-        appearance: Some(crate::record::ShownAs {
+fn bridged_post() -> (Id, crate::chat::Message) {
+    let post = crate::chat::Message {
+        appearance: Some(crate::chat::ShownAs {
             name: "Bo".into(),
             avatar: Some("tilo-demo://avatar-bo".into()),
-            persona: Some(crate::record::ShownPersona {
+            persona: Some(crate::chat::ShownPersona {
                 service: "discord".into(),
                 account: "80351110224678912".into(),
                 linked: None,
             }),
         }),
-        ..crate::record::Message::new(
+        ..crate::chat::Message::new(
             Id::from_raw("c_crit"),
             ui::tilo_resource::MemberId::bot(DEMO_BRIDGE),
             crate::demo::NOW - 60,
@@ -672,17 +672,17 @@ pub(crate) fn agent_work_steps() -> Vec<(ui::tilo_resource::MemberId, Invoke<Cha
 }
 
 /// In the demo conversation: the reader summoning the agent, under the id
-/// [`DEMO_SUMMONS`] the agent's record of its work names.
+/// [`DEMO_SUMMONS`] the agent's resource of its work names.
 #[cfg(feature = "samples")]
-pub(crate) fn agent_summons() -> (Id, crate::record::Message) {
-    let summons = crate::record::Message {
+pub(crate) fn agent_summons() -> (Id, crate::chat::Message) {
+    let summons = crate::chat::Message {
         mentions: vec![crate::mention::Mention {
             user: demo_agent(),
             start: 0,
             len: "@Tide".len(),
             is_agent: true,
         }],
-        ..crate::record::Message::new(
+        ..crate::chat::Message::new(
             Id::from_raw("c_crit"),
             ui::tilo_resource::MemberId::person(crate::model::ME),
             crate::demo::NOW - 120,
@@ -692,24 +692,24 @@ pub(crate) fn agent_summons() -> (Id, crate::record::Message) {
     (Id::from_raw(DEMO_SUMMONS), summons)
 }
 
-/// On the demo conversation holding [`agent_summons`]: the agent's record
+/// On the demo conversation holding [`agent_summons`]: the agent's resource
 /// of the work it took on, by the agent.
 #[cfg(feature = "samples")]
 pub(crate) fn agent_work_part_steps() -> Vec<(ui::tilo_resource::MemberId, Invoke<ChatPart>)> {
     vec![(demo_agent(), agent_work(&Id::from_raw(DEMO_SUMMONS)))]
 }
 
-/// The demo agent's record of the work `summons` asked of it.
+/// The demo agent's resource of the work `summons` asked of it.
 #[cfg(feature = "samples")]
 pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatPart> {
     ChatPart::RECORD_WORK.with(chat_part::RecordWork {
         message: summons.clone(),
-        work: crate::record::WorkUpdate {
+        work: crate::chat::WorkUpdate {
             state: "doing".into(),
             app: None,
             did: Some("Add function".into()),
             about: Some("Revenue curve, preserving the current graph bounds".into()),
-            trace: vec![crate::record::StepUpdate {
+            trace: vec![crate::chat::StepUpdate {
                 id: "00000000-0000-4000-8000-000000000001".into(),
                 sequence: 0,
                 resource: "calculator.workspace".into(),
@@ -729,7 +729,7 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
     match &effect {
         // A direct conversation is one of the chat's own: its id names the
         // two people it is between, so opening and sending read and write the
-        // same record and the same parts as a channel's.
+        // same resource and the same parts as a channel's.
         ChatEffect::OpenDirectConversation { public_key } => {
             let (_, id) = chat.borrow().direct_conversation(public_key)?;
             chat.borrow_mut().open_conversation(&id, &cx.live().get());

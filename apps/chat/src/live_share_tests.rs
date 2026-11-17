@@ -8,7 +8,7 @@ use ui::tilo_actions::ActionInvoker;
 use ui::window_share::{EmbedState, OpenWindow};
 
 use crate::app::Hit;
-use crate::record::ShareAccess;
+use crate::chat::ShareAccess;
 use crate::resource::ChatShell;
 use crate::testing::{chain, message_item, mounted_rows};
 
@@ -66,7 +66,7 @@ fn a_shared_window_is_a_live_message_only_its_sharer_changes_it() {
         shared.text, "",
         "the card says what it is; no text is made up"
     );
-    let at = shared.resource().expect("it names its record");
+    let at = shared.resource().expect("it names its resource");
     assert_eq!(
         (at.app.as_str(), at.record.as_deref()),
         ("so.tilo.notes", Some("plan"))
@@ -162,7 +162,7 @@ fn an_ended_share_is_not_switched_and_reopening_shares_nothing() {
 }
 
 #[test]
-fn a_window_is_shared_whole_from_its_record_into_a_channel_that_takes_posts() {
+fn a_window_is_shared_whole_from_its_resource_into_a_channel_that_takes_posts() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     for arguments in [
         // A part of a resource is a reference, not a window.
@@ -170,7 +170,7 @@ fn a_window_is_shared_whole_from_its_record_into_a_channel_that_takes_posts() {
             "attached": {"app": "so.tilo.notes", "record": "plan",
                 "kind": "notes.workspace", "id": "plan", "label": "Plan",
                 "span": {"start": 1, "end": 4, "unit": "Chars"}}}),
-        // A window lives in a record; a path or a link is not one.
+        // A window lives in a resource; a path or a link is not one.
         json!({"channel": "c_chat",
             "attached": {"app": "/home/ada/plan.md", "record": "plan",
                 "kind": "notes.workspace", "id": "plan", "label": "Plan"}}),
@@ -338,7 +338,7 @@ fn the_desktop_shares_and_stops_through_chat_and_hears_what_is_shared() {
         .rfind(|m| m.share.is_some())
         .expect("shared from the panel");
     assert_eq!(shared.share.as_ref().unwrap().access, ShareAccess::Edit);
-    let at = shared.resource().expect("it names its record");
+    let at = shared.resource().expect("it names its resource");
     assert_eq!(
         (at.app.as_str(), at.record.as_deref()),
         ("so.tilo.notes", Some("plan"))
@@ -568,13 +568,13 @@ fn a_view_only_share_is_read_in_place() {
     ui::window_share::set_drawn(false);
 }
 
-/// An agent shares what it works on with nothing but the record's address:
-/// no window of that record is open on any device, and the card still asks
-/// the desktop for the record's own app, live, to watch and to work in.
+/// An agent shares what it works on with nothing but the resource's address:
+/// no window of that resource is open on any device, and the card still asks
+/// the desktop for the resource's own app, live, to watch and to work in.
 /// Nobody's desktop says whether "its window" is open, so the share stays
 /// live until the agent, or the person it acts for, ends it.
 #[test]
-fn an_agent_shares_a_record_with_no_window_of_it_open() {
+fn an_agent_shares_a_resource_with_no_window_of_it_open() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     let window = ui::hosted_window::HostedWindow::new();
     let _hosted = ui::window_toolbar::enter(Some(&window));
@@ -590,7 +590,7 @@ fn an_agent_shares_a_record_with_no_window_of_it_open() {
             "attached": {"app": "so.tilo.notes", "record": "plan",
                 "kind": "notes.workspace", "id": "plan", "label": "Plan"}}),
     )
-    .expect("an agent shares a window by its record's address");
+    .expect("an agent shares a window by its resource's address");
     app.harness().resize((1280, 900)).unwrap();
     app.settle();
     app.settle();
@@ -614,7 +614,7 @@ fn an_agent_shares_a_record_with_no_window_of_it_open() {
     assert_eq!(
         (embeds[0].view.app.as_str(), embeds[0].view.record.as_str()),
         ("so.tilo.notes", "plan"),
-        "the desktop is asked for the record's own app"
+        "the desktop is asked for the resource's own app"
     );
 
     // Its person works in it where the conversation shows it.

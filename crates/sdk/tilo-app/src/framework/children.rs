@@ -45,7 +45,7 @@ use ui_core::widget::Edits;
 
 use super::chain::{CHAIN_ACTION_TYPE, WorkspaceResources};
 use super::live::Live;
-use super::record::ResourceApi;
+use super::resources::ResourceApi;
 
 /// The operation type a child's own actions are carried out under on the
 /// container's API: the action and the child it changes.
@@ -914,7 +914,7 @@ impl<C: ChildResource> ChildrenState<C> {
 
     /// `spec` carried out on this container's API.
     fn route(&self, spec: ActionSpec) -> ActionSpec {
-        super::record::route_operation(spec, CHAIN_ACTION_TYPE, &self.id)
+        super::resources::route_operation(spec, CHAIN_ACTION_TYPE, &self.id)
     }
 }
 
@@ -993,7 +993,7 @@ fn wrap_child(spec: ActionSpec, api: &str, child: &Id) -> ActionSpec {
         .and_then(|action| {
             EncodedAction::encode_operation(
                 CHAIN_ACTION_TYPE,
-                &super::record::ResourceAction {
+                &super::resources::ResourceAction {
                     record: api.clone(),
                     action,
                 },
@@ -1176,7 +1176,7 @@ impl<C: ChildResource> ChildrenState<C> {
                 }
                 let typed: C::Action = tilo_actions::decode_json(&request.action.payload)
                     .map_err(|error| error.to_string())?;
-                super::record::not_by_app::<C>(&typed)?;
+                super::resources::not_by_app::<C>(&typed)?;
                 let resources = self
                     .apply_to(&request.child, &typed, invoker)
                     .map_err(|error| error.to_string())?;
@@ -1315,7 +1315,7 @@ impl<C: ChildResource> Children<C> {
     /// As the API refuses it.
     pub fn apply(&self, id: &Id, action: &C::Action) -> Result<(), ActionError> {
         self.state
-            .apply_to(id, action, &super::record::acting(&self.me))
+            .apply_to(id, action, &super::resources::acting(&self.me))
             .map(drop)
     }
 
@@ -1327,7 +1327,7 @@ impl<C: ChildResource> Children<C> {
         let Some(parent) = &self.dispatch else {
             return self.state.lifecycle(
                 step,
-                &super::record::acting(&self.me),
+                &super::resources::acting(&self.me),
                 tilo_resource::origin_now_ms(),
                 None,
             );
@@ -1356,7 +1356,7 @@ impl<C: ChildResource> Children<C> {
         action: &EncodedAction,
         invoker: &ActionInvoker,
     ) -> Result<tilo_actions::ActionOutput, String> {
-        let request: super::record::ResourceAction =
+        let request: super::resources::ResourceAction =
             tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
         if request.record != self.state.id() {
             return Err(format!("`{}` is another record", request.record));

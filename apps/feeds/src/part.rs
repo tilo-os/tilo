@@ -1,17 +1,17 @@
 //! The library's articles, kept in numbered parts beside the library.
 //!
-//! One record cannot hold every article a reader ever fetched at a cost that
-//! stays flat: every reader of a record loads, verifies and diffs all of it,
+//! One resource cannot hold every article a reader ever fetched at a cost that
+//! stays flat: every reader of a resource loads, verifies and diffs all of it,
 //! so one article marked read would cost every article fetched before it. The
-//! articles live in a chain of [`ArticlePart`] records instead (`tilo_app`'s
+//! articles live in a chain of [`ArticlePart`] resources instead (`tilo_app`'s
 //! `Chained`), each holding up to [`PART_ARTICLES`] articles or
 //! [`PART_TEXT_BYTES`] of their text; a change touches the one part holding its
 //! article. What is above the articles — the folders and the subscriptions —
-//! stays in the library's own record ([`crate::model::Library`]).
+//! stays in the library's own document ([`crate::model::Library`]).
 //!
 //! - **Where a fetched article goes.** To the newest part, unless it is full
 //!   ([`new_part`]): then to the next. Two writers starting the same part
-//!   start the same record, so their articles meet there.
+//!   start the same resource, so their articles meet there.
 //! - **Where a change goes.** To the part holding the article it names.
 //! - **Reading in one go.** Marking a subscription (or everything) read is one
 //!   step over articles of many parts, which no one part can take. It is
@@ -607,7 +607,7 @@ pub fn prepare(
     Ok(())
 }
 
-/// The chain the parts belong to, beside the library's own record.
+/// The chain the parts belong to, beside the library's own document.
 #[must_use]
 pub fn chain() -> ui::resource::DocumentId {
     ui::resource::DocumentId::derived("articles", &ui::resource::DocumentId::workspace_default())

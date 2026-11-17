@@ -412,7 +412,7 @@ impl Sessions {
 
     pub fn rename_environment(&mut self, record: &str, name: &str) -> Result<(), String> {
         if !tilo_environment::is_record_key(record) {
-            return Err("not an environment record".into());
+            return Err("not an environment resource".into());
         }
         self.environments = self.directory_request(&serde_json::json!({
             "op": "environment-action",
@@ -431,7 +431,7 @@ impl Sessions {
         writable: bool,
     ) -> Result<(), String> {
         if !tilo_environment::is_record_key(record) {
-            return Err("not an environment record".into());
+            return Err("not an environment resource".into());
         }
         self.environments = self.directory_request(&serde_json::json!({
             "op": "environment-action",

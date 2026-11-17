@@ -814,7 +814,7 @@ fn a_release_and_another_actors_action_are_both_answered() {
     assert_eq!(output.value.clone().unwrap()["released"], true);
 }
 
-/// The tab's record says who let a held departure leave, and the engine that
+/// The tab's resource says who let a held departure leave, and the engine that
 /// keeps it cannot know: the window's answer says. An agent's action reached
 /// the submission, and the engine sets the hold down under that agent. The
 /// person's allow runs the agent's invocation again, and what lets the
@@ -1013,7 +1013,7 @@ fn a_hold_beyond_those_the_window_asks_about_is_turned_away_at_once() {
             (9, false, AnsweredBy::TooMany),
             (30, false, AnsweredBy::TooMany)
         ],
-        "each is answered as one too many, which the tab's record sets down"
+        "each is answered as one too many, which the tab's resource sets down"
     );
 }
 

@@ -12,7 +12,7 @@
 //! stale; `BLESS=1` rewrites it.
 //!
 //! The program is a fixed run of loops: up to six passes each read Chat's
-//! records through the record api, ask `plan-event` what to do and loop over
+//! resources through the resource api, ask `plan-event` what to do and loop over
 //! its lists. A pass runs only while
 //! the previous plan asked for another, so a reply waits for its thread and
 //! a post for its author's avatar.
@@ -90,7 +90,7 @@ fn guild(id: &str, action: &str, args: &[(&str, Binding)]) -> Step {
     )
 }
 
-/// A Chat verb on the bridged Chat record, naming its item by id.
+/// A Chat verb on the bridged Chat resource, naming its item by id.
 fn chat(id: &str, action: &str, args: &[(&str, Binding)], shown: bool) -> Step {
     invoke(
         id,
@@ -102,7 +102,7 @@ fn chat(id: &str, action: &str, args: &[(&str, Binding)], shown: bool) -> Step {
 }
 
 /// A Chat verb on the chat's messages, which the chat keeps in a chain of
-/// parts beside its record and publishes as one resource, naming its
+/// parts beside its resource and publishes as one resource, naming its
 /// message by id.
 fn message(id: &str, action: &str, args: &[(&str, Binding)], shown: bool) -> Step {
     invoke(
@@ -199,7 +199,7 @@ fn mirrored_post(step: &str, extra: &[(&str, Binding)]) -> Vec<Step> {
 fn pass() -> Vec<Step> {
     let plan_step = |id: &str, pointer: &str| Binding::step(id, pointer);
     vec![
-        // Chat's record of the workspace, and the newest part of its
+        // Chat's resource of the workspace, and the newest part of its
         // messages' chain: however long the chat, a pass reads no more.
         Step::new(
             "chat",
@@ -743,7 +743,7 @@ fn pass() -> Vec<Step> {
 fn triggers() -> Vec<TriggerSpec> {
     let mut triggers = vec![
         // Every Chat change by anyone but the bridge itself, which the
-        // dispatcher never fires on its own output: to the chat record
+        // dispatcher never fires on its own output: to the chat resource
         // (channels, people) and to its messages.
         TriggerSpec::ResourceChanged {
             kind: CHAT_KIND.into(),
@@ -852,7 +852,7 @@ fn program() -> Shortcut {
     }
 }
 
-/// Every action a real Chat record (with a channel and a message) and a
+/// Every action a real Chat resource (with a channel and a message) and a
 /// connected guild publish.
 fn catalog() -> tilo_automation::ActionCatalog {
     let mut chat = TestApp::<ChatShell>::new().unwrap();
@@ -871,7 +871,7 @@ fn catalog() -> tilo_automation::ActionCatalog {
     .unwrap();
     let mut guild = TestApp::<Discord>::new().unwrap();
     guild
-        .invoke(Guild::CONNECT.with(discord::record::guild::Connect {
+        .invoke(Guild::CONNECT.with(discord::guild::guild::Connect {
             guild_id: "1".into(),
             name: "Tilo".into(),
             only_channel: None,
@@ -923,7 +923,7 @@ fn the_bridge_program_checks_against_chat_and_discord_and_is_current() {
 }
 
 /// The bridge reacts for Discord people through the field edit of Chat's
-/// messages, and no other record of Chat's: the messages' other fields are
+/// messages, and no other resource of Chat's: the messages' other fields are
 /// read-only, so a reaction is all that field edit reaches.
 #[test]
 fn the_bridge_field_edits_only_chats_messages() {
@@ -976,7 +976,7 @@ fn the_program_names_only_the_discord_connector_and_chat() {
 /// Chat every message mirrored from that Discord author, and only those.
 #[test]
 fn blocking_a_persona_removes_what_was_mirrored_of_them() {
-    use discord::record::guild;
+    use discord::guild::guild;
     use discord::{MappedKind, Origin};
     use tilo_automation::dispatch::{Armed, Event, Firer, dispatch, event_of};
     use ui::tilo_resource::Replica;

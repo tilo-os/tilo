@@ -1,7 +1,7 @@
 //! The composers: the SDK rich-text editor, embedded where chat draws it.
 //!
 //! A channel or thread composer edits that surface's shared draft: rich text
-//! in the document, the record's `drafts` field under the composer's key,
+//! in the document, the resource's `drafts` field under the composer's key,
 //! every edit of it a field edit at that path through the chat's dispatcher, so
 //! members see each keystroke and a typed word is one undo step. The
 //! message editor edits a local copy until it is saved. Enter sends and Shift+Enter breaks the line in both. What chat
@@ -30,8 +30,8 @@ use winit::event::{Modifiers, WindowEvent};
 use crate::drafts::ChatDrafts;
 
 /// The draft a channel or thread composer edits: the rich text kept under
-/// its key in the person's own drafts record ([`ChatDrafts`]), never in the
-/// workspace's chat record.
+/// its key in the person's own drafts resource ([`ChatDrafts`]), never in the
+/// workspace's chat resource.
 pub struct DraftField {
     key: String,
     record: Option<PersonResource<ChatDrafts>>,
@@ -85,12 +85,12 @@ impl DraftField {
 
     fn ensure(&mut self) {
         if let Some(field) = &mut self.field {
-            // A record that refuses the start leaves the composer read-only.
+            // A resource that refuses the start leaves the composer read-only.
             drop(field.ensure());
         }
     }
 
-    /// Whether drafts are kept in the person's record (else in memory on
+    /// Whether drafts are kept in the person's resource (else in memory on
     /// this device, for a window that knows no person).
     fn kept(&self) -> bool {
         self.record.is_some()
@@ -337,7 +337,7 @@ impl DraftComposer {
     }
 
     /// Edit the draft of `key` (a channel, or a thread): the person's own,
-    /// in their drafts record, or kept on this device when the window knows
+    /// in their drafts resource, or kept on this device when the window knows
     /// no person.
     pub fn set_key(&mut self, key: &str) {
         if !self.host.widget().source().shared.kept() {
@@ -685,7 +685,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
             .set_popover_bounds(Some(bounds));
     }
 
-    /// Who the workspace's record knows beyond the workspace's roster, offered at `@`
+    /// Who the workspace's document knows beyond the workspace's roster, offered at `@`
     /// too.
     pub fn set_mention_people(&mut self, people: Vec<ui::widget::MentionCandidate>) {
         self.host

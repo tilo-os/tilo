@@ -6,7 +6,7 @@
 //! conversation, a category, a message, a call), so the palette, an agent
 //! or a script reaches the same handler a click does. What an effect changes
 //! in the document — the message a shared file becomes — it changes through
-//! the record's verbs and field edits. Sharing a file and the call controls
+//! the resource's verbs and field edits. Sharing a file and the call controls
 //! reach this device's files and voice service: outside effects, decided by
 //! the person's answers like any other.
 
@@ -24,7 +24,7 @@ use crate::resource::Chat;
 /// any other message's row is resolved when it is addressed.
 pub const RECENT_MESSAGES: usize = 20;
 
-/// The id of the item resource the record publishes for `id` of `field`.
+/// The id of the item resource the resource publishes for `id` of `field`.
 pub(crate) fn item_row_id(field: &str, id: &str) -> String {
     tilo_resource::items::item_resource_id::<Chat>(field, &tilo_resource::Id::from_raw(id))
 }
@@ -274,7 +274,7 @@ impl ChatApp {
                 unit,
             } => return self.reveal_message_range(&message, start, end, &unit),
             ChatEffect::OpenPerson { user } => self.open_person(&user)?,
-            // A direct conversation is read and written in the record and the
+            // A direct conversation is read and written in the resource and the
             // parts, which the effect context holds: one invoked without it
             // cannot answer.
             ChatEffect::OpenDirectConversation { .. }
@@ -297,7 +297,7 @@ impl ChatApp {
                 })));
             }
             ChatEffect::ExportContent { .. } => {
-                return Err("the record answers this read".into());
+                return Err("the resource answers this read".into());
             }
             ChatEffect::OpenSlackChannel { .. } | ChatEffect::OpenDiscordChannel { .. } => {
                 return Err("Browser navigation requires the owning host".into());
@@ -473,7 +473,7 @@ impl ChatApp {
                     return Err("Chat is open to view only".into());
                 }
                 self.submit(crate::resource::Chat::CREATE_CHANNEL.with(
-                    crate::record::chat::CreateChannel {
+                    crate::chat::chat::CreateChannel {
                         name,
                         category: None,
                         kind: Some(ChannelKind::Voice),
@@ -679,11 +679,11 @@ impl ChatApp {
         Ok(())
     }
 
-    /// The person the record keeps under `slot` ([`crate::record::member_slot`]).
+    /// The person the resource keeps under `slot` ([`crate::chat::member_slot`]).
     fn person_at(&self, slot: &str) -> Option<&crate::model::User> {
         self.search_users
             .iter()
-            .find(|user| crate::record::member_slot(&user.id).as_str() == slot)
+            .find(|user| crate::chat::member_slot(&user.id).as_str() == slot)
     }
 
     fn open_person(&mut self, slot: &str) -> Result<(), String> {
@@ -723,7 +723,7 @@ impl ChatApp {
     /// The effects offered on what the window shows: each category and
     /// channel (a voice channel with its call), the latest
     /// messages of every conversation, the reviewed reports and the people.
-    /// They are rows merged into the item resources the record publishes.
+    /// They are rows merged into the item resources the resource publishes.
     pub(crate) fn published_rows(&self) -> Vec<LiveRow> {
         let categories = self
             .categories
@@ -749,7 +749,7 @@ impl ChatApp {
         let people = self
             .search_users
             .iter()
-            .filter_map(|user| self.person_row(crate::record::member_slot(&user.id).as_str()));
+            .filter_map(|user| self.person_row(crate::chat::member_slot(&user.id).as_str()));
         let reports = self
             .reports
             .iter()
@@ -790,7 +790,7 @@ impl ChatApp {
     }
 
     fn channel_row(&self, id: &str) -> Option<LiveRow> {
-        // Only a conversation the record holds is an item with effects on it:
+        // Only a conversation the resource holds is an item with effects on it:
         // a conversation with a person neither has written in yet is derived
         // from the workspace's people, and its row is
         // [`Self::direct_conversation_rows`]'.
@@ -909,8 +909,8 @@ impl ChatApp {
             badge: agent.then(|| "agent".to_owned()),
             preview: None,
         });
-        // The record keeps no message (they are in its parts), so the row
-        // carries what the record offers on each: its reads and views.
+        // The resource keeps no message (they are in its parts), so the row
+        // carries what the resource offers on each: its reads and views.
         let item = tilo_resource::Id::from_raw(id);
         let effects = <Chat as tilo_resource::Resource>::item_effects("messages", &item);
         let offers_reasoning = effects.iter().any(|spec| spec.id == "show-agent-reasoning");
@@ -976,7 +976,7 @@ impl ChatApp {
 
 impl ChatApp {
     /// What runs when a search hit or an agent's `open` names an item of
-    /// the chat: it is shown on the next sync, once the record is read.
+    /// the chat: it is shown on the next sync, once the resource is read.
     pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
         let opened = std::rc::Rc::clone(&self.opened);
         move |anchor| opened.borrow_mut().push(anchor.to_owned())
@@ -996,7 +996,7 @@ impl ChatApp {
 
 /// The view effect that shows the item `anchor` names.
 fn opening(anchor: &str) -> Option<ChatEffect> {
-    // An agent is an item of the workspace's own record of agents, not of
+    // An agent is an item of the workspace's own document of agents, not of
     // the chat's: search finds it there, and it opens the conversation it is
     // in here.
     if let Some((_, agent)) =

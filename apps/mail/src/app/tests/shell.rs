@@ -462,7 +462,7 @@ tilo_test_env::scenario! {
                 doc.get(&automerge::ROOT, "ui")
                     .expect("document remains readable")
                     .is_none(),
-                "Open records no selection, folder, search, mode, or compose presentation state"
+                "Open resources no selection, folder, search, mode, or compose presentation state"
             );
         }
 

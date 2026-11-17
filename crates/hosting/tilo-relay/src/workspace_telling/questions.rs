@@ -94,7 +94,7 @@ pub(super) fn questions(
 /// into the protected field in Tilo.
 fn telling(
     (workspace, record): (&str, &str),
-    (id, message): (&Id, &chat::record::Message),
+    (id, message): (&Id, &chat::chat::Message),
     question: &chat::question::Question,
     told: String,
 ) -> ToTell {
@@ -296,7 +296,7 @@ mod tests {
     )]
 
     use chat::question::{Answered, Choice, Question, Withdrawn};
-    use chat::record::Message;
+    use chat::chat::Message;
     use tilo_actions::MemberId;
     use tilo_resource::Atom;
 
@@ -327,7 +327,7 @@ mod tests {
     fn message(text: &str, question: Option<Question>) -> Message {
         let assistant = MemberId::agent("assistant");
         let channel =
-            chat::record::Chat::direct_id([MemberId::person(hex::encode(ADA)), assistant.clone()]);
+            chat::chat::Chat::direct_id([MemberId::person(hex::encode(ADA)), assistant.clone()]);
         let mut message = Message::new(channel, assistant, 1_763_366_400, text.to_owned());
         message.author_name = Some("Assistant".to_owned());
         message.question = question;

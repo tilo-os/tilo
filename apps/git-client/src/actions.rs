@@ -25,7 +25,7 @@
 //!
 //! ## What genuinely lives in the shared document
 //!
-//! The record ([`crate::resource::GitClient`]) holds the repository it
+//! The resource ([`crate::resource::GitClient`]) holds the repository it
 //! opens and what members see of it ([`crate::shared`]): branches,
 //! commits, remotes, tags, stashes and identity. Working-tree status is
 //! never in it.

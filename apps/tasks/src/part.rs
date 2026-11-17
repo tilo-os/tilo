@@ -1,17 +1,17 @@
 //! The tracker's issues, kept in numbered parts beside the tracker.
 //!
-//! One record cannot hold every issue a workspace ever wrote at a cost that
-//! stays flat: every reader of a record loads, verifies and diffs all of it,
+//! One resource cannot hold every issue a workspace ever wrote at a cost that
+//! stays flat: every reader of a resource loads, verifies and diffs all of it,
 //! so a change to one issue of thousands would cost thousands. The issues
-//! live in a chain of [`IssuePart`] records instead (`tilo_app`'s
+//! live in a chain of [`IssuePart`] resources instead (`tilo_app`'s
 //! `Chained`), each holding up to [`PART_ISSUES`] issues or
 //! [`PART_TEXT_BYTES`] of their text; a change touches the one part that
-//! holds its issue. The tracker's own record ([`crate::model::Tracker`])
+//! holds its issue. The tracker's own document ([`crate::model::Tracker`])
 //! keeps the projects and areas above them.
 //!
 //! - **Where a new issue goes.** To the newest part, unless it is full
 //!   ([`new_part`]): then to the next. Two writers starting the same part
-//!   start the same record, so their issues meet there.
+//!   start the same resource, so their issues meet there.
 //! - **Where a change goes.** To the part holding the issue it names.
 //! - **Numbers.** A part counts the issues made in it on top of the highest
 //!   number given before it started ([`IssuePart::before`]), which whoever
@@ -561,7 +561,7 @@ impl IssuePart {
         #[param("The resource's kind")] kind: String,
         #[param("The resource's address in its app")] resource: NonBlank,
         #[param("How the link reads")] label: String,
-        #[param("The app's record that keeps it; its record of the workspace without")]
+        #[param("The app's resource that keeps it; its resource of the workspace without")]
         record: Option<String>,
     ) -> Result<(), Refusal> {
         let id = cx.id();
@@ -1461,7 +1461,7 @@ mod many;
 #[cfg(test)]
 mod tests;
 
-/// The chain the parts belong to, beside the tracker's own record.
+/// The chain the parts belong to, beside the tracker's own document.
 #[must_use]
 pub fn chain() -> ui::resource::DocumentId {
     ui::resource::DocumentId::derived("issues", &ui::resource::DocumentId::workspace_default())

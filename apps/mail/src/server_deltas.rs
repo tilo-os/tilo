@@ -51,7 +51,7 @@ pub(super) fn server_changes(
             }
             match reported.get(&uid) {
                 None => gone.push(message.id),
-                // Another client read or starred it: the record decides
+                // Another client read or starred it: the resource decides
                 // whether that or a change made here wins.
                 Some(&(seen, flagged)) if seen != message.read || flagged != message.starred => {
                     let mut reported = message.clone();

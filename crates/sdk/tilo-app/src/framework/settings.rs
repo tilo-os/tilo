@@ -10,7 +10,7 @@ use std::rc::{Rc, Weak};
 use ui_core::LocalState;
 use ui_core::storage::{AppStorage, Settings, SettingsRevision, SettingsSchema};
 
-use super::record::{Held, ResourceApi};
+use super::resources::{Held, ResourceApi};
 use super::section::{SectionApi, SectionKind};
 
 /// One typed settings value, kept current while the view lives: a write
@@ -87,7 +87,7 @@ impl<T: SettingsSchema + Clone + PartialEq + Send + Sync> Setting<T> {
 
 type Refresh = Box<dyn FnMut()>;
 
-impl<T> super::record::sealed::Hold<T> for Setting<T>
+impl<T> super::resources::sealed::Hold<T> for Setting<T>
 where
     T: tilo_resource::Resource<State = T>
         + tilo_resource::Fields
@@ -97,15 +97,15 @@ where
         + Send
         + Sync,
 {
-    fn held(&self, storage: super::record::sealed::Storage<'_>) -> Option<Rc<Held<T>>> {
+    fn held(&self, storage: super::resources::sealed::Storage<'_>) -> Option<Rc<Held<T>>> {
         storage.0.section_held(&self.settings)
     }
 
     fn api(
         &self,
-        storage: super::record::sealed::Storage<'_>,
-    ) -> Option<super::record::sealed::Api> {
-        Some(super::record::sealed::Api(
+        storage: super::resources::sealed::Storage<'_>,
+    ) -> Option<super::resources::sealed::Api> {
+        Some(super::resources::sealed::Api(
             storage.0.section(&self.settings) as Rc<dyn ResourceApi>,
         ))
     }
@@ -128,7 +128,7 @@ pub(crate) struct ViewStorage {
     /// Those sections, as the API reaches them.
     section_apis: RefCell<Vec<Rc<dyn ResourceApi>>>,
     /// The records another provider keeps, by id, with that provider
-    /// ([`Records::kept_by`](super::Records::kept_by)): views show them and
+    /// ([`Resources::kept_by`](super::Resources::kept_by)): views show them and
     /// bind to them, the window neither publishes nor runs their actions.
     kept_by: RefCell<HashMap<String, &'static str>>,
     /// The store of the app's records in the workspace, for the records it
@@ -431,7 +431,7 @@ impl ViewStorage {
     }
 
     /// Mark the record `id` as kept by `provider`
-    /// ([`Records::kept_by`](super::Records::kept_by)).
+    /// ([`Resources::kept_by`](super::Resources::kept_by)).
     pub(crate) fn keep_by(&self, id: &str, provider: &'static str) {
         self.kept_by.borrow_mut().insert(id.to_owned(), provider);
     }
@@ -453,7 +453,7 @@ impl ViewStorage {
             .as_ref()
             .map(super::person::PersonState::me)
             .or(me);
-        super::record::answer(&self.answering_apis(), me, payload)
+        super::resources::answer(&self.answering_apis(), me, payload)
     }
 
     /// Answer a `read` of one of those records, named `record`

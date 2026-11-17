@@ -184,7 +184,7 @@ impl Workspace {
             .find(|tag| tag.name.to_lowercase() == name)
     }
 
-    /// Whether note `page` has its body stored in the record yet.
+    /// Whether note `page` has its body stored in the resource yet.
     pub fn has_stored_body(&self, page: PageId) -> bool {
         self.body_cursors.get(&page).is_some_and(Option::is_some)
     }

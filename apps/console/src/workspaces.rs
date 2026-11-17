@@ -6,10 +6,10 @@ use ui::prelude::*;
 use ui::tilo_actions::remote::mcp_server;
 use ui::widget::{ListRow, Section};
 
-use crate::{Console, Reads, Records, ago, page, tr, trf};
+use crate::{Console, Reads, Resources, ago, page, tr, trf};
 
 pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
-    let records = Records::of(cx);
+    let records = Resources::of(cx);
     let read = &reads.server;
     Box::new(cx.arriving(&read.answer(), move |_, server| {
         if server.workspaces.is_empty() {
@@ -30,7 +30,7 @@ pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
     }))
 }
 
-fn row(records: &Records, index: usize, workspace: &mcp_server::Workspace) -> Element {
+fn row(records: &Resources, index: usize, workspace: &mcp_server::Workspace) -> Element {
     let by = match &workspace.made_by {
         Some(mcp_server::Maker::Person) => Some(tr("console-workspace-made-by-you")),
         Some(mcp_server::Maker::Agent { agent, .. }) => Some(trf(

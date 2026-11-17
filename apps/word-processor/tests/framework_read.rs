@@ -73,7 +73,7 @@ fn read_text_pages_the_committed_document_for_an_agent() {
     assert!(rest["nextCursor"].is_null());
     assert_eq!(
         rest["record"], first["record"],
-        "one record, stamped by the SDK"
+        "one resource, stamped by the SDK"
     );
 
     app.harness().type_text("!");

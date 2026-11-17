@@ -16,7 +16,7 @@ fn nonempty_replies_cannot_be_reused_and_oversized_output_creates_no_reply() {
         (reply.as_str(), "replacement".to_owned()),
         (
             "oversized_reply",
-            "x".repeat(crate::record::MAX_MESSAGE_TEXT_BYTES + 1),
+            "x".repeat(crate::chat::MAX_MESSAGE_TEXT_BYTES + 1),
         ),
     ] {
         let invoke = ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {

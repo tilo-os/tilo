@@ -69,7 +69,7 @@ pub struct CalculatorApp {
     dragging: bool,
     drag_last: Point,
     field_dragging: bool,
-    /// Host focus selects this component's record for undo and keyboard
+    /// Host focus selects this component's resource for undo and keyboard
     /// delivery; controls remain semantic children.
     host_focused: bool,
     last_click: Option<ui::time::Instant>,

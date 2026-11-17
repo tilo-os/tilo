@@ -366,7 +366,7 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn a_device_is_named_through_the_host;
 
-    phase the_name_the_person_typed_reaches_their_record;
+    phase the_name_the_person_typed_reaches_their_resource;
     {
         en();
         let now = i64::try_from(ui::time::unix_now_ms()).unwrap();
@@ -630,7 +630,7 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn the_access_rows_join_grants_and_offer_what_can_be_done;
 
-    phase the_apis_grants_join_the_records_agents;
+    phase the_apis_grants_join_the_resources_agents;
     {
         en();
         let mut sample = sample();

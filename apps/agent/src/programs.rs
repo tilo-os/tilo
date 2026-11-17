@@ -297,7 +297,7 @@ fn title_of(catalogue: &Catalogue, app: &str) -> String {
         )
 }
 
-/// The types each app declares, from a host's `catalogue` answer: what a projected record's
+/// The types each app declares, from a host's `catalogue` answer: what a projected resource's
 /// type name is looked up in, to name the app that keeps it.
 #[must_use]
 pub fn types_of(catalogue: &Value) -> BTreeMap<String, String> {
@@ -362,7 +362,7 @@ pub fn app_lines(mounted: &[Mounted], catalogue: &Value) -> String {
 }
 
 /// What naming a resource of `app` in an answer needs: its type name's app (a host mounting
-/// several apps answers records of each), so the reference opens in the app that keeps it.
+/// several apps answers resources of each), so the reference opens in the app that keeps it.
 pub struct Naming<'a> {
     /// The app whose host answered.
     pub host: &'a Mounted,
@@ -385,7 +385,7 @@ impl Naming<'_> {
             .map_or_else(|| alias_of(app), |m| m.alias.as_str())
     }
 
-    /// A projected record as a reference that opens it, and as its literal.
+    /// A projected resource as a reference that opens it, and as its literal.
     fn reference(&self, record: &Value) -> Option<(ResourceAt, String)> {
         let type_name = record.get("type")?.as_str()?;
         let id = record.get("id")?.as_str()?;
@@ -525,7 +525,7 @@ fn invocation(value: &Value, naming: &Naming<'_>, step: &mut ProgramStep) {
     }
 }
 
-/// `value`, a host's projection, as answer lines: a record as its reference literal, label and
+/// `value`, a host's projection, as answer lines: a resource as its reference literal, label and
 /// fields; a list as one line per item after its count; anything else as itself.
 fn show(value: &Value, naming: &Naming<'_>, step: &mut ProgramStep, depth: usize) {
     if let Some(items) = value.get("items").and_then(Value::as_array) {
@@ -752,9 +752,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_program_block_answers_records_diagnostics_and_previews;
+        fn a_program_block_answers_resources_diagnostics_and_previews;
 
-        phase a_list_answers_one_line_per_record_led_by_its_reference;
+        phase a_list_answers_one_line_per_resource_led_by_its_reference;
         {
             let mounted = board();
             let types = BTreeMap::from([("Card".to_owned(), "so.tilo.lang.board".to_owned())]);

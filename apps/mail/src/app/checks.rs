@@ -2,11 +2,11 @@
 //! browser page.
 //!
 //! A page holds no sockets and no account secrets, so it never fetches. What
-//! it shows is what the person's devices fetched (the mailbox record and the
+//! it shows is what the person's devices fetched (the mailbox resource and the
 //! mail kept for their devices). When it wants new mail it records a check
 //! in the mailbox's `checks` outbox, and a live Mail on a device that holds
 //! the account carries it out like a send or a flag change: it fetches, and
-//! what it fetched reaches the page through the same records. When no such
+//! what it fetched reaches the page through the same resources. When no such
 //! device takes the check soon, the page says so beside the account's mail
 //! rather than waiting quietly.
 

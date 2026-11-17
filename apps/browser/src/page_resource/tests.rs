@@ -1,12 +1,12 @@
-//! The tab's record as a resource, through Browser's own window: agents the
+//! The tab's resource as a resource, through Browser's own window: agents the
 //! action API admitted act on the page, the engine sets down what they did,
-//! and the record is read where Browser keeps it — by a reviewer through the
+//! and the resource is read where Browser keeps it — by a reviewer through the
 //! page's own action, by History, by another device, and after the engine
 //! that set it down is gone. Only the window adds to it: nobody at the API
 //! does.
 //!
 //! The engine is the deterministic one. It answers what a test queues: an
-//! operating action's answer with its place in the engine's record, then the
+//! operating action's answer with its place in the engine's resource, then the
 //! engine's listing of that action when the window asks for it.
 
 use std::sync::Arc;
@@ -30,11 +30,11 @@ mod one_name;
 
 type App = TestApp<BrowserShell>;
 
-/// The workspace Browser is open in: one with an id, so its records have a
+/// The workspace Browser is open in: one with an id, so its resources have a
 /// route.
 const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000b7";
 const PAGE: &str = "https://shop.test/form";
-/// The record as the window publishes it.
+/// The resource as the window publishes it.
 const RESOURCE: &str = "person:browser.page-record";
 
 /// Ada, by her root public key.
@@ -67,7 +67,7 @@ fn agent(actor: &str) -> ActionInvoker {
 }
 
 /// An agent the action API admitted to act for Ada, by its actor: what
-/// the API of a record of Ada's own takes actions from, beside Ada.
+/// the API of a resource of Ada's own takes actions from, beside Ada.
 fn agent_for_ada(actor: &str) -> ActionInvoker {
     ActionInvoker::admitted(&Acting::agent(actor)).acting_for(ada())
 }
@@ -161,7 +161,7 @@ fn answer(message: &str) -> PageReply {
     }
 }
 
-/// What the engine answers a read of its record with when it lists
+/// What the engine answers a read of its resource with when it lists
 /// `entries`.
 fn listing(entries: &[Value], live: &Value) -> PageReply {
     let mut data = json!({
@@ -179,7 +179,7 @@ fn listing(entries: &[Value], live: &Value) -> PageReply {
 }
 
 /// The engine ends the next operating action as `entry`: the action's answer
-/// carries its place in the engine's record, and the engine lists the entry
+/// carries its place in the engine's resource, and the engine lists the entry
 /// when it is asked what it set down.
 fn engine_sets_down(engine: &TestEngine, entry: &Value) {
     engine.push_page_reply(Ok(PageReply {
@@ -249,20 +249,20 @@ fn two_agents_answer_the_form(app: &mut App, engine: &TestEngine) {
     app.settle();
 }
 
-/// Browser's record of page actions, as its window holds it.
+/// Browser's resource of page actions, as its window holds it.
 fn record(app: &mut App) -> PersonResource<PageResource> {
     app.person::<PageResource>()
-        .expect("Browser keeps a record of page actions")
+        .expect("Browser keeps a resource of page actions")
 }
 
-/// The one tab the record holds.
+/// The one tab the resource holds.
 fn only_tab(record: &PersonResource<PageResource>) -> String {
     let tabs: Vec<String> = record.with(|state| state.tabs.keys().cloned().collect());
     assert_eq!(tabs.len(), 1, "one tab acted: {tabs:?}");
     tabs.into_iter().next().unwrap_or_default()
 }
 
-/// What `tab`'s record holds: each action's place, actor and action.
+/// What `tab`'s resource holds: each action's place, actor and action.
 fn held(record: &PersonResource<PageResource>, tab: &str) -> Vec<(u64, String, String)> {
     record.with(|state| {
         state
@@ -280,8 +280,8 @@ fn held(record: &PersonResource<PageResource>, tab: &str) -> Vec<(u64, String, S
     })
 }
 
-/// One step of the record's history: who made the change, how many actions
-/// of `tab` the record held after it, and the newest of them.
+/// One step of the resource's history: who made the change, how many actions
+/// of `tab` the resource held after it, and the newest of them.
 fn steps(record: &PersonResource<PageResource>, tab: &str) -> Vec<(Actor, usize, String)> {
     record
         .record()
@@ -299,7 +299,7 @@ fn steps(record: &PersonResource<PageResource>, tab: &str) -> Vec<(Actor, usize,
                         .by
                         .clone();
                     let then = history::read_at::<PageResource>(&mut doc, &[version.hash])
-                        .expect("a past version of the record reads");
+                        .expect("a past version of the resource reads");
                     let page = then.page(tab, 0);
                     let newest = page
                         .entries
@@ -311,10 +311,10 @@ fn steps(record: &PersonResource<PageResource>, tab: &str) -> Vec<(Actor, usize,
                 })
                 .collect()
         })
-        .expect("the record is open")
+        .expect("the resource is open")
 }
 
-/// Read the tab's record through the page's own action, as a reviewer does.
+/// Read the tab's resource through the page's own action, as a reviewer does.
 fn review(app: &mut App, since: Option<u64>) -> Value {
     let reviewer = agent("rev");
     act(
@@ -322,7 +322,7 @@ fn review(app: &mut App, since: Option<u64>) -> Value {
         Some(&reviewer),
         &BrowserEffect::ReadPageRecord { since },
     )
-    .expect("the record answers")
+    .expect("the resource answers")
 }
 
 fn published(resources: &[ui::tilo_actions::ResourceSpec], id: &str) -> bool {
@@ -332,12 +332,12 @@ fn published(resources: &[ui::tilo_actions::ResourceSpec], id: &str) -> bool {
 }
 
 /// Two named agents act in one tab: each action is a change of Browser's
-/// record as it ends, in the order they ran, under the name the engine keeps
+/// resource as it ends, in the order they ran, under the name the engine keeps
 /// the actor by and authored by the invoker the action API admitted. What
 /// was typed straight into the page, and what the person at the window did,
 /// is the person's.
 #[test]
-fn what_two_agents_did_is_the_record_in_order_under_their_names() {
+fn what_two_agents_did_is_the_resource_in_order_under_their_names() {
     let engine = TestEngine::new();
     let mut app = open(&engine);
     two_agents_answer_the_form(&mut app, &engine);
@@ -354,7 +354,7 @@ fn what_two_agents_did_is_the_record_in_order_under_their_names() {
     // What the engine set down of each is kept as it listed it.
     let kept = record.with(|state| state.page(&tab, 0).entries);
     assert_eq!(kept, [email_filled(1), country_chosen(2), form_sent(3)]);
-    // Each is one change of the record, by the agent that acted.
+    // Each is one change of the resource, by the agent that acted.
     assert_eq!(
         steps(&record, &tab),
         [
@@ -407,7 +407,7 @@ fn what_two_agents_did_is_the_record_in_order_under_their_names() {
         "the typing and the person's own click are the person's changes"
     );
 
-    // The record is a resource of the window like Browser's others.
+    // The resource is a resource of the window like Browser's others.
     assert!(
         published(&app.harness().resources(), RESOURCE),
         "{RESOURCE} is published"
@@ -441,12 +441,12 @@ fn named_in(entries: &Value) -> Vec<(String, Option<String>, Option<String>)> {
 
 /// Agents on three machines work in one tab: two on Ada's laptop, one on a
 /// device of hers that names itself nothing, one on the device that runs
-/// the page. The record names, beside each actor, the device the API
+/// the page. The resource names, beside each actor, the device the API
 /// verified it came from, and none for the one here, whatever the engine
 /// lists. An actor's name stays the actor the API admitted, so two
 /// agents of one device are two actors and one agent is the same actor
-/// across its actions. The record's read, the review of the page's fields
-/// and the record's history say the same.
+/// across its actions. The resource's read, the review of the page's fields
+/// and the resource's history say the same.
 #[test]
 fn an_agent_from_another_device_is_set_down_with_the_device_it_was_admitted_from() {
     let engine = TestEngine::new();
@@ -493,7 +493,7 @@ fn an_agent_from_another_device_is_set_down_with_the_device_it_was_admitted_from
     let kept = Value::Array(record.with(|state| state.page(&tab, 0).entries));
     assert_eq!(named_in(&kept), expected, "{kept}");
 
-    // A reviewer's read of the record answers the same.
+    // A reviewer's read of the resource answers the same.
     let read = review(&mut app, None);
     assert_eq!(named_in(&read["data"]["entries"]), expected, "{read}");
 
@@ -536,7 +536,7 @@ fn an_agent_from_another_device_is_set_down_with_the_device_it_was_admitted_from
         ]
     );
 
-    // Each action is its agent's change of the record, and the change says
+    // Each action is its agent's change of the resource, and the change says
     // the device too.
     let from: Vec<Option<InvokerDevice>> = record
         .record()
@@ -549,7 +549,7 @@ fn an_agent_from_another_device_is_set_down_with_the_device_it_was_admitted_from
                 .map(|invoker| invoker.device)
                 .collect()
         })
-        .expect("the record is open");
+        .expect("the resource is open");
     assert_eq!(
         from,
         [
@@ -562,11 +562,11 @@ fn an_agent_from_another_device_is_set_down_with_the_device_it_was_admitted_from
     );
 }
 
-/// A reviewer reads the record through the page's action: answered from the
+/// A reviewer reads the resource through the page's action: answered from the
 /// resource, read on by place, with what only the engine knows at that
 /// moment added from the engine.
 #[test]
-fn the_record_is_read_on_by_place_with_what_the_engine_knows_now() {
+fn the_resource_is_read_on_by_place_with_what_the_engine_knows_now() {
     let engine = TestEngine::new();
     let mut app = open(&engine);
     two_agents_answer_the_form(&mut app, &engine);
@@ -603,7 +603,7 @@ fn the_record_is_read_on_by_place_with_what_the_engine_knows_now() {
     assert_eq!(none["data"]["next"], 3);
 
     // An action the engine set down that no answer told the window of (its
-    // caller had given up) is written when the record is next read.
+    // caller had given up) is written when the resource is next read.
     let late = json!({"seq": 4, "time_ms": 1_700_000_000_004_u64, "actor": "agent:ben",
         "action": "press", "ok": false, "code": "timeout", "message": "The page did not answer",
         "url": "https://shop.test/sent"});
@@ -616,18 +616,18 @@ fn the_record_is_read_on_by_place_with_what_the_engine_knows_now() {
     assert_eq!(held(&record, &tab).len(), 4);
 }
 
-/// The engine is gone and a new one runs the tab: the record is still read,
+/// The engine is gone and a new one runs the tab: the resource is still read,
 /// from the resource, and goes on from the place it had reached although
-/// the new engine counts its own record from the start.
+/// the new engine counts its own document from the start.
 #[test]
-fn the_record_is_still_read_after_the_engine_started_again() {
+fn the_resource_is_still_read_after_the_engine_started_again() {
     let first = TestEngine::new();
     let mut app = open(&first);
     two_agents_answer_the_form(&mut app, &first);
     let tab = only_tab(&record(&mut app));
 
     // The window closes and opens again: its page runs in a new engine,
-    // whose own record is empty.
+    // whose own document is empty.
     let second = TestEngine::new();
     crate::browser_widget::test_window_engine::install(second.clone());
     let mut app = app.reopen().expect("Browser opens again");
@@ -649,7 +649,7 @@ fn the_record_is_still_read_after_the_engine_started_again() {
         "url": "https://shop.test/sent", "target": {"role": "link", "name": "Orders"}});
     engine_sets_down(&second, &again);
     let clicked = act(&mut app, Some(&ben), &click("d2e3")).expect("the click answers");
-    assert_eq!(clicked["seq"], 4, "its place in the tab's record");
+    assert_eq!(clicked["seq"], 4, "its place in the tab's resource");
     app.settle();
     let record = record(&mut app);
     assert_eq!(
@@ -674,7 +674,7 @@ fn the_record_is_still_read_after_the_engine_started_again() {
     );
     assert_eq!(later["data"]["next"], 4);
 
-    // An engine that does not answer leaves the record as readable as it
+    // An engine that does not answer leaves the resource as readable as it
     // was, and the answer says what it could not tell.
     second.push_page_reply(Err(PageFailure::unavailable()));
     let without = review(&mut app, None);
@@ -688,8 +688,8 @@ fn the_record_is_still_read_after_the_engine_started_again() {
     );
 }
 
-/// History over the record steps through the tab action by action: each
-/// version of the record holds one action more, and names who did it.
+/// History over the resource steps through the tab action by action: each
+/// version of the resource holds one action more, and names who did it.
 #[test]
 fn history_steps_through_the_record_one_action_at_a_time() {
     let engine = TestEngine::new();
@@ -714,7 +714,7 @@ fn history_steps_through_the_record_one_action_at_a_time() {
         ]
     );
     // A step is the action's own change: the history entry names the action
-    // of the record that made it and who invoked it.
+    // of the resource that made it and who invoked it.
     let entries: Vec<ui::tilo_actions::ActionContext> = record
         .record()
         .read(|doc| {
@@ -724,7 +724,7 @@ fn history_steps_through_the_record_one_action_at_a_time() {
                 .filter(|context| context.invoker.is_some())
                 .collect()
         })
-        .expect("the record is open");
+        .expect("the resource is open");
     assert_eq!(entries.len(), 3);
     for entry in &entries {
         assert_eq!(
@@ -742,24 +742,27 @@ fn history_steps_through_the_record_one_action_at_a_time() {
 /// record: same route, and after the workspace's sync the same actions by
 /// the same authors.
 #[test]
-fn another_device_of_the_workspace_reads_the_same_record() {
+fn another_device_of_the_workspace_reads_the_same_resource() {
     let engine = TestEngine::new();
     let mut laptop = open(&engine);
     two_agents_answer_the_form(&mut laptop, &engine);
     let mut phone = open(&TestEngine::new());
     let (on_laptop, on_phone) = (record(&mut laptop), record(&mut phone));
-    assert!(on_laptop.syncs(), "the record has a route in the workspace");
+    assert!(
+        on_laptop.syncs(),
+        "the resource has a route in the workspace"
+    );
     let route = on_laptop.record().route().expect("a route");
     assert_eq!(Some(&route), on_phone.record().route().as_ref());
     assert_eq!(route.cluster_id.to_string(), WORKSPACE);
 
     let tab = only_tab(&on_laptop);
     assert!(held(&on_phone, &tab).is_empty(), "not synced yet");
-    let sent = on_laptop.record().document().expect("the record's bytes");
+    let sent = on_laptop.record().document().expect("the resource's bytes");
     on_phone
         .record()
         .merge_peer_document(sent)
-        .expect("the phone takes the record in");
+        .expect("the phone takes the resource in");
     assert_eq!(held(&on_phone, &tab), held(&on_laptop, &tab));
     assert_eq!(
         on_phone.with(|state| state.page(&tab, 0)),
@@ -776,7 +779,7 @@ fn contains(haystack: &[u8], needle: &str) -> bool {
 
 /// A secret never reaches the record: not when the engine leaves it out, as
 /// it does, and not when an engine lists it anyway. It is in no state of the
-/// record, no version of its history, no answer of a read and no byte of the
+/// resource, no version of its history, no answer of a read and no byte of the
 /// document.
 #[test]
 fn a_secret_filled_into_the_page_is_never_written() {
@@ -830,18 +833,18 @@ fn a_secret_filled_into_the_page_is_never_written() {
                 .into_iter()
                 .map(|version| {
                     let then = history::read_at::<PageResource>(&mut doc, &[version.hash])
-                        .expect("a past version of the record reads");
+                        .expect("a past version of the resource reads");
                     format!("{then:?} {:?} {:?}", version.context, version.message)
                 })
                 .collect();
             (doc.save_nocompress(), versions)
         })
-        .expect("the record is open");
+        .expect("the resource is open");
     for secret in [PASSWORD, CARD] {
         assert!(!read.contains(secret), "a read answers {secret}: {read}");
         assert!(
             !state.contains(secret),
-            "the record holds {secret}: {state}"
+            "the resource holds {secret}: {state}"
         );
         for version in &versions {
             assert!(
@@ -876,10 +879,10 @@ fn a_secret_filled_into_the_page_is_never_written() {
 
 /// What a person types straight into the page is no action, and no answer
 /// carries it: the engine says it set an entry down, and the window writes
-/// it into the tab's record in its place, as the person's change and under
+/// it into the tab's resource in its place, as the person's change and under
 /// no agent's name. One the engine set down after actions the window has
 /// not read yet waits for them and follows them in order; one told twice is
-/// written once. Of what was typed into a secret field the record keeps
+/// written once. Of what was typed into a secret field the resource keeps
 /// that it was set, whatever the entry carries.
 #[test]
 fn what_a_person_types_is_set_down_in_its_place_as_the_persons() {
@@ -913,7 +916,7 @@ fn what_a_person_types_is_set_down_in_its_place_as_the_persons() {
     assert_eq!(
         page_asks(&engine),
         asked,
-        "what follows the record as the window has it is written as told, without a read"
+        "what follows the resource as the window has it is written as told, without a read"
     );
 
     // The engine sets down an agent's action and then more typing, and tells
@@ -930,7 +933,7 @@ fn what_a_person_types_is_set_down_in_its_place_as_the_persons() {
     for _ in 0..3 {
         app.settle();
     }
-    // Told again, it is the entry the record already holds.
+    // Told again, it is the entry the resource already holds.
     engine.emit_page_resource(6, more.clone());
     engine.emit_page_resource(4, typed);
     for _ in 0..3 {
@@ -977,9 +980,9 @@ fn what_a_person_types_is_set_down_in_its_place_as_the_persons() {
             "ok": true, "secret": true, "message": "Direct input into textbox \"Password\"",
             "url": PAGE, "target": {"role": "textbox", "name": "Password"}})
         ],
-        "the record says the field was set, and holds none of it"
+        "the resource says the field was set, and holds none of it"
     );
-    // A reader of the record is told the same, in the order it happened.
+    // A reader of the resource is told the same, in the order it happened.
     let read = review(&mut app, Some(3));
     let entries = read["data"]["entries"].as_array().expect("entries");
     assert_eq!(
@@ -1003,7 +1006,7 @@ fn what_a_person_types_is_set_down_in_its_place_as_the_persons() {
     }
 
     // Nobody but the window sets typing down: an agent that writes some as
-    // the person's is refused, and the record is as it was.
+    // the person's is refused, and the resource is as it was.
     let forged = json!({"seq": 8, "actor": "", "how": "input", "ok": true,
         "target": {"role": "textbox", "name": "Passport number"}, "text": "X0000000"});
     let refused = set_down(&record, Some(&agent("mallory")), &tab, forged).unwrap_err();
@@ -1132,13 +1135,13 @@ fn what_the_window_held_is_set_down_with_who_answered() {
                 .map(|invoker| invoker.acting.acted_for_person().map(str::to_owned))
                 .collect()
         })
-        .expect("the record is open");
+        .expect("the resource is open");
     assert_eq!(
         answered_for,
         [Some(ada())],
         "authored by the invoker the action API admitted the answer for"
     );
-    // A reader of the record is told the same.
+    // A reader of the resource is told the same.
     let read = review(&mut app, Some(3));
     let entries = read["data"]["entries"].as_array().expect("entries");
     assert_eq!(
@@ -1160,7 +1163,7 @@ fn what_the_window_held_is_set_down_with_who_answered() {
     );
 
     // Nobody but the window sets a hold's answer down: an agent that writes
-    // the person's allow is refused, and the record is as it was.
+    // the person's allow is refused, and the resource is as it was.
     let forged = json!({"seq": 8, "actor": "", "how": "hold", "action": "allow", "ok": true,
         "message": "POST https://orders.test", "to_url": "https://orders.test"});
     let refused = set_down(&record, Some(&agent("mallory")), &tab, forged).unwrap_err();
@@ -1169,7 +1172,7 @@ fn what_the_window_held_is_set_down_with_who_answered() {
 }
 
 /// What was written into a secret field is in the page and nowhere else,
-/// whatever wrote it: the record keeps of such an entry that the field was
+/// whatever wrote it: the resource keeps of such an entry that the field was
 /// set, and no text, chosen value or answer it carries. A key pressed there
 /// is kept by what the engine said of it, which names no key.
 #[test]
@@ -1223,7 +1226,7 @@ fn an_entry_of_a_secret_field_says_it_was_set_and_keeps_none_of_its_text() {
     assert!(!format!("{state:?}").contains("s3cret"));
 }
 
-/// Browser's record of page actions in a window whose page nobody acted
+/// Browser's resource of page actions in a window whose page nobody acted
 /// on, with the window that keeps it.
 fn quiet_window() -> (App, PersonResource<PageResource>) {
     let mut app = open(&TestEngine::new());
@@ -1231,7 +1234,7 @@ fn quiet_window() -> (App, PersonResource<PageResource>) {
     (app, record)
 }
 
-/// The window's own writing of `entry` into `tab`'s record.
+/// The window's own writing of `entry` into `tab`'s resource.
 fn setting_down(tab: &str, entry: Value) -> Invoke<PageResource> {
     PageResource::SET_DOWN.with(page_actions::SetDown {
         tab: tab.into(),
@@ -1262,11 +1265,11 @@ fn clicked(seq: u64) -> Value {
         "url": PAGE, "target": {"role": "button", "name": seq.to_string()}})
 }
 
-/// The record keeps of an entry only what a record entry is, each text
+/// The resource keeps of an entry only what a resource entry is, each text
 /// within its bound, and neither text the page refused nor anything the
 /// entry carries beside.
 #[test]
-fn an_entry_is_kept_by_what_the_record_keeps_of_one() {
+fn an_entry_is_kept_by_what_the_resource_keeps_of_one() {
     let (_app, record) = quiet_window();
     let by = agent("ada");
     let long = "é".repeat(400);
@@ -1421,9 +1424,9 @@ fn an_action_names_only_the_device_its_actor_was_admitted_from() {
     );
 }
 
-/// The record is bounded as the engine bounds its own: a tab keeps its
+/// The resource is bounded as the engine bounds its own: a tab keeps its
 /// newest actions, the oldest leave the state counted as dropped and stay
-/// in the record's history; a read answers a bounded part and says where to
+/// in the resource's history; a read answers a bounded part and says where to
 /// read on.
 #[test]
 fn a_tab_keeps_its_newest_actions_and_older_ones_stay_in_history() {
@@ -1438,7 +1441,7 @@ fn a_tab_keeps_its_newest_actions_and_older_ones_stay_in_history() {
             first_full = record
                 .record()
                 .read(|doc| doc.clone().get_heads())
-                .expect("the record is open");
+                .expect("the resource is open");
         }
     }
     let state = record.get();
@@ -1469,15 +1472,15 @@ fn a_tab_keeps_its_newest_actions_and_older_ones_stay_in_history() {
     let then = record
         .record()
         .read(|doc| history::read_at::<PageResource>(&mut doc.clone(), &first_full))
-        .expect("the record is open")
-        .expect("the record's first version reads");
+        .expect("the resource is open")
+        .expect("the resource's first version reads");
     assert_eq!(then.page("tab-a", 0).entries, [clicked(1)]);
 }
 
-/// The record keeps the tabs that acted last: a new tab beyond the bound
+/// The resource keeps the tabs that acted last: a new tab beyond the bound
 /// takes the place of the one that acted longest ago.
 #[test]
-fn the_record_keeps_the_tabs_that_acted_last() {
+fn the_resource_keeps_the_tabs_that_acted_last() {
     let (_app, record) = quiet_window();
     let by = agent("ada");
     for tab in 0..=MAX_TABS as u64 {
@@ -1498,8 +1501,8 @@ fn the_record_keeps_the_tabs_that_acted_last() {
     assert!(state.page("tab", 0).entries.is_empty());
 }
 
-/// The actions the window's api offers on the record.
-fn offered_on_the_record(app: &mut App) -> Vec<String> {
+/// The actions the window's api offers on the resource.
+fn offered_on_the_resource(app: &mut App) -> Vec<String> {
     app.agent_surface()
         .as_array()
         .map_or(&[][..], Vec::as_slice)
@@ -1516,15 +1519,15 @@ fn refusal(answer: Result<Option<Value>, String>) -> String {
     refusal
 }
 
-/// Only a window adds to the record, and only what its engine listed. An
+/// Only a window adds to the resource, and only what its engine listed. An
 /// agent the API admitted for the person cannot set down, under its own
 /// name, an action it never did: not by the verb's name, which the API
 /// does not know, not as a value of `apply`, not in a group. Nor can the
-/// person. The record stays what the engine listed, a reviewer reads it as
+/// person. The resource stays what the engine listed, a reviewer reads it as
 /// before, and what the window writes next still lands as the change of the
 /// agent that acted.
 #[test]
-fn nobody_at_the_api_adds_to_the_record() {
+fn nobody_at_the_api_adds_to_the_resource() {
     let engine = TestEngine::new();
     let mut app = open(&engine);
     let (ada_agent, ben) = (agent_for_ada("ada"), agent_for_ada("ben"));
@@ -1536,9 +1539,9 @@ fn nobody_at_the_api_adds_to_the_record() {
     let listed = record.with(|state| state.page(&tab, 0).entries);
     assert_eq!(listed, [email_filled(1)]);
 
-    // The record is at the API with what every record offers, and without
+    // The resource is at the API with what every resource offers, and without
     // an action that sets one down.
-    let offered = offered_on_the_record(&mut app);
+    let offered = offered_on_the_resource(&mut app);
     for open in ["apply", "group"] {
         assert!(
             offered.iter().any(|action| action == open),
@@ -1551,7 +1554,7 @@ fn nobody_at_the_api_adds_to_the_record() {
     );
 
     // Ada's agent never sent the form and Ada typed nothing. Each claims it
-    // did, with an entry the record keeps when the window writes it: under
+    // did, with an entry the resource keeps when the window writes it: under
     // the claimant's own name, at the tab's next place.
     let typed = json!({"seq": 2, "time_ms": 1_700_000_000_002_u64, "actor": "", "how": "input",
         "action": "input", "ok": true, "url": PAGE,
@@ -1587,14 +1590,14 @@ fn nobody_at_the_api_adds_to_the_record() {
     assert_eq!(
         record.with(|state| state.page(&tab, 0).entries),
         listed,
-        "the record holds what the engine listed, and nothing claimed"
+        "the resource holds what the engine listed, and nothing claimed"
     );
     assert_eq!(
         steps(&record, &tab),
         [(by_agent("ada"), 1, "Filled textbox \"Email\"".to_owned())]
     );
 
-    // A reviewer reads the record as before.
+    // A reviewer reads the resource as before.
     engine.push_page_reply(Ok(listing(&[], &json!({}))));
     let read = review(&mut app, None);
     assert_eq!(read["message"], "1 action");
@@ -1661,7 +1664,7 @@ fn page_action(app: &mut App, action: &str) -> ActionAddress {
 /// A form's own action is its invoker's, as a page action is. A named agent
 /// answers the page's form through the form's action and then sends it:
 /// what the engine sets down under the agent's name, the answers and the
-/// submission the window held, is the agent's change in the record, authored
+/// submission the window held, is the agent's change in the resource, authored
 /// by the invoker the action API admitted it as, and a reviewer reads both
 /// under that agent.
 #[test]
@@ -1756,7 +1759,7 @@ fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
                 })
                 .collect()
         })
-        .expect("the record is open");
+        .expect("the resource is open");
     assert_eq!(
         authored_for,
         [(true, Some(ada())), (true, Some(ada()))],
@@ -1781,8 +1784,8 @@ fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
     );
 }
 
-/// A sign-in's password never reaches the record either. The window sends it
-/// as a secret, so it is in no state of the record, no version of its
+/// A sign-in's password never reaches the resource either. The window sends it
+/// as a secret, so it is in no state of the resource, no version of its
 /// history, no answer of a read and no byte of the document: not from the
 /// answer itself, which says only who was answered, and not when an engine
 /// lists the same text as something written afterwards.
@@ -1888,15 +1891,15 @@ fn a_sign_ins_password_is_never_written() {
                 .into_iter()
                 .map(|version| {
                     let then = history::read_at::<PageResource>(&mut doc, &[version.hash])
-                        .expect("a past version of the record reads");
+                        .expect("a past version of the resource reads");
                     format!("{then:?} {:?} {:?}", version.context, version.message)
                 })
                 .collect();
             (doc.save_nocompress(), versions)
         })
-        .expect("the record is open");
+        .expect("the resource is open");
     assert!(!read.contains(PASSWORD), "a read answers it: {read}");
-    assert!(!state.contains(PASSWORD), "the record holds it: {state}");
+    assert!(!state.contains(PASSWORD), "the resource holds it: {state}");
     for version in &versions {
         assert!(!version.contains(PASSWORD), "history holds it: {version}");
     }

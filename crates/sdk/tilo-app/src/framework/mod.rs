@@ -355,9 +355,9 @@ mod publishing;
 mod query;
 mod reactions;
 mod reactive;
-mod record;
 pub mod reference;
 pub mod resource_index;
+mod resources;
 mod root;
 mod rows;
 mod save_notice;
@@ -416,8 +416,8 @@ pub use preview::PastVersion;
 pub use provenance::{Provenance, Source};
 pub use publishing::Publishes;
 pub use query::{Query, ReadFailure};
-pub use record::{Declare, OtherResource, Records};
 pub use reference::Call;
+pub use resources::{Declare, OtherResource, Resources};
 pub use root::{reserved_action_ids, with_surface};
 pub use rows::LiveRow;
 pub use saves::Saves;
@@ -433,7 +433,7 @@ pub use ui_core::resource::{chain_of_resource_id, chain_resource_id};
 pub use upkeep::Upkeep;
 pub use view::{Bindable, EffectsHandle, Mounts, ViewCx};
 pub use window_bar::{Binding, Choice, WindowBar};
-pub use workspace::{RecordOpener, WorkspaceResource};
+pub use workspace::{ResourceOpener, WorkspaceResource};
 
 /// Record content, canonical hashing and picture headers. Use the store
 /// borrowed through `SurfaceCx::content` or `LaunchInput::content` so the host

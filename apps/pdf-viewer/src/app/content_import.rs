@@ -1,5 +1,5 @@
 //! Opening a PDF the workspace keeps as content, so an agent with no files and no
-//! picker can give a record its document. The record pins the bytes as its source and
+//! picker can give a resource its document. The resource pins the bytes as its source and
 //! keeps the reference that opens them.
 
 use ui::framework::EffectCx;
@@ -9,13 +9,13 @@ use super::PdfApp;
 use crate::markup::PdfMarkup;
 
 pub(super) const NO_PDF: &str =
-    "this record holds no PDF to read yet: open one the workspace keeps with import-pdf-content";
+    "this resource holds no PDF to read yet: open one the workspace keeps with import-pdf-content";
 
 const UNNAMED: &str = "Document.pdf";
 
 impl PdfApp {
-    /// Pin the PDF `address` names as the document this record marks up, and answer
-    /// its name and page count. A record never re-targets its markup, so another PDF is
+    /// Pin the PDF `address` names as the document this resource marks up, and answer
+    /// its name and page count. A resource never re-targets its markup, so another PDF is
     /// refused; the page plan is made with the pin.
     pub(crate) fn import_pdf_content(
         &self,
@@ -41,7 +41,7 @@ impl PdfApp {
                 held.name.as_str()
             };
             return Err(format!(
-                "this record already marks up {name}: open the PDF in a record of its own"
+                "this resource already marks up {name}: open the PDF in a resource of its own"
             ));
         }
         if tilo_content::document_format(&bytes).is_none_or(|format| format.extension != "pdf")
@@ -113,7 +113,7 @@ mod tests {
         let pinned = app
             .state()
             .pinned_source()
-            .expect("the record pins the PDF");
+            .expect("the resource pins the PDF");
         assert_eq!(pinned.hash(), hash);
         assert_eq!(pinned.name, "report.pdf");
         assert_eq!(
@@ -131,10 +131,10 @@ mod tests {
         assert_eq!(read["file"], "report.pdf");
     }
 
-    /// The PDF the record holds answers again unchanged; another is refused.
+    /// The PDF the resource holds answers again unchanged; another is refused.
     #[serial(pdfium)]
     #[test]
-    fn a_record_holding_a_pdf_refuses_another_and_answers_its_own_again() {
+    fn a_resource_holding_a_pdf_refuses_another_and_answers_its_own_again() {
         let mut app = TestApp::<PdfViewerShell>::new().expect("the reader opens");
         let first = app.content().put(&fixture("sample.pdf")).expect("stored");
         let second = app.content().put(&fixture("latin.pdf")).expect("stored");
@@ -205,7 +205,7 @@ mod tests {
         let pinned = app
             .state()
             .pinned_source()
-            .expect("the record pins the PDF");
+            .expect("the resource pins the PDF");
         assert_eq!(pinned.hash(), tilo_content::hash_bytes(&bytes));
         assert_eq!(
             pinned.source.reference().as_deref(),
@@ -286,10 +286,10 @@ mod tests {
                 PdfMarkup::PIN_SOURCE
                     .with((Bytes::kept_as(&bytes, &reference), "report.pdf".to_owned())),
             )
-            .expect("the record pins the PDF");
+            .expect("the resource pins the PDF");
         let pinned = PdfMarkup::of(replica.doc())
             .pinned_source()
-            .expect("the record's source");
+            .expect("the resource's source");
         assert_eq!(pinned.hash(), tilo_content::hash_bytes(&bytes));
 
         let mut app = PdfApp::empty_with_content(writer.clone());

@@ -479,7 +479,7 @@ pub(super) fn person_history() -> (
     let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
     let record = app
         .person::<crate::history::BrowsingHistory>()
-        .expect("a test profile keeps person records");
+        .expect("a test profile keeps person resources");
     (app, record)
 }
 
@@ -1452,7 +1452,7 @@ fn site_panel_stays_retained_composed_and_actionable() {
     reason = "Keep the real panel action and ordered asynchronous replies in one regression fixture."
 )]
 fn site_protection_reload_updates_chrome_only_after_correlated_success() {
-    // Keep engine replies under test control: TestEngine records commands,
+    // Keep engine replies under test control: TestEngine resources commands,
     // while this queue models the native helper's asynchronous event order.
     struct QueuedEngine {
         events: std::sync::Mutex<Vec<WebViewEvent>>,

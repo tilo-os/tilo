@@ -429,7 +429,7 @@ fn drafts_reach_the_server_and_come_back_as_nothing(
             mail.messages
                 .get(&ui::tilo_resource::Id::from_raw(copy.as_str()))
                 .is_none(),
-            "no entry in the record for the copy {copy}"
+            "no entry in the resource for the copy {copy}"
         );
     }
 }

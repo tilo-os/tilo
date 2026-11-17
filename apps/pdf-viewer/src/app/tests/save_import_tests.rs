@@ -255,7 +255,7 @@ fn a_save_that_cannot_be_written_says_what_to_do() {
 fn open_laid_out_sample() -> Option<(PdfApp, ui::State)> {
     let mut app = open_raster_sample()?;
     let mut st = crate::scenarios::record_state();
-    settle_record(&mut app, &mut st);
+    settle_resource(&mut app, &mut st);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     app.recompute_regions();
     app.sync_viewport_frame();

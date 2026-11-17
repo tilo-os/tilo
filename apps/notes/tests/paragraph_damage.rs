@@ -147,7 +147,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     let damage = damage.borrow().clone();
     assert!(
         !damage.is_empty(),
-        "the actual outer component records changed paint"
+        "the actual outer component resources changed paint"
     );
     assert!(
         damage.iter().map(Rect::area).sum::<f64>() < 1200.0 * 900.0 / 2.0,

@@ -227,7 +227,7 @@ pub fn live_window_in_workspace<A: ResourceApp>(
 /// one per window: stamped with that window's default identity, initialized
 /// as `A` creates a record, then edited with `actions`. Open the app over
 /// such records with [`HeadlessApp::with_window_resources`].
-pub fn window_record<A: ResourceApp>(
+pub fn window_resource<A: ResourceApp>(
     instance: u64,
     actions: &[<A::Resource as Resource>::Action],
 ) -> Result<tilo_resource::Doc, LaunchError> {

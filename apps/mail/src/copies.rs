@@ -1,10 +1,10 @@
 //! The mail the person's devices hold for one another.
 //!
-//! A message a device fetched is kept, as the server sent it, as content of the copies record
-//! ([`MailCopies`]): the person's own record in the workspace, which syncs to their devices and
-//! no other member's. A device that lacks a message the record names takes it from there,
+//! A message a device fetched is kept, as the server sent it, as content of the copies resource
+//! ([`MailCopies`]): the person's own document in the workspace, which syncs to their devices and
+//! no other member's. A device that lacks a message the resource names takes it from there,
 //! newest first, without asking any server; the server stays the authority over its messages,
-//! and one it reports removed is dropped from the record.
+//! and one it reports removed is dropped from the resource.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -122,7 +122,7 @@ pub struct NewCopy {
 impl MailCopies {
     /// Keep fetched mail
     ///
-    /// Records messages a device fetched from their servers, each kept as
+    /// Resources messages a device fetched from their servers, each kept as
     /// its server sent it, for the person's other devices to take. Each
     /// account keeps its newest messages, as many as a device keeps.
     #[action(external)]
@@ -181,12 +181,12 @@ impl MailCopies {
     }
 }
 
-/// The person's copies record as one window uses it: what this device
+/// The person's copies resource as one window uses it: what this device
 /// fetches is kept there, and what another of their devices kept is taken
 /// from there.
 pub(crate) struct Copies {
     record: PersonResource<MailCopies>,
-    /// The record's content: kept with the record on the person's devices
+    /// The resource's content: kept with the resource on the person's devices
     /// and carried on its route.
     content: ContentStore,
     /// Messages asked of the person's other devices and not here yet, by
@@ -195,7 +195,7 @@ pub(crate) struct Copies {
     /// Messages taken, or that cannot arrive, in this window: not asked
     /// for again.
     settled: HashSet<MessageId>,
-    /// What content had reached this process, and how far the record had
+    /// What content had reached this process, and how far the resource had
     /// moved, when this last looked.
     looked: Option<(u64, u64)>,
 }
@@ -296,7 +296,7 @@ impl Copies {
     }
 
     /// Whether there may be something new to take: content reached this
-    /// process, or the record moved, since this last looked.
+    /// process, or the resource moved, since this last looked.
     pub(crate) fn due(&self) -> bool {
         self.looked != Some(self.now())
     }
@@ -365,7 +365,7 @@ impl Copies {
         taken
     }
 
-    /// Read `copy` from the record's content, asking the person's other
+    /// Read `copy` from the resource's content, asking the person's other
     /// devices for it when it is not here.
     fn read(&mut self, reference: &str, id: MessageId, copy: &KeptCopy) -> Read {
         if let Some(bytes) = self.content.read(reference) {
@@ -390,7 +390,7 @@ impl Copies {
     }
 
     /// Let go of the bytes read or kept here: the person's devices keep
-    /// them with the record, and the mailbox keeps what it took.
+    /// them with the resource, and the mailbox keeps what it took.
     fn release(&self) {
         let live: BTreeSet<String> = self.asked.keys().cloned().collect();
         if let Err(error) = self.content.collect_unreferenced(&live) {
@@ -436,7 +436,7 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// The copies of mail a device keeps.
-        fn kept_copies_name_file_record_and_bound_their_mail;
+        fn kept_copies_name_file_resource_and_bound_their_mail;
 
         phase a_kept_message_reads_back_filed_where_its_server_holds_it;
         {
@@ -464,7 +464,7 @@ mod tests {
                     uid_validity: 3,
                 })
             );
-            // Bytes of another message are not this one, whatever the record
+            // Bytes of another message are not this one, whatever the resource
             // files them under.
             assert!(kept.message(id, &raw("other", "Not it.")).is_none());
             assert!(kept.message(id, b"not mail at all").is_none());

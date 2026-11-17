@@ -78,7 +78,7 @@ action pin(n: Note, pinned: Bool = not n.pinned) (icon: .pin, on: n.pinned) {
 
 `(untitled: "Untitled")` says once what a note is called while its title is empty: its row, its
 window's title, a reference to it, its history and its title field's placeholder all read those
-words, translated in the app's catalogue, so no view writes the fallback itself. A type's records
+words, translated in the app's catalogue, so no view writes the fallback itself. A type's resources
 are named by its first text field; `(title: subject)` names the one that does it instead, as a
 draft whose first field is the address it goes from is called by its subject:
 
@@ -120,10 +120,10 @@ run resumed after waiting for a person, and any run replayed, reads the numbers 
 first time.
 
 `notify(to: who, title: text, body: text, opens: r)` tells the person `who` something. A notice
-is a record the action writes in its own change: the workspace keeps it like any other resource,
+is a resource the action writes in its own change: the workspace keeps it like any other resource,
 so every device of that person reads it and no one else's does, and what one of them does with
-it — dismiss it, or choose it and open the resource `r` — is a change of the record too, which
-takes it down on all of theirs. A device tells only what reaches it as news: a notice the record
+it — dismiss it, or choose it and open the resource `r` — is a change of the resource too, which
+takes it down on all of theirs. A device tells only what reaches it as news: a notice the resource
 held when it first looked, or one it told before, stays quiet, so a replay and a device joining
 late tell nothing again. The journal records that the notice was written, so a run resumed or
 replayed writes no second one.
@@ -156,18 +156,18 @@ trigger recount(b: Board) every 30m: recount_columns(b)
 trigger due(r: Reminder) at r.at: ring(r)
 ```
 
-A trigger names one type and runs for each of the package's records of it. `every` takes a
+A trigger names one type and runs for each of the package's resources of it. `every` takes a
 length of time and runs at the start of each period on the clock (`every 30m` is on the half
-hour); `at` reads a `Time` or `Option<Time>` field of the record and runs once when that instant
+hour); `at` reads a `Time` or `Option<Time>` field of the resource and runs once when that instant
 has come. An `every` period that passed while every device was off runs once when one comes up,
-and so does an `at` time that passed; a record whose time moves to a later instant rings again
-there. The action takes the record (`ring(r)`) or a root (`root Board`) as its arguments.
+and so does an `at` time that passed; a resource whose time moves to a later instant rings again
+there. The action takes the resource (`ring(r)`) or a root (`root Board`) as its arguments.
 
 The host that runs a trigger is the workspace's origin, the device that governs the workspace,
 and it records in the same change what the trigger last did for the record: the period it ran
 in, or the instant it fired at. A second run of the same period or instant is refused there, so
 a trigger runs once across the workspace's devices however they sync. A trigger needs no window
-of its app open: the workspace's record service runs it, as it runs the app's root, whether or
+of its app open: the workspace's document service runs it, as it runs the app's root, whether or
 not anything of the app is on screen. Nothing polls: the service wakes at the next instant a
 trigger is due. The field an `at` trigger reads is kept as one of the type's columns, so finding
 the next instant costs the pages up to it, not the type's records: a reminder among ten
@@ -187,10 +187,10 @@ view todayboard(t: todo.Tasks, nb: notes.Notes) {
 }
 ```
 
-What a package declares is its own: record types, aliases, enums, functions, actions,
+What a package declares is its own: document types, aliases, enums, functions, actions,
 views and the resource types it roots. A package that `use`s it sees them as `alias.X`, and
-they stay the library's: the ids are locked in the library's `app.ids`, and a record its action
-writes is an ordinary workspace record under the library's app id, written under the authority
+they stay the library's: the ids are locked in the library's `app.ids`, and a resource its action
+writes is an ordinary workspace document under the library's app id, written under the authority
 of whoever applied the action.
 
 The standard library is one of these packages (`tilo.std`, `crates/lang/tilolang/std/app.tl`):

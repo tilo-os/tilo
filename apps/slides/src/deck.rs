@@ -3,7 +3,7 @@
 //! order; each slide holds its elements in a collection whose order is the
 //! stacking order, back to front. Everything else is a field edit; the verbs
 //! below add, copy, move and delete slides and elements and replace the deck.
-//! The window works on [`crate::model::Deck`], made from this record by
+//! The window works on [`crate::model::Deck`], made from this resource by
 //! [`mirror`].
 
 use serde::{Deserialize, Serialize};
@@ -379,7 +379,7 @@ impl SlideData {
 
 impl Deck {
     /// Answers through [`fields`](tilo_resource::read::fields), so a caller with
-    /// no window open reads the record as it reads any app's.
+    /// no window open reads the resource as it reads any app's.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -882,7 +882,7 @@ fn mirror_element(id: &Id, element: &Element, z: usize) -> crate::model::Element
     mirrored.radius = element.radius;
     mirrored.z = i64::try_from(z).unwrap_or(i64::MAX);
     if element.kind == ElementKind::Text {
-        // The paragraphs keep the record's ids, so a style set over the box marks
+        // The paragraphs keep the resource's ids, so a style set over the box marks
         // them where they are.
         let blocks = blocks_of(&element.body);
         mirrored.set_blocks(blocks.clone());

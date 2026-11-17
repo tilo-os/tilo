@@ -49,7 +49,7 @@ impl BrowserOpener for Browser {
     }
 }
 
-/// Records the authorization URL instead of following it.
+/// Resources the authorization URL instead of following it.
 struct Recorder(std::sync::Mutex<Vec<String>>);
 
 impl BrowserOpener for Recorder {

@@ -1,6 +1,6 @@
 //! When alarms and timers ring on this device. What rings is the person's
 //! [`Clocks`], the same on every device; whether this device has rung it is not,
-//! so each keeps its own delivery ledger in the [`ClocksOnDevices`] record beside
+//! so each keeps its own delivery ledger in the [`ClocksOnDevices`] resource beside
 //! the clocks and writes only its own entry. Wall time is passed in, so suspend,
 //! clock corrections and tests are deterministic.
 
@@ -70,8 +70,8 @@ impl ClocksOnDevices {
     }
 }
 
-/// This device's entry in the [`ClocksOnDevices`] record, or memory where there
-/// is no record (a capture, a past version).
+/// This device's entry in the [`ClocksOnDevices`] resource, or memory where there
+/// is no resource (a capture, a past version).
 #[derive(Clone)]
 pub(crate) struct DeviceChoices {
     record: Option<(PersonResource<ClocksOnDevices>, String)>,

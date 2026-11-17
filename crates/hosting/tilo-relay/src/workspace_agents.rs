@@ -463,7 +463,7 @@ impl HostAgents {
         routes: &[(String, String)],
     ) -> Result<Asks, String> {
         let mut asks = Asks::default();
-        let Some(chat) = self.read::<chat::record::Chat>(workspace, CHAT, "").await? else {
+        let Some(chat) = self.read::<chat::chat::Chat>(workspace, CHAT, "").await? else {
             return Ok(asks);
         };
         for (app, record) in routes {

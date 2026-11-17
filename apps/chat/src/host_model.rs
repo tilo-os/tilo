@@ -435,7 +435,7 @@ impl ChatApp {
 }
 
 // AgentStream's aggregate reasoning and terminal-detail limits. Its text limit
-// is shared with record; reasoning currently has no exported limit constant.
+// is shared with resource; reasoning currently has no exported limit constant.
 const MAX_REASONING_BYTES: usize = 256 * 1024;
 const MAX_DETAIL_BYTES: usize = 16 * 1024;
 
@@ -448,7 +448,7 @@ fn utf8_prefix(value: &str, limit: usize) -> &str {
 }
 
 impl Attempt {
-    /// Validate before emitting any ordered record actions. A rejected delta
+    /// Validate before emitting any ordered resource actions. A rejected delta
     /// would otherwise leave a sequence gap that also rejects the terminal.
     fn bound_output(&mut self) -> bool {
         if !self.state.text.starts_with(&self.published_text)
@@ -465,11 +465,11 @@ impl Attempt {
             });
             return false;
         }
-        if self.state.text.len() > crate::record::MAX_MESSAGE_TEXT_BYTES
+        if self.state.text.len() > crate::chat::MAX_MESSAGE_TEXT_BYTES
             || self.state.reasoning.len() > MAX_REASONING_BYTES
         {
             self.state.text =
-                utf8_prefix(&self.state.text, crate::record::MAX_MESSAGE_TEXT_BYTES).into();
+                utf8_prefix(&self.state.text, crate::chat::MAX_MESSAGE_TEXT_BYTES).into();
             self.state.reasoning = utf8_prefix(&self.state.reasoning, MAX_REASONING_BYTES).into();
             self.state.status = StreamStatus::Truncated;
             self.state.error = Some(ui::models::ModelError {
@@ -492,7 +492,7 @@ impl Attempt {
                 .strip_prefix(published.as_str())
                 .filter(|delta| !delta.is_empty())
             {
-                let delta = utf8_prefix(suffix, crate::record::MAX_MESSAGE_TEXT_BYTES);
+                let delta = utf8_prefix(suffix, crate::chat::MAX_MESSAGE_TEXT_BYTES);
                 self.sequence += 1;
                 let event = if reasoning {
                     AgentOutput::ReasoningDelta { text: delta.into() }

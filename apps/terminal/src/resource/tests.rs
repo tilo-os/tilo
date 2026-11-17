@@ -51,7 +51,7 @@ fn read_reports_the_live_screen_and_where_the_session_runs() {
 }
 
 #[test]
-fn output_stays_out_of_the_record() {
+fn output_stays_out_of_the_resource() {
     let mut app = TestApp::<TerminalShell>::new().expect("terminal");
     feed(&mut app, b"first\r\n");
     let versions = app.versions().len();
@@ -77,9 +77,9 @@ fn output_stays_out_of_the_record() {
 }
 
 tilo_test_env::scenario! {
-    fn the_session_record_holds_valid_facts_under_its_object;
+    fn the_session_resource_holds_valid_facts_under_its_object;
 
-    phase the_record_takes_valid_facts_only;
+    phase the_resource_takes_valid_facts_only;
     {
         let mut session = Replica::<Terminal>::new();
         assert!(
@@ -111,7 +111,7 @@ tilo_test_env::scenario! {
         assert_eq!(session.state().unwrap().relay(), None);
     }
 
-    phase a_session_nested_in_another_record_stays_under_its_object;
+    phase a_session_nested_in_another_resource_stays_under_its_object;
     {
         let mut doc = Doc::new();
         let panel = ui::tilo_resource::Slot::Key(&automerge::ROOT, "terminal_panel")
@@ -133,7 +133,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase history_reads_a_requested_run_from_the_stored_record;
+    phase history_reads_a_requested_run_from_the_stored_resource;
     {
         use ui::tilo_resource::Settled;
         let mut session = Replica::<Terminal>::new().as_member(ui::permissions::MemberId::agent("claude-code"));
@@ -308,7 +308,7 @@ fn the_session_publishes_its_effects_and_the_links_on_screen() {
     );
     assert!(
         widget.grid_text().contains("hello"),
-        "the record must not replace the screen of a terminal running its own output"
+        "the resource must not replace the screen of a terminal running its own output"
     );
 }
 

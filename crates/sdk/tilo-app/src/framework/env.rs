@@ -574,9 +574,9 @@ impl<R: Resource> ResourceEnv<R> {
 
     /// Opens the record `id` of `P` that `owner` keeps, later, from a widget that outlives this
     /// view: a page's Files window opens each chunk of the workspace's tree as the tree lists it
-    /// ([`RecordOpener::open`](super::RecordOpener::open)).
-    pub fn record_opener<P: Resource>(&self, owner: &'static str) -> super::RecordOpener<P> {
-        super::RecordOpener::new(Rc::clone(&self.storage), owner)
+    /// ([`ResourceOpener::open`](super::ResourceOpener::open)).
+    pub fn resource_opener<P: Resource>(&self, owner: &'static str) -> super::ResourceOpener<P> {
+        super::ResourceOpener::new(Rc::clone(&self.storage), owner)
     }
 
     /// The person's record `P` that one app keeps for all of theirs — their

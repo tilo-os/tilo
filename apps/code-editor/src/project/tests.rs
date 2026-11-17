@@ -467,7 +467,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn an_edit_never_grows_a_file_past_its_limit() {
-    // A record a window keeps writes the large parts of an action into that window's content
+    // A resource a window keeps writes the large parts of an action into that window's content
     // store; this replica records one on a thread with a store of its own, as a window has.
     let _store = ui::tilo_resource::content::register_for_resources();
     let mut project = Replica::<Project>::new();

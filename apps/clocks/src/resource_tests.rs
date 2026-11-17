@@ -110,7 +110,7 @@ fn one_published_tree_offers_every_clock_and_floats_timers_on_this_device_only()
         Some("At 7:30 AM, repeating Once.")
     );
 
-    // Phase: floating a timer from its row changes this device's entry in the record,
+    // Phase: floating a timer from its row changes this device's entry in the resource,
     // not the clocks everyone shares, and the row offers the way back.
     app.call_on(&timer, "float-timer", serde_json::json!({}))
         .unwrap();
@@ -192,7 +192,7 @@ tilo_test_env::scenario! {
         clippy::too_many_lines,
         reason = "one scenario, one labelled phase per merged case"
     )]
-    fn the_clocks_record_changes_only_through_its_actions;
+    fn the_clocks_resource_changes_only_through_its_actions;
 
     phase every_edit_is_an_action_stamped_with_its_own_time;
     {

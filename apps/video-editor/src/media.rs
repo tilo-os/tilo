@@ -1,6 +1,6 @@
 //! Where a media reference resolves to, and whether its bytes are local.
 //!
-//! The record carries only references: a workspace-relative path plus cheap
+//! The resource carries only references: a workspace-relative path plus cheap
 //! metadata. The bytes live on the workspace FUSE, where they hydrate on read, so
 //! a path that resolves is not a path that can be decoded. Everything that reads
 //! media goes through [`resolve`], which says both.
@@ -21,7 +21,7 @@ pub const MEDIA_PREFIX: &str = "media";
 pub const KEPT_PREFIX: &str = "tilo-kept";
 
 /// Whether a reference's bytes are local. The reference itself is always in the
-/// record, so a clip can be laid out, trimmed and drawn from metadata alone.
+/// resource, so a clip can be laid out, trimmed and drawn from metadata alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, tilo_resource::Model)]
 pub enum Hydration {
     /// Metadata is known; the bytes have not been fetched yet.

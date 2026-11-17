@@ -17,8 +17,8 @@ use ui::widget::{Dropdown, Field, Form, FormSection, ModalDialog, Toggle};
 
 use super::Action;
 use crate::actions::CameraEffect;
+use crate::camera::Camera;
 use crate::model::{Facing, PhotoFormat, Resolution, Settings, Timer};
-use crate::record::Record;
 
 /// Actions raised by retained controls, applied by the app after the event
 /// that raised them.
@@ -28,7 +28,7 @@ pub(super) type ActionQueue = Rc<RefCell<Vec<Action>>>;
 pub(super) struct SettingsSheet {
     pub(super) dialog: ModalDialog<Form>,
     states: States,
-    actions: Option<Actions<Record>>,
+    actions: Option<Actions<Camera>>,
     lenses: bool,
 }
 
@@ -72,7 +72,7 @@ fn timer_value(timer: Timer) -> &'static str {
 
 fn bound<I: 'static, C: ActionControl<I>>(
     control: C,
-    actions: Option<&Actions<Record>>,
+    actions: Option<&Actions<Camera>>,
     effect: impl Binds<CameraEffect, I>,
 ) -> C {
     match actions {
@@ -88,7 +88,7 @@ fn choice(
     label: impl Into<String>,
     all: Vec<(String, String)>,
     state: &LocalState<String>,
-    actions: Option<&Actions<Record>>,
+    actions: Option<&Actions<Camera>>,
     effect: impl Binds<CameraEffect, String>,
 ) -> Field {
     let mut dropdown = Dropdown::from_state(Vec::new(), state);
@@ -99,7 +99,7 @@ fn choice(
 fn switch(
     label: &str,
     state: &LocalState<bool>,
-    actions: Option<&Actions<Record>>,
+    actions: Option<&Actions<Camera>>,
     effect: impl Binds<CameraEffect, bool>,
 ) -> Field {
     Field::new(label, bound(Toggle::from_state(state), actions, effect))
@@ -120,7 +120,7 @@ impl States {
         }
     }
 
-    fn form(&self, actions: Option<&Actions<Record>>, lenses: bool) -> Form {
+    fn form(&self, actions: Option<&Actions<Camera>>, lenses: bool) -> Form {
         let mut capture = FormSection::new(crate::CATALOG.t("camera-settings-capture"))
             .grouped()
             .field(choice(
@@ -211,7 +211,7 @@ impl SettingsSheet {
         }
     }
 
-    pub(super) fn attach(&mut self, actions: &Actions<Record>) {
+    pub(super) fn attach(&mut self, actions: &Actions<Camera>) {
         self.actions = Some(actions.clone());
         *self.dialog.content_mut() = self.states.form(self.actions.as_ref(), self.lenses);
     }

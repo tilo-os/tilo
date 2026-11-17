@@ -1388,7 +1388,7 @@ fn revocation(effect: DevicesAccessEffect) -> ui::tilo_actions::ActionSpec {
 }
 
 /// Naming `device`: a button that opens a field holding the name it reads by,
-/// and Save hands the new one to the host that keeps the person's record.
+/// and Save hands the new one to the host that keeps the person's resource.
 fn rename_control(
     cx: &ViewCx<Settings>,
     state: &PageState,

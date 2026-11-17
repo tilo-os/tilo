@@ -23,7 +23,7 @@ use tilo_view::{Arg, Node, ResourceRef, Value, ViewCx, ViewResource};
 use tilo_view_macros::view;
 
 /// The app SDK, under a name the view's own `ui` (the described components) does not take:
-/// a conversation's id is the SDK's `Id`, which the chat record's fields name.
+/// a conversation's id is the SDK's `Id`, which the chat resource's fields name.
 use ::ui as sdk;
 type Id = sdk::tilo_resource::Id;
 
@@ -78,13 +78,13 @@ impl Person {
     }
 }
 
-/// What a channel's record does not itself say of the people in it, which the session reading
+/// What a channel's resource does not itself say of the people in it, which the session reading
 /// it knows: the name its reader goes by on this device — the very name the top bar shows them
-/// — and the workspace's agents by their id. A record holds ids; a person is named where they
+/// — and the workspace's agents by their id. A resource holds ids; a person is named where they
 /// are read.
 ///
-/// Chat's record names the people it was told about (a workspace's roster), and a session's
-/// own record may never have been told of its reader or of the agent it asks: the reading is
+/// Chat's resource names the people it was told about (a workspace's roster), and a session's
+/// own document may never have been told of its reader or of the agent it asks: the reading is
 /// then completed here rather than showing anyone their routing id.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Names {
@@ -99,7 +99,7 @@ pub struct Names {
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "the page's message carries independent facts the row draws (edited, pinned, retry, sending), each read off the record on its own"
+    reason = "the page's message carries independent facts the row draws (edited, pinned, retry, sending), each read off the resource on its own"
 )]
 pub struct Message {
     /// Its id, after `chat.workspace/messages/`.
@@ -122,7 +122,7 @@ pub struct Message {
     /// Who reacted with which emoji, each emoji once, in the order they were first used.
     #[serde(default)]
     pub reactions: Vec<Reaction>,
-    /// What it carries besides its words: the records it was shared from, the words it quotes,
+    /// What it carries besides its words: the resources it was shared from, the words it quotes,
     /// and the files it posts.
     #[serde(default)]
     pub attachments: Vec<Attachment>,
@@ -166,10 +166,10 @@ pub struct Work {
     #[serde(default)]
     pub state: String,
     /// What the run said of the work: what is under way (`doing`), or what
-    /// happened when it ended. What a person reads, never the run's record.
+    /// happened when it ended. What a person reads, never the run's resource.
     #[serde(default)]
     pub detail: String,
-    /// The run's working record of a failure, for whoever debugs it later: the
+    /// The run's working resource of a failure, for whoever debugs it later: the
     /// transport's error, the partial answer, the provider's exposed reasoning.
     /// Shown only behind a disclosure, never as the row's own words.
     #[serde(default)]
@@ -280,13 +280,13 @@ pub struct Reaction {
     pub who: Vec<MemberId>,
 }
 
-/// What a message carries: a record it was shared from, the words it quotes, or a file it posts.
+/// What a message carries: a resource it was shared from, the words it quotes, or a file it posts.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Attachment {
     /// What it is: `resource`, `text`, `image`, `video` or `file`.
     #[serde(default)]
     pub kind: String,
-    /// What a chip or a card says of it: a record's label, the words it quotes, a file's name.
+    /// What a chip or a card says of it: a resource's label, the words it quotes, a file's name.
     #[serde(default)]
     pub label: String,
     /// The resource it shows, when it shows one: what a press places.
@@ -311,7 +311,7 @@ pub fn channel_address(id: &str) -> String {
 }
 
 /// The conversation an address names, by its id: its stable address
-/// ([`channel_address`]), and the item form older links and records carry
+/// ([`channel_address`]), and the item form older links and resources carry
 /// (`chat.workspace/channels/<id>`), which keep opening the same conversation.
 #[must_use]
 pub fn channel_of(address: &str) -> Option<&str> {
@@ -324,7 +324,7 @@ pub fn channel_of(address: &str) -> Option<&str> {
 impl Channel {
     /// The resource a place names for this channel, by the id it is published under:
     /// `chat.workspace.channels:<id>` as a development session publishes it, and
-    /// `chat.workspace/channels/<id>` as the chat's own record publishes the item — the very
+    /// `chat.workspace/channels/<id>` as the chat's own document publishes the item — the very
     /// conversation Chat's own window shows and the one the canvas places when a person asks
     /// there (shell.md §8.1).
     #[must_use]
@@ -365,14 +365,14 @@ impl Channel {
     /// people who spoke, and the messages it holds, each with what it answers, who reacted and
     /// what it carries.
     ///
-    /// A conversation the record does not hold (a direct one nobody has written in yet) is
+    /// A conversation the resource does not hold (a direct one nobody has written in yet) is
     /// named by the people it is with, as the window names it.
     ///
-    /// [`Names`] completes what the record does not say: the reader's own name, and the
+    /// [`Names`] completes what the resource does not say: the reader's own name, and the
     /// workspace's agents by their id. Nobody is ever shown their routing id.
     #[must_use]
     pub fn read(
-        chat: &crate::record::Chat,
+        chat: &crate::chat::Chat,
         rows: &[crate::model::Message],
         id: &str,
         me: &MemberId,
@@ -493,13 +493,13 @@ impl Channel {
     }
 
     /// Add the person `author` to `people` when not already there, as they are named here: the
-    /// record's roster first, then what the reading's [`Names`] say — the reader's own name, or
+    /// resource's roster first, then what the reading's [`Names`] say — the reader's own name, or
     /// the workspace's name for an agent — and otherwise Chat's honest placeholder for someone
     /// it cannot name. Never their routing id. Software that wrote for a person (`acting`) is
     /// named with them, as Chat's window names its authors: "Helper for Ada", after it left too.
     fn named(
         people: &mut Vec<Person>,
-        chat: &crate::record::Chat,
+        chat: &crate::chat::Chat,
         names: &Names,
         me: &MemberId,
         author: &MemberId,
@@ -508,7 +508,7 @@ impl Channel {
         if people.iter().any(|held| held.id == *author) {
             return;
         }
-        let roster = chat.people.find(&crate::record::member_slot(author));
+        let roster = chat.people.find(&crate::chat::member_slot(author));
         let agent = !author.is_person();
         let shown = roster
             .map(|person| person.name.trim().to_owned())
@@ -524,7 +524,7 @@ impl Channel {
                 crate::identity::RoleWord::InName,
                 |person| {
                     chat.people
-                        .find(&crate::record::member_slot(person))
+                        .find(&crate::chat::member_slot(person))
                         .map_or_else(
                             || crate::identity::unnamed_label(person),
                             |held| held.name.trim().to_owned(),
@@ -541,14 +541,14 @@ impl Channel {
     }
 }
 
-/// An agent's record of its work on a reply, as the page shows it: where the work is, and what
+/// An agent's resource of its work on a reply, as the page shows it: where the work is, and what
 /// the agent said of it — what it is doing, or why it ended.
 ///
 /// The words are the reply's own text while it streams and, once the turn ends, what the run
 /// said became of it; the work's own detail is the provider's account of an end that failed, so
 /// the page can say what happened without making the person open Chat's window.
 fn work_of(work: &crate::model::AgentWork) -> Work {
-    // A streamed end is the end: the record keeps the provider's own finish beside the state the
+    // A streamed end is the end: the resource keeps the provider's own finish beside the state the
     // run wrote, and both say the same thing where both exist.
     let state = work
         .stream
@@ -581,7 +581,7 @@ fn work_of(work: &crate::model::AgentWork) -> Work {
     }
 }
 
-/// The state a provider's finish is, spelled as [record-work](crate::messages) spells it.
+/// The state a provider's finish is, spelled as [resource-work](crate::messages) spells it.
 fn provider_state(finish: crate::agent_stream::AgentFinish) -> &'static str {
     use crate::agent_stream::AgentFinish;
     match finish {
@@ -613,7 +613,7 @@ fn retryable(rows: &[crate::model::Message], row: &crate::model::Message) -> boo
         return false;
     }
     row.id
-        == crate::record::reply_id_at(
+        == crate::chat::reply_id_at(
             &Id::from_raw(summons.to_owned()),
             &row.author,
             asker.attempts,
@@ -621,7 +621,7 @@ fn retryable(rows: &[crate::model::Message], row: &crate::model::Message) -> boo
         .to_string()
 }
 
-/// The name an agent author shows, as the workspace's member record names it, and otherwise what
+/// The name an agent author shows, as the workspace's member document names it, and otherwise what
 /// Chat calls an agent it has not been told the name of. An author that is not an agent has no
 /// agent's name.
 fn agent_name(names: &Names, author: &MemberId) -> Option<String> {
@@ -651,7 +651,7 @@ fn excerpt(text: &str) -> String {
 }
 
 impl Attachment {
-    /// What the message's attachment `attached` is, as its page draws it: a chip for a record,
+    /// What the message's attachment `attached` is, as its page draws it: a chip for a resource,
     /// the words for a quote, a card for a file.
     #[must_use]
     pub fn of(attached: &tilo_reference::Attached) -> Self {
@@ -694,7 +694,7 @@ impl Attachment {
 }
 
 impl ViewResource for Channel {
-    // The item of Chat's `channels` collection, as its record publishes it
+    // The item of Chat's `channels` collection, as its resource publishes it
     // (`chat.workspace/channels/<id>`): the conversation a place shows, and the one the canvas
     // places when a person asks there.
     const KIND: &'static str = "chat.workspace.channels";
@@ -707,7 +707,7 @@ mod question;
 mod turn;
 pub use turn::{TURN_KIND, Turn};
 
-/// The kind of the chat's messages record, as its own items are published under it: a message's
+/// The kind of the chat's messages resource, as its own items are published under it: a message's
 /// row and a reply's quote open `chat.workspace/messages/<id>`.
 const MESSAGES_KIND: &str = "chat.workspace";
 
@@ -1094,7 +1094,7 @@ fn writing_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
 /// the evidence that the person was not ignored.
 ///
 /// What the row says is the run's sentence for a person — one line of what happened, and at most
-/// what to do next. The run's working record (the transport's error, the partial answer, the
+/// what to do next. The run's working resource (the transport's error, the partial answer, the
 /// provider's exposed reasoning) is for whoever debugs the failure later, so it sits behind a
 /// disclosure: a person who just wants to read the conversation never meets it.
 fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
@@ -1125,7 +1125,7 @@ fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
     if record.is_empty() {
         return banner;
     }
-    // The technical record closes behind its own row: a disclosure a person opens only when they
+    // The technical resource closes behind its own row: a disclosure a person opens only when they
     // want to know what went wrong under the hood, never the row's own words.
     let details: Node = ui::DisclosureRowBuilder::new(
         &cx.key(format!("failed-record-{}", message.id)),
@@ -1204,11 +1204,11 @@ fn reply_quote(c: &Channel, quote: &Quote, key: &str, cx: &ViewCx) -> Node {
     }
 }
 
-/// One thing a message carries: a record it was shared from (a row that places it), the words
+/// One thing a message carries: a resource it was shared from (a row that places it), the words
 /// it quotes, a picture, or a file it posts (a card naming it).
 fn attachment_row(attachment: &Attachment, key: &str, cx: &ViewCx) -> Node {
     if let Some(target) = &attachment.resource {
-        // A record is a reference: a row that shows it and places it when activated, which is
+        // A resource is a reference: a row that shows it and places it when activated, which is
         // the system's open (shell.md §3) — Chat does not handle the press itself.
         let row: Node = ui::ListRowBuilder::new(key)
             .title(&attachment.label)
@@ -1278,7 +1278,7 @@ fn reactions(c: &Channel, message: &Message, key: &str) -> Node {
 ///
 /// The field is the composer's own draft, and what it holds is the `text` argument of Chat's own
 /// `send`: Enter sends what the field carries, and the button sends the draft the field is bound
-/// to, so a press, an agent's send and the shell's send-to box take the one path to the record.
+/// to, so a press, an agent's send and the shell's send-to box take the one path to the resource.
 fn composer(c: &Channel, cx: &ViewCx) -> Node {
     let field: Node = ui::TextInputBuilder::new(&cx.key("draft"))
         .placeholder(crate::i18n::t_args(
@@ -1493,7 +1493,7 @@ mod tests {
             .collect()
     }
 
-    /// A message of `channel` written by `author` at `ts`, as the record's projection reads one.
+    /// A message of `channel` written by `author` at `ts`, as the resource's projection reads one.
     fn row(
         channel: &str,
         id: &str,
@@ -1528,17 +1528,17 @@ mod tests {
         }
     }
 
-    /// A channel of a record that knows nobody: a real session's ask conversation, whose record
+    /// A channel of a resource that knows nobody: a real session's ask conversation, whose resource
     /// was created by the ask and never introduced to its reader or its agent, with one message
     /// from the person seated here under their root key and one from the agent answering them.
     fn unacquainted_channel(me: &str, agent: &str) -> Channel {
-        let mut chat = crate::record::Chat::default();
+        let mut chat = crate::chat::Chat::default();
         chat.open_channel(
             Id::from_raw("c_ask"),
-            crate::record::Conversation {
+            crate::chat::Conversation {
                 name: "Assistant".to_owned(),
                 members: vec![MemberId::person(me), MemberId::agent(agent)],
-                ..crate::record::Conversation::default()
+                ..crate::chat::Conversation::default()
             },
         );
         let rows = vec![
@@ -1575,7 +1575,7 @@ mod tests {
 
         phase a_real_sessions_person_is_named_never_shown_their_id;
         {
-            // A session's Chat record is the ask's, and the ask never told it who reads it: the
+            // A session's Chat resource is the ask's, and the ask never told it who reads it: the
             // person's message is authored by their root key, a 64-hex routing id. The page draws
             // the name this device shows them — "quinn davis" — never that key.
             const ME: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
@@ -1656,10 +1656,10 @@ mod tests {
             // window names it.
             const ADA: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
             const BOB: &str = "7f3c0f9bb4ed0e42f1a2d0e5a3c1b0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3";
-            let mut chat = crate::record::Chat::default();
-            chat.people.push(crate::record::Person {
+            let mut chat = crate::chat::Chat::default();
+            chat.people.push(crate::chat::Person {
                 name: "Ada".to_owned(),
-                ..crate::record::Person::unnamed(MemberId::person(ADA))
+                ..crate::chat::Person::unnamed(MemberId::person(ADA))
             });
             let mut said = row("c_ask", "m_reply", MemberId::agent("helper"), 1_782_470_460, "Hi");
             said.acting =
@@ -1680,17 +1680,17 @@ mod tests {
             );
         }
 
-        phase a_person_the_record_cannot_name_is_never_shown_their_id;
+        phase a_person_the_resource_cannot_name_is_never_shown_their_id;
         {
-            // Someone neither the record nor the reading's names know: the page says the honest
+            // Someone neither the resource nor the reading's names know: the page says the honest
             // placeholder Chat uses for an unnamed person, never the routing key it holds.
             const STRANGER: &str = "f00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeed";
-            let mut chat = crate::record::Chat::default();
+            let mut chat = crate::chat::Chat::default();
             chat.open_channel(
                 Id::from_raw("c_ask"),
-                crate::record::Conversation {
+                crate::chat::Conversation {
                     name: "Assistant".to_owned(),
-                    ..crate::record::Conversation::default()
+                    ..crate::chat::Conversation::default()
                 },
             );
             let rows = vec![row("c_ask", "m_ask", MemberId::person(STRANGER), 1_782_470_400, "hello")];
@@ -1787,7 +1787,7 @@ mod tests {
 
         phase a_messages_attachment_chip_can_be_dragged_out;
         {
-            // A record an attachment holds is a drag source as well as a row: dragging it carries
+            // A resource an attachment holds is a drag source as well as a row: dragging it carries
             // the resource's address, so a drop target elsewhere — the canvas — takes it.
             let mut channel = demo_channel();
             let shared = ResourceRef {
@@ -2004,7 +2004,7 @@ mod tests {
                     node.kind == "ui.ListRow"
                         && node.props.get("title") == Some(&Value::Text("Q3 plan".to_owned()))
                 })
-                .expect("the shared record's row");
+                .expect("the shared resource's row");
             assert_eq!(
                 cx.effect(&row.key, "activate"),
                 Some(tilo_view::Effect::Open {
@@ -2027,16 +2027,16 @@ mod tests {
             // An agent answering the message right above it needs no quote: the person reads what is
             // answered just over the answer. A reply to anything else keeps its quote.
             const ME: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
-            let mut chat = crate::record::Chat::default();
+            let mut chat = crate::chat::Chat::default();
             chat.open_channel(
                 Id::from_raw("c_ask"),
-                crate::record::Conversation {
+                crate::chat::Conversation {
                     name: "Assistant".to_owned(),
                     members: vec![
                         MemberId::person(ME),
                         MemberId::agent("assistant"),
                     ],
-                    ..crate::record::Conversation::default()
+                    ..crate::chat::Conversation::default()
                 },
             );
             let message = |id: &str, author: MemberId, ts: i64, text: &str, parent: Option<&str>| {
@@ -2134,14 +2134,14 @@ mod tests {
                 "Yes: that stretch flattens",
             );
             reply.parent = Some("m_asked".to_owned());
-            reply.quoted = Some(crate::record::Quote {
+            reply.quoted = Some(crate::chat::Quote {
                 text: chosen.to_owned(),
                 start: u64::try_from(start).expect("an offset"),
                 end: u64::try_from(end).expect("an offset"),
             });
             rows.push(reply);
             let channel = Channel::read(
-                &crate::record::Chat::default(),
+                &crate::chat::Chat::default(),
                 &rows,
                 "c_crit",
                 &MemberId::person(crate::model::ME),
@@ -2207,7 +2207,7 @@ mod tests {
             ..Message::by(MemberId::person(crate::model::ME))
         });
         channel.messages.push(Message {
-            id: crate::record::reply_id(&Id::from_raw("m_asked"), &MemberId::agent("tide"))
+            id: crate::chat::reply_id(&Id::from_raw("m_asked"), &MemberId::agent("tide"))
                 .to_string(),
             ts: 1_782_470_400,
             text: partial.to_owned(),
@@ -2323,7 +2323,7 @@ mod tests {
                         // that message, and posts nothing.
                         args: vec![
                             Arg::text(
-                                crate::record::reply_id(&Id::from_raw("m_asked"), &MemberId::agent("tide"))
+                                crate::chat::reply_id(&Id::from_raw("m_asked"), &MemberId::agent("tide"))
                                     .to_string(),
                             ),
                             Arg::text("m_asked"),
@@ -2338,11 +2338,11 @@ mod tests {
             }
         }
 
-        phase a_failed_row_says_what_happened_and_keeps_the_runs_record_behind_a_disclosure;
+        phase a_failed_row_says_what_happened_and_keeps_the_runs_resource_behind_a_disclosure;
         {
             // A failed turn's row says the run's own sentence for a person — one line of what
             // happened — never the working record a person would read as the model's reasoning or
-            // a recovery instruction written for the agent. The record is there, for whoever debugs
+            // a recovery instruction written for the agent. The resource is there, for whoever debugs
             // the failure, behind a disclosure the row offers.
             let mut channel = writing_channel("provider_failed", "");
             if let Some(reply) = channel.messages.last_mut() {
@@ -2369,12 +2369,12 @@ mod tests {
                 "the row says what happened in the run's sentence"
             );
             // The row's own visible words — the banner, not the disclosure it offers — carry nothing
-            // of the record. The disclosure's body is the one place it lives.
+            // of the resource. The disclosure's body is the one place it lives.
             let shown = texts(rows[0]);
             for line in &shown {
                 assert!(
                     !line.contains("Retry inference from saved history"),
-                    "the record's recovery instruction is not the row's words: {line:?}"
+                    "the resource's recovery instruction is not the row's words: {line:?}"
                 );
                 assert!(
                     !line.contains("Provider-exposed summary"),
@@ -2385,10 +2385,10 @@ mod tests {
                     "model reasoning is not the row's words: {line:?}"
                 );
             }
-            // The record is behind a disclosure on the row, so it can be opened when a person wants
+            // The resource is behind a disclosure on the row, so it can be opened when a person wants
             // to know what went wrong under the hood.
             let details = keyed(&tree, "ui.DisclosureRow", "@failed-record-");
-            assert_eq!(details.len(), 1, "the record has a disclosure");
+            assert_eq!(details.len(), 1, "the resource has a disclosure");
             assert_eq!(
                 details[0].props.get("title"),
                 Some(&Value::Text("Details".to_owned())),
@@ -2398,7 +2398,7 @@ mod tests {
                 texts(details[0])
                     .iter()
                     .any(|line| line.contains("Provider-exposed summary")),
-                "the record is inside the disclosure"
+                "the resource is inside the disclosure"
             );
         }
 
@@ -2445,14 +2445,14 @@ mod tests {
         phase a_failed_reply_is_the_one_a_retry_asks_again;
         {
             // The failed reply of the question's current attempt is the one a Retry asks again: the
-            // page reads the record's own work — a provider end from an earlier turn beside a state
+            // page reads the resource's own work — a provider end from an earlier turn beside a state
             // the run wrote — and derives the reply's id from the summons, the agent and the
             // attempt, as Chat does.
             let workspace = crate::demo::Workspace::demo().expect("the demo workspace");
             let mut rows = workspace.message_rows("c_crit");
             let summons = rows[0].id.clone();
             let reply_id =
-                crate::record::reply_id(&Id::from_raw(summons.clone()), &MemberId::agent("tide")).to_string();
+                crate::chat::reply_id(&Id::from_raw(summons.clone()), &MemberId::agent("tide")).to_string();
             rows.push(crate::model::Message {
                 id: reply_id.clone(),
                 channel: "c_crit".to_owned(),
@@ -2505,7 +2505,7 @@ mod tests {
                     failure_detail: String::new(),
                     steps: Vec::new(),
                 }),
-                "the page projects the record's failed end and its reason"
+                "the page projects the resource's failed end and its reason"
             );
             assert!(
                 reply.retry,
@@ -2669,16 +2669,16 @@ mod tests {
             // quote and a long answer stays level with the byline and never drops to the middle of
             // the words underneath it. The person's own message and the agent's reply draw alike.
             const ME: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
-            let mut chat = crate::record::Chat::default();
+            let mut chat = crate::chat::Chat::default();
             chat.open_channel(
                 Id::from_raw("c_ask"),
-                crate::record::Conversation {
+                crate::chat::Conversation {
                     name: "Assistant".to_owned(),
                     members: vec![
                         MemberId::person(ME),
                         MemberId::agent("assistant"),
                     ],
-                    ..crate::record::Conversation::default()
+                    ..crate::chat::Conversation::default()
                 },
             );
             let mut said = row("c_ask", "m_reply", MemberId::agent("assistant"), 1_782_470_420, "Hi");

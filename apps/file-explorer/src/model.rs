@@ -4,10 +4,10 @@ use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
 
 use fs_protocol::projection::{
+    DOCUMENT_INDEX_BY_ID_XATTR_PREFIX, DOCUMENT_INDEX_PAGE_ENTRIES, DOCUMENT_INDEX_V2_VERSION,
+    DOCUMENT_INDEX_V2_XATTR, DOCUMENT_INDEX_V3_VERSION, DOCUMENT_INDEX_V3_XATTR,
     DocumentIndexEntryV1, DocumentIndexExactV2, DocumentIndexManifestV2, DocumentIndexManifestV3,
-    DocumentIndexPageV2, DocumentIndexPageV3, MAX_RECORD_INDEX_PAGE_BYTES,
-    RECORD_INDEX_BY_ID_XATTR_PREFIX, RECORD_INDEX_PAGE_ENTRIES, RECORD_INDEX_V2_VERSION,
-    RECORD_INDEX_V2_XATTR, RECORD_INDEX_V3_VERSION, RECORD_INDEX_V3_XATTR,
+    DocumentIndexPageV2, DocumentIndexPageV3, MAX_DOCUMENT_INDEX_PAGE_BYTES,
     valid_document_index_revision,
 };
 use fs_protocol::{
@@ -79,22 +79,22 @@ pub fn read_document_id(path: &Path) -> Option<[u8; 16]> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkspaceRecordIndex {
-    pub records: Vec<WorkspaceRecord>,
+pub struct WorkspaceDocumentIndex {
+    pub records: Vec<WorkspaceDocument>,
     pub truncated: bool,
 }
 
-/// One bounded unit of the record catalogue; `reset` says the authority changed and paging starts again.
+/// One bounded unit of the resource catalogue; `reset` says the authority changed and paging starts again.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkspaceRecordIndexPage {
-    pub records: Vec<WorkspaceRecord>,
+pub struct WorkspaceDocumentIndexPage {
+    pub records: Vec<WorkspaceDocument>,
     pub reset: bool,
     pub complete: bool,
     pub truncated: bool,
 }
 
 #[derive(Debug)]
-pub struct WorkspaceRecordIndexPager {
+pub struct WorkspaceDocumentIndexPager {
     source_roots: Vec<PathBuf>,
     roots: Vec<PathBuf>,
     root_index: usize,
@@ -126,7 +126,7 @@ struct DocumentIndexCursor {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkspaceRecord {
+pub struct WorkspaceDocument {
     pub document_id: uuid::Uuid,
     pub name: String,
     pub path: PathBuf,
@@ -146,33 +146,33 @@ fn safe_projected_path(root: &Path, projected: &str) -> Option<PathBuf> {
     Some(root.join(path))
 }
 
-fn read_record_index_manifest_v2(root: &Path) -> Option<DocumentIndexManifestV2> {
-    let bytes = xattr::get(root, RECORD_INDEX_V2_XATTR).ok()??;
-    if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
+fn read_resource_index_manifest_v2(root: &Path) -> Option<DocumentIndexManifestV2> {
+    let bytes = xattr::get(root, DOCUMENT_INDEX_V2_XATTR).ok()??;
+    if bytes.len() > MAX_DOCUMENT_INDEX_PAGE_BYTES {
         return None;
     }
     let manifest = DocumentIndexManifestV2::from_json(&bytes).ok()?;
-    if manifest.schema_version != RECORD_INDEX_V2_VERSION
+    if manifest.schema_version != DOCUMENT_INDEX_V2_VERSION
         || !valid_document_index_revision(&manifest.revision)
-        || manifest.page_entries != RECORD_INDEX_PAGE_ENTRIES
+        || manifest.page_entries != DOCUMENT_INDEX_PAGE_ENTRIES
     {
         return None;
     }
     Some(manifest)
 }
 
-fn read_record_index_page_v2(
+fn read_resource_index_page_v2(
     root: &Path,
     manifest: &DocumentIndexManifestV2,
     offset: usize,
 ) -> Option<DocumentIndexPageV2> {
-    let name = format!("{RECORD_INDEX_V2_XATTR}.{}.{}", manifest.revision, offset);
+    let name = format!("{DOCUMENT_INDEX_V2_XATTR}.{}.{}", manifest.revision, offset);
     let bytes = xattr::get(root, &name).ok()??;
-    if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
+    if bytes.len() > MAX_DOCUMENT_INDEX_PAGE_BYTES {
         return None;
     }
     let page = DocumentIndexPageV2::from_json(&bytes).ok()?;
-    if page.schema_version != RECORD_INDEX_V2_VERSION
+    if page.schema_version != DOCUMENT_INDEX_V2_VERSION
         || page.revision != manifest.revision
         || page.offset != offset
         || page.records.len() > manifest.page_entries
@@ -186,31 +186,31 @@ fn read_record_index_page_v2(
     Some(page)
 }
 
-fn read_record_index_manifest_v3(root: &Path) -> Option<DocumentIndexManifestV3> {
-    let bytes = xattr::get(root, RECORD_INDEX_V3_XATTR).ok()??;
-    if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
+fn read_resource_index_manifest_v3(root: &Path) -> Option<DocumentIndexManifestV3> {
+    let bytes = xattr::get(root, DOCUMENT_INDEX_V3_XATTR).ok()??;
+    if bytes.len() > MAX_DOCUMENT_INDEX_PAGE_BYTES {
         return None;
     }
     let value = DocumentIndexManifestV3::from_json(&bytes).ok()?;
-    (value.schema_version == RECORD_INDEX_V3_VERSION
+    (value.schema_version == DOCUMENT_INDEX_V3_VERSION
         && valid_document_index_revision(&value.revision)
         && uuid::Uuid::parse_str(&value.initial_cursor).is_ok()
-        && value.page_entries == RECORD_INDEX_PAGE_ENTRIES)
+        && value.page_entries == DOCUMENT_INDEX_PAGE_ENTRIES)
         .then_some(value)
 }
 
-fn read_record_index_page_v3(
+fn read_resource_index_page_v3(
     root: &Path,
     manifest: &DocumentIndexManifestV3,
     cursor: &str,
 ) -> Option<DocumentIndexPageV3> {
-    let name = format!("{RECORD_INDEX_V3_XATTR}.{}.{}", manifest.revision, cursor);
+    let name = format!("{DOCUMENT_INDEX_V3_XATTR}.{}.{}", manifest.revision, cursor);
     let bytes = xattr::get(root, name).ok()??;
-    if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
+    if bytes.len() > MAX_DOCUMENT_INDEX_PAGE_BYTES {
         return None;
     }
     let value = DocumentIndexPageV3::from_json(&bytes).ok()?;
-    (value.schema_version == RECORD_INDEX_V3_VERSION
+    (value.schema_version == DOCUMENT_INDEX_V3_VERSION
         && value.revision == manifest.revision
         && value.records.len() <= manifest.page_entries
         && value
@@ -224,28 +224,28 @@ fn read_record_index_page_v3(
     .then_some(value)
 }
 
-pub fn resolve_workspace_record(
+pub fn resolve_workspace_resource(
     roots: &[PathBuf],
     document_id: uuid::Uuid,
-) -> Option<WorkspaceRecord> {
+) -> Option<WorkspaceDocument> {
     for root in roots {
-        let name = format!("{RECORD_INDEX_BY_ID_XATTR_PREFIX}{document_id}");
+        let name = format!("{DOCUMENT_INDEX_BY_ID_XATTR_PREFIX}{document_id}");
         let Some(bytes) = xattr::get(root, name).ok().flatten() else {
             continue;
         };
-        if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
+        if bytes.len() > MAX_DOCUMENT_INDEX_PAGE_BYTES {
             continue;
         }
         let Ok(projection) = DocumentIndexExactV2::from_json(&bytes) else {
             continue;
         };
-        if projection.schema_version != RECORD_INDEX_V2_VERSION
+        if projection.schema_version != DOCUMENT_INDEX_V2_VERSION
             || !valid_document_index_revision(&projection.revision)
             || projection.record.document_id.0 != document_id
         {
             continue;
         }
-        let (mut records, malformed) = project_record_entries(root, vec![projection.record]);
+        let (mut records, malformed) = project_resource_entries(root, vec![projection.record]);
         if !malformed && let Some(record) = records.pop() {
             return Some(record);
         }
@@ -253,8 +253,9 @@ pub fn resolve_workspace_record(
     None
 }
 
-fn has_record_index(root: &Path) -> bool {
-    read_record_index_manifest_v3(root).is_some() || read_record_index_manifest_v2(root).is_some()
+fn has_resource_index(root: &Path) -> bool {
+    read_resource_index_manifest_v3(root).is_some()
+        || read_resource_index_manifest_v2(root).is_some()
 }
 
 fn root_generation(root: &Path) -> String {
@@ -264,7 +265,7 @@ fn root_generation(root: &Path) -> String {
     hasher.update((root_bytes.len() as u64).to_be_bytes());
     hasher.update(root_bytes);
     // An ACL mount's manifest is stable and opaque: its own index, never a hash of the directory's mtime.
-    if let Some(bytes) = xattr::get(root, RECORD_INDEX_V3_XATTR).ok().flatten() {
+    if let Some(bytes) = xattr::get(root, DOCUMENT_INDEX_V3_XATTR).ok().flatten() {
         hasher.update(b"opaque-v3\\0");
         hasher.update((bytes.len() as u64).to_be_bytes());
         hasher.update(&bytes);
@@ -283,7 +284,7 @@ fn root_generation(root: &Path) -> String {
         }
         Err(_) => hasher.update(b"missing\\0"),
     }
-    let name = RECORD_INDEX_V2_XATTR;
+    let name = DOCUMENT_INDEX_V2_XATTR;
     hasher.update((name.len() as u64).to_be_bytes());
     hasher.update(name.as_bytes());
     if let Some(bytes) = xattr::get(root, name).ok().flatten() {
@@ -293,10 +294,10 @@ fn root_generation(root: &Path) -> String {
     hex::encode(hasher.finalize())
 }
 
-fn project_record_entries(
+fn project_resource_entries(
     root: &Path,
     entries: Vec<DocumentIndexEntryV1>,
-) -> (Vec<WorkspaceRecord>, bool) {
+) -> (Vec<WorkspaceDocument>, bool) {
     let mut truncated = false;
     let mut records = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -308,7 +309,7 @@ fn project_record_entries(
             || path.display().to_string(),
             |name| name.to_string_lossy().into(),
         );
-        records.push(WorkspaceRecord {
+        records.push(WorkspaceDocument {
             document_id: entry.document_id.0,
             name,
             path,
@@ -320,7 +321,7 @@ fn project_record_entries(
     (records, truncated)
 }
 
-impl WorkspaceRecordIndexPager {
+impl WorkspaceDocumentIndexPager {
     pub const GENERATION_ROOTS_PER_POLL: usize = 8;
 
     pub fn new(roots: &[PathBuf]) -> Self {
@@ -377,13 +378,13 @@ impl WorkspaceRecordIndexPager {
             && source.root == root
         {
             return Some(DocumentIndexManifestV2 {
-                schema_version: RECORD_INDEX_V2_VERSION,
+                schema_version: DOCUMENT_INDEX_V2_VERSION,
                 revision: source.revision.clone(),
                 records: source.records,
-                page_entries: RECORD_INDEX_PAGE_ENTRIES,
+                page_entries: DOCUMENT_INDEX_PAGE_ENTRIES,
             });
         }
-        read_record_index_manifest_v2(root)
+        read_resource_index_manifest_v2(root)
     }
 
     #[cfg_attr(
@@ -405,7 +406,7 @@ impl WorkspaceRecordIndexPager {
             && source.revision == manifest.revision
         {
             let end = offset
-                .checked_add(RECORD_INDEX_PAGE_ENTRIES)?
+                .checked_add(DOCUMENT_INDEX_PAGE_ENTRIES)?
                 .min(source.records);
             let records = ((offset + 1)..=end)
                 .map(|ordinal| DocumentIndexEntryV1 {
@@ -421,20 +422,20 @@ impl WorkspaceRecordIndexPager {
                 })
                 .collect();
             return Some(DocumentIndexPageV2 {
-                schema_version: RECORD_INDEX_V2_VERSION,
+                schema_version: DOCUMENT_INDEX_V2_VERSION,
                 revision: source.revision.clone(),
                 offset,
                 next_offset: (end < source.records).then_some(end),
                 records,
             });
         }
-        read_record_index_page_v2(root, manifest, offset)
+        read_resource_index_page_v2(root, manifest, offset)
     }
 
     fn discover_step(&mut self) -> bool {
         // Each configured workspace root is an authority mount; child mounts are not inferred from the tree.
         while let Some(root) = self.discovery_sources.pop_front() {
-            if has_record_index(&root) {
+            if has_resource_index(&root) {
                 self.roots.push(root);
             }
         }
@@ -497,7 +498,7 @@ impl WorkspaceRecordIndexPager {
         clippy::too_many_lines,
         reason = "one bounded authority-page state machine keeps generation, cursor, and fail-closed validation together"
     )]
-    pub fn next_page(&mut self) -> WorkspaceRecordIndexPage {
+    pub fn next_page(&mut self) -> WorkspaceDocumentIndexPage {
         // Capture the authority before admitting the first page, so a change between them restarts paging.
         if self.observed_generation.is_none() {
             let _ = self.poll_generation();
@@ -505,7 +506,7 @@ impl WorkspaceRecordIndexPager {
         let mut reset = std::mem::take(&mut self.reset_pending);
         let mut truncated = false;
         if !self.discovered && !self.discover_step() {
-            return WorkspaceRecordIndexPage {
+            return WorkspaceDocumentIndexPage {
                 records: Vec::new(),
                 reset,
                 complete: false,
@@ -514,14 +515,14 @@ impl WorkspaceRecordIndexPager {
         }
         loop {
             let Some(root) = self.roots.get(self.root_index).cloned() else {
-                return WorkspaceRecordIndexPage {
+                return WorkspaceDocumentIndexPage {
                     records: Vec::new(),
                     reset,
                     complete: true,
                     truncated,
                 };
             };
-            if let Some(manifest) = read_record_index_manifest_v3(&root) {
+            if let Some(manifest) = read_resource_index_manifest_v3(&root) {
                 let cursor = match &self.opaque_cursor {
                     Some((revision, cursor, _)) if revision == &manifest.revision => cursor.clone(),
                     Some(_) => {
@@ -533,10 +534,10 @@ impl WorkspaceRecordIndexPager {
                     }
                     None => manifest.initial_cursor.clone(),
                 };
-                let Some(page) = read_record_index_page_v3(&root, &manifest, &cursor) else {
+                let Some(page) = read_resource_index_page_v3(&root, &manifest, &cursor) else {
                     self.root_index += 1;
                     self.opaque_cursor = None;
-                    return WorkspaceRecordIndexPage {
+                    return WorkspaceDocumentIndexPage {
                         records: Vec::new(),
                         reset,
                         complete: false,
@@ -558,7 +559,7 @@ impl WorkspaceRecordIndexPager {
                 }) {
                     self.root_index += 1;
                     self.opaque_cursor = None;
-                    return WorkspaceRecordIndexPage {
+                    return WorkspaceDocumentIndexPage {
                         records: Vec::new(),
                         reset,
                         complete: false,
@@ -566,7 +567,7 @@ impl WorkspaceRecordIndexPager {
                     };
                 }
                 let last_document_id = page.records.last().map(|record| record.document_id);
-                let (records, malformed) = project_record_entries(&root, page.records);
+                let (records, malformed) = project_resource_entries(&root, page.records);
                 truncated |= malformed;
                 if let Some(next) = page.next_cursor {
                     self.opaque_cursor = Some((manifest.revision, next, last_document_id));
@@ -574,7 +575,7 @@ impl WorkspaceRecordIndexPager {
                     self.root_index += 1;
                     self.opaque_cursor = None;
                 }
-                return WorkspaceRecordIndexPage {
+                return WorkspaceDocumentIndexPage {
                     records,
                     reset,
                     complete: self.root_index == self.roots.len(),
@@ -584,7 +585,7 @@ impl WorkspaceRecordIndexPager {
             let Some(manifest) = self.v2_manifest(&root) else {
                 self.root_index += 1;
                 self.cursor = None;
-                return WorkspaceRecordIndexPage {
+                return WorkspaceDocumentIndexPage {
                     records: Vec::new(),
                     reset,
                     complete: false,
@@ -618,7 +619,7 @@ impl WorkspaceRecordIndexPager {
             let Some(page) = self.v2_page(&root, &manifest, offset) else {
                 self.root_index += 1;
                 self.cursor = None;
-                return WorkspaceRecordIndexPage {
+                return WorkspaceDocumentIndexPage {
                     records: Vec::new(),
                     reset,
                     complete: false,
@@ -633,7 +634,7 @@ impl WorkspaceRecordIndexPager {
             }) {
                 self.root_index += 1;
                 self.cursor = None;
-                return WorkspaceRecordIndexPage {
+                return WorkspaceDocumentIndexPage {
                     records: Vec::new(),
                     reset,
                     complete: false,
@@ -647,14 +648,14 @@ impl WorkspaceRecordIndexPager {
             if !valid_next {
                 self.root_index += 1;
                 self.cursor = None;
-                return WorkspaceRecordIndexPage {
+                return WorkspaceDocumentIndexPage {
                     records: Vec::new(),
                     reset,
                     complete: false,
                     truncated: true,
                 };
             }
-            let (records, malformed) = project_record_entries(&root, page.records);
+            let (records, malformed) = project_resource_entries(&root, page.records);
             truncated |= malformed;
             if let Some(next) = next {
                 self.cursor = Some(DocumentIndexCursor {
@@ -666,7 +667,7 @@ impl WorkspaceRecordIndexPager {
                 self.root_index += 1;
                 self.cursor = None;
             }
-            return WorkspaceRecordIndexPage {
+            return WorkspaceDocumentIndexPage {
                 records,
                 reset,
                 complete: self.root_index == self.roots.len(),
@@ -676,10 +677,10 @@ impl WorkspaceRecordIndexPager {
     }
 }
 
-pub fn read_workspace_record_index(roots: &[PathBuf]) -> WorkspaceRecordIndex {
-    let mut pager = WorkspaceRecordIndexPager::new(roots);
+pub fn read_workspace_resource_index(roots: &[PathBuf]) -> WorkspaceDocumentIndex {
+    let mut pager = WorkspaceDocumentIndexPager::new(roots);
     let page = pager.next_page();
-    WorkspaceRecordIndex {
+    WorkspaceDocumentIndex {
         records: page.records,
         truncated: page.truncated || !page.complete,
     }
@@ -707,8 +708,8 @@ pub fn workspace_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// Only direct mounts publish record-index resources and answer exact record opens.
-pub fn workspace_record_authority_roots() -> Vec<PathBuf> {
+/// Only direct mounts publish resource-index resources and answer exact resource opens.
+pub fn workspace_resource_authority_roots() -> Vec<PathBuf> {
     if let Some(value) = std::env::var_os("TILO_WORKSPACE_ROOTS") {
         return parse_workspace_roots(&value);
     }
@@ -769,7 +770,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// A conflict is the record's; a filename never creates or clears one.
+    /// A conflict is the resource's; a filename never creates or clears one.
     pub fn is_conflict(&self) -> bool {
         self.history
             .as_ref()
@@ -998,7 +999,7 @@ pub fn format_path(path: &Path, home: Option<&Path>) -> String {
 
 pub fn initial_path() -> PathBuf {
     // A configured workspace mount comes first; an empty override means there is none.
-    if let Some(root) = workspace_record_authority_roots().into_iter().next() {
+    if let Some(root) = workspace_resource_authority_roots().into_iter().next() {
         return root;
     }
     if let Some(home) = user_home() {
@@ -1016,25 +1017,25 @@ pub fn user_home() -> Option<PathBuf> {
 pub(crate) mod sync_state_tests {
     use super::*;
 
-    pub(crate) fn set_record_index(root: &Path, records: &[serde_json::Value]) {
+    pub(crate) fn set_resource_index(root: &Path, records: &[serde_json::Value]) {
         let revision = "c".repeat(64);
         xattr::set(
             root,
-            RECORD_INDEX_V2_XATTR,
+            DOCUMENT_INDEX_V2_XATTR,
             &serde_json::to_vec(&serde_json::json!({
-                "schema_version": RECORD_INDEX_V2_VERSION,
+                "schema_version": DOCUMENT_INDEX_V2_VERSION,
                 "revision": revision,
                 "records": records.len(),
-                "page_entries": RECORD_INDEX_PAGE_ENTRIES,
+                "page_entries": DOCUMENT_INDEX_PAGE_ENTRIES,
             }))
             .unwrap(),
         )
         .unwrap();
         xattr::set(
             root,
-            format!("{RECORD_INDEX_V2_XATTR}.{revision}.0"),
+            format!("{DOCUMENT_INDEX_V2_XATTR}.{revision}.0"),
             &serde_json::to_vec(&serde_json::json!({
-                "schema_version": RECORD_INDEX_V2_VERSION,
+                "schema_version": DOCUMENT_INDEX_V2_VERSION,
                 "revision": revision,
                 "offset": 0,
                 "next_offset": null,
@@ -1094,18 +1095,18 @@ pub(crate) mod sync_state_tests {
 
             {
                 let root = tempfile::tempdir().unwrap();
-                let records = RECORD_INDEX_PAGE_ENTRIES * 64 + 1;
+                let records = DOCUMENT_INDEX_PAGE_ENTRIES * 64 + 1;
                 let mut pager =
-                    WorkspaceRecordIndexPager::from_generated_v2(root.path().to_path_buf(), records);
+                    WorkspaceDocumentIndexPager::from_generated_v2(root.path().to_path_buf(), records);
                 let first = pager.next_page();
                 assert_eq!(
                     first.records.len(),
-                    RECORD_INDEX_PAGE_ENTRIES,
+                    DOCUMENT_INDEX_PAGE_ENTRIES,
                     "one step cannot materialise the whole index"
                 );
                 assert!(!first.complete);
-                let provider = crate::search_provider::CollaborativeRecordSearch::new(&first.records);
-                let found = |provider: &crate::search_provider::CollaborativeRecordSearch| {
+                let provider = crate::search_provider::CollaborativeResourceSearch::new(&first.records);
+                let found = |provider: &crate::search_provider::CollaborativeResourceSearch| {
                     ui::search::SearchProvider::search(
                         &ui::framework::testing::search_source::<crate::resource::FileExplorer>(
                             provider.entries(),
@@ -1119,7 +1120,7 @@ pub(crate) mod sync_state_tests {
                 while pager.has_more() {
                     let page = pager.next_page();
                     assert!(
-                        page.records.len() <= RECORD_INDEX_PAGE_ENTRIES,
+                        page.records.len() <= DOCUMENT_INDEX_PAGE_ENTRIES,
                         "an idle tick must not monopolise the frame"
                     );
                     indexed += page.records.len();
@@ -1142,7 +1143,7 @@ pub(crate) mod sync_state_tests {
 
     tilo_test_env::scenario! {
         #[cfg(unix)]
-        fn workspace_records_and_xattrs_project_exactly_by_identity;
+        fn workspace_resources_and_xattrs_project_exactly_by_identity;
 
         phase real_xattrs_round_trip_with_exact_widths;
         {
@@ -1202,7 +1203,7 @@ pub(crate) mod sync_state_tests {
             }
         }
 
-        phase workspace_records_project_by_stable_identity;
+        phase workspace_resources_project_by_stable_identity;
         {
             {
                 let ws = tempfile::tempdir().unwrap();
@@ -1216,8 +1217,8 @@ pub(crate) mod sync_state_tests {
                 xattr::set(&projected, SYNC_XATTR, b"projected").unwrap();
                 let projected_hash = [0x33u8; 32];
                 xattr::set(&projected, CONTENT_HASH_XATTR, &projected_hash).unwrap();
-                let projected_record = [0x44u8; 16];
-                xattr::set(&projected, DOCUMENT_ID_XATTR, &projected_record).unwrap();
+                let projected_resource = [0x44u8; 16];
+                xattr::set(&projected, DOCUMENT_ID_XATTR, &projected_resource).unwrap();
                 let projected_availability =
                     availability_json(&serde_json::json!({"state": "unknown"}));
                 xattr::set(&projected, AVAILABILITY_XATTR, &projected_availability).unwrap();
@@ -1246,8 +1247,8 @@ pub(crate) mod sync_state_tests {
                         .find(|e| e.name == "b-projected.bin")
                         .unwrap()
                         .document_id,
-                    Some(projected_record),
-                    "record identity projects independently of path and bytes"
+                    Some(projected_resource),
+                    "resource identity projects independently of path and bytes"
                 );
                 assert_eq!(
                     entries
@@ -1269,7 +1270,7 @@ pub(crate) mod sync_state_tests {
             {
                 let root = tempfile::tempdir().unwrap();
                 let document_id = uuid::Uuid::from_u128(7);
-                set_record_index(
+                set_resource_index(
                     root.path(),
                     &[serde_json::json!({
                         "document_id": document_id,
@@ -1278,7 +1279,7 @@ pub(crate) mod sync_state_tests {
                     })],
                 );
 
-                let index = read_workspace_record_index(&[root.path().to_path_buf()]);
+                let index = read_workspace_resource_index(&[root.path().to_path_buf()]);
                 assert!(!index.truncated);
                 assert_eq!(index.records.len(), 1);
                 assert_eq!(index.records[0].document_id, document_id);
@@ -1306,9 +1307,9 @@ pub(crate) mod sync_state_tests {
                         }
                     ]),
                 ] {
-                    set_record_index(root.path(), records.as_array().unwrap());
+                    set_resource_index(root.path(), records.as_array().unwrap());
                     assert!(
-                        read_workspace_record_index(&[root.path().to_path_buf()])
+                        read_workspace_resource_index(&[root.path().to_path_buf()])
                             .records
                             .is_empty()
                     );
@@ -1320,7 +1321,7 @@ pub(crate) mod sync_state_tests {
         {
             {
                 let root = tempfile::tempdir().unwrap();
-                set_record_index(
+                set_resource_index(
                     root.path(),
                     &[serde_json::json!({
                         "document_id": uuid::Uuid::from_u128(9),
@@ -1328,9 +1329,9 @@ pub(crate) mod sync_state_tests {
                         "is_dir": false,
                     })],
                 );
-                let mut pager = WorkspaceRecordIndexPager::new(&[root.path().to_path_buf()]);
+                let mut pager = WorkspaceDocumentIndexPager::new(&[root.path().to_path_buf()]);
                 assert_eq!(pager.next_page().records.len(), 1);
-                xattr::remove(root.path(), RECORD_INDEX_V2_XATTR).unwrap();
+                xattr::remove(root.path(), DOCUMENT_INDEX_V2_XATTR).unwrap();
                 assert!(
                     pager.poll_generation(),
                     "lost mount authority withdraws stale rows"
@@ -1345,7 +1346,7 @@ pub(crate) mod sync_state_tests {
                 let parent = tempfile::tempdir().unwrap();
                 let share = parent.path().join("received-share");
                 std::fs::create_dir(&share).unwrap();
-                set_record_index(
+                set_resource_index(
                     &share,
                     &[serde_json::json!({
                         "document_id": uuid::Uuid::from_u128(1),
@@ -1353,14 +1354,14 @@ pub(crate) mod sync_state_tests {
                         "is_dir": false,
                     })],
                 );
-                let mut pager = WorkspaceRecordIndexPager::new(&[parent.path().to_path_buf()]);
+                let mut pager = WorkspaceDocumentIndexPager::new(&[parent.path().to_path_buf()]);
                 let page = pager.next_page();
                 assert!(page.records.is_empty());
                 assert!(page.complete);
                 assert!(
-                    resolve_workspace_record(&[parent.path().to_path_buf()], uuid::Uuid::from_u128(1))
+                    resolve_workspace_resource(&[parent.path().to_path_buf()], uuid::Uuid::from_u128(1))
                         .is_none(),
-                    "walking child mounts would make search publish a record that exact opens cannot route"
+                    "walking child mounts would make search publish a resource that exact opens cannot route"
                 );
             }
 
@@ -1369,17 +1370,17 @@ pub(crate) mod sync_state_tests {
                 let revision = "b".repeat(64);
                 xattr::set(
                     root.path(),
-                    RECORD_INDEX_V2_XATTR,
+                    DOCUMENT_INDEX_V2_XATTR,
                     &serde_json::to_vec(&serde_json::json!({
-                        "schema_version": RECORD_INDEX_V2_VERSION,
+                        "schema_version": DOCUMENT_INDEX_V2_VERSION,
                         "revision": revision,
                         "records": 129,
-                        "page_entries": RECORD_INDEX_PAGE_ENTRIES,
+                        "page_entries": DOCUMENT_INDEX_PAGE_ENTRIES,
                     }))
                     .unwrap(),
                 )
                 .unwrap();
-                let first = (1..=RECORD_INDEX_PAGE_ENTRIES)
+                let first = (1..=DOCUMENT_INDEX_PAGE_ENTRIES)
                     .map(|id| {
                         serde_json::json!({
                             "document_id": uuid::Uuid::from_u128(id as u128),
@@ -1389,12 +1390,12 @@ pub(crate) mod sync_state_tests {
                     })
                     .collect::<Vec<_>>();
                 for (offset, next, records) in [
-                    (0, Some(RECORD_INDEX_PAGE_ENTRIES), first),
+                    (0, Some(DOCUMENT_INDEX_PAGE_ENTRIES), first),
                     (
-                        RECORD_INDEX_PAGE_ENTRIES,
+                        DOCUMENT_INDEX_PAGE_ENTRIES,
                         None,
                         vec![serde_json::json!({
-                            "document_id": uuid::Uuid::from_u128(RECORD_INDEX_PAGE_ENTRIES as u128),
+                            "document_id": uuid::Uuid::from_u128(DOCUMENT_INDEX_PAGE_ENTRIES as u128),
                             "path": "/aliased",
                             "is_dir": false,
                         })],
@@ -1402,9 +1403,9 @@ pub(crate) mod sync_state_tests {
                 ] {
                     xattr::set(
                         root.path(),
-                        format!("{RECORD_INDEX_V2_XATTR}.{revision}.{offset}"),
+                        format!("{DOCUMENT_INDEX_V2_XATTR}.{revision}.{offset}"),
                         &serde_json::to_vec(&serde_json::json!({
-                            "schema_version": RECORD_INDEX_V2_VERSION,
+                            "schema_version": DOCUMENT_INDEX_V2_VERSION,
                             "revision": revision,
                             "offset": offset,
                             "next_offset": next,
@@ -1414,8 +1415,8 @@ pub(crate) mod sync_state_tests {
                     )
                     .unwrap();
                 }
-                let mut pager = WorkspaceRecordIndexPager::new(&[root.path().to_path_buf()]);
-                assert_eq!(pager.next_page().records.len(), RECORD_INDEX_PAGE_ENTRIES);
+                let mut pager = WorkspaceDocumentIndexPager::new(&[root.path().to_path_buf()]);
+                assert_eq!(pager.next_page().records.len(), DOCUMENT_INDEX_PAGE_ENTRIES);
                 let rejected = pager.next_page();
                 assert!(rejected.records.is_empty());
                 assert!(

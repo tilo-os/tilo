@@ -1,7 +1,7 @@
 //! The container manager's window: [`ContainersState`] holds the engine snapshot, where
 //! the window is and what its dialogs ask, and [`ContainersApp`] presents it in a
 //! [`NavShell`](ui::widget::NavShell) with the dialogs mounted beside it. The draft is
-//! the record; the engine stays in memory.
+//! the resource; the engine stays in memory.
 
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
@@ -339,7 +339,7 @@ pub(crate) struct ContainersState {
 /// beside it.
 pub struct ContainersApp {
     state: Rc<RefCell<ContainersState>>,
-    /// The draft as the record holds it, shown as it changes; `None` outside the
+    /// The draft as the resource holds it, shown as it changes; `None` outside the
     /// framework.
     document: Option<Live<Containers>>,
     presented: Option<(u64, u64)>,
@@ -779,7 +779,7 @@ impl ContainersState {
         });
     }
 
-    /// The draft as the record holds it now; a past version with a draft shows the form.
+    /// The draft as the resource holds it now; a past version with a draft shows the form.
     pub(crate) fn present_draft(&mut self, draft: &crate::draft::CreateDraft) {
         if self.past {
             self.set_create_open(!draft.is_empty());
@@ -2172,7 +2172,7 @@ impl ContainersState {
         self.engine_changed();
     }
 
-    /// The container a verb is in flight on, dropping a record the engine answered or one
+    /// The container a verb is in flight on, dropping a resource the engine answered or one
     /// that waited too long.
     fn saw_in_flight(&mut self) -> Option<String> {
         let asked = self.in_flight.as_ref()?;

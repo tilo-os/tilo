@@ -9,9 +9,9 @@
 //! A real PDF is loaded through [`source`], which rasterises pages and
 //! extracts their text layer with Tilo's sandboxed PDF engine. The durable
 //! markup lives in the shared Automerge document, so undo/redo and live collaboration come for
-//! free. Each document's markup is a record of its own: launched with a
-//! file the app opens that file's record; launched bare it reopens the
-//! document its record marks up, or shows an empty state. The screenshot
+//! free. Each document's markup is a resource of its own: launched with a
+//! file the app opens that file's resource; launched bare it reopens the
+//! document its resource marks up, or shows an empty state. The screenshot
 //! scenarios (`scenarios`, behind the `samples` feature) open a real sample
 //! PDF the same way.
 

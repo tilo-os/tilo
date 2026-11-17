@@ -5,7 +5,7 @@ use ui::tilo_actions::OperationKind;
 use ui::tilo_resource::Effect;
 
 tilo_test_env::scenario! {
-    fn page_actions_turn_copy_and_refuse_on_the_record;
+    fn page_actions_turn_copy_and_refuse_on_the_resource;
 
     phase duplicating_a_rotated_page_keeps_its_orientation_and_source;
     {
@@ -115,7 +115,7 @@ tilo_test_env::scenario! {
                 PdfMarkup::DELETE_PAGE.with(Id::from_raw("gone")),
             ),
         ] {
-            // Each refusal meets a record of its own.
+            // Each refusal meets a resource of its own.
             let mut replica = Replica::<PdfMarkup>::load(&PdfMarkup::planned(2)).expect("record");
             let before = replica.state().expect("state");
             assert!(replica.apply(invoke).is_err(), "{what} is refused");

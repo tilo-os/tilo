@@ -335,8 +335,8 @@ impl MarkdownFile {
 }
 
 /// Bring a notebook stored at version `from` up to this one: a document
-/// already stored as a [`Notebook`] record is only checked. A notebook from
-/// before the record has no migration, and says so rather than opening empty.
+/// already stored as a [`Notebook`] resource is only checked. A notebook from
+/// before the resource has no migration, and says so rather than opening empty.
 fn migrate_stored(doc: &tilo_resource::Doc, from: u32) -> Result<(), tilo_resource::ModelError> {
     use automerge::ReadDoc as _;
     if from != 1 {
@@ -346,7 +346,7 @@ fn migrate_stored(doc: &tilo_resource::Doc, from: u32) -> Result<(), tilo_resour
     }
     if doc.get(&automerge::ROOT, "notes_schema_version")?.is_some() {
         return Err(tilo_resource::ModelError::invalid(
-            "this notebook was written before notes were kept as a record, and is not migrated",
+            "this notebook was written before notes were kept as a resource, and is not migrated",
         ));
     }
     Notebook::read_fields(doc, &automerge::ROOT).map(|_| ())

@@ -87,11 +87,11 @@ an invocation of its own, named for the key ("Visa backend #3").
 | `GET /v1/account` | the person's plan and per workspace what it keeps and the VM time it ran |
 | `GET /v1/workspaces?label[name]=value` | `{"workspaces": [{"id", "name", "host", "role", "labels"}]}`: every workspace the key reaches, wherever it is hosted; with `label[…]`, those labelled with every one given |
 | `POST /v1/workspaces` `{name, labels?}` | `201` the workspace made: `{"id", "name", "host", "role": "owner", "labels"}`; the same `Idempotency-Key` answers the one it made |
-| `POST /v1/workspaces/{workspace}/branches` `{name, labels?}` | `201` a branch of a workspace of the person's own, as a workspace made: a new one of theirs holding every record of it with its history and the files they name, without its conversations, people's drafts and places, or anyone but the person (MCP: `account/workspaces#branch {workspace, name, labels?, id?}`). Answered once it holds everything; one that could not take a part is deleted again and the call answers `422 branch_incomplete` naming the part. The same `Idempotency-Key` answers the branch it made. A key for one workspace makes none |
+| `POST /v1/workspaces/{workspace}/branches` `{name, labels?}` | `201` a branch of a workspace of the person's own, as a workspace made: a new one of theirs holding every resource of it with its history and the files they name, without its conversations, people's drafts and places, or anyone but the person (MCP: `account/workspaces#branch {workspace, name, labels?, id?}`). Answered once it holds everything; one that could not take a part is deleted again and the call answers `422 branch_incomplete` naming the part. The same `Idempotency-Key` answers the branch it made. A key for one workspace makes none |
 | `PUT /v1/workspaces/{workspace}/unattended` `{on}` | lets the keys made for this workspace alone run commands in its Linux machine (`terminal#run`) without asking the person each time, here and in branches made from it (MCP: `workspace/unattended#set {on}`; `tilo_read workspace/unattended` reads it). `on: true` asks the person on their approving device: `202` pending with an `ask`, the run answering `{"workspace", "unattended": true}` once they allow it and failing if they do not. `on: false` answers `200` at once and asks again from the next command. Only the workspace's owner has it; a key reaching all their workspaces is still asked. Listings say `"unattended": true` while it is on |
 | `GET /v1/workspaces/{workspace}/export` | `{"workspace", "exported_at_ms", "resources": [...], "unread": [...]}`: every resource of every app, read whole and streamed as it reads |
 | `DELETE /v1/workspaces/{workspace}` | `{"deleted": "…", "revoked_keys": [...]}`: final, with everything in it and every key minted for it |
-| `GET /v1/keys` | `{"keys": [{"grant", "name", "scope", "expires_at_ms", "last_used_at_ms", "created_by"}]}`: this key and the keys it minted, read from the workspace's own record when the key reaches one |
+| `GET /v1/keys` | `{"keys": [{"grant", "name", "scope", "expires_at_ms", "last_used_at_ms", "created_by"}]}`: this key and the keys it minted, read from the workspace's own document when the key reaches one |
 | `POST /v1/keys` `{workspace, name?, expires_in?}` | `201` a key for one workspace, minted from this one: `{"grant", "token", "mcp_url", "expires_at_ms"}`; the person is not asked |
 | `DELETE /v1/keys/{grant}` | revokes this key or one it minted, and every key it minted; the workspace a revoked key reaches records the revocation, so every API server and holder refuses it |
 
@@ -134,8 +134,8 @@ with its arguments as the body (`{}` for none). Headers: `Idempotency-Key`, `Til
   Nothing ran yet when `ask` is there: the person is being asked on their device.
 - **`422`** the app refused or it failed: the error shape, with the action's row as `action`.
 
-Every record also publishes `group`: `{"actions": [{"action": "create", "args": {...}}, …]}`
-applies those actions of the record in order as one all-or-nothing step — one transaction,
+Every resource also publishes `group`: `{"actions": [{"action": "create", "args": {...}}, …]}`
+applies those actions of the resource in order as one all-or-nothing step — one transaction,
 one undo, and History records each member, attributed to the caller. If any member refuses,
 nothing applies. A group answers no `result`: its members' values are not carried back.
 
@@ -145,7 +145,7 @@ nothing applies. A group answers no `result`: its members' values are not carrie
 
 | | |
 |---|---|
-| `GET /v1/workspaces/{workspace}/invocations?limit=&cursor=` | the workspace's invocations in records the key may read, newest first, whoever made them (MCP: `tilo_read workspace/invocations`, `tilo_ls workspace/invocations {limit, cursor}`): `{"items": [...], "total", "waiting", "pending", "next_cursor", "text"}`, 50 a page unless `limit` says (at most 200). An invocation is `{"id", "calls", "step", "by": {"name", "kind"}, "title", "status": "waiting"|"running"|"ended"|"failed"|"cancelled"|"undone", "failure", "started_ms", "ended_ms", "action", "summary", "changes", "undone", "records", "undoable", "undo_blocked", "recorded", "remembered"}`. One that changed a record is listed after the host restarts, from that record's history, without an `id` (`remembered: false`); `step` names it either way. Of each the key is told only what lies in records it may read now; one with nothing there is not listed, and the totals count only what is listed |
+| `GET /v1/workspaces/{workspace}/invocations?limit=&cursor=` | the workspace's invocations in records the key may read, newest first, whoever made them (MCP: `tilo_read workspace/invocations`, `tilo_ls workspace/invocations {limit, cursor}`): `{"items": [...], "total", "waiting", "pending", "next_cursor", "text"}`, 50 a page unless `limit` says (at most 200). An invocation is `{"id", "calls", "step", "by": {"name", "kind"}, "title", "status": "waiting"|"running"|"ended"|"failed"|"cancelled"|"undone", "failure", "started_ms", "ended_ms", "action", "summary", "changes", "undone", "resources", "undoable", "undo_blocked", "recorded", "remembered"}`. One that changed a resource is listed after the host restarts, from that resource's history, without an `id` (`remembered: false`); `step` names it either way. Of each the key is told only what lies in records it may read now; one with nothing there is not listed, and the totals count only what is listed |
 | `GET /v1/workspaces/{workspace}/invocations/{invocation}?wait=` | the invocation as the action answers it; `wait` (seconds, at most 60) holds until it is no longer pending |
 | `POST /v1/workspaces/{workspace}/invocations/{invocation}/cancel` | stops it: the invocation, now `cancelled` |
 | `POST /v1/workspaces/{workspace}/invocations/{invocation}/undo` | takes back what it changed: `{"status": "ok", "undone": [...]}` |
@@ -158,8 +158,8 @@ Each event's `id` is a cursor: reconnecting with `Last-Event-ID` resumes after i
 seen once. `event` is the kind, `data` its JSON:
 
 - `change` `{"path", "resources", "change", "sentence", "actor", "title", "group", "time_ms", "undone"}`
-  — `resources` names every record the change wrote: each entry's `path`, and its `app`,
-  `record` and `item` where the change names them. `actor` is structured (`{"kind": "person"|
+  — `resources` names every resource the change wrote: each entry's `path`, and its `app`,
+  `resource` and `item` where the change names them. `actor` is structured (`{"kind": "person"|
   "agent", "name": …, …}`), `run` is the invocation it is a step of, `title` that run's name and
   `group` the run a client opened. A change a person made by hand has no `run`.
 - `invocation` `{"phase": "started"|"succeeded"|"failed"|"cancelled", "invocation", "path", "title", "group", "time_ms"}`
@@ -190,10 +190,10 @@ many as it takes. Both end in the same place: `tilo.content:<hash>`, which an ac
 file by. Nothing names an app yet — a file's **bytes** say which app opens it. Opening the
 file there is that app's `open` with the file: `POST …/resources/pdf-viewer/actions/open`
 `{"content": "tilo.content:<hash>", "name": "forms/visa.pdf"}`. PDF Viewer, Writer, Sheets and
-Slides open each file in a record of its own, so a folder of PDFs is a PDF each; Notes and
+Slides open each file in a resource of its own, so a folder of PDFs is a PDF each; Notes and
 Photos take it into the notebook or library the workspace keeps. The answer's
-`result.provider` names the record, where a person opens it and search finds it. An app that
-does not open the file's type refuses it and makes no record.
+`result.provider` names the resource, where a person opens it and search finds it. An app that
+does not open the file's type refuses it and makes no resource.
 
 | | |
 |---|---|

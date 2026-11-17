@@ -121,7 +121,7 @@ fn unsupported_cache_stays_unknown_and_is_never_displayed_as_zero() {
 }
 
 #[test]
-fn captures_use_the_production_surface_and_never_seed_live_records() {
+fn captures_use_the_production_surface_and_never_seed_live_resources() {
     for scenario in [
         "empty",
         "storage-report",

@@ -570,7 +570,7 @@ fn open_with_a_path_imports_the_file_under_a_configured_collaboration_service() 
 }
 
 #[test]
-fn a_file_launch_opens_the_files_own_record() {
+fn a_file_launch_opens_the_files_own_resource() {
     ui::i18n::I18nManager::init("en-US");
     let directory = tempfile::tempdir().unwrap();
     let report = directory.path().join("report.md");
@@ -585,7 +585,11 @@ fn a_file_launch_opens_the_files_own_record() {
     assert_ne!(edited, ["Report", "Our committee met."]);
 
     let app = app.relaunch(&[&report]).unwrap();
-    assert_eq!(paragraphs(&app), edited, "a reopened file keeps its record");
+    assert_eq!(
+        paragraphs(&app),
+        edited,
+        "a reopened file keeps its resource"
+    );
 
     let notes = directory.path().join("notes.txt");
     std::fs::write(&notes, "first line\nsecond line\n").unwrap();
@@ -733,7 +737,7 @@ fn an_edit_bound_to_the_caret_is_invoked_on_the_document() {
 }
 
 #[test]
-fn two_sessions_creating_one_files_record_converge_on_one_document() {
+fn two_sessions_creating_one_files_resource_converge_on_one_document() {
     ui::i18n::I18nManager::init("en-US");
     let directory = tempfile::tempdir().unwrap();
     let report = directory.path().join("report.md");
@@ -769,7 +773,7 @@ fn reopening_a_file_changed_elsewhere_reads_it_again() {
     assert_eq!(
         paragraphs(&app),
         ["Edited: First draft"],
-        "an unchanged file leaves the record as it is"
+        "an unchanged file leaves the resource as it is"
     );
 
     std::fs::write(&path, "Rewritten elsewhere\n").unwrap();

@@ -228,7 +228,7 @@ impl Journal {
     /// error-or-worse (falling back to the first visible entry).
     fn effective_selected(&self) -> Option<usize> {
         // A stable resource selection is explicit even when this replica has not received
-        // that record yet; never substitute an unrelated auto selection for a
+        // that resource yet; never substitute an unrelated auto selection for a
         // member's chosen entry.
         if self.selected_entry.is_some() {
             let selected = usize::try_from(self.sel_raw).ok()?;
@@ -514,7 +514,7 @@ impl Journal {
         match read {
             Ok(Read::Whole(page)) => {
                 // A tail read still in flight started from the page this replaces: its
-                // records would be shown twice.
+                // resources would be shown twice.
                 self.reading = None;
                 self.tail_cursor = page.cursor;
                 self.show_entries(page.entries);
@@ -528,7 +528,7 @@ impl Journal {
             }
         }
     }
-    /// Add what live tail found to the page, keeping its newest `JOURNAL_LIMIT` records.
+    /// Add what live tail found to the page, keeping its newest `JOURNAL_LIMIT` resources.
     fn show_tail(&mut self, page: Page) {
         let caught_up = page.entries.len() < JOURNAL_LIMIT;
         if caught_up {
@@ -547,7 +547,7 @@ impl Journal {
         }
         let mut entries = std::mem::take(&mut self.entries);
         entries.extend(page.entries);
-        // Nearly sorted already: records arrive in the journal's order.
+        // Nearly sorted already: resources arrive in the journal's order.
         entries.sort_by_key(|entry| entry.realtime_us);
         let excess = entries.len().saturating_sub(JOURNAL_LIMIT);
         entries.drain(..excess);
@@ -1104,12 +1104,12 @@ mod tests {
     }
 
     #[test]
-    fn refresh_republishes_changed_middle_records_and_facets() {
+    fn refresh_republishes_changed_middle_resources_and_facets() {
         let mut app = captured((1280, 800));
         let (mut entries, revision) = surface(&mut app, |viewer| {
             (viewer.entries.clone(), viewer.shared.borrow().rows_revision)
         });
-        entries[1].message = "Updated middle record".into();
+        entries[1].message = "Updated middle resource".into();
         entries[1].unit = "updated.service".into();
         entries[1].priority = Priority::Crit;
         surface(&mut app, |viewer| {
@@ -1119,7 +1119,7 @@ mod tests {
         surface(&mut app, |viewer| {
             let bridge = viewer.shared.borrow();
             assert_ne!(bridge.rows_revision, revision);
-            assert_eq!(bridge.rows[1].message, "Updated middle record");
+            assert_eq!(bridge.rows[1].message, "Updated middle resource");
             assert_eq!(bridge.rows[1].unit, "updated");
             assert_eq!(bridge.rows[1].priority, Priority::Crit);
             assert!(bridge.units.contains(&"updated.service".to_owned()));
@@ -1133,9 +1133,9 @@ mod tests {
         );
     }
 
-    /// Live tail reads only what was written after the newest record shown and adds it to
+    /// Live tail reads only what was written after the newest resource shown and adds it to
     /// the page; a quiet journal rebuilds and republishes nothing, and the page keeps its
-    /// newest records.
+    /// newest resources.
     #[test]
     fn live_tail_adds_what_is_new_and_a_quiet_journal_changes_nothing() {
         let mut app = captured((1280, 800));
@@ -1180,7 +1180,7 @@ mod tests {
             assert_ne!(viewer.shared.borrow().rows_revision, revision);
         });
 
-        // A full answer may have left records behind: the next read is the newest page
+        // A full answer may have left resources behind: the next read is the newest page
         // whole, and the window never holds more than a page.
         let burst: Vec<LogEntry> = (0..JOURNAL_LIMIT as u64)
             .map(|i| {
@@ -1198,7 +1198,7 @@ mod tests {
             assert_eq!(
                 viewer.entries.first().map(|entry| entry.realtime_us),
                 Some(newest + 2),
-                "the oldest records leave the page"
+                "the oldest resources leave the page"
             );
             assert_eq!(viewer.tail_after(), None);
         });
@@ -1211,7 +1211,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_keeps_selection_on_its_record_or_shows_no_selection() {
+    fn refresh_keeps_selection_on_its_resource_or_shows_no_selection() {
         let mut app = captured((1280, 800));
         let (mut entries, id) = surface(&mut app, |viewer| {
             (

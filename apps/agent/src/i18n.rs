@@ -38,7 +38,7 @@ pub fn step(step: &TaskStep) -> String {
 }
 
 /// One step of a run once it is done, said to the person: what it did, and to
-/// what. The record of a turn's steps says what happened; [`step`] says what is
+/// what. The resource of a turn's steps says what happened; [`step`] says what is
 /// under way.
 #[must_use]
 pub fn step_done(step: &TaskStep) -> String {
@@ -297,9 +297,9 @@ mod tests {
     }
 
     /// Every message the source catalogue has reads as a sentence a person
-    /// could be shown: it carries nothing only the agent's record needs.
+    /// could be shown: it carries nothing only the agent's resource needs.
     #[test]
-    fn no_failure_sentence_carries_the_runs_record() {
+    fn no_failure_sentence_carries_the_runs_resource() {
         let messages = tilo_copy_lint::catalog::messages(SOURCE_FTL);
         assert!(!messages.is_empty());
         for (id, said) in &messages {

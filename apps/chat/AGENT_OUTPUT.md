@@ -3,7 +3,7 @@
 Chat receives model output without giving readers a provider connection: an
 agent answering a turn records its work on the reply through `record-work`, and
 the host-provided prose assistant writes the workspace's replicated typed Chat
-record through the `stream-output` action described below.
+resource through the `stream-output` action described below.
 
 Neither path grants authority to execute tools.
 
@@ -20,9 +20,9 @@ stable `run`, a one-based contiguous `sequence`, and one of:
 - `reasoning_delta { text }` appends **only provider-exposed reasoning** to a
   separate, initially collapsed section. The agent's existing decision explanation
   (`AgentWork.reasoning`) is not relabelled as model reasoning.
-- `progress { label }` records actual working/tool progress, never timer-generated
+- `progress { label }` resources actual working/tool progress, never timer-generated
   activity. Actual dispatched operations remain in `AgentWork.trace`.
-- `finished { outcome, detail }` records `complete`, `truncated`, `refused`,
+- `finished { outcome, detail }` resources `complete`, `truncated`, `refused`,
   `cancelled`, or `failed`. Supply a safe, actionable error detail, without
   credentials or private request headers. Partial output survives every outcome.
 

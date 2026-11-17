@@ -845,7 +845,7 @@ fn two_person_executions_type_the_opening_and_place_real_png_independently() {
     let png = ui::png::encode_rgba8(2, 1, &[255, 160, 40, 255, 30, 70, 180, 255]).unwrap();
     let content = writer_view(&mut app, |wp, _| wp.inner.content_store().clone());
     let hash = content.put(&png).unwrap();
-    // A record's content is sealed under its members' secret: the reference the
+    // A resource's content is sealed under its members' secret: the reference the
     // store answers names these bytes, and its key is not a plain address.
     assert!(
         tilo_content::names(&hash, &png),

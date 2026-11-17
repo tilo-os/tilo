@@ -300,7 +300,7 @@ mail-trusted-senders-distrust = Diesem Absender nicht mehr vertrauen
 
 ## What the app is called in a window and in the launcher
 mail-app-title = Mail
-## What the records are called, and the actions on them
+## What the resources are called, and the actions on them
 mail-copies = Mail auf deinen Geräten
 mail-copies-keep-copies = Abgerufene Mails behalten
 mail-copies-forget-copies = Abgerufene Mails vergessen

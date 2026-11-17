@@ -1486,7 +1486,7 @@ fn device_sync_settings(
         ));
     };
     let rhythm = &ui.theme.tokens.spacing.rhythm;
-    let active: Vec<&crate::sync::PeerRecord> =
+    let active: Vec<&crate::sync::PeerEntry> =
         state.peers.iter().filter(|peer| peer.is_active()).collect();
 
     let mut summary = Row::new()
@@ -1527,7 +1527,7 @@ fn device_sync_settings(
             )),
     ));
 
-    let pending: Vec<&crate::sync::PeerRecord> = state
+    let pending: Vec<&crate::sync::PeerEntry> = state
         .peers
         .iter()
         .filter(|peer| peer.pending_approval && peer.revoked_at.is_none())

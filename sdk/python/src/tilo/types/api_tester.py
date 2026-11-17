@@ -25,7 +25,7 @@ __all__ = [
     "Credentials",
     "Environment",
     "HttpMethod",
-    "RequestRecord",
+    "RequestResource",
     "Row",
     "SavedCollection",
     "Sent",
@@ -64,7 +64,7 @@ class Environment(TypedDict):
 
 HttpMethod = Literal["Get", "Post", "Put", "Patch", "Delete", "Head", "Options"]
 
-class RequestRecord(TypedDict):
+class RequestResource(TypedDict):
     name: str
     method: HttpMethod
     url: str
@@ -82,7 +82,7 @@ class Row(TypedDict):
 
 class SavedCollection(TypedDict):
     name: str
-    requests: list[Entry[RequestRecord]]
+    requests: list[Entry[RequestResource]]
 
 class Sent(TypedDict):
     route: str
@@ -187,11 +187,11 @@ RecordSentArgs = TypedDict("RecordSentArgs", {
 
 class Workspace(Resource):
     """API workspace — `api-tester.workspace`."""
-    __surface__ = "so.tilo.api-tester@d34f2cdf6de15455"
+    __surface__ = "so.tilo.api-tester@086b9b29f5cecbbb"
     collections: list[Entry[SavedCollection]]
     environments: list[Entry[Environment]]
     active_environment: str | None
-    request: RequestRecord
+    request: RequestResource
     @property
     def opened(self) -> str:
         """Read only."""

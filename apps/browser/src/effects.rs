@@ -667,7 +667,7 @@ pub enum BrowserEffect {
     },
     /// Who did what on the page
     ///
-    /// The tab's record of the actions that operated its page, in the order
+    /// The tab's resource of the actions that operated its page, in the order
     /// they ran: who asked, what was done, the element it acted on by role
     /// and name, the text it wrote or the options it chose, and how it
     /// ended. A filled secret is never in it, and reading the page takes no

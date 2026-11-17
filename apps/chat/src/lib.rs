@@ -3,7 +3,7 @@
 //! A collaborative chat + calls surface that runs in a Tilo workspace, its
 //! workspace. The convergent state — categories, channels, messages, reactions,
 //! edits + edit history, threads and members — is the [`record::Chat`]
-//! model, the workspace's own record of the chat, changed only through its verbs
+//! model, the workspace's own document of the chat, changed only through its verbs
 //! and field edits. Attachments are content-addressed references:
 //! the CRDT stores their identity and bounded metadata, while bytes stay in the
 //! app's content store. The [`app::ChatApp`] widget is a projection of that
@@ -53,6 +53,7 @@ pub mod body;
 pub mod call;
 pub mod cause;
 mod channel_sheet;
+pub mod chat;
 pub mod composer;
 pub mod continuity;
 #[cfg(feature = "samples")]
@@ -87,7 +88,6 @@ pub mod projection;
 pub mod question;
 pub mod question_card;
 pub mod recall;
-pub mod record;
 pub mod render_call;
 pub mod render_chat;
 pub mod resource;

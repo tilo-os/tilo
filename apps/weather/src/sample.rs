@@ -1,5 +1,5 @@
 //! The bundled sample places and their forecasts: a capture stages these through
-//! the record's actions, so a screenshot has a populated window without a
+//! the resource's actions, so a screenshot has a populated window without a
 //! network. A live window never shows them. Everything is stored in metric.
 
 use crate::model::{

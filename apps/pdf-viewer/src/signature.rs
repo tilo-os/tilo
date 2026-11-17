@@ -1,5 +1,5 @@
 //! The signature a person signs with: the name they sign as and the strokes they drew,
-//! composed once and reused on every document. It is the person's own record, never part
+//! composed once and reused on every document. It is the person's own document, never part
 //! of the document.
 
 use ui::tilo_resource::{self, Model, ModelError, Refusal, resource};
@@ -74,11 +74,11 @@ pub fn point_lists(profile: &SignatureProfile) -> Vec<Vec<(f64, f64)>> {
 const MAX_POINTS: usize = 20_000;
 
 impl SignatureProfile {
-    /// What the record holds: the name the person signs as and the strokes they drew.
+    /// What the resource holds: the name the person signs as and the strokes they drew.
     ///
     /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
+    /// with no window open reads the resource as it reads any app's resource, and
+    /// a named item is read from the resource's table or by the read its own
     /// type gives it.
     pub fn read_document(
         &self,

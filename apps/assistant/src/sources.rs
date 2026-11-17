@@ -1,4 +1,4 @@
-//! What the window shows, read from the records the system keeps: the workspace's agents
+//! What the window shows, read from the resources the system keeps: the workspace's agents
 //! (Chat's `chat.agent`), and, as their keepers publish them, the assistant's sub-agents, its
 //! tasks, its scheduled work and events, and what it learned. The window keeps none of it.
 //!
@@ -12,16 +12,16 @@ use ui::tilo_workspace_agent::{self as workspace_agent, Agent, WorkspaceAgents};
 
 use crate::Window;
 
-/// What a read of one of the system's records answered.
+/// What a read of one of the system's resources answered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Read<T> {
-    /// What the record holds now.
+    /// What the resource holds now.
     Here(T),
     /// Nothing in this workspace answers the read.
     NotHere,
 }
 
-/// The person's assistant, as the workspace's record of its agents has it.
+/// The person's assistant, as the workspace's document of its agents has it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Assistant {
     /// Its id in the workspace's agents; its actor is `agent:<id>`.
@@ -172,7 +172,7 @@ pub(crate) struct Event {
     pub(crate) on: bool,
 }
 
-/// What a capture stands in for the records a window someone uses reads: its scenario's
+/// What a capture stands in for the resources a window someone uses reads: its scenario's
 /// assistant and everything about it ([`ResourceApp::fixture`]). Never read in a live window.
 #[cfg_attr(
     not(feature = "samples"),
@@ -191,7 +191,7 @@ pub(crate) struct Staged {
     pub(crate) learned: Vec<String>,
 }
 
-/// The records the window reads, held for its views.
+/// The resources the window reads, held for its views.
 #[derive(Clone)]
 pub(crate) struct Reads {
     staged: Option<Rc<Staged>>,
@@ -208,7 +208,7 @@ impl Reads {
         }
     }
 
-    /// The workspace's record of its agents, where this window holds it.
+    /// The workspace's document of its agents, where this window holds it.
     pub(crate) fn agents(&self) -> Option<&WorkspaceResource<WorkspaceAgents>> {
         self.agents.as_ref()
     }
@@ -252,7 +252,7 @@ impl Reads {
     }
 
     /// What a capture staged, or [`Read::NotHere`] in a window someone uses: the reads that
-    /// have no record to ask yet.
+    /// have no resource to ask yet.
     fn staged<T>(&self, read: impl FnOnce(&Staged) -> T) -> Read<T> {
         self.staged
             .as_deref()

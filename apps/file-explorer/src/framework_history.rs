@@ -493,7 +493,7 @@ mod tests {
                 .unwrap();
                 assert_eq!(
                     actual, request,
-                    "exact retry keeps the original ID, frontier, record and selected version"
+                    "exact retry keeps the original ID, frontier, resource and selected version"
                 );
                 assert_eq!(
                     transport.result(uuid::Uuid::from_u128(7)),

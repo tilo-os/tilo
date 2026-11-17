@@ -319,9 +319,9 @@ pub struct Link {
     pub kind: String,
     /// The resource's address in its app.
     pub resource: String,
-    /// The app's record that keeps it, such as a page kept on its own. None
-    /// for the app's own record of the workspace, which every link made
-    /// before links named a record means.
+    /// The app's resource that keeps it, such as a page kept on its own. None
+    /// for the app's own document of the workspace, which every link made
+    /// before links named a resource means.
     pub record: Option<String>,
 }
 

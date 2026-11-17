@@ -1,5 +1,5 @@
 //! Calculator: a scientific calculator with 2D and 3D graphing. History and
-//! plotted functions are in the record, so undo and collaboration see them;
+//! plotted functions are in the resource, so undo and collaboration see them;
 //! the expression being typed, the mode and the camera are the window's.
 
 // An app runs in its own sandboxed process, so an integer that wraps here

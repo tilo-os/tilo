@@ -688,7 +688,7 @@ pub fn text_digest(text: &str) -> String {
 /// A file's text: collaborative text, read only while a view shows it.
 ///
 /// Read from a document it holds no text until [`Project::load_texts`]
-/// reads it; a new value ([`Source::new`]) writes its text when the record
+/// reads it; a new value ([`Source::new`]) writes its text when the resource
 /// is stored. A value read from a document never writes back.
 #[derive(Clone, Debug, Default)]
 pub struct Source {

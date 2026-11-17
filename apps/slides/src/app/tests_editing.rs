@@ -808,7 +808,7 @@ fn assert_idle(bench: &mut Bench, what: &str) {
             } else {
                 // A far timer (the save status's stall notice) only stands
                 // by: the window parks on it, and what it waits for (the
-                // record's store saying the write landed) wakes it first.
+                // resource's store saying the write landed) wakes it first.
                 assert!(
                     bench.app.harness().park_until(due),
                     "{what}: the window slept through to a far timer, nothing woke it: {schedule:?}"

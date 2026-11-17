@@ -226,7 +226,7 @@ fields = [
 
 [[resources]]
 kind = "browser.page-record"
-label = "Page record"
+label = "Page resource"
 version = 1
 fields = [
   { path = "actions", type = { map = { named = "PageAction" } }, readonly = true },

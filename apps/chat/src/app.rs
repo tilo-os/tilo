@@ -51,7 +51,7 @@ use ui::widget::DrawChild;
 pub(crate) const HUDDLE_VIDEO: (f64, f64, f64, f64) = (0.505, 0.300, 0.250, 0.230);
 
 /// What the workspace's private conversations and drafts are keyed by. Chat's
-/// record is the chat of one Tilo workspace and holds no workspaces of its
+/// resource is the chat of one Tilo workspace and holds no workspaces of its
 /// own: an agent conversation, a private draft and a call continuation name
 /// the workspace they belong to by this one scope.
 pub(crate) const WORKSPACE_SCOPE: &str = "workspace";
@@ -258,7 +258,7 @@ pub struct ChatApp {
     pub(crate) history_anchor: Point,
     /// Your own message currently being edited. The shared multiline input
     /// owns its working text, caret, selection and IME composition until Save
-    /// submits the record's `edit-message`.
+    /// submits the resource's `edit-message`.
     pub(crate) editing: Option<Id>,
     pub(crate) edit_input: crate::composer::MessageEditor,
     /// The protected field of the question that asks this person for a
@@ -372,26 +372,26 @@ pub struct ChatApp {
     /// What the workspace calls this window's person, numbered like anyone else.
     pub(crate) own_label: Option<String>,
     pub(crate) workspace_colors: HashMap<MemberId, (u8, u8, u8)>,
-    /// What the workspace's record of its agents calls each of them, by bare id: the agent identity
+    /// What the workspace's document of its agents calls each of them, by bare id: the agent identity
     /// record every app of the workspace reads, followed as it changes. It names an author
     /// (`agent:<id>`) whether or not the agent is working here this moment.
     pub(crate) workspace_agent_names: HashMap<Id, String>,
-    /// The presence colour each agent's record gives it, by bare id: the one its keeper chose, or
+    /// The presence colour each agent's resource gives it, by bare id: the one its keeper chose, or
     /// the one its identity gives it. An agent wears it here as it does in every app of the
     /// workspace.
     pub(crate) workspace_agent_colours: HashMap<Id, u8>,
-    /// The agent identity record, followed every frame (see `follow_agents`).
+    /// The agent identity resource, followed every frame (see `follow_agents`).
     agents_document:
         Option<ui::framework::WorkspaceResource<ui::tilo_workspace_agent::WorkspaceAgents>>,
     /// Opens the agent identity record once the workspace delivers it: a window whose agents
     /// record was made after it opened reads it too, without being opened again.
-    agents_opener: Option<ui::framework::RecordOpener<ui::tilo_workspace_agent::WorkspaceAgents>>,
+    agents_opener: Option<ui::framework::ResourceOpener<ui::tilo_workspace_agent::WorkspaceAgents>>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
     /// The direct conversations that hold messages, by conversation id: the
     /// ones the sidebar lists beside the one open.
     pub(crate) direct_held: std::collections::HashSet<String>,
-    /// The conversations the record itself holds, by id: the ones this window
+    /// The conversations the resource itself holds, by id: the ones this window
     /// has item resources to publish effects on. A conversation with a person
     /// neither has written in yet is one the app derives from the workspace's
     /// people, and has no item of its own.
@@ -407,7 +407,7 @@ pub struct ChatApp {
     pub(crate) agent_people: HashMap<MemberId, MemberId>,
     /// What the workspace's host keeps of the files members post, as it says:
     /// a file it would not take is refused here, in plain words.
-    pub(crate) workspace_files: crate::record::WorkspaceFiles,
+    pub(crate) workspace_files: crate::chat::WorkspaceFiles,
     /// Each shown message body, read-only in the SDK editor, by body size
     /// and message id, with the mention colours it was painted with.
     pub(crate) body_views:
@@ -437,7 +437,7 @@ pub struct ChatApp {
     // reaction, the channel/message context menus) applies its verb or
     // field edit through it, permission-checked, attributed to this
     // window's person, recorded in history and replicated. See
-    // [`crate::record`].
+    // [`crate::chat`].
     pub(crate) dispatch: Option<ui::framework::Dispatcher<crate::resource::Chat>>,
     /// Chat's `send`, as the window publishes it: the action the composer's
     /// send button runs, and the one an agent's send and the shell's send-to
@@ -450,7 +450,7 @@ pub struct ChatApp {
     /// further.
     pub(crate) read_asked: Option<(String, crate::parts::ReadMark)>,
     pub(crate) read_refused: Option<(String, crate::parts::ReadMark)>,
-    /// The chat's messages, kept in parts beside the record
+    /// The chat's messages, kept in parts beside the resource
     /// ([`crate::parts`]): what the window reads them from and posts, edits
     /// and reacts through. `None` where the window has none (a past
     /// version).
@@ -463,17 +463,17 @@ pub struct ChatApp {
     /// messages by several people under the ids the scenario names.
     pub(crate) staged_start: Option<crate::parts::ChatPart>,
     /// A screenshot scenario's messages still to stage, each with who
-    /// wrote it: staged once the workspace's records take a write (a frame's
-    /// read of the record holds them).
+    /// wrote it: staged once the workspace's documents take a write (a frame's
+    /// read of the resource holds them).
     pub(crate) staged_parts:
         std::collections::VecDeque<(MemberId, ui::tilo_resource::Invoke<crate::parts::ChatPart>)>,
     /// The scenario those messages are of.
     #[cfg(feature = "samples")]
     pub(crate) staged_scenario: Option<String>,
-    /// The chat record as the window last read it: what a test's detached
+    /// The chat resource as the window last read it: what a test's detached
     /// chain reads where its actions are invoked.
     #[cfg(test)]
-    pub(crate) last_read: std::rc::Rc<std::cell::RefCell<std::rc::Rc<crate::record::Chat>>>,
+    pub(crate) last_read: std::rc::Rc<std::cell::RefCell<std::rc::Rc<crate::chat::Chat>>>,
     /// The voice channel a started call joins once it is in the document.
     pub(crate) pending_call: Option<Id>,
     /// Ephemeral opt-in to publishing Chat navigation through viewport presence.
@@ -488,7 +488,7 @@ pub struct ChatApp {
     /// Every action an affordance applied, for tests that compare them with
     /// the published ones.
     #[cfg(test)]
-    pub(crate) dispatched: std::cell::RefCell<Vec<crate::record::ChatAction>>,
+    pub(crate) dispatched: std::cell::RefCell<Vec<crate::chat::ChatAction>>,
     /// Every verb on the chat's messages an affordance applied, likewise.
     #[cfg(test)]
     pub(crate) dispatched_parts: std::cell::RefCell<Vec<crate::messages::ChatPartAction>>,
@@ -541,9 +541,9 @@ pub struct ChatApp {
     /// This window's person still has to be announced into the shared
     /// roster under the name this device knows them by.
     announce: Option<crate::identity::LocalIdentity>,
-    /// The person's own drafts record, so the sidebar can say where the
+    /// The person's own drafts resource, so the sidebar can say where the
     /// unsent words are.
-    pub(crate) drafts_record: Option<ui::framework::PersonResource<crate::drafts::ChatDrafts>>,
+    pub(crate) drafts_resource: Option<ui::framework::PersonResource<crate::drafts::ChatDrafts>>,
 
     /// Latest decoded camera picture per person, shown in their call tile
     /// (this person's own among them, in the host tile). Only ever holds a
@@ -643,7 +643,7 @@ impl ChatApp {
     }
 
     /// Hold the chat's messages in a chain of this window's own, as `me`,
-    /// its actions reading the record as the window last read it: a test's
+    /// its actions reading the resource as the window last read it: a test's
     /// stand-in for the workspace's.
     #[cfg(test)]
     pub(crate) fn attach_detached_chain(&mut self, me: &MemberId) {
@@ -656,7 +656,7 @@ impl ChatApp {
     }
 
     /// Show `workspace`, a test's chat, reading and writing its messages through
-    /// its chain and refreshing the record its actions read.
+    /// its chain and refreshing the resource its actions read.
     #[cfg(test)]
     pub(crate) fn attach_workspace(&mut self, workspace: &crate::demo::Workspace) {
         self.last_read = workspace.base();
@@ -785,7 +785,7 @@ impl ChatApp {
             motion_reduced: false,
             input_floating_surface: None,
             agent_people: HashMap::new(),
-            workspace_files: crate::record::WorkspaceFiles::default(),
+            workspace_files: crate::chat::WorkspaceFiles::default(),
             body_views: std::cell::RefCell::new(HashMap::new()),
             body_text_inset: std::cell::Cell::new(0.0),
             mention_paint_cache: std::cell::RefCell::new(None),
@@ -838,7 +838,7 @@ impl ChatApp {
             relayout: false,
             flap_animating: false,
             announce: None,
-            drafts_record: None,
+            drafts_resource: None,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
             call_pictures: ui::call_pictures::CallPictures::new(),
@@ -1038,7 +1038,7 @@ impl ChatApp {
     }
 
     /// Stage what is left of a scenario's messages, until the workspace's
-    /// records refuse a write for now.
+    /// resources refuse a write for now.
     pub(crate) fn flush_staged_parts(&mut self) {
         let Some(chain) = self.chain.clone() else {
             return;
@@ -1167,8 +1167,8 @@ impl ChatApp {
             self.composer_main.attach_drafts(record.clone());
             self.composer_thread.attach_drafts(record.clone());
             // The sidebar shows where the unsent words are, so it holds the
-            // record too.
-            self.drafts_record = Some(record);
+            // resource too.
+            self.drafts_resource = Some(record);
         }
         self
     }
@@ -1208,7 +1208,7 @@ impl ChatApp {
 
     /// React to `msg` with `emoji`, or take the reaction back: on a filed
     /// report's message the edit is the report's own reactions field in the
-    /// chat record, which is where its message is read from; on any other
+    /// chat resource, which is where its message is read from; on any other
     /// message it is [`Self::reaction_toggle_action`] on the message's part.
     pub(crate) fn toggle_reaction(&self, doc: &mut ui::widget::Edits<'_>, msg: &str, emoji: &str) {
         let report = crate::feedback::report_of_message(msg)
@@ -1289,7 +1289,7 @@ impl ChatApp {
             ),
             // A direct conversation the window does not list yet: one with an agent, before
             // its first message.
-            None if crate::record::Chat::is_direct(&ui::tilo_resource::Id::from_raw(
+            None if crate::chat::Chat::is_direct(&ui::tilo_resource::Id::from_raw(
                 channel.to_owned(),
             )) =>
             {
@@ -1302,7 +1302,7 @@ impl ChatApp {
     /// The person this window is talking to in the open conversation, when it
     /// is a direct one: its member that is not this window's person.
     pub(crate) fn direct_person(&self) -> Option<MemberId> {
-        crate::record::Chat::direct_members(&ui::tilo_resource::Id::from_raw(
+        crate::chat::Chat::direct_members(&ui::tilo_resource::Id::from_raw(
             self.active_channel.clone(),
         ))?
         .into_iter()
@@ -1314,12 +1314,12 @@ impl ChatApp {
     }
 
     /// Whether `id` is a conversation this window can show: a channel the
-    /// record lists, or a direct one, with a person or an agent — which
-    /// exists by naming its members, whether or not the record lists it
+    /// resource lists, or a direct one, with a person or an agent — which
+    /// exists by naming its members, whether or not the resource lists it
     /// as a row yet.
     pub(crate) fn is_conversation(&self, id: &str) -> bool {
         self.channel(id).is_some()
-            || crate::record::Chat::direct_members(&ui::tilo_resource::Id::from_raw(id.to_owned()))
+            || crate::chat::Chat::direct_members(&ui::tilo_resource::Id::from_raw(id.to_owned()))
                 .is_some()
     }
 
@@ -1330,7 +1330,7 @@ impl ChatApp {
     /// it has to take that first message.
     pub(crate) fn takes_messages(&self) -> bool {
         self.channel(&self.active_channel).is_some()
-            || crate::record::Chat::direct_members(&ui::tilo_resource::Id::from_raw(
+            || crate::chat::Chat::direct_members(&ui::tilo_resource::Id::from_raw(
                 self.active_channel.clone(),
             ))
             .is_some_and(|members| members.contains(&self.me.id))
@@ -1347,7 +1347,7 @@ impl ChatApp {
         let direct = self.channel(&self.active_channel).map_or_else(
             // A direct conversation is one by its id, listed or not yet.
             || {
-                crate::record::Chat::is_direct(&ui::tilo_resource::Id::from_raw(
+                crate::chat::Chat::is_direct(&ui::tilo_resource::Id::from_raw(
                     self.active_channel.clone(),
                 ))
             },
@@ -1674,7 +1674,7 @@ impl Widget for ChatApp {
     }
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
-        // The record is lent to the settle pass: the workspace's other records
+        // The resource is lent to the settle pass: the workspace's other resources
         // take writes now.
         self.flush_staged_parts();
         self.settle_scrollback();
@@ -1824,7 +1824,7 @@ impl Widget for ChatApp {
             let heads = doc.base_heads();
             let pending = doc.pending_ops();
             // The messages move on their own, in the parts beside the
-            // record.
+            // resource.
             let parts_moved = self
                 .chain
                 .as_ref()

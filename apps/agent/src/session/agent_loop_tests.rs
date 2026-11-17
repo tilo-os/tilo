@@ -263,7 +263,7 @@ struct World {
     turn_stopped: bool,
     /// How the desktop's open of Writer behaves.
     opens: Opens,
-    /// The record of a second Writer window (its own peer and record,
+    /// The resource of a second Writer window (its own peer and resource,
     /// the same resource ids), once an open added one.
     second_window: Option<&'static str>,
     /// A republished catalogue reaches the agent this many link polls
@@ -661,7 +661,7 @@ impl World {
         reason = "the fixture world answers every published operation in one place"
     )]
     fn apply(&mut self, action: &str, arguments: &serde_json::Map<String, Value>) -> (Value, bool) {
-        // The conversation's reply takes the record; it is no step of the
+        // The conversation's reply takes the resource; it is no step of the
         // document the run works in.
         if action == "record-work" || action == "keep-summary" {
             return (serde_json::json!({"succeeded": {}}), false);
@@ -1402,7 +1402,7 @@ fn late_chat(world: &World) -> Option<(usize, CollabEvent)> {
 
 /// The surfaces the agent reads at its first turn. When Chat republishes this
 /// run's message late, every other message it holds is published already: what
-/// is missing is the reply this run records on.
+/// is missing is the reply this run resources on.
 fn first_catalogue(world: &World) -> Vec<BrokerActionSurface> {
     let mut surfaces = world.surfaces();
     let answered = world
@@ -1570,7 +1570,7 @@ mod summary;
 #[path = "agent_loop/tests/text_answers.rs"]
 mod text_answers;
 #[path = "agent_loop/tests/turn_records.rs"]
-mod turn_records;
+mod turn_resources;
 #[path = "agent_loop/tests/unusable_answers.rs"]
 mod unusable_answers;
 #[path = "agent_loop/tests/web.rs"]
@@ -1735,7 +1735,7 @@ fn a_german_desktop_reads_the_missing_model_in_german() {
     );
 }
 
-/// What the conversation was told, one entry per record, in order.
+/// What the conversation was told, one entry per resource, in order.
 fn recorded(sent: &[CollabRequest], action: &str) -> Vec<serde_json::Map<String, Value>> {
     sent.iter()
         .filter_map(invoked)
@@ -1898,7 +1898,7 @@ fn an_open_landing_on_a_published_window_returns_at_once() {
     assert_eq!(f.world.borrow().blocks[0].1, "Rain falls.");
 }
 
-/// A second window of an open application is its own peer and record,
+/// A second window of an open application is its own peer and resource,
 /// even though it publishes the same resource ids as the first: the
 /// open sees it on the catalogue that brings it, with no receipt.
 #[test]
@@ -2146,7 +2146,7 @@ tilo_test_env::scenario! {
                 .iter()
                 .any(|request| invoked(request).is_some())
         );
-        // The transport's own words are the record, kept for debugging; the
+        // The transport's own words are the resource, kept for debugging; the
         // sentence a person reads is what happened, in their terms.
         assert!(matches!(terminal(&f.sent.borrow()),
             TurnUpdate::Failed { message }
@@ -2404,7 +2404,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase opened_records_reads_the_desktop_receipt;
+    phase opened_resources_reads_the_desktop_receipt;
     {
         let receipt = serde_json::json!({
             "kind": "desktop.command",
@@ -2417,11 +2417,11 @@ tilo_test_env::scenario! {
             ]
         });
         assert_eq!(
-            opened_records(Some(&receipt), "so.tilo.word-processor"),
+            opened_resources(Some(&receipt), "so.tilo.word-processor"),
             ["doc-9"]
         );
-        assert!(opened_records(Some(&serde_json::json!({})), "so.tilo.notes").is_empty());
-        assert!(opened_records(None, "so.tilo.notes").is_empty());
+        assert!(opened_resources(Some(&serde_json::json!({})), "so.tilo.notes").is_empty());
+        assert!(opened_resources(None, "so.tilo.notes").is_empty());
     }
 
     phase a_single_turn_writes_and_finishes;
@@ -2686,7 +2686,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// An `invoke` of `action` on `resource` in `peer`'s record; marked
+/// An `invoke` of `action` on `resource` in `peer`'s resource; marked
 /// independent of the steps before it when `independent`.
 fn invoke_on(
     peer: u64,
@@ -2707,7 +2707,7 @@ fn invoke_on(
 
 /// Three steps on three different records: a Chat post and a paragraph
 /// in each of two Writer windows.
-fn three_records(independent: bool) -> Vec<(&'static str, Value)> {
+fn three_resources(independent: bool) -> Vec<(&'static str, Value)> {
     vec![
         invoke_on(
             CHAT_PEER,

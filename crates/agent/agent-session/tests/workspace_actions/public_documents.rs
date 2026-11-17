@@ -307,7 +307,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
                     doc,
                     "operator",
                     chat::Chat::CREATE_CHANNEL_WITH_ID.with(
-                        chat::record::chat::CreateChannelWithId {
+                        chat::chat::chat::CreateChannelWithId {
                             id: format!("c_{CHANNEL}"),
                             name: CHANNEL.parse().expect("a channel name"),
                             category: None,

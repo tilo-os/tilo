@@ -1,6 +1,6 @@
 //! Markdown typed into a note becomes formatting as its closing delimiter is
 //! typed, and contractions typed without an apostrophe get one back at the
-//! word's end: both stored in the notebook record and kept on reopening.
+//! word's end: both stored in the notebook resource and kept on reopening.
 
 use crate::framework_support::with_note;
 use notes::{PageId, markdown, read};

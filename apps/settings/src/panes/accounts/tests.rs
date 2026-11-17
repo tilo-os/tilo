@@ -85,7 +85,7 @@ fn scratch_root() -> (tempfile::TempDir, AccountRoot) {
 tilo_test_env::scenario! {
     fn the_accounts_model_keeps_store_vault_and_journal_in_step;
 
-    phase selected_browser_sessions_use_device_inventory_not_public_identity_records;
+    phase selected_browser_sessions_use_device_inventory_not_public_identity_resources;
     {
         let (_scratch, root) = scratch_root();
         let mut store = accounts::AccountStore::new();

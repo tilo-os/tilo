@@ -1,21 +1,21 @@
 //! The chat's messages as a chain of parts.
 //!
-//! One record cannot hold a chat that runs for months: a record's snapshot
+//! One resource cannot hold a chat that runs for months: a resource's snapshot
 //! has a size limit, and a newcomer would be sent all of it. So the workspace's
-//! chat record ([`crate::record::Chat`]) keeps categories, channels, people,
-//! drafts and moderation, and its messages live in numbered part records
-//! ([`ChatPart`]), each a record of its own ([`part`]).
+//! chat resource ([`crate::chat::Chat`]) keeps categories, channels, people,
+//! drafts and moderation, and its messages live in numbered part resources
+//! ([`ChatPart`]), each a resource of its own ([`part`]).
 //!
 //! - **Which part is current.** The part with the highest number a device
 //!   holds is the chain's head. A workspace's host replays a joining device the
-//!   chat record and the head only; every earlier part is on-demand
+//!   chat resource and the head only; every earlier part is on-demand
 //!   (`neighbour_wire::document_sync`): a device opens it, through the normal
-//!   record sync and the chat record's grants, when someone scrolls back to
+//!   resource sync and the chat resource's grants, when someone scrolls back to
 //!   it.
 //! - **Where a post goes.** To the head, unless the head is full
 //!   ([`post_part`]): then to the next part. A part's id is the chain and its
 //!   number, so two writers that both start part `n + 1` start the same
-//!   record, and their posts meet there.
+//!   resource, and their posts meet there.
 //! - **Where a change to a message goes.** To the part that holds the
 //!   message: an edit, a reaction, a reply in its thread, a report.
 //! - **Read marks** are positions in the chain ([`ReadMark`]), so they mean
@@ -36,12 +36,12 @@ use std::collections::BTreeMap;
 use ui::resource::DocumentId;
 use ui::tilo_resource::{self, Collection, Model};
 
-use crate::record::Message;
+use crate::chat::Message;
 
 /// Posts a part holds before the next one starts.
 pub const PART_MESSAGES: usize = 2000;
 /// Message text, in bytes, a part holds before the next one starts: well
-/// under what one record's snapshot may hold, so every part stays
+/// under what one resource's snapshot may hold, so every part stays
 /// compactable whatever its posts say.
 pub const PART_TEXT_BYTES: usize = 1024 * 1024;
 
@@ -145,7 +145,7 @@ mod tests {
         /// names the cases that failed.
         fn parts_number_one_chain_and_posts_and_read_marks_move_along_it;
 
-        phase parts_are_numbered_records_of_one_chain;
+        phase parts_are_numbered_resources_of_one_chain;
         {
             let first = part(0);
             assert_eq!(part_index(&first), Some(0));

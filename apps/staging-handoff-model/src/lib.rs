@@ -132,7 +132,7 @@ impl Handoff {
     ///
     /// # Errors
     ///
-    /// Why the record is not a handoff this version accepts.
+    /// Why the resource is not a handoff this version accepts.
     pub fn validate(&self) -> Result<(), String> {
         if self.schema != SCHEMA {
             return Err("unsupported staged installation version".into());
@@ -190,10 +190,10 @@ impl Handoff {
     /// Why the bytes are too large, malformed or inconsistent.
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_BYTES {
-            return Err("staged installation record is unexpectedly large".into());
+            return Err("staged installation resource is unexpectedly large".into());
         }
         let handoff = serde_json::from_slice::<Self>(bytes)
-            .map_err(|error| format!("staged installation record is malformed: {error}"))?;
+            .map_err(|error| format!("staged installation resource is malformed: {error}"))?;
         handoff.validate()?;
         Ok(handoff)
     }
@@ -202,7 +202,7 @@ impl Handoff {
     ///
     /// # Errors
     ///
-    /// Why the record is inconsistent, cannot be serialized, or does not fit `len` bytes.
+    /// Why the resource is inconsistent, cannot be serialized, or does not fit `len` bytes.
     pub fn to_padded(&self, len: u64) -> Result<Vec<u8>, String> {
         self.validate()?;
         pad_json(&serde_json::to_vec(self).map_err(|e| e.to_string())?, len)

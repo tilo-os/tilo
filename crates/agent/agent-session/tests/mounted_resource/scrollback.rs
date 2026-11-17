@@ -28,7 +28,7 @@ const ARCHIVE: &str = "archive";
 fn long_post(n: usize) -> String {
     let line = format!("filler {n} ");
     line.repeat(
-        chat::record::MAX_MESSAGE_TEXT_BYTES
+        chat::chat::MAX_MESSAGE_TEXT_BYTES
             .checked_div(line.len())
             .unwrap_or_default(),
     )

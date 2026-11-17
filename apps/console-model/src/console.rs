@@ -20,7 +20,7 @@ impl Console {
 }
 
 impl Console {
-    /// What the record holds: which runs Agents shows: the agent and the workspace.
+    /// What the resource holds: which runs Agents shows: the agent and the workspace.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

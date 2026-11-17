@@ -826,7 +826,7 @@ impl RasterBackend {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "one pass from the records to the engine's edits, page by page"
+        reason = "one pass from the resources to the engine's edits, page by page"
     )]
     fn edits_for(&self, markup: &ExportMarkup) -> anyhow::Result<tilo_pdf::Edits> {
         let mut edits = tilo_pdf::Edits::default();

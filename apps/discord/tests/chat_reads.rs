@@ -6,10 +6,10 @@
 )]
 
 //! What the bridge reads of a real Chat record: the ids a verb created come
-//! back in its answer, and Chat's records as the record api reads them are
+//! back in its answer, and Chat's resources as the resource api reads them are
 //! what the planners read.
 
-use chat::record::Chat;
+use chat::chat::Chat;
 use chat::resource::ChatShell;
 use discord::tilo::{self, WorkspaceChat};
 use serde_json::json;
@@ -74,8 +74,8 @@ fn a_verb_answers_the_ids_it_created() {
     assert_eq!(held.get(&Id::from_raw(&message)).unwrap().text, "hello");
 }
 
-/// Chat's records as the bridge's program reads them through the record api:
-/// its record of the workspace, and the newest part of its messages' chain.
+/// Chat's resources as the bridge's program reads them through the resource api:
+/// its resource of the workspace, and the newest part of its messages' chain.
 fn read(app: &TestApp<ChatShell>) -> tilo::ChatRead {
     use ui::tilo_actions::remote::{Caller, HeldCopies, ResourceAddress, ResourceAsk};
     let own = app.record().clone();
@@ -108,7 +108,7 @@ fn read(app: &TestApp<ChatShell>) -> tilo::ChatRead {
 }
 
 #[test]
-fn the_record_api_reads_what_the_planners_read() {
+fn the_resource_api_reads_what_the_planners_read() {
     let (mut app, channel) = begun();
     let root = created(
         app.call_on_output(

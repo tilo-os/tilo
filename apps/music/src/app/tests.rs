@@ -4004,7 +4004,7 @@ fn page_widget(app: &Music, id: &str) -> Rect {
 }
 
 #[test]
-fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() {
+fn recommendations_shared_input_and_dismiss_controls_resource_canonical_actions() {
     let (mut app, mut doc) = app_with_doc();
     app.disconnect();
     app.view = View::Recommendations;

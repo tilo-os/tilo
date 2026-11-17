@@ -2,7 +2,7 @@
 //! asks what kind of channel, its name, where it goes and what it is about.
 //!
 //! The sheet only gathers the answers. What it settles on is applied by the
-//! chat as its record's own verbs (`create-channel`, `create-category`) and
+//! chat as its resource's own verbs (`create-channel`, `create-category`) and
 //! field edits, the same path an agent or a script takes.
 
 use vello::Scene;

@@ -361,7 +361,7 @@ fn every_operation_is_a_published_action() {
         );
     }
     // The API's effects are published on the drafts, beside their edits. The framework's own
-    // share verbs stand on every record's root, so they are no part of what the API declares.
+    // share verbs stand on every resource's root, so they are no part of what the API declares.
     let mut effects: Vec<&str> = workbench
         .actions
         .iter()

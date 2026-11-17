@@ -200,7 +200,7 @@ fn answer_effect(
         return answer;
     }
     // Messages are read, searched and answered from what this device keeps
-    // of its servers and what the record holds, whatever a window shows.
+    // of its servers and what the resource holds, whatever a window shows.
     match &effect {
         MailEffect::SearchMessages { .. } => {
             let query = crate::search::MessageQuery::of(&effect)?;
@@ -347,7 +347,7 @@ fn draft_reply(
         notes: Some(drafted.notes),
     };
     // What the verb would refuse is refused here, so the answer never
-    // claims a draft the record did not take.
+    // claims a draft the resource did not take.
     let mut probe = (*mail).clone();
     probe
         .create_draft(

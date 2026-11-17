@@ -205,7 +205,7 @@ impl ChatApp {
             items.retain(|action| *action != MenuAction::ReplyInThread);
         }
         // The menu is about the message, so a box it opens sends the message itself: the item of
-        // Chat's record, as its row publishes it.
+        // Chat's resource, as its row publishes it.
         let label = match message.text.trim() {
             "" => self.message_label(message),
             said => said.to_owned(),

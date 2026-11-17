@@ -70,7 +70,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonical_calendar_items_become_events_in_the_target_record() {
+    fn canonical_calendar_items_become_events_in_the_target_resource() {
         let import = crate::resource::import(
             "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:kept@example.test\r\nSUMMARY:Kept\r\nDTSTART:20260102T090000Z\r\nDTEND:20260102T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
         )

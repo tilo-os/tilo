@@ -895,7 +895,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn download_records_outlive_origin_and_offer_host_actions_when_complete() {
+    fn download_resources_outlive_origin_and_offer_host_actions_when_complete() {
         {
             let capture = ui::webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();

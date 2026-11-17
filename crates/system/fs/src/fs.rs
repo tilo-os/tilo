@@ -44,7 +44,7 @@ use crate::smart::Heuristics;
 use crate::smart::history::{AccessHistory, natural_cmp};
 use crate::smart::kept_history::{KeptHistory, KeptHistorySource};
 use fs_protocol::projection::{
-    DocumentIndexEntryV1, RECORD_INDEX_PAGE_ENTRIES, RECORD_INDEX_V2_VERSION,
+    DOCUMENT_INDEX_PAGE_ENTRIES, DOCUMENT_INDEX_V2_VERSION, DocumentIndexEntryV1,
 };
 use fs_protocol::{AvailabilityPolicy, Residency, TransferPhase};
 
@@ -2798,7 +2798,7 @@ impl QuickFS {
             }
             let mut rows = Vec::with_capacity(namespace.indexed_document_count());
             loop {
-                let page = namespace.indexed_document_page(rows.len(), RECORD_INDEX_PAGE_ENTRIES);
+                let page = namespace.indexed_document_page(rows.len(), DOCUMENT_INDEX_PAGE_ENTRIES);
                 if page.is_empty() {
                     break;
                 }
@@ -2884,13 +2884,13 @@ impl QuickFS {
         let revision = self.document_catalog_revision();
         let records = self.ns().indexed_document_count();
         let manifest = fs_protocol::projection::DocumentIndexManifestV2 {
-            schema_version: RECORD_INDEX_V2_VERSION,
+            schema_version: DOCUMENT_INDEX_V2_VERSION,
             revision,
             // A bounded-cursor ceiling, not an ACL-visible count: pages apply ACL filtering
             // locally and may be empty, and a visible count would need an unbounded
             // denied-row scan.
             records,
-            page_entries: RECORD_INDEX_PAGE_ENTRIES,
+            page_entries: DOCUMENT_INDEX_PAGE_ENTRIES,
         };
         manifest.validate().ok()?;
         serde_json::to_vec(&manifest).ok()
@@ -2898,7 +2898,7 @@ impl QuickFS {
 
     fn document_index_page_v2(&self, revision: &str, offset: usize) -> Option<Vec<u8>> {
         (self.document_catalog_revision() == revision).then_some(())?;
-        let page_entries = RECORD_INDEX_PAGE_ENTRIES;
+        let page_entries = DOCUMENT_INDEX_PAGE_ENTRIES;
         let namespace = self.ns();
         let records = namespace.indexed_document_count();
         if offset > records || !offset.is_multiple_of(page_entries) {
@@ -2908,7 +2908,7 @@ impl QuickFS {
         let candidates = namespace.indexed_document_page(offset, page_entries);
         drop(namespace);
         let page = fs_protocol::projection::DocumentIndexPageV2 {
-            schema_version: RECORD_INDEX_V2_VERSION,
+            schema_version: DOCUMENT_INDEX_V2_VERSION,
             revision: revision.to_string(),
             offset,
             next_offset: (end < records).then_some(end),
@@ -2924,7 +2924,7 @@ impl QuickFS {
         };
         page.validate().ok()?;
         let bytes = serde_json::to_vec(&page).ok()?;
-        (bytes.len() <= fs_protocol::projection::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
+        (bytes.len() <= fs_protocol::projection::MAX_DOCUMENT_INDEX_PAGE_BYTES).then_some(bytes)
     }
 
     fn document_index_cursor(
@@ -2983,7 +2983,7 @@ impl QuickFS {
             schema_version: 3,
             initial_cursor,
             revision: index.revision.clone(),
-            page_entries: RECORD_INDEX_PAGE_ENTRIES,
+            page_entries: DOCUMENT_INDEX_PAGE_ENTRIES,
         };
         manifest.validate().ok()?;
         serde_json::to_vec(&manifest).ok()
@@ -3008,7 +3008,7 @@ impl QuickFS {
         (index.revision == revision && index.acl_revision == acl_revision).then_some(())?;
         let records = index.records.len();
         let end = offset
-            .saturating_add(RECORD_INDEX_PAGE_ENTRIES)
+            .saturating_add(DOCUMENT_INDEX_PAGE_ENTRIES)
             .min(records);
         let candidates = index.records.get(offset..end)?.to_vec();
         let next_cursor = (end < records).then(|| {
@@ -3022,20 +3022,20 @@ impl QuickFS {
         };
         page.validate().ok()?;
         let bytes = serde_json::to_vec(&page).ok()?;
-        (bytes.len() <= fs_protocol::projection::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
+        (bytes.len() <= fs_protocol::projection::MAX_DOCUMENT_INDEX_PAGE_BYTES).then_some(bytes)
     }
 
     fn document_index_by_id_v2(&self, document_id: fs_protocol::FileDocumentId) -> Option<Vec<u8>> {
         let index = self.acl_visible_document_index()?;
         let entry = index.by_id.get(&document_id)?.clone();
         let projection = fs_protocol::projection::DocumentIndexExactV2 {
-            schema_version: RECORD_INDEX_V2_VERSION,
+            schema_version: DOCUMENT_INDEX_V2_VERSION,
             revision: index.revision.clone(),
             record: entry,
         };
         projection.validate().ok()?;
         let bytes = serde_json::to_vec(&projection).ok()?;
-        (bytes.len() <= fs_protocol::projection::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
+        (bytes.len() <= fs_protocol::projection::MAX_DOCUMENT_INDEX_PAGE_BYTES).then_some(bytes)
     }
 
     /// Read a bounded immutable version for an app-native history preview. Never changes
@@ -6243,7 +6243,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(fs_protocol::projection::RECORD_INDEX_V2_XATTR) {
+        if name.to_str() == Some(fs_protocol::projection::DOCUMENT_INDEX_V2_XATTR) {
             if ino.0 != crate::namespace::ROOT_INO {
                 reply.error(to_errno(libc::ENODATA));
                 return;
@@ -6260,7 +6260,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(fs_protocol::projection::RECORD_INDEX_V3_XATTR) {
+        if name.to_str() == Some(fs_protocol::projection::DOCUMENT_INDEX_V3_XATTR) {
             if ino.0 != crate::namespace::ROOT_INO || self.enforcement.is_none() {
                 reply.error(to_errno(libc::ENODATA));
                 return;
@@ -6289,7 +6289,7 @@ impl Filesystem for QuickFS {
         if let Some(document_id) = name
             .to_str()
             .and_then(|name| {
-                name.strip_prefix(fs_protocol::projection::RECORD_INDEX_BY_ID_XATTR_PREFIX)
+                name.strip_prefix(fs_protocol::projection::DOCUMENT_INDEX_BY_ID_XATTR_PREFIX)
             })
             .and_then(|value| uuid::Uuid::parse_str(value).ok())
             .map(fs_protocol::FileDocumentId)
@@ -6421,7 +6421,7 @@ impl Filesystem for QuickFS {
             buf.push(0);
         }
         if ino.0 == crate::namespace::ROOT_INO {
-            buf.extend_from_slice(fs_protocol::projection::RECORD_INDEX_V2_XATTR.as_bytes());
+            buf.extend_from_slice(fs_protocol::projection::DOCUMENT_INDEX_V2_XATTR.as_bytes());
             buf.push(0);
         }
         if self.availability.is_some() {

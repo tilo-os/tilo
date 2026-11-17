@@ -11,12 +11,14 @@ use ui::tilo_resource::{self, ActionCx, Atom, Id, Invoke, Refusal, SearchEntry, 
 use ui::widget::Element;
 
 use crate::model::HttpMethod;
-use crate::record::{Environment, HISTORY_LIMIT, RequestRecord, SavedCollection, Sent, Variable};
+use crate::workspace::{
+    Environment, HISTORY_LIMIT, RequestResource, SavedCollection, Sent, Variable,
+};
 
-pub use crate::record::Workspace;
+pub use crate::workspace::Workspace;
 
 impl Workspace {
-    /// What the record holds: the collections, requests, environments and variables, and
+    /// What the resource holds: the collections, requests, environments and variables, and
     /// the one active environment.
     pub fn read_document(
         &self,
@@ -35,7 +37,7 @@ impl Workspace {
 impl Workspace {
     #[action]
     pub fn new_request(&mut self, cx: &mut ActionCx) {
-        self.request = RequestRecord::named("New request");
+        self.request = RequestResource::named("New request");
         self.opened = Atom(cx.uuid().to_string());
     }
 
@@ -71,7 +73,7 @@ impl Workspace {
             .ok_or("no such collection")?;
         collection.requests.push(
             Id::from_raw(cx.uuid().to_string()),
-            RequestRecord::named(name.trim()),
+            RequestResource::named(name.trim()),
         );
         Ok(())
     }
@@ -210,13 +212,13 @@ impl Workspace {
         self.request = match sent.replay_of() {
             // The entry kept the request it sent: its headers, body and parameters come
             // back with it.
-            Some(replay) => RequestRecord::of(&replay.to_request()),
+            Some(replay) => RequestResource::of(&replay.to_request()),
             // An entry recorded before history kept the request itself: its method and URL
             // are all that is known.
-            None => RequestRecord {
+            None => RequestResource {
                 method: sent.method,
                 url: sent.url.0.clone(),
-                ..RequestRecord::named("New request")
+                ..RequestResource::named("New request")
             },
         };
         self.opened = Atom(cx.uuid().to_string());
@@ -233,11 +235,11 @@ impl Workspace {
     ) -> Result<(), Refusal> {
         let entry = self.history.get(sent).ok_or("no such request")?;
         let mut request = match entry.replay_of() {
-            Some(replay) => RequestRecord::of(&replay.to_request()),
-            None => RequestRecord {
+            Some(replay) => RequestResource::of(&replay.to_request()),
+            None => RequestResource {
                 method: entry.method,
                 url: entry.url.0.clone(),
-                ..RequestRecord::named("New request")
+                ..RequestResource::named("New request")
             },
         };
         request.name = name
@@ -280,7 +282,7 @@ impl Workspace {
         #[param("The round-trip time in milliseconds")] duration_ms: u64,
     ) {
         // The builder holds what went out — its headers, body and
-        // parameters — minus the credential, which the record never holds.
+        // parameters — minus the credential, which the resource never holds.
         // The method and URL the caller reports are authoritative: they say
         // what was actually sent, even if the builder moved on since.
         let method = HttpMethod::from_str(&method);
@@ -303,13 +305,13 @@ impl Workspace {
     /// A new workspace opens on one blank request, the same on every device.
     pub(super) fn blank() -> Self {
         Self {
-            request: RequestRecord::named("New request"),
+            request: RequestResource::named("New request"),
             opened: Atom(uuid::Uuid::nil().to_string()),
             ..Self::default()
         }
     }
 
-    /// What system search finds: records by their names and routes, never a
+    /// What system search finds: resources by their names and routes, never a
     /// body, a credential or a variable's value. Each hit is anchored at the
     /// collection, environment or sent request it belongs to.
     fn search(&self) -> Vec<SearchEntry> {

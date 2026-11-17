@@ -5,7 +5,7 @@
 //! stepping, Open and Save. Each slot runs the reader's published
 //! [`PdfEffect`] through the same handler the palette and agents reach. The window's search finds in
 //! the pages (the reader is its [`ui::widget::Findable`]) and its History
-//! control opens the record's History; the reader draws no toolbar row.
+//! control opens the resource's History; the reader draws no toolbar row.
 
 use ui::icons::Icon;
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};

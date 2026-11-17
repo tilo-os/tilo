@@ -11,7 +11,7 @@ hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-# The record-facing schema the app needs; the worker leaves it out.
+# The resource-facing schema the app needs; the worker leaves it out.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", optional = true }
 
 [features]

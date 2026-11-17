@@ -1,6 +1,6 @@
 //! The Slides editor: one full-window widget that lays out and paints the
 //! toolbar, the slide rail, the canvas, the inspector and present mode. It shows
-//! the framework's mirror of the [`crate::deck::Deck`] record, so undo and
+//! the framework's mirror of the [`crate::deck::Deck`] resource, so undo and
 //! collaboration need no extra plumbing; the current slide, the selection and the
 //! mode are the window's own.
 
@@ -40,7 +40,7 @@ use ui::widget::{
 
 use crate::actions;
 use crate::assets::ImageStore;
-use crate::deck::Deck as DeckRecord;
+use crate::deck::Deck as DeckResource;
 
 use crate::help_overlay::HelpOverlay;
 use crate::model::{
@@ -317,7 +317,10 @@ impl RoutedEvent<'_, '_> {
     }
 }
 
-fn notes_control(deck: &Dispatcher<DeckRecord>, slide: &str) -> TextControl<TextInput, DeckRecord> {
+fn notes_control(
+    deck: &Dispatcher<DeckResource>,
+    slide: &str,
+) -> TextControl<TextInput, DeckResource> {
     TextControl::at(
         TextInput::local()
             .multiline(true)
@@ -342,10 +345,10 @@ pub struct SlidesApp {
     /// The deck as last presented, with a gesture in flight previewed on it.
     deck: Deck,
     focus_slide: Option<Id>,
-    deferred: Option<std::rc::Rc<DeckRecord>>,
+    deferred: Option<std::rc::Rc<DeckResource>>,
     opened: Rc<RefCell<Opened>>,
     store: store::Shared,
-    live: Option<Live<DeckRecord>>,
+    live: Option<Live<DeckResource>>,
     presented: Option<(u64, u64)>,
     rect: Rect,
     node: Option<NodeId>,
@@ -380,7 +383,7 @@ pub struct SlidesApp {
     opening_press: Option<(Point, u8)>,
     fingers_down: u8,
 
-    dispatch: Dispatcher<DeckRecord>,
+    dispatch: Dispatcher<DeckResource>,
     bar: window_bar::Bar,
 
     rail_drawer: SidebarDrawer,
@@ -416,7 +419,7 @@ pub struct SlidesApp {
     fill_picker_open: bool,
     /// Each edit is a field edit of the slide's notes; `editing_notes` only owns
     /// the inspector's open state.
-    notes: TextControl<TextInput, DeckRecord>,
+    notes: TextControl<TextInput, DeckResource>,
     notes_preview: TextInput,
     notes_slide: Rc<RefCell<String>>,
     notes_caret_to_end: bool,
@@ -439,7 +442,7 @@ enum DemoMenu {
 impl SlidesApp {
     /// Its edits go through the view's dispatcher; its pictures are in the
     /// view's content store.
-    pub fn new(cx: &ViewCx<DeckRecord>) -> Self {
+    pub fn new(cx: &ViewCx<DeckResource>) -> Self {
         let content = cx.content().unwrap_or_else(crate::assets::app_content);
         let state = cx.live().get();
         let mut app = Self::build(cx.dispatcher(), content);
@@ -447,7 +450,7 @@ impl SlidesApp {
         app
     }
 
-    fn build(dispatch: Dispatcher<DeckRecord>, content: ContentStore) -> Self {
+    fn build(dispatch: Dispatcher<DeckResource>, content: ContentStore) -> Self {
         let deck = starter_deck();
         let notes_slide = Rc::new(RefCell::new(String::new()));
         let notes = notes_control(&dispatch, "");
@@ -736,7 +739,7 @@ impl SlidesApp {
         self.rail_drawer.layout()
     }
 
-    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<DeckRecord>) {
+    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<DeckResource>) {
         if self.gesture_in_flight() {
             self.deferred = Some(Rc::clone(state));
             return;

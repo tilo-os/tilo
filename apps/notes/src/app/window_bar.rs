@@ -39,7 +39,7 @@ impl NotesApp {
                 label: crate::metadata::note_title(title),
                 anchor: Some(anchor),
                 // Unsaved work is marked by the window's framework, from the
-                // record's save.
+                // resource's save.
                 ..ToolbarLocation::default()
             }),
             actions: note_actions.into_iter().flatten().collect(),

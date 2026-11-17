@@ -9,10 +9,10 @@ Native standalone launches select the platform store at their composition root;
 host-mounted components use `HostContext::secrets()`.
 
 On opening an older document, migration seals the visible authentication values
-before replacing their current fields, including legacy JSON record blobs.
+before replacing their current fields, including legacy JSON resource blobs.
 Failed protected writes leave the document unchanged so unlocking and retrying
 can preserve the credentials. Plaintext auth values cannot be serialized into
-new collaborative records or actions, and debug output redacts auth and outgoing
+new collaborative resources or actions, and debug output redacts auth and outgoing
 requests.
 
 **This migration does not erase Automerge history.** Old changes, peer replicas,

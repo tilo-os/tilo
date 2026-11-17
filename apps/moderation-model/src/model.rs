@@ -34,7 +34,7 @@ pub struct Report {
     pub reporter: MemberId,
     /// Whom the report is about.
     pub person: MemberId,
-    /// The app, record and item reported, when the report is about content.
+    /// The app, resource and item reported, when the report is about content.
     pub app: Option<String>,
     pub record: Option<String>,
     pub item: Option<String>,
@@ -60,7 +60,7 @@ pub enum Outcome {
     Ban,
 }
 
-/// A record whose changes by the person a decision took back, and the run that did it, so
+/// A resource whose changes by the person a decision took back, and the run that did it, so
 /// overturning can take the take-back back.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Reverted {
@@ -175,7 +175,7 @@ fn optional_id(value: Option<&String>, what: &str) -> Result<(), Refusal> {
     value.map_or(Ok(()), |value| id_like(value, what))
 }
 
-/// Rewrite the decisions of the moderation record stored at `moderation` from before a
+/// Rewrite the decisions of the moderation resource stored at `moderation` from before a
 /// decision's reports and take-backs were model values (each one JSON string) into the
 /// shape they are stored in now: a list of report ids and a list of take-backs.
 ///
@@ -192,7 +192,7 @@ pub fn upgrade_decisions(
 }
 
 impl Moderation {
-    /// What the record holds: the reports made and the decisions taken on them.
+    /// What the resource holds: the reports made and the decisions taken on them.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -209,7 +209,7 @@ impl Moderation {
     read_content = Moderation::read_document
 )]
 impl Moderation {
-    /// Bring a moderation record of version 1 up to this one: its decisions' reports and
+    /// Bring a moderation resource of version 1 up to this one: its decisions' reports and
     /// take-backs become model values ([`upgrade_decisions`]).
     fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
         if from != 1 {
@@ -230,14 +230,14 @@ impl Moderation {
         cx: &mut ActionCx,
         #[param("The person reported")] person: MemberId,
         #[param("The app of the reported content")] app: Option<String>,
-        #[param("The record of the reported content")] record: Option<String>,
+        #[param("The resource of the reported content")] record: Option<String>,
         #[param("The reported item, such as a message")] item: Option<String>,
         #[param("What they did")] reason: NonBlank,
     ) -> Result<(), Refusal> {
         let reporter = reporter(cx)?;
         id_like(person.id(), "the person")?;
         optional_id(app.as_ref(), "the app")?;
-        optional_id(record.as_ref(), "the record")?;
+        optional_id(record.as_ref(), "the resource")?;
         optional_id(item.as_ref(), "the item")?;
         if reporter == person {
             return Err(Refusal::new("you cannot report yourself"));
@@ -280,7 +280,7 @@ impl Moderation {
 
     /// Decide on a person.
     ///
-    /// Records what was done about a person and why, settling the reports named.
+    /// Resources what was done about a person and why, settling the reports named.
     #[action(moderation)]
     pub fn decide(
         &mut self,

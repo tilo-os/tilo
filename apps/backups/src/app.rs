@@ -2110,7 +2110,7 @@ mod tests {
         );
     }
     #[test]
-    fn the_window_alone_writes_nothing_to_the_record() {
+    fn the_window_alone_writes_nothing_to_the_resource() {
         let app = frame(
             BackupsWindow::with_catalog(Catalog::empty()),
             1280.0,

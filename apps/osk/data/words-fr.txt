@@ -2166,7 +2166,7 @@ professionnels	6570
 profil	6570
 proposer	6570
 préparation	6570
-record	6570
+resource	6570
 remplacer	6570
 respecter	6570
 richard	6570
@@ -6387,7 +6387,7 @@ quarantaine	6000
 quatorze	6000
 rappelons	6000
 recommandé	6000
-records	6000
+resources	6000
 regroupe	6000
 remplis	6000
 rendra	6000

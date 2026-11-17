@@ -1,7 +1,7 @@
 //! The demo workspace a screenshot or a test shows: its people, channels and
-//! conversation, read by `me`. Never a real record's content.
+//! conversation, read by `me`. Never a real resource's content.
 //!
-//! The chat record ([`demo`]) holds the people and channels; the conversation
+//! The chat resource ([`demo`]) holds the people and channels; the conversation
 //! is the first part of the chat's messages ([`demo_part`]). A tool or a
 //! test without a window holds both as documents ([`Workspace`]).
 
@@ -9,10 +9,10 @@ use automerge::AutoCommit;
 use ui::tilo_actions::ApiError;
 use ui::tilo_resource::{Atom, Id, Invoke, ModelError, Replica};
 
+use crate::chat::{Category, Chat, Conversation, Message, Person, Revision, chat};
 use crate::messages::{Messages, chat_part};
-use crate::model::{ChannelKind, EditRecord, Presence};
+use crate::model::{ChannelKind, EditEntry, Presence};
 use crate::parts::ChatPart;
-use crate::record::{Category, Chat, Conversation, Message, Person, Revision, chat};
 
 /// Deterministic "now" for the demo so a screenshot is stable: 2026-06-30
 /// 10:40 UTC, just before the capture clock's 10:42.
@@ -47,7 +47,7 @@ struct NewMessage {
     parent: Option<String>,
     reactions: Vec<(String, Vec<String>)>,
     attachments: Vec<tilo_reference::Attached>,
-    history: Vec<EditRecord>,
+    history: Vec<EditEntry>,
     edited: bool,
 }
 
@@ -267,7 +267,7 @@ impl Demo {
                     text: "Wired the screen-share stage — whoever presents gets a big featured tile and everyone else drops to the filmstrip beneath it. Reads really cleanly.".into(),
                     edited: true,
                     history: vec![
-                        EditRecord {
+                        EditEntry {
                             ts: m(43),
                             text: "Wired up screen-share — the presenter gets a featured tile, everyone else goes to a filmstrip.".into(),
                         },
@@ -458,8 +458,8 @@ pub fn demo_part(me: &str) -> ChatPart {
 
 // A fixture is no one's edit: the people, channels and messages it starts
 // a test or a tool with are written into the document as they stand, not
-// through the record's actions. The channels and messages refuse every
-// generic edit (`#[model(readonly)]`): only the record's actions make them,
+// through the resource's actions. The channels and messages refuse every
+// generic edit (`#[model(readonly)]`): only the resource's actions make them,
 // so no edit names someone else as a message's author or rearranges a
 // workspace behind its moderators.
 
@@ -477,7 +477,7 @@ fn add<T>(
     Ok(())
 }
 
-/// The chat record `doc` holds, changed by `change` and written back as it
+/// The chat resource `doc` holds, changed by `change` and written back as it
 /// stands, uncommitted.
 fn change_chat(
     doc: &mut AutoCommit,
@@ -508,7 +508,7 @@ pub fn write(doc: &mut AutoCommit, chat: &Chat) -> Result<(), ModelError> {
             add(&mut held.channels, id, channel.clone())?;
         }
         for person in &chat.people {
-            let id = crate::record::member_slot(&person.id);
+            let id = crate::chat::member_slot(&person.id);
             if held.people.find(&id).is_some() {
                 return Err(ModelError::invalid(format!("an item `{id}` exists")));
             }
@@ -555,7 +555,7 @@ fn commit_genesis(doc: &mut AutoCommit) {
     );
 }
 
-/// `doc` with the record's genesis, when it holds no chat yet.
+/// `doc` with the resource's genesis, when it holds no chat yet.
 fn initialized(doc: &mut AutoCommit) -> Result<(), ModelError> {
     use automerge::ReadDoc as _;
     if doc.get(automerge::ROOT, "channels")?.is_none() {
@@ -565,13 +565,13 @@ fn initialized(doc: &mut AutoCommit) -> Result<(), ModelError> {
     Ok(())
 }
 
-/// The demo workspace's chat record in `doc`, read by [`crate::model::ME`]: its
+/// The demo workspace's chat resource in `doc`, read by [`crate::model::ME`]: its
 /// people and channels, without the conversation.
 pub fn seed(doc: &mut AutoCommit) -> Result<(), ModelError> {
     write(doc, &demo(crate::model::ME))
 }
 
-/// The demo workspace in `workspace`, read by [`crate::model::ME`]: its chat record,
+/// The demo workspace in `workspace`, read by [`crate::model::ME`]: its chat resource,
 /// and its conversation as the first part of its messages.
 pub fn seed_workspace(workspace: &mut Workspace) -> Result<(), ApiError> {
     seed(&mut workspace.chat).map_err(|error| ApiError::Failed(error.to_string()))?;
@@ -579,14 +579,14 @@ pub fn seed_workspace(workspace: &mut Workspace) -> Result<(), ApiError> {
 }
 
 /// A chat as a tool or a test holds it without a window: the workspace's chat
-/// record, as a document, and the parts of its messages, as the chain a
+/// resource, as a document, and the parts of its messages, as the chain a
 /// window holds them in ([`ui::framework::Chain`]). It reads and changes
 /// like the chat record it dereferences to; a verb on the messages applies
 /// through the chain to the part it changes ([`Workspace::apply_part_as`]).
 pub struct Workspace {
     pub chat: AutoCommit,
     parts: Option<ui::framework::Chain<ChatPart>>,
-    /// The chat record as the chain's actions read it: refreshed before
+    /// The chat resource as the chain's actions read it: refreshed before
     /// each of them.
     base: std::rc::Rc<std::cell::RefCell<std::rc::Rc<Chat>>>,
 }
@@ -622,7 +622,7 @@ impl std::ops::DerefMut for Workspace {
 }
 
 impl Workspace {
-    /// A workspace holding the chat record `chat` and no messages yet.
+    /// A workspace holding the chat resource `chat` and no messages yet.
     #[must_use]
     pub fn of(chat: AutoCommit) -> Self {
         Self {
@@ -647,14 +647,14 @@ impl Workspace {
         self.parts.clone()
     }
 
-    /// The chat record as the chain's actions read it: what a window over
-    /// this workspace refreshes when it reads the record.
+    /// The chat resource as the chain's actions read it: what a window over
+    /// this workspace refreshes when it reads the resource.
     #[must_use]
     pub fn base(&self) -> std::rc::Rc<std::cell::RefCell<std::rc::Rc<Chat>>> {
         std::rc::Rc::clone(&self.base)
     }
 
-    /// The chat record as it stands.
+    /// The chat resource as it stands.
     #[must_use]
     pub fn read(&self) -> Chat {
         crate::projection::read(&self.chat)
@@ -697,7 +697,7 @@ impl Workspace {
         self.read().message_row(&self.messages(), id)
     }
 
-    /// Apply `invoke`, a verb of the chat record, as `author` invokes it.
+    /// Apply `invoke`, a verb of the chat resource, as `author` invokes it.
     ///
     /// # Errors
     /// As [`apply_as`].
@@ -779,7 +779,7 @@ impl Workspace {
 }
 
 // What a tool or a test holding a bare chat document does with it: apply
-// the record's verbs as a named person, the way the API applies them.
+// the resource's verbs as a named person, the way the API applies them.
 
 /// Apply `invoke` to `doc` through the API, as `author` invokes it.
 pub fn apply_as(doc: &mut AutoCommit, author: &str, invoke: Invoke<Chat>) -> Result<(), ApiError> {
@@ -865,7 +865,7 @@ pub fn post(channel: &str, text: &str, parent: Option<&str>) -> Invoke<ChatPart>
 
 /// Apply `invoke`, a verb on the messages, as `author` invokes it to
 /// `part`, a part of the chat's messages held as a document (started with
-/// its genesis when empty), read against the chat record `chat` as the
+/// its genesis when empty), read against the chat resource `chat` as the
 /// window's chain reads it: for a tool or a host that carries the parts as
 /// documents itself.
 pub fn apply_part_doc(

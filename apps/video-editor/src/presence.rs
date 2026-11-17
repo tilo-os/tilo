@@ -2,7 +2,7 @@
 //! a clip, the timeline, one inspector field — on the presence channel, and the
 //! two halves that must agree about it.
 //!
-//! Presence is view state: it never reaches the actions or the record, so no
+//! Presence is view state: it never reaches the actions or the resource, so no
 //! undo stack holds "someone moved their playhead". A member has one point
 //! (their text caret while typing in a field, else their playhead) and one range
 //! (their selected clip), each published on the key of the place it is at, with

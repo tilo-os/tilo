@@ -236,7 +236,7 @@ pub struct HeadlessApp<A: ResourceApp> {
 }
 
 /// Stand in for the hosts keeping the records `A` declares kept by them
-/// ([`Records::kept_by`](super::Records::kept_by)), as the session does:
+/// ([`Resources::kept_by`](super::Resources::kept_by)), as the session does:
 /// each provider's settings sections are held over the profile's settings
 /// document `settings`, and what the window's controls invoke there is
 /// changed as `author`'s.
@@ -245,8 +245,8 @@ fn serve_kept<A: ResourceApp>(
     settings: &ui_core::storage::SettingsDocument,
     author: &str,
 ) {
-    let mut declared = super::Records::declaring();
-    A::records(&mut declared);
+    let mut declared = super::Resources::declaring();
+    A::resources(&mut declared);
     let mut providers: Vec<(&'static str, Vec<super::Declare>)> = Vec::new();
     for (provider, declare) in declared.into_kept() {
         match providers.iter_mut().find(|(known, _)| *known == provider) {
@@ -570,7 +570,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// A new window of the app on a fresh profile that already holds
     /// `documents`, each a record a window of the app kept in the test workspace
-    /// (`window_record`): how an app that now keeps one record per workspace
+    /// (`window_resource`): how an app that now keeps one record per workspace
     /// first opens where it used to keep one per window.
     pub fn with_window_resources(
         documents: &mut [tilo_resource::Doc],
@@ -824,7 +824,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Hand the records the app declares kept by other providers
-    /// ([`Records::kept_by`](super::Records::kept_by)) to `host`, in place of
+    /// ([`Resources::kept_by`](super::Resources::kept_by)) to `host`, in place of
     /// the test's own stand-in: a host under test (a page keeping the
     /// person's settings) is told the window's frame, the profile's settings
     /// document and the person at the window, and serves them as it does
@@ -833,8 +833,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
         host: impl FnOnce(&mut FrameHarness, &ui_core::storage::SettingsDocument, &str),
     ) {
-        let mut declared = super::Records::declaring();
-        A::records(&mut declared);
+        let mut declared = super::Resources::declaring();
+        A::resources(&mut declared);
         for (provider, _) in declared.into_kept() {
             self.harness.stop_serving_provider(provider);
         }

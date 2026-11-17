@@ -16,7 +16,7 @@ use crate::imported_folders::{ImportedNode, ImportedTree, NodeKind};
 
 const PAGE_SIZE: usize = 50;
 
-/// Borrow the personal record projection without copying it into a workspace document or a
+/// Borrow the personal resource projection without copying it into a workspace document or a
 /// second view-owned model.
 pub struct ViewState<'a> {
     pub bookmarks: &'a Bookmarks,

@@ -1,5 +1,5 @@
 //! The bridge live against a real Discord server: a workspace on an in-process
-//! relay with Chat and the guild record, the bridge bot installed from its
+//! relay with Chat and the guild resource, the bridge bot installed from its
 //! program file, and this binary started again as the `discord-worker`
 //! under the connector host. Ada's side is scripted through her own Chat
 //! changes; the Discord side through a webhook of its own, so what it posts
@@ -37,7 +37,7 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ::discord::record::{Guild, MappedKind, Ownership};
+use ::discord::guild::{Guild, MappedKind, Ownership};
 use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
@@ -213,7 +213,7 @@ impl Rest {
     }
 }
 
-/// The workspace, as the governor's copy holds its records.
+/// The workspace, as the governor's copy holds its resources.
 struct Workspace {
     workspaces: Workspaces,
     id: String,
@@ -318,7 +318,7 @@ impl Workspace {
         .await
     }
 
-    async fn message(&self, text: &str) -> Option<(String, chat::record::Message)> {
+    async fn message(&self, text: &str) -> Option<(String, chat::chat::Message)> {
         chat::messages::read_part(&self.part().await)
             .messages
             .iter()
@@ -637,7 +637,7 @@ async fn live(token: String, guild_id: String) -> usize {
     workspace
         .act(
             &workspace.owner,
-            chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
                 name: "made-in-tilo".parse().unwrap(),
                 category: None,
                 kind: None,

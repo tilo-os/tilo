@@ -1,7 +1,7 @@
 //! Pure data model for the Mail app.
 //!
 //! Everything here is IO-free, render-free logic. The widgets read these
-//! structs; the mailbox record ([`crate::resource::Mail`]) holds the
+//! structs; the mailbox resource ([`crate::resource::Mail`]) holds the
 //! *mutable* per-message state (read/unread, starred, current folder) and the
 //! draft. The immutable message corpus (headers + bodies +
 //! attachments) is hydrated from the server in the live app, or from the

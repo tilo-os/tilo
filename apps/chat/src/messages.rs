@@ -4,9 +4,9 @@
 //!
 //! A post goes to the head the device holds, or the part after it once the
 //! head is full ([`crate::parts::post_part`]); anything done to a message
-//! (an edit, a reaction, a reply in its thread, an agent's record of its
+//! (an edit, a reaction, a reply in its thread, an agent's log of its
 //! work on it) goes to the part that holds it. What a part's verb records
-//! from the workspace's chat record — who a mention names — is filled in where it
+//! from the workspace's chat resource — who a mention names — is filled in where it
 //! is invoked ([`Chained::prepare`]), so the verb reads only its own part
 //! and replays the same everywhere.
 //!
@@ -29,7 +29,7 @@ use ui::tilo_resource::{
 use crate::cause::{Cause, Starting};
 use crate::parts::{self, ChatPart};
 use crate::question::{Choice, Question};
-use crate::record::{
+use crate::chat::{
     Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting, ProviderStream, Revision,
     ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, author, reply_id_at, seconds,
 };
@@ -65,7 +65,7 @@ impl ChatPart {
     /// words, opening the message in the chat it was posted in.
     ///
     /// The window offers none of its own: messages are kept here, in the
-    /// record, so a device that never opened Chat still finds them, and one
+    /// resource, so a device that never opened Chat still finds them, and one
     /// that deletes a message has it gone from search with it.
     #[must_use]
     pub fn search(&self) -> Vec<SearchEntry> {
@@ -75,13 +75,13 @@ impl ChatPart {
                 let text = message.text.trim();
                 (!text.is_empty()).then(|| {
                     // Who wrote it and where are ids here: the workspace's
-                    // own record holds the names, so a row says them by what
+                    // own document holds the names, so a row says them by what
                     // those resources are called now.
                     let sender = IndexPerson {
                         name: String::new(),
                         anchor: item_resource_id::<Chat>(
                             "people",
-                            &crate::record::member_slot(&message.author),
+                            &crate::chat::member_slot(&message.author),
                         ),
                         agent: !message.author.is_person(),
                         identity: message.author.id().to_owned(),
@@ -119,7 +119,7 @@ impl ChatPart {
     /// Append a message to `channel` by the invoker `cx` names, at `ts`, refusing what no
     /// one should see: a reply to a reply or to another channel's message,
     /// an oversized body or an invalid attachment. Whether the channel takes
-    /// posts is the chat record's to say, where the post is invoked.
+    /// posts is the chat resource's to say, where the post is invoked.
     pub(crate) fn append(
         &mut self,
         cx: &ActionCx,
@@ -135,7 +135,7 @@ impl ChatPart {
         if posting
             .attachments
             .iter()
-            .any(|attached| !crate::record::valid_attached(attached))
+            .any(|attached| !crate::chat::valid_attached(attached))
         {
             return Err(Refusal::new(
                 "an attachment is a bounded address, words worth reading, or a file this workspace holds",
@@ -236,11 +236,11 @@ pub struct NewMessage {
     /// The run of the message it answers that it quotes, when it answers a span rather than the
     /// whole message: the words as they read, and where they stand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quoted: Option<crate::record::Quote>,
+    pub quoted: Option<crate::chat::Quote>,
     /// Its paragraphs as written, with their formatting
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Vec<ClipBlock>>,
-    /// What it carries besides its words: records and parts of records it
+    /// What it carries besides its words: resources and parts of records it
     /// shares, words it quotes, files another action put in the store
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<tilo_reference::Attached>,
@@ -260,7 +260,7 @@ pub struct NewMessage {
 }
 
 // The window's effects on a message (reveal it, read it) are offered on
-// each message the chain publishes, as on the record's other items.
+// each message the chain publishes, as on the resource's other items.
 #[ui::tilo_resource::resource(
     kind = "chat.messages",
     params = chat_part,
@@ -325,7 +325,7 @@ impl ChatPart {
     /// Posts a file another step handed over (a file from Files, a picture)
     /// under the name given, with words about it: a picture shows as one,
     /// anything else as a file to download.
-    #[action(incoming_message, prepare = crate::record::prepare_file_post)]
+    #[action(incoming_message, prepare = crate::chat::prepare_file_post)]
     pub fn post_file(
         &mut self,
         cx: &mut ActionCx,
@@ -380,9 +380,9 @@ impl ChatPart {
             Vec<crate::mention::Mention>,
         >,
     ) -> Result<(), Refusal> {
-        if !crate::record::valid_resource_at(&attached) {
+        if !crate::chat::valid_resource_at(&attached) {
             return Err(Refusal::new(
-                "the address of a record of an existing app is required",
+                "the address of a resource of an existing app is required",
             ));
         }
         let label = attached.reference.label.clone();
@@ -409,7 +409,7 @@ impl ChatPart {
     /// Share a window live.
     ///
     /// Post a window's resource so everyone in the channel sees it as it is
-    /// now, drawn by its own app from their own copy of its record, and opens
+    /// now, drawn by its own app from their own copy of its resource, and opens
     /// it with `access`: `view` (the default) or `edit`. Its sharer stops
     /// sharing it with `stop-sharing`.
     #[action(incoming_message)]
@@ -425,9 +425,9 @@ impl ChatPart {
             Vec<crate::mention::Mention>,
         >,
     ) -> Result<(), Refusal> {
-        if !crate::record::valid_resource_at(&attached) || attached.reference.span.is_some() {
+        if !crate::chat::valid_resource_at(&attached) || attached.reference.span.is_some() {
             return Err(Refusal::new(
-                "a window is shared as a whole resource of a record",
+                "a window is shared as a whole resource of a resource",
             ));
         }
         let label = attached.reference.label.clone();
@@ -751,7 +751,7 @@ impl ChatPart {
         if !unchanged {
             record.state = Some(Transition { state, since });
         }
-        // The run's working record of a failure, kept beside the words the
+        // The run's working resource of a failure, kept beside the words the
         // reply shows; a later update without one leaves it as it was.
         if work.detail.is_some() {
             record.failure_detail.clone_from(&work.detail);
@@ -1110,9 +1110,9 @@ fn takes_posts(chat: &Chat, channel: &Id) -> Result<(), String> {
     Ok(())
 }
 
-/// What a message records of who it mentions: what the chat's own record resolves from `text`
+/// What a message resources of who it mentions: what the chat's own document resolves from `text`
 /// and its body, and what the window wrote down before invoking it — the workspace's agents,
-/// whose names the chat's record does not list — each run once.
+/// whose names the chat's resource does not list — each run once.
 fn resolved_mentions(
     resolved: Vec<crate::mention::Mention>,
     written: Option<Vec<crate::mention::Mention>>,
@@ -1319,9 +1319,9 @@ impl ChatPart {
 /// The parts of the chat's messages a device holds, read as one timeline:
 /// every message oldest first, whichever part holds it.
 ///
-/// The order is the records', not a clock's ([`Self::iter`]): the parts by
+/// The order is the resources', not a clock's ([`Self::iter`]): the parts by
 /// number, each part's messages in the order the part holds them, which every
-/// device reads the same from the same records. Two devices that wrote
+/// device reads the same from the same resources. Two devices that wrote
 /// offline and took each other's posts in the opposite order read the same
 /// conversation in the same order, and so does a device that receives a
 /// message late. A post's whole-second time (`ts`) is only what the window
@@ -1379,8 +1379,8 @@ impl Messages {
         self.parts.last().map(|(index, _)| *index)
     }
 
-    /// Every message held, oldest first: the parts', each in the order its record holds it
-    /// (its order key, ties by id). Every device reads the same records as
+    /// Every message held, oldest first: the parts', each in the order its resource holds it
+    /// (its order key, ties by id). Every device reads the same resources as
     /// that order, so this is one total order, whatever order the changes
     /// arrived in.
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&Id, &Message)> + '_ {
@@ -1613,7 +1613,7 @@ impl Messages {
     }
 }
 
-/// The parts `doc` holds when it is a part's record, read as one: for a
+/// The parts `doc` holds when it is a part's resource, read as one: for a
 /// reader of one part document.
 #[must_use]
 pub fn read_part(doc: &tilo_actions::Doc) -> ChatPart {

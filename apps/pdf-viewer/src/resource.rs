@@ -189,7 +189,7 @@ impl PdfMarkup {
     /// Pin the source.
     ///
     /// The PDF bytes the markup is made against, from the content store. The first pin
-    /// wins: a record never re-targets its markup.
+    /// wins: a resource never re-targets its markup.
     #[action(external)]
     pub fn pin_source(
         &mut self,
@@ -215,7 +215,7 @@ impl PdfMarkup {
     /// Take over the PDF's own markup.
     ///
     /// The highlights, notes and replies, free text, ink and form values the bytes carry
-    /// become records, once per source, with ids derived from it.
+    /// become resources, once per source, with ids derived from it.
     #[action(external, writes = comments)]
     pub fn adopt_existing(
         &mut self,
@@ -350,7 +350,7 @@ impl PdfMarkup {
 
     /// Delete page.
     ///
-    /// Its markup stays in the record, hidden, and comes back with the page.
+    /// Its markup stays in the resource, hidden, and comes back with the page.
     /// The last page is never deleted.
     #[action(item = pages)]
     pub fn delete_page(&mut self, page: &Id) -> Result<(), Refusal> {
@@ -796,7 +796,7 @@ impl ResourceApp for PdfViewerShell {
     fn view(cx: &mut ViewCx<PdfMarkup>) -> Element {
         let content = cx.content().unwrap_or_else(crate::app::default_content);
         let app = if cx.mode() == RunMode::Past {
-            // A past version shows its markup's record, never a document:
+            // A past version shows its markup's resource, never a document:
             // History builds a view for every version it previews.
             PdfApp::past()
         } else if let Some(path) = cx.launch_arguments().first() {
@@ -895,7 +895,7 @@ fn reader_view(cx: &ViewCx<PdfMarkup>, mut app: PdfApp) -> Element {
     app.attach_open_here(cx.opener());
     // A window opened on no document offers the workspace's: a paper an agent
     // filled in is one click away, never a file chooser away. A window that
-    // shows one lists nothing, so the records are not read for it.
+    // shows one lists nothing, so the resources are not read for it.
     if cx.launch_arguments().is_empty() {
         app.attach_workspace_documents(
             cx.window_documents()

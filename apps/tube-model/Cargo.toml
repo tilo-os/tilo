@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license.workspace = true
-description = "Tube's shared library and watch history: the record types, their verbs and typed action arguments"
+description = "Tube's shared library and watch history: the resource types, their verbs and typed action arguments"
 
-# Tube's records, as the app that draws them reads them and as the app's verbs change them. It
+# Tube's resources, as the app that draws them reads them and as the app's verbs change them. It
 # has no window and no surface of its own; the app draws it.
 #
 # It depends on the resource layer and the action API, never the toolkit.

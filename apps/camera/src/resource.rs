@@ -1,10 +1,10 @@
-//! Camera as a resource: its record ([`Record`]: the recent capture handoff
+//! Camera as a resource: its resource ([`Camera`]: the recent capture handoff
 //! and the scan history) is the document; the shutter, devices and scanners
 //! are live rows the view publishes.
 //!
 //! Everything else is the window's [`CameraEffect`] vocabulary: the screen,
 //! mode and lens reveals and the capture preferences are offered on the
-//! camera, while shutter, record, camera chooser, code-scanner import and
+//! camera, while shutter, resource, camera chooser, code-scanner import and
 //! document-scanner effects ride the live rows the view publishes. Capture
 //! preferences are settings — the
 //! person's [`CapturePreferences`] and this device's
@@ -15,8 +15,8 @@ use ui::tilo_resource::Invoke;
 use ui::widget::Element;
 
 use crate::app::CameraApp;
+use crate::camera::{Camera, SharedCapture};
 use crate::model::{CaptureKind, CaptureMode, CapturePreferences, Facing, Timer};
-use crate::record::{Record, SharedCapture};
 
 /// The clock a screenshot reads instead of the machine's, in Unix seconds,
 /// so capture times and their relative labels come out the same every run.
@@ -60,11 +60,11 @@ pub(crate) fn sample_capture() -> SharedCapture {
     }
 }
 
-/// Framework app: the camera widget is the window over its [`Record`].
+/// Framework app: the camera widget is the window over its [`Camera`].
 pub struct CameraShell;
 
 impl ResourceApp for CameraShell {
-    type Resource = Record;
+    type Resource = Camera;
     const ID: &'static str = ui::apps::CAMERA;
     const TITLE: &'static str = "Camera";
     const TITLE_KEY: &'static str = "camera-app-title";
@@ -73,7 +73,7 @@ impl ResourceApp for CameraShell {
     /// A live window drives the cameras and scanners of this device and
     /// writes captures to its picture folder; a screenshot or a past version
     /// shows sample frames and reaches nothing.
-    fn view(cx: &mut ViewCx<Record>) -> Element {
+    fn view(cx: &mut ViewCx<Camera>) -> Element {
         if cx.mode().is_live() {
             let app = CameraApp::disk();
             let app = match cx.content() {
@@ -92,7 +92,7 @@ impl ResourceApp for CameraShell {
 
     /// The video scenario films; the timer scenario counts down from a
     /// three-second self-timer the person chose.
-    fn fixture(fixture: &mut Fixture<Record>) {
+    fn fixture(fixture: &mut Fixture<Camera>) {
         fixture.provide(ShotClock(SHOT_NOW));
         match fixture.scenario() {
             Some("video") => fixture.provide(CaptureMode::Video),
@@ -105,8 +105,8 @@ impl ResourceApp for CameraShell {
     }
 
     /// Every screenshot has a recent capture to hand off.
-    fn scenario(_name: Option<&str>) -> Vec<Invoke<Record>> {
-        vec![Record::REGISTER_CAPTURE.with(sample_capture())]
+    fn scenario(_name: Option<&str>) -> Vec<Invoke<Camera>> {
+        vec![Camera::REGISTER_CAPTURE.with(sample_capture())]
     }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
@@ -165,7 +165,7 @@ mod tests {
             assert!(surface.contains(id), "{id} is published: {surface}");
         }
         let published =
-            ui::tilo_resource::publish::<Record>("camera", "Camera", &Record::default());
+            ui::tilo_resource::publish::<Camera>("camera", "Camera", &Camera::default());
         assert_eq!(published.kind, "camera");
         assert!(
             !published
@@ -209,11 +209,11 @@ mod tests {
             app.settings::<CameraDevicePreferences>().get().resolution,
             crate::model::Resolution::R4K
         );
-        assert_eq!(app.versions().len(), versions, "no edit of the record");
+        assert_eq!(app.versions().len(), versions, "no edit of the resource");
     }
 
     #[test]
-    fn captures_stage_the_record_and_the_preferences() {
+    fn captures_stage_the_resource_and_the_preferences() {
         let mut viewfinder = TestApp::<CameraShell>::capture(None).unwrap();
         assert_eq!(viewfinder.harness().inspection().viewport, [1280, 800]);
         let recent = viewfinder

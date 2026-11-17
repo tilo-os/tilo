@@ -180,7 +180,7 @@ async fn get_text(client: &tilo_net::Client, url: &str) -> Result<Option<String>
     }
 }
 
-/// A `/api/get` record as lyrics, synced preferred.
+/// A `/api/get` resource as lyrics, synced preferred.
 #[cfg(feature = "live")]
 async fn lrclib_from_object(
     client: &tilo_net::Client,
@@ -191,7 +191,7 @@ async fn lrclib_from_object(
     };
     Ok(serde_json::from_str::<serde_json::Value>(&body)
         .ok()
-        .and_then(|json| lyrics_from_record(&json)))
+        .and_then(|json| lyrics_from_resource(&json)))
 }
 
 /// Search LRCLIB by track and artist: the best candidate's lyrics.
@@ -218,11 +218,11 @@ fn best_candidate(body: &str) -> Option<Lyrics> {
             .and_then(|v| v.as_str())
             .is_some_and(|s| !s.trim().is_empty())
         {
-            return lyrics_from_record(rec);
+            return lyrics_from_resource(rec);
         }
     }
     for rec in list {
-        if let Some(l) = lyrics_from_record(rec) {
+        if let Some(l) = lyrics_from_resource(rec) {
             return Some(l);
         }
     }
@@ -230,7 +230,7 @@ fn best_candidate(body: &str) -> Option<Lyrics> {
 }
 
 #[cfg(feature = "live")]
-fn lyrics_from_record(json: &serde_json::Value) -> Option<Lyrics> {
+fn lyrics_from_resource(json: &serde_json::Value) -> Option<Lyrics> {
     if let Some(synced) = json.get("syncedLyrics").and_then(|v| v.as_str())
         && !synced.trim().is_empty()
     {

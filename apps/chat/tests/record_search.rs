@@ -1,8 +1,8 @@
-//! The chat binary's record mode: what search finds in a record it reads on a
+//! The chat binary's resource mode: what search finds in a resource it reads on a
 //! device that never ran Chat's window.
 #![allow(
     clippy::expect_used,
-    reason = "a record that cannot be read fails the test loudly"
+    reason = "a resource that cannot be read fails the test loudly"
 )]
 
 use std::io::Write as _;
@@ -30,19 +30,19 @@ fn read(doc: &[u8]) -> Vec<serde_json::Value> {
     child
         .stdin
         .take()
-        .expect("the record is written to the reader")
+        .expect("the resource is written to the reader")
         .write_all(doc)
-        .expect("the reader takes its record");
+        .expect("the reader takes its resource");
     let out = child.wait_with_output().expect("the reader ends");
     assert!(
         out.status.success(),
-        "the record is read: {}",
+        "the resource is read: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     serde_json::from_slice(&out.stdout).expect("the reader answers entries")
 }
 
-/// The title of the entry opening the item `anchor` of a record, when the
+/// The title of the entry opening the item `anchor` of a resource, when the
 /// reader found one: an anchor names its kind, its field and its id.
 fn found(entries: &[serde_json::Value], anchor: &str) -> Option<String> {
     entries
@@ -64,7 +64,7 @@ fn text_hit(entries: &[serde_json::Value], text: &str) -> Option<String> {
 }
 
 #[test]
-fn a_conversation_and_its_messages_are_found_from_the_records() {
+fn a_conversation_and_its_messages_are_found_from_the_resources() {
     let mut workspace = Workspace::demo().expect("the demo workspace holds");
     let posted = workspace
         .say(
@@ -116,7 +116,7 @@ fn a_conversation_and_its_messages_are_found_from_the_records() {
 }
 
 #[test]
-fn an_agent_is_found_from_the_workspace_record() {
+fn an_agent_is_found_from_the_workspace_resource() {
     let mut agents = Replica::<WorkspaceAgents>::new().as_author("u_ada");
     agents
         .apply(
@@ -160,7 +160,7 @@ fn an_agent_is_found_from_the_workspace_record() {
 }
 
 #[test]
-fn a_draft_is_found_from_the_persons_own_record() {
+fn a_draft_is_found_from_the_persons_own_resource() {
     let mut drafts = Replica::<ChatDrafts>::new().as_author("u_ada");
     let written = ChatDrafts::paths()
         .drafts
@@ -224,6 +224,6 @@ fn a_deleted_message_is_not_found() {
     assert_eq!(
         text_hit(&messages, "the wheel is loose again"),
         None,
-        "what the record no longer holds is not found"
+        "what the resource no longer holds is not found"
     );
 }

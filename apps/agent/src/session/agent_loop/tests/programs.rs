@@ -44,7 +44,7 @@ fn surface(peer: u64, app: &str, actions: Vec<ExportedAction>) -> BrokerActionSu
     }
 }
 
-/// Board's and Views' hosts, Views' `answer`, and the tracker's step records.
+/// Board's and Views' hosts, Views' `answer`, and the tracker's step resources.
 pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
     let source = || {
         vec![ActionParam::required(
@@ -177,7 +177,7 @@ fn recorded(sent: &[CollabRequest], action: &str) -> Vec<Value> {
 tilo_test_env::scenario! {
     #[allow(
         clippy::too_many_lines,
-        reason = "one task end to end: its programs, their records, and the view it answers with"
+        reason = "one task end to end: its programs, their resources, and the view it answers with"
     )]
     fn a_task_works_in_programs_and_refuses_what_is_not_a_view;
 
@@ -285,7 +285,7 @@ tilo_test_env::scenario! {
         assert_eq!(steps.len(), 3, "{steps:?}");
         assert_eq!(steps[0]["outcome"], "refused", "{steps:?}");
         assert_eq!(steps[0]["resource"], "tilo.program");
-        // A previewed program names the record it read, and one that changed
+        // A previewed program names the resource it read, and one that changed
         // something names the action it ran.
         assert_eq!(steps[1]["outcome"], "applied", "{steps:?}");
         assert_eq!(steps[1]["resource"], format!("tl:{BOARD}:root/cards:c1"));

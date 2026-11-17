@@ -1,7 +1,7 @@
 //! Pure data model for the Camera app.
 //!
 //! Everything here is plain data + pure logic — no rendering, no document,
-//! no IO. The record lives in [`crate::record`]; the widget in
+//! no IO. The resource lives in [`crate::camera`]; the widget in
 //! [`crate::app`]. Keeping the model pure makes it unit-testable without a
 //! GPU or an event loop.
 

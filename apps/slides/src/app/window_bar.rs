@@ -11,7 +11,9 @@ use ui::window_toolbar::{
 };
 
 use super::editor_chrome::insert_tools;
-use super::{DeckRecord, ElementKind, Hit, Mode, SlideZoom, SlidesApp, SlidesEffect, tr, tr_args};
+use super::{
+    DeckResource, ElementKind, Hit, Mode, SlideZoom, SlidesApp, SlidesEffect, tr, tr_args,
+};
 
 pub(crate) const EDITOR: &str = "slides.view:editor";
 pub(crate) const OVERVIEW: &str = "slides.view:overview";
@@ -24,12 +26,12 @@ enum Command {
 }
 
 pub(super) struct Bar {
-    actions: BarActions<DeckRecord>,
+    actions: BarActions<DeckResource>,
     commands: BarCommands<Command>,
 }
 
 impl Bar {
-    pub(super) fn new(dispatch: &Dispatcher<DeckRecord>) -> Self {
+    pub(super) fn new(dispatch: &Dispatcher<DeckResource>) -> Self {
         Self {
             actions: BarActions::new(dispatch.clone()),
             commands: BarCommands::new(),

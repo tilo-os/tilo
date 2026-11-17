@@ -454,7 +454,7 @@ chat-effects-select-input = Mikrofon wählen
 
 ## What the app is called in a window and in the launcher
 chat-app-title = Chat
-## What the records are called, and the actions on them
+## What the resources are called, and the actions on them
 chat-drafts = Chat-Entwürfe
 chat-workspace = Chat
 chat-drafts-start-draft = Entwurf beginnen

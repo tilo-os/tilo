@@ -48,7 +48,7 @@ pub(crate) fn leaves_moved_out(
 /// [`kept`] lists.
 macro_rules! sections {
     ($($section:ty),* $(,)?) => {
-        pub fn declare(records: &mut ui::framework::Records<'_>) {
+        pub fn declare(records: &mut ui::framework::Resources<'_>) {
             records$(.settings::<$section>())*;
         }
 

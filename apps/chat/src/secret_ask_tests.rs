@@ -161,7 +161,7 @@ fn only_the_person_asked_answers_and_the_answer_carries_the_reference() {
 /// The person asked sees the protected field under the question. What they
 /// type goes to their vault's host with the kind and the places the question
 /// names, and to nothing else: the question is answered with the reference
-/// the vault gave, their words say so, and the record holds nothing typed.
+/// the vault gave, their words say so, and the resource holds nothing typed.
 #[test]
 fn what_is_typed_goes_to_the_vault_and_the_question_is_answered_with_its_reference() {
     let vault = Arc::new(TestHost::new().completing(|_| tilo_actions::ActionOutput {
@@ -223,7 +223,7 @@ fn what_is_typed_goes_to_the_vault_and_the_question_is_answered_with_its_referen
     );
     for kept in mounted_rows(&mut app, CHANNEL) {
         let kept = format!("{kept:?}");
-        assert!(!kept.contains(TYPED), "the record holds what was typed");
+        assert!(!kept.contains(TYPED), "the resource holds what was typed");
     }
 }
 

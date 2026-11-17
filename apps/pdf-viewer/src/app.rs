@@ -385,7 +385,7 @@ pub struct PdfApp {
     has_document: bool,
     record_source: Option<crate::markup::PinnedSource>,
     reopen_requested: bool,
-    /// Where the record's pinned source is being fetched from, and the arrivals count
+    /// Where the resource's pinned source is being fetched from, and the arrivals count
     /// last checked; looked for again when that moves, never on a timer.
     source_wait: Option<(tilo_content::ContentState, u64)>,
     staged_opening: bool,
@@ -448,7 +448,7 @@ pub struct PdfApp {
     sig_strokes: Vec<Vec<(f64, f64)>>,
     sig_stroke: Option<Vec<(f64, f64)>>,
     /// The person's own signature record: it follows them to their other devices and
-    /// never reaches a member. Absent where the host keeps no person records.
+    /// never reaches a member. Absent where the host keeps no person resources.
     signature: Option<ui::framework::PersonResource<crate::signature::SignatureProfile>>,
     signature_revision: Option<u64>,
     sig_pad_rect: Rect,
@@ -3431,7 +3431,7 @@ impl PdfApp {
     /// Submit a replacement to the PDF owner: filesystem reads and `PDFium`
     /// parsing never run in `sync()` or an input handler. On success the
     /// view resets to page one at fit-page and the reader switches to that
-    /// document's own markup record; on failure the empty state surfaces
+    /// document's own markup resource; on failure the empty state surfaces
     /// the reason.
     fn queue_worker_open(&mut self, path: &std::path::Path) {
         let Some(handle) = self.raster_handle.as_ref() else {
@@ -4910,7 +4910,7 @@ impl PdfApp {
     /// # Errors
     /// Returns why the effect cannot run now.
     /// Open the PDF at `path`, or the one the person chooses, in this
-    /// window: on its own markup record, which the host shows in place of
+    /// window: on its own markup resource, which the host shows in place of
     /// this one, answered once it does or why it could not. Where files
     /// have no paths the chosen bytes open here, in a window that marks up
     /// nothing yet.
@@ -5189,7 +5189,7 @@ impl ui::widget::Findable for PdfApp {
 #[cfg(test)]
 mod empty_state_tests;
 #[cfg(test)]
-mod records_tests;
+mod resources_tests;
 
 #[cfg(test)]
 mod adopt_tests;

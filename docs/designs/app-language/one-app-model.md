@@ -56,10 +56,10 @@ drawing goes through `ui.Drawing` (components.md §4.1).
 | Deep links and open-at-resource handled inside the app | `open(r)` places `r` with its default view, beside where it was asked, for every app. |
 
 **Who the system is, per platform.** On Tilo, the shell draws windows and places, and the
-session's document host keeps the records. On another platform (macOS, Windows, the web), the
+session's document host keeps the resources. On another platform (macOS, Windows, the web), the
 same runtime is compiled into the app: it opens the platform's window, draws the same chrome
 the shell would draw (each view's bar with the resource's actions, and navigation between
-resources), and hosts the records itself. The app's code is the same on both. It never draws
+resources), and hosts the resources itself. The app's code is the same on both. It never draws
 chrome and never opens a window.
 
 ## 4. Storage, actions, identity, permissions
@@ -75,17 +75,17 @@ This design adds nothing there.
 
 What a Rust app's runner needs of storage is two things: **the state of its
 resources**, as its model types read them, and **a way to submit actions** on
-them, with the arguments a control supplies. Both are the record the host
+them, with the arguments a control supplies. Both are the resource the host
 opened for the window (`TypedRoot::sync` reads it, `Edits::apply` changes it),
-for every launch: a window keeps its own record today, whichever host started
+for every launch: a window keeps its own document today, whichever host started
 it.
 
 **Where an app's model will run.** Not in the session beside the window, and
 not on a second code path in the app: the model and verbs run as an instance
 kind of the per-workspace host, and every window of the app, the person's and
 an agent's alike, reaches that instance the way a window reaches any other
-host. Until that instance kind exists, the window's own record is the only
-path, and there is no launch an app can be told to take that keeps no record
+host. Until that instance kind exists, the window's own document is the only
+path, and there is no launch an app can be told to take that keeps no resource
 of its own.
 
 ## 5. What a Rust developer writes

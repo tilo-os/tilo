@@ -392,17 +392,17 @@ pub struct NotesApp {
     /// this through taffy node ids; it's a flex sub-container whose
     /// rect we never need outside of layout. Tracked locally for
     /// completeness.
-    /// Last framework-owned durability projection; querying it never touches the record.
+    /// Last framework-owned durability projection; querying it never touches the resource.
     resource_save_status: ui::resource::ResourceSaveStatus,
     canonical_assets: Arc<std::sync::RwLock<HashMap<String, Vec<u8>>>>,
     /// Pasted or dropped images made smaller off the frame, to insert.
     shrunk_images: Arc<std::sync::Mutex<Vec<ShrunkImage>>>,
     canonical_asset_manifest: ui::tilo_resource::Map<ui::tilo_resource::Bytes>,
     /// Some referenced image's bytes are still on their way from a
-    /// member's device: the record content arrival count when the
+    /// member's device: the resource content arrival count when the
     /// notebook was last read for them. Read again once it has moved.
     canonical_assets_waiting: Option<u64>,
-    /// The read of pictures the window does not hold yet, and the record
+    /// The read of pictures the window does not hold yet, and the resource
     /// content arrival count it started at.
     asset_reads: asset_reads::AssetReads,
     asset_read_looked: u64,
@@ -495,7 +495,7 @@ pub struct NotesApp {
     prepared_local_focus: Option<crate::local_view::PreparedFocus>,
     // The first measured width resolves the saved drawer and Sidebar intent once.
     pending_responsive_view: Option<(bool, bool)>,
-    /// Whether the record's changes are on disk, as the framework reports it.
+    /// Whether the resource's changes are on disk, as the framework reports it.
     save_status: Option<ui::LocalState<ui::resource::ResourceSaveStatus>>,
     /// A note to open once the notebook holds it.
     open_when_present: Option<PageId>,
@@ -653,7 +653,7 @@ impl NotesApp {
 
     /// The workspace a restored view shows of `doc`, after the one the
     /// window shows: notes that did not change keep what it read of them.
-    /// Hosted, the framework read the notebook when it opened the record and
+    /// Hosted, the framework read the notebook when it opened the resource and
     /// follows `doc` since: the restore takes that state, reading only what
     /// changed after it, rather than every note a second time. A peer's
     /// change that arrived in between is in it, because the live notebook is
@@ -851,7 +851,7 @@ impl NotesApp {
         app
     }
 
-    /// Recompute the status bar snapshot from the workspace and the record's
+    /// Recompute the status bar snapshot from the workspace and the resource's
     /// save state.
     /// Cheap — called from `handle_event`'s tail and after every page-tree
     /// submission. The status bar diffs internally so a no-op
@@ -1668,8 +1668,8 @@ impl NotesApp {
         app
     }
 
-    /// Show whether the record's changes are on disk as `status` reports it:
-    /// the framework's view of the record writer.
+    /// Show whether the resource's changes are on disk as `status` reports it:
+    /// the framework's view of the resource writer.
     pub fn follow_save_status(&mut self, status: ui::LocalState<ui::resource::ResourceSaveStatus>) {
         self.save_status = Some(status);
     }
@@ -2263,7 +2263,7 @@ impl NotesApp {
 
     /// Route a note-header tag activation through the durable resource
     /// operation. It is intentionally a view operation (each member may
-    /// browse a different tag) but still validates the keyed tag record in the
+    /// browse a different tag) but still validates the keyed tag resource in the
     /// canonical document before selecting a collection.
     fn drain_tag_open(&mut self) {
         let Some(tag) = self.main.take_tag_open() else {
@@ -4228,7 +4228,7 @@ mod tests {
 
     /// The dispatcher the framework attaches to the notebook surface, for a
     /// test that drives `NotesApp` over a document of its own. The live
-    /// notebook follows the framework's record, so a surface over another
+    /// notebook follows the framework's resource, so a surface over another
     /// document is never presented and never reads it.
     fn framework_dispatcher() -> (
         ui::framework::Dispatcher<crate::resource::Notebook>,
@@ -4349,7 +4349,7 @@ mod tests {
 
     /// A save that fails holds its notice in the window's bar, "Try again"
     /// beside it, for as long as the failure stands; "Try again" recovers
-    /// the actual record writer (not a latch the test consumes after the
+    /// the actual resource writer (not a latch the test consumes after the
     /// production owner took it), and the save that succeeds takes the
     /// failure down.
     #[test]
@@ -4362,15 +4362,15 @@ mod tests {
         let mut host =
             ui::prelude::TestApp::<crate::NotesShell>::open_data_dir(profile.path()).unwrap();
         host.flush().unwrap();
-        // Notes keeps one record per workspace: the workspace's own document.
+        // Notes keeps one resource per workspace: the workspace's own document.
         assert!(host.record().is_package_primary());
         let workspaces = profile.path().join("so.tilo.notes").join("workspaces");
         let directory = std::fs::read_dir(&workspaces)
-            .expect("observe the real record directory")
+            .expect("observe the real resource directory")
             .map(|entry| entry.unwrap().path())
             .next()
             .expect("the profile keeps the workspace it opened");
-        assert!(directory.is_dir(), "observe the real record directory");
+        assert!(directory.is_dir(), "observe the real resource directory");
         let backup = profile.path().join("held-record");
         std::fs::rename(&directory, &backup).unwrap();
         // A regular file in place of this test's directory makes writes fail

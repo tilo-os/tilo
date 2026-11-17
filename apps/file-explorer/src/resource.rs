@@ -922,7 +922,7 @@ impl ResourceApp for FileExplorerShell {
         title: "Selected file",
         preview: crate::framework_history::preview,
     });
-    /// The person's own workspace tree: the record the filesystem daemon
+    /// The person's own workspace tree: the resource the filesystem daemon
     /// writes as files are created, renamed, moved and deleted, and the one
     /// the person's other devices and a shared workspace's members hold. The
     /// window shows it through the mount, and keeps it as theirs.
@@ -1198,7 +1198,7 @@ fn attach_files(cx: &ViewCx<FileExplorer>, files: &mut FilesState) {
     files.attach_framework(
         cx.dispatcher(),
         cx.settings::<FilesPreferences>(),
-        cx.person::<crate::recent::RecentRecord>(),
+        cx.person::<crate::recent::RecentResource>(),
         cx.device().map(str::to_owned),
         ops,
     );

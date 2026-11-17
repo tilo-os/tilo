@@ -76,7 +76,7 @@ fn flooded_workspace() -> Replica {
     chat::demo::apply_as(
         &mut doc,
         OWNER,
-        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+        chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
             name: "general".parse().unwrap(),
             category: None,
             kind: None,
@@ -123,7 +123,7 @@ fn flooded_workspace() -> Replica {
     chat::demo::apply_as(
         &mut doc,
         ADA,
-        chat::Chat::REPORT_MESSAGE.with(chat::record::chat::ReportMessage {
+        chat::Chat::REPORT_MESSAGE.with(chat::chat::chat::ReportMessage {
             message: spam,
             author: MemberId::person(MALLORY),
             reason: "spam".parse().unwrap(),
@@ -268,7 +268,7 @@ fn a_report_restricts_through_the_workspace_and_undoes_the_flood_as_the_bot() {
     assert!(
         state
             .people
-            .find(&chat::record::member_slot(&MemberId::person(MALLORY)))
+            .find(&chat::chat::member_slot(&MemberId::person(MALLORY)))
             .is_some(),
         "she keeps her place in the roster"
     );

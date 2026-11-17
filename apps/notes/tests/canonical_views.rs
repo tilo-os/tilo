@@ -14,8 +14,8 @@ use ui::{
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn owned_views_restore_selection_and_clamp_utf8_offsets() {
-    // Catches reopening the default page, or projecting old text over the latest record.
-    eprintln!("phase owned_close_restores_each_instances_selected_page_from_latest_record");
+    // Catches reopening the default page, or projecting old text over the latest resource.
+    eprintln!("phase owned_close_restores_each_instances_selected_page_from_latest_resource");
     {
         let f = NotebookFixture::rich();
         let checkout = notebook(&f);
@@ -70,7 +70,7 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
         let revision_before = revision(&f, &checkout);
         let component = restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved));
         let mut a = FrameHarness::from_component(component, (1000, 700), runner_inputs()).unwrap();
-        // A window presented again shows the record's title and gives the
+        // A window presented again shows the resource's title and gives the
         // keyboard back to the note's body: a title edit is the person's own
         // gesture, never one a presentation restores for them.
         a.expect(

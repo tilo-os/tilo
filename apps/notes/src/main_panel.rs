@@ -732,7 +732,7 @@ impl MainPanel {
         {
             self.scroll_by_page.insert(old, self.scroll_y);
         }
-        // Binding the page already open again (its record re-read, a reveal)
+        // Binding the page already open again (its resource re-read, a reveal)
         // keeps the caret where the person left it: a rebind that put it back
         // at the start would make the next keystroke land before the last.
         let same_page = self.page_id == Some(page);

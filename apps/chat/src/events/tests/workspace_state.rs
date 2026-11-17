@@ -295,7 +295,7 @@ tilo_test_env::scenario! {
                 .iter()
                 .any(|person| person.id == MemberId::agent("planner")
                     && person.name == "Planner"),
-            "the workspace's agent record names it for the @ list"
+            "the workspace's agent resource names it for the @ list"
         );
         // Typing the name opens the list, and a pick writes the agent's name: what the page's
         // composer draws is this same list.
@@ -477,7 +477,7 @@ tilo_test_env::scenario! {
                 .find(|(u, _)| u.id == *id)
                 .map(|(u, _)| u.status)
         };
-        // Without a workspace the record's word stands.
+        // Without a workspace the resource's word stands.
         assert_eq!(status(&app, &others[1]), Some(Presence::Online));
         // The workspace knows the first person is here; the second has left.
         app.workspace_names.insert(others[0].clone(), "Here".into());
@@ -570,7 +570,7 @@ fn a_private_workspace_keeps_collaboration_controls_out_of_the_header() {
     let mut doc = AutoCommit::new();
     crate::testing::starter(&mut doc, model::ME, "You", "QD");
     let mut app = ChatApp::new_ephemeral();
-    app.active_channel = crate::record::CHAT_CHANNEL.into();
+    app.active_channel = crate::chat::CHAT_CHANNEL.into();
     app.thread_open = None;
     app.reload(&doc);
     render_frame(&mut app, 1280.0, 720.0);

@@ -995,7 +995,7 @@ async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
                     doc,
                     "operator",
                     chat::Chat::CREATE_CHANNEL_WITH_ID.with(
-                        chat::record::chat::CreateChannelWithId {
+                        chat::chat::chat::CreateChannelWithId {
                             id: "c_general".into(),
                             name: "general".parse().expect("a channel name"),
                             category: None,
@@ -1127,7 +1127,7 @@ async fn every_message_a_long_conversation_lists_is_read_at_its_path() {
                     doc,
                     "operator",
                     chat::Chat::CREATE_CHANNEL_WITH_ID.with(
-                        chat::record::chat::CreateChannelWithId {
+                        chat::chat::chat::CreateChannelWithId {
                             id: "c_general".into(),
                             name: "general".parse().expect("a channel name"),
                             category: None,

@@ -2,8 +2,8 @@
 //! fills with a field edit on `form_values/<name>`, with what that edit
 //! takes.
 //!
-//! The fields come from the PDF the record marks up (they are the file's,
-//! not the record's); their values are the record's where it holds one,
+//! The fields come from the PDF the resource marks up (they are the file's,
+//! not the resource's); their values are the resource's where it holds one,
 //! else the file's own, as the page draws them.
 
 use std::collections::BTreeMap;
@@ -15,10 +15,10 @@ use crate::markup::{PagePlanEntry, PdfMarkup};
 use crate::model::{FormEntry, FormFieldKind, FormFieldRow, FormFields};
 
 impl PdfApp {
-    /// The form fields of the PDF the record marks up, with the values
+    /// The form fields of the PDF the resource marks up, with the values
     /// `markup` holds for them: the fields this window's PDF owner read
     /// when it opened the document, the ones its pages draw; else what the
-    /// in-process engine reads of the record's PDF
+    /// in-process engine reads of the resource's PDF
     /// ([`Self::reading_document`]), so a caller with no screen gets the
     /// form too. A PDF whose form lists no field is refused, never answered
     /// as having none.

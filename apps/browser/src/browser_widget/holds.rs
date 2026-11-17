@@ -35,7 +35,7 @@
 //! page as a picture kept in the workspace's content store ([`Held::picture`]). The picture
 //! is kept only for a hold that waits.
 //!
-//! The tab's record says all of it ([`crate::page_resource`]). The engine sets down that a
+//! The tab's resource says all of it ([`crate::page_resource`]). The engine sets down that a
 //! departure was held, under the actor whose action reached it, and how it ended. It cannot
 //! know who answered, so each answer the window sends says ([`AnsweredBy`]):
 //!
@@ -457,7 +457,7 @@ impl BrowserWidget {
     /// Who answers a hold when the action API admitted the answer for
     /// `invoker`: that actor, by the name the tab keeps their page actions
     /// under, and the person at the window for nobody. The engine sets the
-    /// answer down under that name, so the tab's record is told whose name
+    /// answer down under that name, so the tab's resource is told whose name
     /// it is.
     pub(crate) fn answering(&mut self, invoker: Option<&ActionInvoker>) -> AnsweredBy {
         let actor = invoker.and_then(|invoker| PageActor::of(&invoker.acting.by));
@@ -498,7 +498,7 @@ impl BrowserWidget {
     }
 
     /// Let `key` leave, or drop it and leave the page as it was. `by` is who answered, which
-    /// the engine sets down in the tab's record.
+    /// the engine sets down in the tab's resource.
     pub(crate) fn release_held(&self, key: HeldKey, allow: bool, by: AnsweredBy) {
         self.engine.send(match key {
             // A download the page offers is the engine's own question, answered as a

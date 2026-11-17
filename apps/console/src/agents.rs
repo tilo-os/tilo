@@ -12,7 +12,7 @@ use ui::widget::{
 };
 
 use crate::effects::ConsoleEffect;
-use crate::{Console, Nav, Reads, Records, ago, faced, page, tr, trf};
+use crate::{Console, Nav, Reads, Resources, ago, faced, page, tr, trf};
 
 /// What Agents reads: every session in every workspace.
 pub(crate) fn query() -> wire::SessionsQuery {
@@ -25,7 +25,7 @@ pub(crate) fn query() -> wire::SessionsQuery {
 pub(crate) const SESSION_KIND: &str = "console.session";
 
 /// A session as the type its rows are items of: what a published session says it is, so search
-/// names it as it names a record's item ("sessions of Console") instead of taking the app's
+/// names it as it names a resource's item ("sessions of Console") instead of taking the app's
 /// word for it.
 pub(crate) struct Session;
 
@@ -182,7 +182,7 @@ pub(crate) fn unknown(seen: &Seen) -> Element {
     page(vec![Box::new(state.with_id("console-session-missing"))])
 }
 
-/// Every session the record lets show: working ones first, then the rest.
+/// Every session the resource lets show: working ones first, then the rest.
 fn list(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen) -> Element {
     let filter = cx.value(Console::clone).get();
     let mut parts = vec![filters(cx, seen, &filter)];
@@ -190,7 +190,7 @@ fn list(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen) -> Element {
         .history
         .sessions
         .iter()
-        .filter(|session| crate::record::shows(&filter, session))
+        .filter(|session| crate::console::shows(&filter, session))
         .collect();
     if shown.is_empty() {
         let state = if seen.history.pending {
@@ -332,7 +332,7 @@ pub(crate) fn now_line(now: &wire::Now) -> String {
     }
 }
 
-/// A dropdown of `options` (value, label) bound to `field` of the record, each option under
+/// A dropdown of `options` (value, label) bound to `field` of the resource, each option under
 /// the heading its group carries in the open list.
 fn picker(
     cx: &ViewCx<Console>,
@@ -445,7 +445,7 @@ pub(crate) fn inspect(
     seen: &Seen,
     session: &wire::AgentSession,
 ) -> Element {
-    let records = Records::of(cx);
+    let records = Resources::of(cx);
     let mut facts = vec![Fact::with_icon(Icon::Bot, session.agent.name.clone())];
     if let Some(starter) = starter(&session.agent) {
         facts.push(Fact::with_icon(Icon::User, starter));
@@ -486,7 +486,7 @@ pub(crate) fn inspect(
             else {
                 return actions(cx, &nav, &shown, open, None);
             };
-            let read = Records::of(cx)
+            let read = Resources::of(cx)
                 .follow_history::<wire::SessionOutput>(wire::SESSION_OUTPUT, &session);
             let (nav, shown) = (nav.clone(), shown.clone());
             Box::new(cx.arriving(&read.answer(), move |cx, whole| {
@@ -498,7 +498,7 @@ pub(crate) fn inspect(
 }
 
 /// Stop, Take over and Undo, as the session allows them.
-pub(crate) fn commands(records: &Records, seen: &Seen, session: &wire::AgentSession) -> Element {
+pub(crate) fn commands(records: &Resources, seen: &Seen, session: &wire::AgentSession) -> Element {
     let mut row = Row::new().with_rhythm(Rhythm::Related);
     if seen.open(session).is_some() && seen.working(session) {
         let (records, seen, session) = (records.clone(), seen.clone(), session.clone());
@@ -538,7 +538,7 @@ pub(crate) fn commands(records: &Records, seen: &Seen, session: &wire::AgentSess
     Box::new(row)
 }
 
-/// Where taking `session` over opens: the record of its last action, else its workspace in the
+/// Where taking `session` over opens: the resource of its last action, else its workspace in the
 /// full desktop.
 fn take_over_target(
     seen: &Seen,
@@ -555,7 +555,7 @@ fn take_over_target(
 }
 
 /// End `session` now, keeping its grant, when it is working.
-pub(crate) fn stop(records: &Records, seen: &Seen, session: &wire::AgentSession) -> bool {
+pub(crate) fn stop(records: &Resources, seen: &Seen, session: &wire::AgentSession) -> bool {
     match seen.open(session).filter(|_| seen.working(session)) {
         Some(open) => {
             records.server(mcp_server::STOP, &open);
@@ -566,7 +566,7 @@ pub(crate) fn stop(records: &Records, seen: &Seen, session: &wire::AgentSession)
 }
 
 /// Take `session` over: stop the agent and open where it was working.
-pub(crate) fn take_over(records: &Records, seen: &Seen, session: &wire::AgentSession) {
+pub(crate) fn take_over(records: &Resources, seen: &Seen, session: &wire::AgentSession) {
     stop(records, seen, session);
     match take_over_target(seen, session) {
         Some(Ok(target)) => records.history(wire::OPEN, &target),
@@ -576,7 +576,7 @@ pub(crate) fn take_over(records: &Records, seen: &Seen, session: &wire::AgentSes
 }
 
 /// Undo all of `session`, when the history lets it.
-pub(crate) fn undo_session(records: &Records, session: &wire::AgentSession) -> bool {
+pub(crate) fn undo_session(records: &Resources, session: &wire::AgentSession) -> bool {
     if session.undo_blocked.is_some() {
         return false;
     }
@@ -601,7 +601,7 @@ fn actions(
     open: Option<usize>,
     full: Option<(usize, &wire::SessionOutput)>,
 ) -> Element {
-    let records = Records::of(cx);
+    let records = Resources::of(cx);
     let mut rows: Vec<Element> = Vec::new();
     for (index, action) in session.actions.iter().enumerate() {
         let target = action.view.target();
@@ -662,7 +662,7 @@ fn actions(
 fn action_view(
     cx: &ViewCx<Console>,
     nav: &Nav,
-    records: &Records,
+    records: &Resources,
     index: usize,
     action: &wire::SessionAction,
     whole: Option<&wire::SessionOutput>,
@@ -806,7 +806,7 @@ struct Output {
 }
 
 /// A command's output: its last lines, or every line once the person asks, read from the
-/// session's record as the history serves it.
+/// session's resource as the history serves it.
 fn output_part(
     shown: &LocalState<Option<usize>>,
     whole: Option<&wire::SessionOutput>,
@@ -854,7 +854,7 @@ fn output_part(
     )
 }
 
-/// The session record of the command at `index` of `session`, when it printed more than its view
+/// The session resource of the command at `index` of `session`, when it printed more than its view
 /// shows.
 fn more_of(session: &wire::AgentSession, index: usize) -> Option<wire::CommandExecution> {
     match &session.actions.get(index)?.view {
@@ -869,7 +869,7 @@ fn more_of(session: &wire::AgentSession, index: usize) -> Option<wire::CommandEx
 
 /// What the action's changes did, as the history compares the workspace either side of
 /// them: each field before and after, or else each change in a line.
-fn compared(cx: &ViewCx<Console>, records: &Records, range: &wire::Range) -> Element {
+fn compared(cx: &ViewCx<Console>, records: &Resources, range: &wire::Range) -> Element {
     let read = records.follow_history::<wire::Detail>(
         wire::DETAIL,
         &wire::DetailQuery {

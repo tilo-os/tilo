@@ -822,7 +822,7 @@ impl CodeApp {
             } else {
                 // An explicitly selected language is durable metadata and wins
                 // over extension inference; the extension is only a fallback
-                // for legacy imported records.
+                // for legacy imported resources.
                 let language = language_from_label(&file.language)
                     .unwrap_or_else(|| Language::from_path(&file.name));
                 self.session.project.adopt_collaborative_file(
@@ -892,8 +892,8 @@ impl CodeApp {
     }
 
     fn retain_diagnostics(&mut self, cache: DiagnosticsCache) {
-        const RECORD_BUDGET: usize = 16_384;
-        if cache.local.len() > RECORD_BUDGET {
+        const RESOURCE_BUDGET: usize = 16_384;
+        if cache.local.len() > RESOURCE_BUDGET {
             return;
         }
         self.inactive_diagnostics
@@ -905,7 +905,7 @@ impl CodeApp {
                 .iter()
                 .map(|cache| cache.local.len())
                 .sum::<usize>()
-                > RECORD_BUDGET
+                > RESOURCE_BUDGET
         {
             self.inactive_diagnostics.remove(0);
         }

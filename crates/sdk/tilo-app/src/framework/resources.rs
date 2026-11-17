@@ -1,4 +1,4 @@
-//! Records a view edits besides the one its app shows: the person's own
+//! Resources a view edits besides the one its app shows: the person's own
 //! record of a resource ([`PersonResource`](super::PersonResource)) and a typed
 //! settings section ([`Setting`](super::Setting)).
 //!
@@ -438,7 +438,7 @@ pub(crate) mod sealed {
 /// committed surface lists it. The person's own shared records are declared
 /// with the app instead
 /// ([`ResourceApp::PERSON_RESOURCES`](super::ResourceApp::PERSON_RESOURCES)).
-pub struct Records<'a> {
+pub struct Resources<'a> {
     /// The window's storage, where they are opened; `None` while the app's
     /// records are only declared ([`Self::declaring`]).
     storage: Option<&'a ViewStorage>,
@@ -465,7 +465,7 @@ pub struct Records<'a> {
 }
 
 /// A declaration of records ([`ResourceApp::records`](super::ResourceApp::records)).
-pub type Declare = fn(&mut Records<'_>);
+pub type Declare = fn(&mut Resources<'_>);
 
 /// Where a host without a window holds the settings sections declared.
 pub(crate) struct Sections {
@@ -479,7 +479,7 @@ pub(crate) struct Sections {
     pub(crate) apis: Vec<Rc<super::section::SectionApi>>,
 }
 
-impl<'a> Records<'a> {
+impl<'a> Resources<'a> {
     pub(crate) fn new(storage: &'a ViewStorage) -> Self {
         Self {
             storage: Some(storage),

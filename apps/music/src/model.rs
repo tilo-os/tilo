@@ -1,4 +1,4 @@
-//! The Music library: the collaborative [`Library`] record, plus the cache and
+//! The Music library: the collaborative [`Library`] resource, plus the cache and
 //! playback values that this device alone holds.
 
 use std::collections::BTreeMap;

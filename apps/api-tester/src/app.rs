@@ -27,11 +27,11 @@ use crate::model::{
     ResponseData, ResponseView,
 };
 use crate::palette::short_path;
-use crate::record::{Credentials, Variable};
 use crate::request::{self, BlankRows};
 use crate::resource::{Workspace, workspace as verbs};
 use crate::response;
 use crate::sidebar::{self, SidebarView, parse_history, parse_request};
+use crate::workspace::{Credentials, Variable};
 use ui::framework::{Actions, Dispatcher, Live, Submit, ViewCx};
 use ui::widget::DrawChild;
 use ui::widget::{Part, PartHandle};
@@ -203,7 +203,7 @@ pub struct ApiTesterApp {
     active_env: Option<Id>,
     request: Request,
     history: Vec<HistoryEntry>,
-    /// The record as last presented.
+    /// The resource as last presented.
     workspace: Rc<Workspace>,
     /// What the window shares with the view's effect handler.
     store: Shared,
@@ -233,12 +233,12 @@ pub struct ApiTesterApp {
     /// Commands pushed by widget callbacks, applied after event routing.
     sink: Sink,
 
-    /// Where every change of the record goes: field edits and verbs, one undo step each,
+    /// Where every change of the resource goes: field edits and verbs, one undo step each,
     /// through the same path the palette and agents take.
     dispatcher: Option<Dispatcher<Workspace>>,
     read_only: Option<LocalState<bool>>,
     shown_read_only: bool,
-    /// Mounted on a record another member created: its content is theirs to seed, so
+    /// Mounted on a resource another member created: its content is theirs to seed, so
     /// an empty document is left untouched.
     dirty: bool,
 }
@@ -849,7 +849,7 @@ impl ApiTesterApp {
     fn replay_history(&mut self, index: usize) {
         if let Some(entry) = self.history.get(index).cloned() {
             // The verb the click runs: the entry's whole request comes back through the
-            // record, so a member sees the builder change. The local copy saves a
+            // resource, so a member sees the builder change. The local copy saves a
             // frame.
             self.request = if let Some(replay) = entry.replay.as_ref() {
                 replay.to_request()
@@ -1329,7 +1329,7 @@ impl ApiTesterApp {
     }
 
     /// The person chose from the environment picker. Which environment is active is shared,
-    /// so a choice is a field edit of the record.
+    /// so a choice is a field edit of the resource.
     fn pick_environment(&mut self, choice: &str) {
         if let Some((_, mode)) = ENVIRONMENT_COMMANDS
             .iter()
@@ -1526,7 +1526,7 @@ impl ui::widget::Decorator for ApiTesterApp {
 mod tests;
 
 impl ApiTesterApp {
-    /// Submit a field edit or a verb of the record; the host checks the permission and
+    /// Submit a field edit or a verb of the resource; the host checks the permission and
     /// applies it as one undo step.
     fn submit(&self, submit: impl Submit<Workspace>) {
         if let Some(dispatcher) = &self.dispatcher {

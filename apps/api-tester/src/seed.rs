@@ -6,8 +6,8 @@ use ui::tilo_resource::{Collection as Items, Id, Invoke};
 use crate::model::{
     Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, KeyValue, Request,
 };
-use crate::record::{self, RequestRecord, SavedCollection, Variable, Workspace};
 use crate::resource::workspace as verbs;
+use crate::workspace::{self, RequestResource, SavedCollection, Variable, Workspace};
 
 pub fn collections() -> Vec<Collection> {
     let mut users = Collection::new("Users API");
@@ -197,7 +197,7 @@ pub fn workspace() -> Vec<Invoke<Workspace>> {
         let mut requests = Items::new();
         for request in &collection.requests {
             let request_id = id();
-            let record = RequestRecord::of(request);
+            let record = RequestResource::of(request);
             first
                 .get_or_insert_with(|| (collection_id.clone(), request_id.clone(), record.clone()));
             requests.push(request_id, record);
@@ -232,7 +232,7 @@ pub fn workspace() -> Vec<Invoke<Workspace>> {
                 },
             );
         }
-        let saved = record::Environment {
+        let saved = workspace::Environment {
             name: environment.name,
             variables,
         };
@@ -255,7 +255,7 @@ pub fn workspace() -> Vec<Invoke<Workspace>> {
             paths
                 .request
                 .path()
-                .edits(&saved, &RequestRecord::of(&active_request()))
+                .edits(&saved, &RequestResource::of(&active_request()))
                 .iter()
                 .filter_map(|edit| Invoke::edit(edit).ok()),
         );

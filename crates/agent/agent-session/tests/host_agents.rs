@@ -1152,7 +1152,7 @@ async fn agents_post_in_the_workspaces_chat_and_read_each_other_by_name() {
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let reader = approved_grant(&mut browser, "Reader", &[CHAT]).await;
     let poster = approved_grant(&mut browser, "Poster", &[CHAT]).await;
-    let channel = chat::record::CHAT_CHANNEL;
+    let channel = chat::chat::CHAT_CHANNEL;
 
     // The reader starts the workspace's chat (its first channels) and holds it.
     let begin = serde_json::json!([chat_step(

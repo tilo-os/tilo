@@ -205,7 +205,7 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
     clippy::items_after_statements,
     reason = "inspection predicates are local to the profiling assertion that consumes them"
 )]
-fn canonical_typing_records_real_frame_cost_and_visible_content() {
+fn canonical_typing_resources_real_frame_cost_and_visible_content() {
     let mut app = ui::framework::testing::TestApp::<notes::NotesShell>::capture_at(
         Some("fenced_code_opening"),
         (1000, 700),

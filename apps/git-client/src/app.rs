@@ -325,7 +325,7 @@ pub(crate) struct GitClientState {
     preferences: Option<ui::framework::Setting<Settings>>,
     control_actions: Option<ui::framework::Actions<crate::resource::GitClient>>,
 
-    /// No repository is bound: keep the empty state until an explicit path or the restored record
+    /// No repository is bound: keep the empty state until an explicit path or the restored resource
     /// selects one.
     awaiting_repo: bool,
     focus: Option<Field>,
@@ -523,7 +523,7 @@ impl GitClientState {
 /// record the document holds.
 pub struct GitClientApp {
     state: Rc<RefCell<GitClientState>>,
-    /// The record as the document holds it, shown as it changes; `None` for a window outside the
+    /// The resource as the document holds it, shown as it changes; `None` for a window outside the
     /// framework.
     document: Option<Live<crate::resource::GitClient>>,
     presented: Option<(u64, u64)>,

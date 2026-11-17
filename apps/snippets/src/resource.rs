@@ -12,7 +12,7 @@ use crate::model::{Snippet, Snippets};
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 impl Snippets {
-    /// What the record holds: the snippets, with their language, folder and tags.
+    /// What the resource holds: the snippets, with their language, folder and tags.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

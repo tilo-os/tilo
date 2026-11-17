@@ -1,4 +1,4 @@
-//! The notes app on the framework: the [`Notebook`] record, its window and
+//! The notes app on the framework: the [`Notebook`] resource, its window and
 //! what launching it on a Markdown file does.
 
 use crate::metadata::CATALOG;
@@ -29,11 +29,11 @@ impl ResourceApp for NotesShell {
     /// One notebook per workspace, not one per window. A notebook is a
     /// collection every window of Notes in the workspace shows (the sidebar is
     /// its pages), so a new window, or Notes reopened after its windows
-    /// closed, must show the pages already written there: with a record
+    /// closed, must show the pages already written there: with a resource
     /// per window each new window started on an empty notebook, and the
     /// pages came back only by restoring the very window that wrote them.
     /// A workspace is the unit of collaboration, so its members share the
-    /// notebook too. Notes from before this keep their per-window records;
+    /// notebook too. Notes from before this keep their per-window resources;
     /// the workspace's notebook adopts them when it is created ([`Self::seed`]).
     const WORKSPACE_RESOURCE: bool = true;
 
@@ -114,7 +114,7 @@ impl ResourceApp for NotesShell {
 
     /// The workspace's notebook starts with the pages of the notebooks Notes
     /// kept per window before it kept one per workspace, on this device, in
-    /// record order ([`crate::adopt`]). Those records are left as they were.
+    /// resource order ([`crate::adopt`]). Those resources are left as they were.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Notebook>> {
         crate::adopt::adoption(
             &cx.window_resources(),

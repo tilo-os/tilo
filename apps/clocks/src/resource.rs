@@ -158,7 +158,7 @@ impl ResourceApp for ClocksShell {
     }
 
     fn launch_resource(input: &LaunchInput<'_>) -> Option<ui::resource::DocumentId> {
-        crate::native_timers::activation_record(input.arguments().first()?)
+        crate::native_timers::activation_resource(input.arguments().first()?)
     }
 
     /// An alarm's link (`tilo-clocks:alarm/<id>`, as its notice names it) opens that alarm.

@@ -1,4 +1,4 @@
-//! The `tasks.tracker` record, the projects and areas above a workspace's
+//! The `tasks.tracker` resource, the projects and areas above a workspace's
 //! issues, and the issues themselves, which the Tasks app keeps in the
 //! `tasks.issues` parts beside it.
 //!
@@ -14,7 +14,7 @@
 //! documents it holds are the links those issues carry, so one task reads in
 //! its project and in whoever's list alike.
 //!
-//! The app draws the record, and an agent reads and writes it through the
+//! The app draws the resource, and an agent reads and writes it through the
 //! verbs below, so both use one definition of every type, verb and typed
 //! action argument.
 
@@ -23,7 +23,7 @@ mod effect;
 mod goal;
 mod issue;
 mod many;
-mod record;
+mod projects;
 pub mod search;
 mod tracker_area;
 mod work;
@@ -37,7 +37,7 @@ pub use issue::{
     agent_assignee, checked_assignee, outside_assignee, person_assignee,
 };
 pub use many::{ListedIssue, MAX_MANY};
-pub use record::{Tracker, tracker};
+pub use projects::{Tracker, tracker};
 pub use tracker_area::{Kind, Person, TrackerArea};
 pub use work::{
     BudgetBy, MAX_ADDRESS_CHARS, MAX_LINE_CHARS, MAX_WAITS, MOST_LOST_RUNS, Resumed, Standing,
@@ -45,13 +45,13 @@ pub use work::{
     checked_waits, standing,
 };
 
-/// The kind of the tracker's own record, which keeps its projects and areas.
+/// The kind of the tracker's own document, which keeps its projects and areas.
 pub const KIND: &str = "tasks.tracker";
 
 /// The kind of the parts the issues are kept in.
 pub const ISSUES_KIND: &str = "tasks.issues";
 
-/// The app that keeps the record.
+/// The app that keeps the resource.
 pub use tilo_app_id::apps::TASKS as APP_ID;
 
 /// The resource address of `issue`, the one its reference chip, its search

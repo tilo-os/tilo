@@ -1572,7 +1572,7 @@ impl ChatApp {
                 self.paint_attachment_open(&mut ctx, att, card);
                 card
             }
-            // A chip is drawn by the row above; a record or quote holding no
+            // A chip is drawn by the row above; a resource or quote holding no
             // bytes leaves no card here.
             tilo_reference::Attached::Resource { .. } | tilo_reference::Attached::Text { .. } => {
                 Rect::new(origin.x, origin.y, origin.x, origin.y)

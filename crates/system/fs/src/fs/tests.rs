@@ -1327,7 +1327,7 @@ mod predictive_tests {
             let (namespace, fs) = fixture().await;
             {
                 let mut ns = namespace.lock_recover();
-                for index in 0..fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES + 1 {
+                for index in 0..fs_protocol::projection::DOCUMENT_INDEX_PAGE_ENTRIES + 1 {
                     let byte = u8::try_from(index).expect("fixture index fits in one byte");
                     ns.create_file(
                         ROOT_INO,
@@ -1344,7 +1344,7 @@ mod predictive_tests {
             manifest.validate().unwrap();
             assert_eq!(
                 manifest.records,
-                fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES + 1
+                fs_protocol::projection::DOCUMENT_INDEX_PAGE_ENTRIES + 1
             );
             let first: fs_protocol::projection::DocumentIndexPageV2 =
                 serde_json::from_slice(&fs.document_index_page_v2(&manifest.revision, 0).unwrap())
@@ -1398,7 +1398,7 @@ mod predictive_tests {
             let (namespace, fs) = fixture().await;
             let visible_document = {
                 let mut ns = namespace.lock_recover();
-                for index in 0..(fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES * 2) {
+                for index in 0..(fs_protocol::projection::DOCUMENT_INDEX_PAGE_ENTRIES * 2) {
                     ns.create_file(ROOT_INO, format!("hidden-{index:04}"), None, 0, 1)
                         .unwrap();
                 }
@@ -1505,7 +1505,7 @@ mod predictive_tests {
             let (namespace, fs) = fixture().await;
             {
                 let mut ns = namespace.lock_recover();
-                for index in 0..=fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES {
+                for index in 0..=fs_protocol::projection::DOCUMENT_INDEX_PAGE_ENTRIES {
                     ns.create_projected_file(
                         ROOT_INO,
                         format!("visible-{index:04}"),
@@ -1531,7 +1531,7 @@ mod predictive_tests {
             .unwrap();
             assert_eq!(
                 first.records.len(),
-                fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES
+                fs_protocol::projection::DOCUMENT_INDEX_PAGE_ENTRIES
             );
             let second: fs_protocol::projection::DocumentIndexPageV3 = serde_json::from_slice(
                 &fs.document_index_page_v3(

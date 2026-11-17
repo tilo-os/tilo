@@ -15,8 +15,8 @@ fn deliver(app: &mut TestApp<ChatShell>, arguments: serde_json::Value) {
         .expect("the delivery is admitted");
 }
 
-/// `channel`'s messages as the record's parts hold them, each by its id.
-fn held(app: &mut TestApp<ChatShell>, channel: &str) -> Vec<(String, crate::record::Message)> {
+/// `channel`'s messages as the resource's parts hold them, each by its id.
+fn held(app: &mut TestApp<ChatShell>, channel: &str) -> Vec<(String, crate::chat::Message)> {
     crate::testing::mounted_messages(app)
         .iter()
         .filter(|(_, message)| message.channel.as_str() == channel)

@@ -38,7 +38,7 @@ fn concurrent_full_triage_histories_still_have_a_bounded_public_status_read() {
                 branch,
                 author,
                 ts * 1000,
-                crate::resource::Chat::TRIAGE.with(crate::record::chat::Triage {
+                crate::resource::Chat::TRIAGE.with(crate::chat::chat::Triage {
                     report: ui::tilo_resource::Id::from_raw(submission.id.clone()),
                     update: serde_json::to_value(TriageUpdate::Investigating).unwrap(),
                 }),

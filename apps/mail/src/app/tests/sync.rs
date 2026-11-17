@@ -433,7 +433,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase trusted_senders_are_a_record_both_ways;
+    phase trusted_senders_are_a_resource_both_ways;
     {
         use crate::trusted_senders::TrustedSenders;
 
@@ -455,7 +455,7 @@ tilo_test_env::scenario! {
         );
 
         // This window trusts one and stops trusting the other: both are the
-        // person's edits of the record.
+        // person's edits of the resource.
         {
             let mut shared = mail.shared.borrow_mut();
             shared.remote_senders.remove("lena@fischer.example");

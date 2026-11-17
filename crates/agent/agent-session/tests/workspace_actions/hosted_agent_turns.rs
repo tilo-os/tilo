@@ -734,7 +734,7 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
     let part = conversation_part(&workspaces, &workspace).await;
     let reply = part
         .messages
-        .get(&chat::record::reply_id(&first, &MemberId::agent(SCOUT)))
+        .get(&chat::chat::reply_id(&first, &MemberId::agent(SCOUT)))
         .unwrap_or_else(|| {
             panic!(
                 "the agent's reply is in the conversation: {:?}",
@@ -963,7 +963,7 @@ async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
     let part = conversation_part(&workspaces, &workspace).await;
     let reply = part
         .messages
-        .get(&chat::record::reply_id(&first, &MemberId::agent(SCOUT)))
+        .get(&chat::chat::reply_id(&first, &MemberId::agent(SCOUT)))
         .expect("the agent's reply is in the conversation");
     assert!(
         reply.text.contains("Nothing needs doing today"),

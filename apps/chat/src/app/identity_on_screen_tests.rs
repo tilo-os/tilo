@@ -25,7 +25,7 @@ fn a_live_peer_joins_through_the_user_action() {
     assert_eq!(
         serde_json::to_value(&recorded).unwrap(),
         crate::testing::operation(&crate::resource::Chat::INTRODUCE.with(
-            crate::record::chat::Introduce {
+            crate::chat::chat::Introduce {
                 name: app.me.name.clone(),
                 initials: app.me.initials.clone(),
                 color: u32::try_from(app.me.color_idx).unwrap(),
@@ -46,7 +46,7 @@ fn a_live_peer_joins_through_the_user_action() {
     );
 }
 
-/// A record that does not read is not an empty chat: the window's person
+/// A resource that does not read is not an empty chat: the window's person
 /// is introduced once it reads, not lost to the read that failed, and what
 /// last read whole stays.
 #[test]
@@ -71,7 +71,7 @@ fn a_record_that_does_not_read_keeps_the_introduction_and_the_channels() {
         &ui::tilo_resource::Atom("not a roster".into()),
     )
     .expect("the field is written");
-    assert!(<crate::record::Chat as ui::tilo_resource::Resource>::read(&broken).is_err());
+    assert!(<crate::chat::Chat as ui::tilo_resource::Resource>::read(&broken).is_err());
 
     app.reload(&state.doc);
     let channels = app.channels.len();
@@ -92,11 +92,11 @@ fn a_record_that_does_not_read_keeps_the_introduction_and_the_channels() {
     Widget::sync(&mut app, &state.doc, &state.root);
     let recorded = app
         .last_dispatched()
-        .expect("the introduction waited for a record that reads");
+        .expect("the introduction waited for a resource that reads");
     assert_eq!(
         serde_json::to_value(&recorded).unwrap(),
         crate::testing::operation(&crate::resource::Chat::INTRODUCE.with(
-            crate::record::chat::Introduce {
+            crate::chat::chat::Introduce {
                 name: app.me.name.clone(),
                 initials: app.me.initials.clone(),
                 color: u32::try_from(app.me.color_idx).unwrap(),
@@ -361,19 +361,19 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
 }
 
 /// An agent is a member like a person: its answer reads by the name the workspace's own
-/// record of its agents keeps for it — whether or not its device works here — and the conversation
+/// resource of its agents keeps for it — whether or not its device works here — and the conversation
 /// with it is named for it. Never by a placeholder that spells part of its routing id.
 #[test]
-fn an_agents_answer_reads_by_the_workspaces_agent_record() {
+fn an_agents_answer_reads_by_the_workspaces_agent_resource() {
     let mut doc = crate::testing::Workspace::default();
     crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
     let mut app = ChatApp::new_ephemeral();
     app.attach_workspace(&doc);
-    // The workspace's record of its agents names it; presence never saw it.
+    // The workspace's document of its agents names it; presence never saw it.
     app.workspace_agent_names
         .insert("notes".to_owned(), "Notes".to_owned());
     app.reload(&doc);
-    let conversation = crate::record::Chat::direct_id([
+    let conversation = crate::chat::Chat::direct_id([
         MemberId::person(crate::model::ME),
         MemberId::agent("notes"),
     ]);
@@ -416,7 +416,7 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
         "Notes"
     );
 
-    // An agent wears the colour its own record gives it, whatever presence announced.
+    // An agent wears the colour its own document gives it, whatever presence announced.
     app.workspace_agent_colours.insert("notes".to_owned(), 3);
     app.workspace_colors
         .insert(MemberId::agent("notes"), (255, 0, 0));
@@ -458,7 +458,7 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
         ("Notes", "notes")
     );
 
-    // An agent the record names not is never shown a part of its routing id either.
+    // An agent the resource names not is never shown a part of its routing id either.
     assert_eq!(
         app.user_name(&MemberId::agent("stranger")),
         crate::identity::unnamed_label(&MemberId::agent("stranger"))

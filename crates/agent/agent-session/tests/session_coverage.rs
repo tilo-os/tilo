@@ -1873,7 +1873,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
     // Posted as a written task, as a step of a plan is.
     let post = |poster: &mut AgentMember, text: &str| {
         let step = serde_json::json!([{"app": CHAT, "resource": "chat.messages",
-            "action": "post", "arguments": {"channel": chat::record::CHAT_CHANNEL, "text": text}}]);
+            "action": "post", "arguments": {"channel": chat::chat::CHAT_CHANNEL, "text": text}}]);
         let task = poster_control.message(&step.to_string()).unwrap();
         poster.run_until(Some(Instant::now() + Duration::from_secs(60)), |_| {
             !poster_control.is_running(&task)
@@ -1981,7 +1981,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
 /// task runs a plan's step.
 fn post_in_chat(poster: &mut AgentMember, control: &AgentControl, text: &str) {
     let step = serde_json::json!([{"app": CHAT, "resource": "chat.messages",
-        "action": "post", "arguments": {"channel": chat::record::CHAT_CHANNEL, "text": text}}]);
+        "action": "post", "arguments": {"channel": chat::chat::CHAT_CHANNEL, "text": text}}]);
     assert_eq!(
         run_task(poster, control, &step.to_string()).state,
         TaskState::Completed
@@ -2474,7 +2474,7 @@ fn posts(post: &str, posts: &[(&str, Option<usize>)]) -> serde_json::Value {
         .iter()
         .map(|(text, serves)| {
             let mut step = serde_json::json!({"operation": post,
-                "arguments": {"channel": chat::record::CHAT_CHANNEL, "text": text}});
+                "arguments": {"channel": chat::chat::CHAT_CHANNEL, "text": text}});
             if let Some(number) = serves {
                 step["for"] = (*number).into();
             }

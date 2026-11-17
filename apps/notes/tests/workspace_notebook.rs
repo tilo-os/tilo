@@ -7,7 +7,7 @@ use notes::actions::{
     create_page_action, new_tag_action, set_tag_assignment_action, write_body_action,
 };
 use notes::{MainPanel, NotesShell, PageId};
-use ui::framework::testing::{TestApp, window_record};
+use ui::framework::testing::{TestApp, window_resource};
 use ui::resource::DocumentId;
 
 fn titles(app: &TestApp<NotesShell>) -> Vec<String> {
@@ -84,7 +84,7 @@ fn the_workspace_notebook_adopts_each_window_notebook_exactly_once() {
     let ideas = PageId::new_v4();
     let tag = PageId::new_v4();
     let blocks = |markdown: &str| MainPanel::seed_blocks(markdown, |_| None);
-    let first = window_record::<NotesShell>(
+    let first = window_resource::<NotesShell>(
         0x41,
         &[
             create_page_action(inbox, None, "Inbox"),
@@ -94,7 +94,7 @@ fn the_workspace_notebook_adopts_each_window_notebook_exactly_once() {
         ],
     )
     .unwrap();
-    let second = window_record::<NotesShell>(
+    let second = window_resource::<NotesShell>(
         0x42,
         &[
             create_page_action(ideas, None, "Ideas"),
@@ -105,12 +105,12 @@ fn the_workspace_notebook_adopts_each_window_notebook_exactly_once() {
     )
     .unwrap();
     // Most windows were opened and closed without a note.
-    let empty = window_record::<NotesShell>(0x43, &[]).unwrap();
+    let empty = window_resource::<NotesShell>(0x43, &[]).unwrap();
     let originals = [&first, &second, &empty].map(|doc| doc.clone().get_heads());
     let app = TestApp::<NotesShell>::with_window_resources(&mut [second, empty, first]).unwrap();
     assert!(app.record().is_package_primary());
 
-    // Every page, in record order, with its tree, body and tag.
+    // Every page, in resource order, with its tree, body and tag.
     let state = shown(&app);
     let roots = state
         .children_of(None)
@@ -138,7 +138,7 @@ fn the_workspace_notebook_adopts_each_window_notebook_exactly_once() {
     let app = app.another_window().unwrap();
     assert_eq!(shown(&app).pages().len(), 3);
 
-    // The per-window records are still there, untouched.
+    // The per-window resources are still there, untouched.
     let windows = app.window_resources();
     assert_eq!(
         windows.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),

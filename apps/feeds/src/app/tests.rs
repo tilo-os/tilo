@@ -186,7 +186,7 @@ fn startup_is_empty_live_and_populated_only_in_demo() {
     assert_eq!(
         doc.get_heads(),
         created,
-        "the untouched live record has no app writes"
+        "the untouched live resource has no app writes"
     );
 
     // The demo opens a rich article and seeds its first document.
@@ -1468,7 +1468,7 @@ fn check_add_dialog_an_empty_required_field_keeps_the_dialog_open() {
         Filter::Folder(folder),
         "the new folder is shown once the library holds it"
     );
-    // The managed record owns Undo; a detached view has no writer history.
+    // The managed resource owns Undo; a detached view has no writer history.
     let mut host = ui::prelude::TestApp::<crate::resource::FeedsShell>::new().unwrap();
     let versions_before = host.versions().len();
     host.with_widget(|app: &mut FeedsApp| {
@@ -1496,7 +1496,7 @@ fn check_add_dialog_an_empty_required_field_keeps_the_dialog_open() {
         versions_before + 1,
         "the dialog submits one canonical action"
     );
-    assert!(host.undo(), "the record owns the undo step");
+    assert!(host.undo(), "the resource owns the undo step");
     assert!(host.state().folders.is_empty());
 }
 

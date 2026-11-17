@@ -1,8 +1,8 @@
 use serde_json::{Value, json};
 
 use super::*;
+use crate::guild::Link;
 use crate::layout::tests::mapping;
-use crate::record::Link;
 
 fn guild() -> Guild {
     let mut g = Guild {
@@ -367,7 +367,7 @@ tilo_test_env::scenario! {
 
     phase a_filed_report_goes_across_as_its_message_with_its_picture;
     {
-        // Chat records filing on the channel, with the submission it filed.
+        // Chat resources filing on the channel, with the submission it filed.
         let event = json!({
             "kind": CHAT_KIND,
             "did": verb(SUBMIT_FEEDBACK),
@@ -423,7 +423,7 @@ fn reaction_edit(op: &str, message: &str, emoji: &str) -> Value {
            "path": [{"field": "messages"}, {"item": message}, {"field": "reactions"}]})
 }
 
-/// The chat as the record api reads it with a filed report's message: its
+/// The chat as the resource api reads it with a filed report's message: its
 /// text read out of the report, its picture as an image, a reaction on it.
 fn with_report() -> crate::tilo::ChatRead {
     crate::tilo::ChatRead::new(

@@ -15,7 +15,7 @@ mod credential_owner_tests;
 pub struct Passwords {}
 
 impl Passwords {
-    /// What the record holds: nothing — the vault is this device's encrypted store, and no
+    /// What the resource holds: nothing — the vault is this device's encrypted store, and no
     /// secret syncs.
     pub fn read_document(
         &self,

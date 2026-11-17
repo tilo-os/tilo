@@ -26,7 +26,7 @@ impl TileSource for Components {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
         match self.0.borrow_mut().remove(&tab.id) {
             Some(component) => TileHost::from_component(component),
-            // The app's code or record is still coming: the window holds
+            // The app's code or resource is still coming: the window holds
             // its place.
             None => TileHost::new(ui::widget::TileContent::Arriving),
         }

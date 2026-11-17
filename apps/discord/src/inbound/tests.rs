@@ -2,8 +2,8 @@ use discord_wire::event::{AttachmentInfo, ThreadRef};
 use serde_json::json;
 
 use super::*;
+use crate::guild::{Link, Mapping, Ownership};
 use crate::layout::tests::mapping;
-use crate::record::{Link, Mapping, Ownership};
 use discord_wire::event::{Authorized, link_check, link_proof};
 
 fn guild() -> Guild {

@@ -2139,7 +2139,7 @@ impl HeldChat {
     /// messages `peer` wrote lie past this person's read mark (a part, and how many of the
     /// conversation's messages in it they saw).
     fn conversation(&self, peer: &str) -> Result<Conversation, String> {
-        use chat::record::Chat;
+        use chat::chat::Chat;
         let people = self.chat["people"]
             .as_object()
             .filter(|people| !people.is_empty());
@@ -2149,7 +2149,7 @@ impl HeldChat {
         let me = tilo_actions::policy::MemberId::person(self.me.clone());
         let them = tilo_actions::policy::MemberId::person(peer);
         let slot = |member: &tilo_actions::policy::MemberId| {
-            chat::record::member_slot(member).as_str().to_owned()
+            chat::chat::member_slot(member).as_str().to_owned()
         };
         if peer == self.me || people.get(&slot(&them)).is_none() {
             return Err(format!("Chat knows no person {peer}"));

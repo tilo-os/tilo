@@ -1344,7 +1344,7 @@ mod tests {
             assert!(!st.selection_still_arriving());
         }
 
-        phase ingesting_records_server_baselines_outside_undo;
+        phase ingesting_resources_server_baselines_outside_undo;
         {
             let st = state();
             let message = st

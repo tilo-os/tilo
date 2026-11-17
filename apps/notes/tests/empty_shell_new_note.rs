@@ -14,7 +14,7 @@ use ui::headless::FrameHarness;
 use ui::widget::TileHost;
 
 /// Answers with a notice until its component arrives, as the browser shell
-/// does while a tab's record is still loading.
+/// does while a tab's resource is still loading.
 struct Arriving(Rc<RefCell<Option<AppComponent>>>);
 impl TileSource for Arriving {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
@@ -28,7 +28,7 @@ impl TileSource for Arriving {
     }
 }
 
-/// A shell showing one window of Notes over `f`'s notebook, the record having
+/// A shell showing one window of Notes over `f`'s notebook, the resource having
 /// arrived after the shell was already running.
 fn shell(f: &NotebookFixture, width: u32) -> (FrameHarness, ui::resource::DocumentCheckout) {
     let checkout = component_support::notebook(f);

@@ -1852,7 +1852,7 @@ mod tests {
         assert_eq!(
             state.resolutions(),
             vec![(hunk, HunkChoice::Theirs)],
-            "the key resolved the change under review, through the record"
+            "the key resolved the change under review, through the resource"
         );
         assert_ne!(state.merged, before, "the merged result composed it");
         let changes = state.merge_model().change_indices();

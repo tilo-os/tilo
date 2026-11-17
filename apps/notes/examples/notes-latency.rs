@@ -1,7 +1,7 @@
 //! Input→display latency of Notes on an owned notebook, through the path a
 //! host drives an app it shows.
 //!
-//! The window is the real Notes window over a real record
+//! The window is the real Notes window over a real resource
 //! ([`ui::framework::testing::drive_live_window`]). Its notebook is written
 //! with Notes' own actions: 27 notes holding 838 blocks between them
 //! (headings, paragraphs, list items), the size of the notebook the Notes

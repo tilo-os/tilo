@@ -354,9 +354,9 @@ fn view_mode_toggle_switches_between_list_and_grid() {
 }
 
 fn initial_path_prefers_workspace_then_user_home_then_cwd_then_root() {
-    use file_explorer::model::{initial_path, user_home, workspace_record_authority_roots};
+    use file_explorer::model::{initial_path, user_home, workspace_resource_authority_roots};
     let p = initial_path();
-    let workspace = workspace_record_authority_roots().into_iter().next();
+    let workspace = workspace_resource_authority_roots().into_iter().next();
     let home = user_home();
     let cwd = std::env::current_dir().ok();
 

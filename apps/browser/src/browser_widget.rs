@@ -618,10 +618,10 @@ pub struct BrowserWidget {
     /// came: several actors may work in one tab, and each takes its turn.
     page_waiting: std::collections::VecDeque<page_turns::WaitingPage>,
     /// Reads of the tab's record that are with the engine, and their answers
-    /// not yet read. They take no turn: the record answers whatever runs.
-    page_record_reads: Vec<page_turns::ResourceRead>,
-    page_record_answers: Vec<ui::tilo_actions::InvocationUpdate>,
-    /// Where this tab's engine stands against the tab's record, which is
+    /// not yet read. They take no turn: the resource answers whatever runs.
+    page_resource_reads: Vec<page_turns::ResourceRead>,
+    page_resource_answers: Vec<ui::tilo_actions::InvocationUpdate>,
+    /// Where this tab's engine stands against the tab's resource, which is
     /// Browser's resource ([`crate::page_resource`]).
     page_resource: crate::page_resource::TabRecorder,
     /// What the window knows of its page's forms: the actions the page
@@ -1490,8 +1490,8 @@ impl BrowserWidget {
             page_operation: None,
             page_operation_result: None,
             page_waiting: std::collections::VecDeque::new(),
-            page_record_reads: Vec::new(),
-            page_record_answers: Vec::new(),
+            page_resource_reads: Vec::new(),
+            page_resource_answers: Vec::new(),
             page_resource: crate::page_resource::TabRecorder::default(),
             forms: crate::page_forms::PageForms::default(),
             forms_read: forms_read::FormsRead::default(),
@@ -2059,7 +2059,7 @@ impl BrowserWidget {
             .ok_or_else(|| "download destination is unavailable".into())
     }
 
-    /// Clear the history only when the record took the clear.
+    /// Clear the history only when the resource took the clear.
     fn clear_history_durably(&mut self) -> Result<(), String> {
         if let Some(record) = &self.person_history
             && let Err(error) =
@@ -3205,7 +3205,7 @@ impl BrowserWidget {
                 WebViewEvent::PageResult { request_id, result } => {
                     self.accept_page_result(request_id, result);
                 }
-                WebViewEvent::PageResource { seq, entry } => self.hear_page_record(seq, &entry),
+                WebViewEvent::PageResource { seq, entry } => self.hear_page_resource(seq, &entry),
                 WebViewEvent::PageChanged(change) => self.hear_page_changed(&change),
                 event @ (WebViewEvent::PageDialog(_) | WebViewEvent::PageDialogClosed { .. }) => {
                     // The question is taken first, so the action it stopped
@@ -4266,7 +4266,7 @@ impl Widget for BrowserWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The identity transform: nothing an ancestor cache records changes.
+        // The identity transform: nothing an ancestor cache resources changes.
         let coefficients = ui::scroll_copy::on_screen(transform).as_coeffs();
         let scale = coefficients[0].hypot(coefficients[1]);
         if scale.is_finite() && scale > 0.0 {
@@ -5407,7 +5407,7 @@ impl BrowserWidget {
         } else {
             clear
         });
-        // Newest first: the record keeps visits by address, so its own order is
+        // Newest first: the resource keeps visits by address, so its own order is
         // the alphabet's.
         let mut newest: Vec<&crate::history::HistoryEntry> =
             self.history.entries().iter().collect();
@@ -5429,7 +5429,7 @@ impl BrowserWidget {
                 }
                 .bound(),
             );
-            // Only a window that keeps a record offers the row its removal.
+            // Only a window that keeps a resource offers the row its removal.
             if self.person_history.is_some() {
                 row = row.with_action(
                     E::ForgetVisit {
@@ -5672,7 +5672,7 @@ impl BrowserWidget {
         if let Some(never_ran) = self.answer_a_page_action_that_waited_too_long(invocation) {
             return Some(never_ran);
         }
-        if let Some(record) = self.take_page_record_answer(invocation) {
+        if let Some(record) = self.take_page_resource_answer(invocation) {
             return Some(record);
         }
         if self

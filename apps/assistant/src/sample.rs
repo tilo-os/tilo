@@ -1,5 +1,5 @@
 //! What the screenshot scenarios show: a person's assistant in the middle of a working day,
-//! as the records it will be read from would hold it. Never written into a real workspace.
+//! as the resources it will be read from would hold it. Never written into a real workspace.
 
 use ui::prelude::*;
 

@@ -61,7 +61,7 @@ osk-toolbar-dismiss = Hide keyboard
 osk-context-unavailable = This key doesn't work in this field.
 osk-context-stale = The field changed. Choose the action again.
 
-## History: what each change of the learned record did
+## History: what each change of the learned resource did
 
 osk-learn = Learned from typing
 osk-forget = Forgot what the keyboard learned

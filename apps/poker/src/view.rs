@@ -26,7 +26,7 @@ fn plain(key: &str) -> String {
     crate::locales::CATALOG.t(key)
 }
 
-/// The whole table, built again whenever the record changes.
+/// The whole table, built again whenever the resource changes.
 pub fn table(cx: &mut ViewCx<Table>, table: &Table) -> Element {
     let me = cx.me().and_then(MemberId::person_id).map(str::to_owned);
     let people = cx.people();

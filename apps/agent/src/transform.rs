@@ -1513,7 +1513,7 @@ mod tests {
             .unwrap();
             assert_eq!(call.input.as_deref(), Some("The launch moved to Friday."));
             assert_eq!(call.transform, Transform::Summarise { max_chars: 280 });
-            // What a member kept sealed is read by the reference its record
+            // What a member kept sealed is read by the reference its resource
             // carries, as an address or as the kept value's stored form.
             let sealed = ui::content::ContentStore::memory().sealing();
             let text = b"The review is on Monday.";

@@ -202,7 +202,7 @@ fn the_editors_bar_actions_are_published_actions() {
     app.settle();
     assert!(
         app.state().clips.len() > before,
-        "the selected clip is cut in the record"
+        "the selected clip is cut in the resource"
     );
     assert!(app.undo(), "the split is one step");
     assert_eq!(app.state().clips.len(), before);

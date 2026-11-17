@@ -1,4 +1,4 @@
-//! What is being written and has not been sent, in a record beside the conversations and
+//! What is being written and has not been sent, in a resource beside the conversations and
 //! kept in the workspace Messages is open in. A draft survives the window closing and never
 //! enters a conversation's record: nothing here is sent, queued or shown to anyone else.
 
@@ -8,7 +8,7 @@ use ui::tilo_resource::Refusal;
 use ui::tilo_resource::{self, Model};
 
 const MAX_DRAFT_CHARS: usize = 16 * 1024;
-/// The most a conversation key may hold, so a hostile key cannot grow the record without
+/// The most a conversation key may hold, so a hostile key cannot grow the resource without
 /// limit.
 const MAX_KEY_CHARS: usize = 512;
 
@@ -99,7 +99,7 @@ mod tests {
                 .expect("a draft is kept");
             ada.apply_action(&keep("sms:a2:+15550100", "on my way"))
                 .expect("a draft is kept");
-            let state = ada.state().expect("the record is readable");
+            let state = ada.state().expect("the resource is readable");
             assert_eq!(
                 state.drafts.len(),
                 2,
@@ -111,7 +111,7 @@ mod tests {
             );
             ada.apply_action(&keep("signal:a1:+15550100", "   "))
                 .expect("a draft is cleared");
-            let state = ada.state().expect("the record is readable");
+            let state = ada.state().expect("the resource is readable");
             assert!(!state.drafts.contains_key("signal:a1:+15550100"));
             assert!(state.drafts.contains_key("sms:a2:+15550100"));
         }
@@ -129,7 +129,7 @@ mod tests {
             .expect("a draft is dropped");
             assert!(
                 ada.state()
-                    .expect("the record is readable")
+                    .expect("the resource is readable")
                     .drafts
                     .is_empty()
             );

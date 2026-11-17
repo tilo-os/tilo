@@ -1,4 +1,4 @@
-//! The senders whose remote images load without asking: a record Mail
+//! The senders whose remote images load without asking: a resource Mail
 //! keeps beside its own in the workspace it is open in
 //! ([`ResourceEnv::person`](ui::framework::ResourceEnv::person)), synced with
 //! the workspace. Trusting a sender is the person's edit, in its history
@@ -19,7 +19,7 @@ pub struct TrustedSenders {
 }
 
 impl TrustedSenders {
-    /// What the record holds: the senders whose remote images load without asking.
+    /// What the resource holds: the senders whose remote images load without asking.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

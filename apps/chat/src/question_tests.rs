@@ -72,7 +72,7 @@ fn answer(message: &Id, answer: &str, device: &str) -> chat_part::AnswerQuestion
 /// One part of a chat's messages, written by whoever a test says.
 struct Part {
     doc: AutoCommit,
-    chat: crate::record::Chat,
+    chat: crate::chat::Chat,
 }
 
 /// Who a verb is attributed to, as a host admits them.
@@ -525,7 +525,7 @@ fn a_question_for_someone_else_shows_that_it_waits_and_offers_this_reader_nothin
             json!({"answer": ALLOW}),
         )
         .is_err(),
-        "and the record refuses this reader's answer"
+        "and the resource refuses this reader's answer"
     );
 }
 

@@ -382,7 +382,7 @@ fn a_received_message_lays_out_and_draws_only_its_row() {
 
 #[test]
 fn a_channel_keeps_its_answers_in_a_thread_and_a_direct_conversation_shows_them_inline() {
-    use crate::record::Chat;
+    use crate::chat::Chat;
     use ui::tilo_resource::Id;
 
     let mut doc = crate::testing::demo_doc();

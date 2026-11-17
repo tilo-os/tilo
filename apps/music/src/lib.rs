@@ -2,7 +2,7 @@
 //! `ui` toolkit.
 //!
 //! Architecture:
-//! - [`model`] — the collaborative [`Library`](model::Library) record (catalog,
+//! - [`model`] — the collaborative [`Library`](model::Library) resource (catalog,
 //!   playlists, likes) plus local playback/cache values. It replicates across
 //!   devices; audio transport/cache never do.
 //! - [`seed`] — the bundled offline sample library (`--shots`, tests).

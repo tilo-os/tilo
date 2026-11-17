@@ -1,5 +1,5 @@
 //! A mention in a chat message, as the workspace reads it: posted through the part's own verb,
-//! synced, and found in the record by the framework (`ui::mentions`), with no chat window open.
+//! synced, and found in the resource by the framework (`ui::mentions`), with no chat window open.
 
 use ui::automerge::AutoCommit;
 use ui::resource::DocumentId;
@@ -38,7 +38,7 @@ fn a_mention_in_a_message_is_found_in_the_record_the_workspace_sent() {
     }))
     .unwrap();
     let message = ada.said(message_text);
-    // Bo's device receives the workspace's records; no chat window is open.
+    // Bo's device receives the workspace's documents; no chat window is open.
     bo.sync_with(&mut ada);
     let part = AutoCommit::load(&bo.part.save()).unwrap();
     let route = DocumentId::package_primary().part(0).as_str().to_owned();
@@ -53,6 +53,6 @@ fn a_mention_in_a_message_is_found_in_the_record_the_workspace_sent() {
         Some(("messages".to_owned(), message.as_str().to_owned()))
     );
     assert_eq!(found[0].excerpt, message_text);
-    // Where the chat's record is: the message's item in the chat's own record.
+    // Where the chat's resource is: the message's item in the chat's own document.
     assert_eq!(ui::mentions::chain_of(&route), Some(""));
 }

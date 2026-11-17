@@ -737,7 +737,7 @@ impl Core {
 
     /// Show what the workspace answered of this window's changes: one it kept
     /// is said done ("Article starred"), and one it refused, which the
-    /// record withdrew, says why instead.
+    /// resource withdrew, says why instead.
     pub(crate) fn announce_answers(&mut self) {
         let Some(dispatcher) = &self.dispatcher else {
             return;

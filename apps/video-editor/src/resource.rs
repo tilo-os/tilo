@@ -751,7 +751,7 @@ pub fn load_project(project: &Project) -> ui::tilo_resource::Edit<Project> {
     Path::<Project, Project>::root().set(project.clone())
 }
 
-/// A new record's document, holding `project` as its first content.
+/// A new resource's document, holding `project` as its first content.
 #[must_use]
 pub fn document_of(project: &Project) -> ui::tilo_resource::Doc {
     use ui::tilo_resource::Fields as _;

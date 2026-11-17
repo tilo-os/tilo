@@ -326,7 +326,7 @@ mod tests {
                     },
                     3_000,
                 );
-                assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+                assert_eq!(hit.title, format!("ordinary resource 2999 {LATE_HIT_NEEDLE}"));
                 let page = provider.search_page(
                     &ui::search::SearchQuery::parse(LATE_HIT_NEEDLE, &[]),
                     None,

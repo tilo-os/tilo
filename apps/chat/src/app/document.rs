@@ -12,18 +12,18 @@ use crate::model::{self, Id, Message, User};
 
 use super::{ChatApp, unread_mentions};
 
-/// The chat record `doc` holds, or nothing when it does not read. A record
+/// The chat resource `doc` holds, or nothing when it does not read. A resource
 /// that does not read is not an empty chat: the framework says why in place
 /// of the view, and nothing is shown, introduced or marked read from it.
-fn read_resource(doc: &AutoCommit) -> Option<crate::record::Chat> {
-    <crate::record::Chat as ui::tilo_resource::Resource>::read(doc).ok()
+fn read_resource(doc: &AutoCommit) -> Option<crate::chat::Chat> {
+    <crate::chat::Chat as ui::tilo_resource::Resource>::read(doc).ok()
 }
 
 impl ChatApp {
-    /// The conversations this window lists that the record keeps no row for — a direct
+    /// The conversations this window lists that the resource keeps no row for — a direct
     /// conversation a send opened, an agent's among them — as search finds them, named as the
-    /// sidebar names them: by what the workspace's own record of its agents calls them
-    /// ([`ChatApp::follow_agents`]). A conversation the record keeps is the record's own to
+    /// sidebar names them: by what the workspace's own document of its agents calls them
+    /// ([`ChatApp::follow_agents`]). A conversation the resource keeps is the resource's own to
     /// publish, and is left out here.
     pub(crate) fn unrecorded_conversation_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         self.channels
@@ -33,7 +33,7 @@ impl ChatApp {
                 let id = ui::tilo_resource::Id::from_raw(row.id.clone());
                 // Who is in it, as its id names them: a box lists a direct
                 // conversation as the one other person or agent in it.
-                let people = crate::record::Chat::direct_members(&id)
+                let people = crate::chat::Chat::direct_members(&id)
                     .unwrap_or_default()
                     .iter()
                     .map(|member| ui::tilo_resource::search_index::IndexPerson {
@@ -141,7 +141,7 @@ impl ChatApp {
         self.users = self.workspace_people_from(&chat, &per_channel);
         self.sync_reload_composers(doc);
         // A share started, switched or ended reaches the workspace as soon as
-        // the record says so, not at the window's next settled frame,
+        // the resource says so, not at the window's next settled frame,
         // which an idle window may not have for a long while.
         self.follow_share_grants();
     }
@@ -159,9 +159,9 @@ impl ChatApp {
         }
     }
 
-    /// The conversations and categories the record keeps, the one open, and
+    /// The conversations and categories the resource keeps, the one open, and
     /// how much each of the others holds unread.
-    fn sync_conversations(&mut self, chat: &crate::record::Chat, held: &crate::messages::Messages) {
+    fn sync_conversations(&mut self, chat: &crate::chat::Chat, held: &crate::messages::Messages) {
         self.channels = chat.conversation_rows(
             &self.me.id,
             held,
@@ -175,7 +175,7 @@ impl ChatApp {
         // Open a conversation: the one already open while it exists, and the
         // workspace's first otherwise — a deleted channel, and a window that
         // has not opened one yet, which a recorded view leaves empty on a
-        // device that has not chosen. A conversation the record need not list
+        // device that has not chosen. A conversation the resource need not list
         // as a channel — any direct one, with a person or with an agent — is
         // valid by its id.
         if (self.active_channel.is_empty() || !self.is_conversation(&self.active_channel))
@@ -208,7 +208,7 @@ impl ChatApp {
 
     /// What people sent this workspace as feedback: each message's words, and
     /// the recording the report carries beside it.
-    fn read_feedback(&mut self, chat: &crate::record::Chat) {
+    fn read_feedback(&mut self, chat: &crate::chat::Chat) {
         self.reports = chat
             .feedback
             .iter()
@@ -312,7 +312,7 @@ impl ChatApp {
     /// one-person surface.
     pub(crate) fn workspace_people_from(
         &self,
-        chat: &crate::record::Chat,
+        chat: &crate::chat::Chat,
         per_channel: &[(Id, Vec<Message>)],
     ) -> Vec<User> {
         let mut ids: HashSet<MemberId> = HashSet::from([self.me.id.clone()]);
@@ -381,7 +381,7 @@ impl ChatApp {
         if self.announce.is_none() {
             return;
         }
-        // The introduction waits for a record that reads.
+        // The introduction waits for a resource that reads.
         let Some(chat) = read_resource(doc) else {
             return;
         };
@@ -401,7 +401,7 @@ impl ChatApp {
             return;
         }
         self.submit(
-            crate::resource::Chat::INTRODUCE.with(crate::record::chat::Introduce {
+            crate::resource::Chat::INTRODUCE.with(crate::chat::chat::Introduce {
                 name: me.name,
                 initials: me.initials,
                 color,
@@ -425,7 +425,7 @@ impl ChatApp {
 
     /// Mark the conversation in view read up to what this window holds of it,
     /// for this window's person.
-    pub(crate) fn mark_conversation_read(&mut self, chat: &crate::record::Chat) {
+    pub(crate) fn mark_conversation_read(&mut self, chat: &crate::chat::Chat) {
         let read = self
             .held_messages()
             .read_to_end(&ui::tilo_resource::Id::from_raw(
@@ -449,7 +449,7 @@ impl ChatApp {
         // for it, so a refusal is not said over the window.
         self.read_asked = Some((self.active_channel.clone(), read));
         self.submit_on_its_own(crate::resource::Chat::MARK_READ.with(
-            crate::record::chat::MarkRead {
+            crate::chat::chat::MarkRead {
                 channel: ui::tilo_resource::Id::from_raw(self.active_channel.clone()),
                 part: u64::try_from(read.part).unwrap_or_default(),
                 seen: u32::try_from(read.seen).unwrap_or(u32::MAX),

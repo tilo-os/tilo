@@ -115,10 +115,10 @@ fn authenticated_subset_commits_actual_personal_bookmarks_and_full_history_and_r
         let mut app = live()?;
         let bookmarks = app
             .person::<PersonalBookmarks>()
-            .ok_or("personal record is missing")?;
+            .ok_or("personal resource is missing")?;
         let history = app
             .person::<BrowsingHistory>()
-            .ok_or("personal record is missing")?;
+            .ok_or("personal resource is missing")?;
         bookmarks.invoke(&PersonalBookmarks::ADD_BOOKMARK.with((
             "https://existing.test/".to_owned(),
             "Already mine".to_owned(),
@@ -223,10 +223,10 @@ fn history_off_does_not_parse_or_import_history_and_wrong_person_writes_nothing(
         let prepared = fixture.prepared(&fixture.plan.identity_public_key)?;
         let history = app
             .person::<BrowsingHistory>()
-            .ok_or("personal record is missing")?;
+            .ok_or("personal resource is missing")?;
         let bookmarks = app
             .person::<PersonalBookmarks>()
-            .ok_or("personal record is missing")?;
+            .ok_or("personal resource is missing")?;
         prepared.capture.apply(&bookmarks, &history)?;
         assert!(history.get().entries().is_empty());
         assert!(
@@ -246,7 +246,7 @@ fn history_off_does_not_parse_or_import_history_and_wrong_person_writes_nothing(
     assert!(outcome.is_ok(), "{outcome:?}");
 }
 #[test]
-fn actual_browser_worker_and_semantic_status_finish_without_touching_shared_records() {
+fn actual_browser_worker_and_semantic_status_finish_without_touching_shared_resources() {
     let outcome = (|| -> TestResult {
         let fixture = Fixture::new(true)?;
         let mut app = live()?;
@@ -291,14 +291,14 @@ fn actual_browser_worker_and_semantic_status_finish_without_touching_shared_reco
         }
         assert!(
             app.person::<PersonalBookmarks>()
-                .ok_or("personal record is missing")?
+                .ok_or("personal resource is missing")?
                 .get()
                 .bookmarks()
                 .contains("https://migration.test/bookmark")
         );
         assert_eq!(
             app.person::<BrowsingHistory>()
-                .ok_or("personal record is missing")?
+                .ok_or("personal resource is missing")?
                 .get()
                 .entries()
                 .first()
@@ -376,7 +376,7 @@ fn failed_browser_import_is_visible_in_empty_personal_library_and_bound_retry_fi
         }
         assert!(
             app.person::<PersonalBookmarks>()
-                .ok_or("personal record is missing")?
+                .ok_or("personal resource is missing")?
                 .get()
                 .bookmarks()
                 .entries()
@@ -384,7 +384,7 @@ fn failed_browser_import_is_visible_in_empty_personal_library_and_bound_retry_fi
         );
         assert!(
             app.person::<BrowsingHistory>()
-                .ok_or("personal record is missing")?
+                .ok_or("personal resource is missing")?
                 .get()
                 .entries()
                 .is_empty()
@@ -451,14 +451,14 @@ fn failed_browser_import_is_visible_in_empty_personal_library_and_bound_retry_fi
         }
         assert!(
             app.person::<PersonalBookmarks>()
-                .ok_or("personal record is missing")?
+                .ok_or("personal resource is missing")?
                 .get()
                 .bookmarks()
                 .contains("https://migration.test/bookmark")
         );
         assert_eq!(
             app.person::<BrowsingHistory>()
-                .ok_or("personal record is missing")?
+                .ok_or("personal resource is missing")?
                 .get()
                 .entries()
                 .first()
@@ -538,7 +538,7 @@ fn unadmitted_service_effect_refuses_before_changing_the_existing_page() {
         assert_eq!(before.1, after.1);
         assert!(
             app.person::<PersonalBookmarks>()
-                .ok_or("personal record is missing")?
+                .ok_or("personal resource is missing")?
                 .get()
                 .bookmarks()
                 .entries()
@@ -546,7 +546,7 @@ fn unadmitted_service_effect_refuses_before_changing_the_existing_page() {
         );
         assert!(
             app.person::<BrowsingHistory>()
-                .ok_or("personal record is missing")?
+                .ok_or("personal resource is missing")?
                 .get()
                 .entries()
                 .is_empty()

@@ -2,7 +2,7 @@
 //! `--shots --scenario NAME` writes, composed by the framework from the
 //! scenario's actions, staging and input, checked against the notebook it
 //! wrote and the window's accessibility tree. Each capture is isolated (its
-//! own profile, record store and harness), so they run on several threads;
+//! own profile, resource store and harness), so they run on several threads;
 //! the test reserves the runner in `.config/nextest.toml`.
 
 #![allow(

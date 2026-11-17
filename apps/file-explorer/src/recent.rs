@@ -76,11 +76,11 @@ impl RecentFiles {
 tilo_resource::json_model!(RecentFiles);
 
 #[derive(Model, Clone, Debug, Default, PartialEq)]
-pub struct RecentRecord {
+pub struct RecentResource {
     pub devices: BTreeMap<String, RecentFiles>,
 }
 
-impl RecentRecord {
+impl RecentResource {
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -91,9 +91,9 @@ impl RecentRecord {
 
 #[resource(
     kind = "files.recent",
-    read_content = RecentRecord::read_document
+    read_content = RecentResource::read_document
 )]
-impl RecentRecord {
+impl RecentResource {
     #[action(housekeeping)]
     pub fn note(&mut self, device: String, path: AbsolutePath, last_use: RecentUse, at_ms: u64) {
         self.devices
@@ -118,7 +118,7 @@ impl RecentRecord {
     }
 }
 
-impl RecentRecord {
+impl RecentResource {
     #[must_use]
     pub fn on(&self, device: &str) -> RecentFiles {
         self.devices.get(device).cloned().unwrap_or_default()

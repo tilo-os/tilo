@@ -50,7 +50,7 @@ type Message {
   filter with its value (`label:urgent`); a name the type declares no filter for is a compile
   error listing the ones it does.
 - `sort` sets the default order. Relevance is offered whenever there's text.
-- Text fields: every `Text` and `RichText` field is indexed, and a result shows the record's
+- Text fields: every `Text` and `RichText` field is indexed, and a result shows the resource's
   first one, cut to its first line.
 - Without a `search` block, every simple field (`Bool`, enum, date, number, reference, set) is a
   filter, and the first time field is the default sort. A Todo with `done` and `due` gets "Done"
@@ -179,7 +179,7 @@ known by (the registry's keywords: "youtube" for an app called Tube) are not par
   origin's search capability, invoked by the system and merged into one ranking. What was
   fetched is cached and indexed like the rest.
 - **The list index** (each list's order and filter columns, so a list opens by reading one
-  page) is still kept next to the record, because most workspaces' records aren't yet held by the
+  page) is still kept next to the resource, because most workspaces' resources aren't yet held by the
   system's storage service. It moves there when they are.
 - **A filter's bound value is a run.** A filter may compare a field with a value the code holds
   (`b.cards.filter(c -> c.column == col)`, `col` a local): the value is bound when the filter

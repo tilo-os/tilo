@@ -115,7 +115,7 @@ impl Reports {
             || status.is_empty()
             || status.chars().count() > MAX_REPORT_STATUS_CHARS
         {
-            return Err(Refusal::new("invalid moderation case record"));
+            return Err(Refusal::new("invalid moderation case resource"));
         }
         let report = self.reports.entry(app_id.to_owned()).or_default();
         report.case = Some(case_id.to_owned());

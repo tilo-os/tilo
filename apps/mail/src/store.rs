@@ -3,7 +3,7 @@
 //! only for what is new.
 //!
 //! What the person did to a message (read, starred, moved) is the mailbox
-//! record's and syncs with it; this keeps only the corpus the servers sent:
+//! resource's and syncs with it; this keeps only the corpus the servers sent:
 //! headers, bodies, attachment names and where each message is on its
 //! server. It is a cache: losing it costs one full fetch, nothing else.
 
@@ -28,7 +28,7 @@ struct Kept {
 }
 
 /// The mail this device has fetched, kept in its cache area. A page keeps
-/// none: the workspace's copies record holds what its person has.
+/// none: the workspace's copies resource holds what its person has.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Store {
     #[cfg(feature = "live")]
@@ -186,7 +186,7 @@ impl Store {
 }
 
 /// A page keeps no mail on a device: what its person has is the workspace's
-/// copies record, read over the session.
+/// copies resource, read over the session.
 #[cfg(not(feature = "live"))]
 #[allow(
     clippy::unused_self,

@@ -186,7 +186,7 @@ fn mounted_fixture(author: &str) -> MountedFixture {
             crate::testing::apply_as(
                 doc,
                 "visitor",
-                crate::resource::Chat::BEGIN_CHAT.with(crate::record::chat::BeginChat {
+                crate::resource::Chat::BEGIN_CHAT.with(crate::chat::chat::BeginChat {
                     name: "Visitor".into(),
                     initials: "V".into(),
                     color: 0,

@@ -125,7 +125,7 @@ struct HeldSend {
 #[derive(Clone)]
 enum AccountsPersist {
     /// A page keeps no account store of its own: the person's accounts
-    /// record is all it reads.
+    /// resource is all it reads.
     #[cfg(feature = "live")]
     Profile(std::path::PathBuf),
     #[cfg(test)]
@@ -476,7 +476,7 @@ impl MailApp {
 
     /// A window someone uses in a browser page: it shows the mail the
     /// workspace holds (the person's accounts and kept copies, the mailbox
-    /// record) and queues what needs a server in the mailbox's outboxes,
+    /// resource) and queues what needs a server in the mailbox's outboxes,
     /// which a device holding the account carries out. A page opens no
     /// sockets and no account vault, so it starts no engine.
     #[cfg(not(feature = "live"))]
@@ -2860,7 +2860,7 @@ impl MailApp {
         not(feature = "live"),
         allow(
             dead_code,
-            reason = "a page reads the accounts the host keeps, not a record of its own"
+            reason = "a page reads the accounts the host keeps, not a resource of its own"
         )
     )]
     pub(crate) fn follow_person_accounts(&mut self, accounts: PersonResource<PersonAccounts>) {

@@ -3,7 +3,7 @@
 //!
 //! The document is the frozen test asset `sample.pdf` ("Field Notes on
 //! Estuarine Birds", three US-Letter pages), kept in the capture's content
-//! store and pinned as the record's source, so the reader opens it through
+//! store and pinned as the resource's source, so the reader opens it through
 //! the PDF worker exactly as it opens a file it was handed. The markup is
 //! written as the field edits that put each item in place, with fixed ids,
 //! dates and authors, so every capture of a scenario is the same frame. The
@@ -223,7 +223,7 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
     ]
 }
 
-/// A brand-new markup record, as a host makes one: its genesis, at the
+/// A brand-new markup resource, as a host makes one: its genesis, at the
 /// storage version the reader reads (a bare document reads as version 1,
 /// which the reader refuses until it is migrated).
 #[cfg(test)]

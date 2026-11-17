@@ -25,7 +25,7 @@ pub struct Monitor {
 }
 
 impl Monitor {
-    /// What the record holds: the shared table layout.
+    /// What the resource holds: the shared table layout.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

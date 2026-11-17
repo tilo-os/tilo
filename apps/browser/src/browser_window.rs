@@ -852,7 +852,7 @@ impl ui::application_view::ApplicationViewState for BrowserWindow {
             .map(|payload| ui::application_view::ApplicationLocalView {
                 app_id: <crate::resource::BrowserShell as ui::framework::ResourceApp>::ID.into(),
                 version: SAVED_PAGE_VERSION,
-                payload: self.page.saved_with_page_record(payload),
+                payload: self.page.saved_with_page_resource(payload),
             }))
     }
 
@@ -866,7 +866,7 @@ impl ui::application_view::ApplicationViewState for BrowserWindow {
                 "the saved page cannot be shown".into(),
             ));
         }
-        self.page.restore_page_record(&local.payload);
+        self.page.restore_page_resource(&local.payload);
         self.focus_address = false;
         self.dirty = true;
         Ok(ui::application_view::ApplicationFocusRestore::Generic)
@@ -958,7 +958,7 @@ mod tests {
     use ui::framework::HostDelivery as _;
     use ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
 
-    /// A page engine that records commands and replays queued events and new tab
+    /// A page engine that resources commands and replays queued events and new tab
     /// intents.
     #[derive(Default)]
     struct PageEngine {

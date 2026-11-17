@@ -17,7 +17,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use super::hud::HudMetrics;
 use super::{Action, CameraApp, DocumentChoice, DocumentJobKind, OcrLanguage};
 use crate::actions::CameraEffect;
-use crate::record::Record;
+use crate::camera::Camera;
 use ui::framework::Actions;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -96,7 +96,7 @@ impl DocumentControls {
 
     /// Each dropdown chooses its setting through Camera's published
     /// `choose-scan-setting` effect.
-    pub(super) fn attach(&mut self, actions: &Actions<Record>) {
+    pub(super) fn attach(&mut self, actions: &Actions<Camera>) {
         let fields = std::mem::take(&mut self.fields);
         self.fields = fields
             .into_iter()

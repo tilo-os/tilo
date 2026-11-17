@@ -69,10 +69,10 @@ view contact_row(c: Contact) {
   a `RichText` (`rich`, its paragraphs) and to a Markdown `Text` field (`markdown`, the same
   text round-tripped), and edits the one the view bound; a change from elsewhere shows when the
   person is not typing there. The view places the editor; no marker on a field says which
-  control draws it. `links:` names the records its `[[` picker offers, which the editor is given
-  as the references they are and what each reads as now, so a record renamed later reads by its
+  control draws it. `links:` names the resources its `[[` picker offers, which the editor is given
+  as the references they are and what each reads as now, so a resource renamed later reads by its
   new title wherever it was linked; choosing one writes a reference in the text, which is what
-  `linked(r)` reports the record by. A picker over a collection reads the records while it is
+  `linked(r)` reports the resource by. A picker over a collection reads the resources while it is
   open, and only what it shows: the view keeps the picker's state (`on links_open(open)` and
   `on links_query(text)`) and answers it with a query of what is typed,
   `links: if linking { nb.notes.matching(text).take(48) } else { [] }`, so a keystroke in the
@@ -189,7 +189,7 @@ std.list(shown, tree: true, ungrouped: .some("No day")) { (t, at) ->
 }
 ```
 
-A key the platform has no words for — a case of an enum, a record reference — is grouped by the
+A key the platform has no words for — a case of an enum, a resource reference — is grouped by the
 text the caller reads off it (`group: x -> .some(x.status.label())`): the heading is the text the
 platform draws, so the runs are the runs of that text.
 
@@ -413,7 +413,7 @@ view usage_ring(used: Float, caption: Text) {
   x2, y2)`, `.path(points, smooth, closed, wash)` and `.text(x, y, text, role, ink, anchor,
   strong)`. Coordinates are fractions of the drawing's box, so a drawing scales with its layout
   and never names pixels. A field with a default (`round`, `fill`, `weight`, the path's flags, a
-  text's role and ink) may be left out, as a record's may.
+  text's role and ink) may be left out, as a resource's may.
 - **Shapes are computed like any list.** A function returns `List<ui.Shape>`, and `map` and
   `flat_map` give their lambda the item's place as a second name, so a bar stands where its
   reading does: `xs.map((x, i) -> ui.Shape.rect(x: i.to_float() * w, y: 1.0 - x, w: w, h: x))`.

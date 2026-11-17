@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, JsonSchema, MemberId};
 
-use crate::record::{Guild, MAX_FETCH_BYTES, MappedKind, Origin};
+use crate::guild::{Guild, MAX_FETCH_BYTES, MappedKind, Origin};
 use crate::{roles, tilo};
 
 /// Discord's avatars are small; anything larger is not an avatar.
@@ -341,7 +341,7 @@ fn place(
     }
 }
 
-/// `message-created`, in the workspace whose Chat record reads as `chat`.
+/// `message-created`, in the workspace whose Chat resource reads as `chat`.
 #[must_use]
 pub fn plan_created(
     guild: &Guild,

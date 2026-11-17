@@ -17,7 +17,7 @@ use tilo_actions::remote::task_programs;
 
 /// What the model reads after a program that called an app's actions and changed nothing, in
 /// place of the reply it wrote for a change: nothing it looked for was there.
-const CHANGED_NOTHING: &str = "\nIt changed nothing: no record matched what the program looked \
+const CHANGED_NOTHING: &str = "\nIt changed nothing: no resource matched what the program looked \
      for, so your reply was not shown. Find what the person means another way, or tell them it \
      is not there.";
 
@@ -40,7 +40,7 @@ pub(in crate::session) struct ProgramWorld {
     types: BTreeMap<String, String>,
     /// Every host's declarations, merged: what the first message's app lines are read from.
     catalogue: Vec<Value>,
-    /// The apps whose records the session serves, by alias, with their root's type, when the
+    /// The apps whose resources the session serves, by alias, with their root's type, when the
     /// session's api runs programs: what a program names without a window of the app open.
     served: Vec<(String, String)>,
     /// What each served app declares, compacted ([`programs::compact_declarations`]), by alias:
@@ -110,7 +110,7 @@ impl ProgramWorld {
     }
 }
 
-/// The apps whose records the session serves (`tl:<app>:<root>`, of kind `tl.<app>.<Type>`), by
+/// The apps whose resources the session serves (`tl:<app>:<root>`, of kind `tl.<app>.<Type>`), by
 /// alias with their root's type, when the session's api runs programs: none without the API.
 fn served_apps(catalogue: &crate::surface::Catalogue) -> Vec<(String, String)> {
     let api = catalogue.offers.iter().any(|offer| {
@@ -147,7 +147,7 @@ fn served_apps(catalogue: &crate::surface::Catalogue) -> Vec<(String, String)> {
     served
 }
 
-/// The ids of the apps whose records the session serves (`tl:<app>:<root>`).
+/// The ids of the apps whose resources the session serves (`tl:<app>:<root>`).
 fn served_app_ids(catalogue: &crate::surface::Catalogue) -> Vec<String> {
     let mut apps: Vec<String> = Vec::new();
     for offer in &catalogue.offers {
@@ -334,7 +334,7 @@ impl Session {
         };
         // The session's api runs the program in the task's own tilolang host, over every app
         // the session runs: no window of an app need be open for a program to read or change its
-        // records. What the open apps' hosts declare only describes them better.
+        // resources. What the open apps' hosts declare only describes them better.
         self.program_world(run, state)?;
         let catalogue = self.task_catalogue();
         let Some(api) = catalogue.offers.iter().find(|offer| {

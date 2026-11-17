@@ -1,6 +1,6 @@
 //! Tasks: the workspace's issues, on a list and a board.
 //!
-//! The tracker is the app's record of the workspace ([`model`]): the
+//! The tracker is the app's resource of the workspace ([`model`]): the
 //! projects and areas above its issues. The issues — nested, each with a
 //! markdown description, a status, an assignee, labels, links and a thread —
 //! are kept in numbered parts beside it ([`part`]), so a change to one costs
@@ -100,7 +100,7 @@ impl Window {
                 })
             }
             // A past version shows the tracker's projects and no issues:
-            // the parts are not part of the record it shows.
+            // the parts are not part of the resource it shows.
             None => cx.value(|tracker: &Tracker| Tasks {
                 tracker: Rc::new(tracker.clone()),
                 parts: Parts::<IssuePart>::default(),
@@ -207,8 +207,8 @@ impl ResourceApp for App {
     }
 
     /// The issues, kept in parts beside the tracker.
-    fn records(records: &mut ui::framework::Records<'_>) {
-        records.chain::<IssuePart>();
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        resources.chain::<IssuePart>();
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {

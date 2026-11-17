@@ -184,7 +184,7 @@ fn a_sealed_reference_imports_the_content_it_opens() {
         import_content(&mut app, &reference, "logo.png").expect("the bare reference imports");
     assert_eq!(again["media"], first["media"]);
 
-    // A render reads the sources the record names, by their references.
+    // A render reads the sources the resource names, by their references.
     let mut placed_project = Project::new("cut");
     placed_project.media.push(item.clone());
     let v1 = Uuid::new_v4();
@@ -643,7 +643,7 @@ fn a_field_edit_naming_no_field_says_which_fields_there_are() {
         call(&mut app, "field-edit", json!({ "edit": whole })).unwrap_err()
     );
     assert!(
-        refused.contains("`project` is the record itself"),
+        refused.contains("`project` is the resource itself"),
         "{refused}"
     );
     assert_eq!(app.state().name, "cut");

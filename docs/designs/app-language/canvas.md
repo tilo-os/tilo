@@ -139,7 +139,7 @@ is shown to anyone.
   caret itself never moves it. A card hugs what it holds up to the visible area and no further:
   its text wraps and the card scrolls.
 - **Captions name the thing.** A place's caption is what it shows, by the name of the view it
-  stands through ("All inboxes", "Notes"), never the first record or account of its app's root.
+  stands through ("All inboxes", "Notes"), never the first resource or account of its app's root.
   A place under another keeps its caption clear of it: they stand the caption's band and the
   canvas's gap apart.
 - **Places hug what they show.** A list found at a click is as tall as its rows up to its room:

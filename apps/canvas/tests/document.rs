@@ -327,7 +327,7 @@ fn the_panels_stay_put_away_on_a_narrow_window() {
 }
 
 #[test]
-fn an_artwork_file_opens_from_files_as_its_own_record() {
+fn an_artwork_file_opens_from_files_as_its_own_resource() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("Valley.artwork");
     {

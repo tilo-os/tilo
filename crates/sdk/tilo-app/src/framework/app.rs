@@ -361,12 +361,12 @@ pub trait ResourceApp: 'static {
     /// and `tilo-app surface` commits its surface with the app's.
     ///
     /// ```ignore
-    /// fn records(records: &mut Records<'_>) {
-    ///     records.person::<WatchHistory>().settings::<Playback>();
+    /// fn resources(resources: &mut Resources<'_>) {
+    ///     resources.person::<WatchHistory>().settings::<Playback>();
     /// }
     /// ```
-    fn records(records: &mut super::Records<'_>) {
-        let _ = records;
+    fn resources(resources: &mut super::Resources<'_>) {
+        let _ = resources;
     }
 
     /// The person's own records the app keeps
@@ -906,8 +906,8 @@ pub(crate) fn build_root<A: ResourceApp>(
     // A window someone uses opens the records the app keeps beside its own,
     // so they are published before any view shows them.
     if permissions.is_some() {
-        A::records(
-            &mut super::Records::new(&storage)
+        A::resources(
+            &mut super::Resources::new(&storage)
                 .with_base(live.clone(), dispatch.clone())
                 .at(run.launched.record.as_ref()),
         );

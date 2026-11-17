@@ -1,5 +1,5 @@
 //! What a Calculator window shows, kept as the window's own presentation: its
-//! mode, the graphs' views and which row each graph has selected. The record
+//! mode, the graphs' views and which row each graph has selected. The resource
 //! holds the calculations and rows; a reopened window shows what it showed.
 
 use ui::application_view::{ApplicationFocusRestore, ApplicationLocalView, ApplicationViewState};
@@ -81,7 +81,7 @@ impl ApplicationViewState for CalculatorApp {
         let [yaw, pitch, zoom] = view.view3d;
         self.model.view2d = View2d { cx, cy, scale };
         self.model.view3d = View3d { yaw, pitch, zoom };
-        // Presentation clamps it to the rows the record has.
+        // Presentation clamps it to the rows the resource has.
         self.model.active_fn = view.active_fn;
         self.model.active_surface = view.active_surface;
         // The mode only: a window that shows a graph adds no starter row.

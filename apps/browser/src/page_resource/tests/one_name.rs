@@ -4,7 +4,7 @@
 //! on the device that runs the page and one that came in from another of the
 //! person's devices are both `agent:claude-code`, and the engine keeps what
 //! they do under that one name. Where each works from is what tells them
-//! apart, and the record says it beside the name. So the window sets an
+//! apart, and the resource says it beside the name. So the window sets an
 //! action down as the invoker of the invocation that ran it, whoever else
 //! was admitted under the name meanwhile.
 
@@ -40,7 +40,7 @@ fn from_here() -> (String, Option<String>, Option<String>) {
     (MEMBER.to_owned(), None, None)
 }
 
-/// The session each change an agent authored in the record's history is by:
+/// The session each change an agent authored in the resource's history is by:
 /// the name its host knows it by.
 fn sessions_in_history(record: &PersonResource<PageResource>) -> Vec<Option<String>> {
     record
@@ -54,7 +54,7 @@ fn sessions_in_history(record: &PersonResource<PageResource>) -> Vec<Option<Stri
                 .map(|invoker| invoker.name)
                 .collect()
         })
-        .expect("the record is open")
+        .expect("the resource is open")
 }
 
 /// Which of `listed` say that where their actor worked from is not known.
@@ -112,8 +112,8 @@ fn who_set_the_fields(app: &mut App, engine: &TestEngine) -> Vec<Value> {
 /// member. The laptop's fill holds the tab and the other is admitted while
 /// it runs. Each fill is set down as the session that did it: the laptop's
 /// names the laptop beside the member and the other names no device, in the
-/// record, in a reviewer's read of it, in who set each field and in the
-/// record's history.
+/// resource, in a reviewer's read of it, in who set each field and in the
+/// resource's history.
 #[test]
 fn a_session_from_another_device_is_told_from_one_here_under_the_same_name() {
     let engine = TestEngine::new();
@@ -222,7 +222,7 @@ fn two_sessions_on_one_device_each_author_what_they_did() {
 /// The engine answers the fill of the session on the laptop and says where
 /// it set it down. Before the window has read that entry a session of the
 /// member on this device asks who set the field, and then reads the tab's
-/// record; the engine lists the fill and, after it, a request the window
+/// resource; the engine lists the fill and, after it, a request the window
 /// held under the member's name, which no answer placed.
 ///
 /// The fill is the laptop session's, by the answer that placed it: who set
@@ -249,7 +249,7 @@ fn what_no_answer_places_under_a_name_two_places_share_says_its_device_is_not_kn
     let record = record(&mut app);
     assert!(
         record.with(|state| state.tabs.keys().next().is_none()),
-        "the fill is not in the tab's record yet"
+        "the fill is not in the tab's resource yet"
     );
 
     engine.set_page_data(
@@ -283,7 +283,7 @@ fn what_no_answer_places_under_a_name_two_places_share_says_its_device_is_not_kn
         Some(&near),
         &BrowserEffect::ReadPageRecord { since: None },
     )
-    .expect("the record answers");
+    .expect("the resource answers");
     let listed = &read["data"]["entries"];
     assert_eq!(named_in(listed), [from_laptop(), from_here()], "{read}");
     assert_eq!(unknown(listed), [false, true], "{read}");

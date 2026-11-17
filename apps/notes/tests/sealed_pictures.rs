@@ -72,7 +72,7 @@ fn files_under(root: &std::path::Path) -> Vec<Vec<u8>> {
     found
 }
 
-/// What a workspace's host does with `stored`'s content as the record's
+/// What a workspace's host does with `stored`'s content as the resource's
 /// route carries it from `writer`: keeps the ciphertext under its address in
 /// `host`, and serves it back, as it is, to whoever asks.
 fn through_host(writer: &TestApp<NotesShell>, stored: &Bytes, host: &std::path::Path) -> Vec<u8> {

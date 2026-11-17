@@ -288,7 +288,7 @@ fn pictures_pasted_in_a_row_with_typing_between_keep_their_order() {
 
 /// A picture a member put in the note arrives after the note says it
 /// is there. Until it does, the window sleeps: no timer looks for it. When
-/// its bytes reach the record's content store, the sync their arrival
+/// its bytes reach the resource's content store, the sync their arrival
 /// brings draws it, with no wait.
 #[test]
 fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() {
@@ -328,15 +328,15 @@ fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() 
         "the bytes are not on this device yet"
     );
     // The lane this window keeps: what it asked for is its own to ask, not
-    // the process's lane for the record.
+    // the process's lane for the resource.
     let lane = app
         .harness()
         .component_document_content_lane()
-        .expect("the window keeps a lane for its record's content");
+        .expect("the window keeps a lane for its resource's content");
     assert_eq!(
         lane.take_requests().wants,
         vec![digest.clone()],
-        "the window asked the record's route for the bytes"
+        "the window asked the resource's route for the bytes"
     );
     // The save the merge started shows its status for a moment, on timers
     // and a fade of its own; once they have run out the notebook must ask
@@ -353,7 +353,7 @@ fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() 
             "something keeps waking the notebook while the bytes are away"
         );
         // Frames only when the live host would run them, each followed by
-        // the idle pass that hands edits to the record's writer.
+        // the idle pass that hands edits to the resource's writer.
         let schedule = app.harness().frame_schedule();
         if schedule.queued_work
             || schedule.needs_animation_frame

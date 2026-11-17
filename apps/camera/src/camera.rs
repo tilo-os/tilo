@@ -3,7 +3,7 @@
 //!
 //! The photo and video *pixels* live as verified bytes in the app's content
 //! store (see [`crate::media`]); a local capture file is merely an optional
-//! projection. The record holds portable capture metadata naming those bytes
+//! projection. The resource holds portable capture metadata naming those bytes
 //! by their content-addressed media id, never a path, plus the scan history.
 //! Capture preferences are settings ([`crate::model::CapturePreferences`]),
 //! not record state. Camera deliberately keeps one recent handoff, not a
@@ -20,7 +20,7 @@ pub const MAX_SCANS: usize = 24;
 const MAX_SCAN_BYTES: usize = 16 * 1024;
 
 /// Portable capture metadata. The pixels live under `media_id` in the app's
-/// content store, verified on read; the record holds no path.
+/// content store, verified on read; the resource holds no path.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[model(check = SharedCapture::valid)]
 pub struct SharedCapture {
@@ -63,9 +63,9 @@ impl SharedCapture {
     }
 }
 
-/// The camera's record.
+/// The camera's resource.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
-pub struct Record {
+pub struct Camera {
     /// Scanned codes, newest first.
     #[model(readonly)]
     pub scans: Vec<ScanEntry>,
@@ -74,12 +74,12 @@ pub struct Record {
     pub recent: Option<SharedCapture>,
 }
 
-impl Record {
-    /// What the record holds: the one recent capture it hands off and the codes it scanned.
+impl Camera {
+    /// What the resource holds: the one recent capture it hands off and the codes it scanned.
     ///
     /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
+    /// with no window open reads the resource as it reads any app's resource, and
+    /// a named item is read from the resource's table or by the read its own
     /// type gives it.
     pub fn read_document(
         &self,
@@ -91,10 +91,10 @@ impl Record {
 
 #[resource(
     kind = "camera",
-    search = Record::search,
-    read_content = Record::read_document
+    search = Camera::search,
+    read_content = Camera::read_document
 )]
-impl Record {
+impl Camera {
     /// Offer the latest capture.
     ///
     /// The capture taken last becomes the one Camera offers to open in
@@ -130,7 +130,7 @@ impl Record {
     }
 }
 
-impl Record {
+impl Camera {
     /// The recent capture and every scanned code, found by what they say.
     fn search(&self) -> Vec<tilo_resource::SearchEntry> {
         let recent = self.recent.iter().map(|capture| {

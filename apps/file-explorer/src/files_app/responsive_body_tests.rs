@@ -863,7 +863,7 @@ fn archive_extraction_stays_directly_reachable_on_phone_and_desktop() {
             || ui::attention::entries()
                 .iter()
                 .any(|entry| entry.what() == t("files-archive-read-only")),
-        "entering an archive says it is read-only, and the record keeps it"
+        "entering an archive says it is read-only, and the resource keeps it"
     );
 
     h.lay_out(1200.0, 760.0);

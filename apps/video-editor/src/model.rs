@@ -1,6 +1,6 @@
 //! The editor's data model: media bin, tracks, clips, project.
 //!
-//! `#[derive(Model)]` stores the project in the record field by field, with media, tracks,
+//! `#[derive(Model)]` stores the project in the resource field by field, with media, tracks,
 //! clips and markers keyed by their own ids, so members' edits merge per field. The
 //! editing math (split, trim, move, ripple) lives here behind unit tests; the verbs
 //! ([`crate::resource`]) run it.
@@ -1148,7 +1148,7 @@ pub struct Clip {
     /// shot's picture and sound, which move, trim, split, delete and re-time together.
     ///
     /// A shared group id rather than "my partner is clip X": a pointer has to be repaired when
-    /// one half is deleted, and in a record two people edit that repair is a conflict. A group
+    /// one half is deleted, and in a resource two people edit that repair is a conflict. A group
     /// id degrades safely — one member is indistinguishable from unlinked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<Uuid>,
@@ -1163,7 +1163,7 @@ pub struct Clip {
     /// play.
     #[serde(default, skip_serializing_if = "is_false")]
     pub sound_split: bool,
-    /// Unlinking clears **this**, not [`Self::link`], so the group survives as a record of
+    /// Unlinking clears **this**, not [`Self::link`], so the group survives as a resource of
     /// what came from one placement: that is what answers "is this shot's sound already on
     /// the timeline". Clearing the id instead offered "Split off audio" again on an unlinked
     /// clip and made a duplicate.

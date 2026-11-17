@@ -226,7 +226,7 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
 
 #[test]
 #[serial(pdfium)]
-fn the_marker_colour_recolours_the_selected_mark_through_the_record() {
+fn the_marker_colour_recolours_the_selected_mark_through_the_resource() {
     let (_directory, mut app) = reader();
     let mark = Annotation::new(
         1,

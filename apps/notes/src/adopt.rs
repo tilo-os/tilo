@@ -1,7 +1,7 @@
 //! Bringing the notebooks of earlier Notes windows into the workspace's notebook.
 //!
 //! Notes used to keep a notebook per window: each window the launcher opened
-//! got a record of its own (`derived:default@tab:<window>`), so a new window
+//! got a resource of its own (`derived:default@tab:<window>`), so a new window
 //! showed an empty notebook and the pages written in another were reachable
 //! only by restoring that exact window. Notes now keeps one notebook per
 //! workspace ([`ResourceApp::WORKSPACE_RESOURCE`](ui::framework::ResourceApp::WORKSPACE_RESOURCE)).
@@ -9,21 +9,21 @@
 //! and pictures of every per-window notebook this device holds in the workspace
 //! into it ([`adoption`]).
 //!
-//! The copy is deterministic: notebooks are taken in record id order, notes
+//! The copy is deterministic: notebooks are taken in resource id order, notes
 //! keep their ids (so links between them still resolve) and their order, and
 //! a note id met again in a later notebook is kept as the first had it. The
-//! per-window records are only read; they stay on disk as they were, so the
+//! per-window resources are only read; they stay on disk as they were, so the
 //! migration can be undone by hand.
 //!
 //! Why a copy and not [`DocumentCheckout::formerly`](ui::resource::DocumentCheckout::formerly):
-//! a former identity hands the new record *one* earlier document, history
+//! a former identity hands the new resource *one* earlier document, history
 //! and all, and claims it so no other successor gets it. A workspace usually has
 //! several window notebooks with notes (each window someone wrote in), and
 //! independent Automerge documents cannot be merged into one: each created
 //! its own `pages` collection, so merging would keep one window's notes and
 //! hide the others' as conflicts. Copying the notes, by id, keeps all of
 //! them; what is lost is their per-keystroke history, which stays readable
-//! in the untouched old records.
+//! in the untouched old resources.
 
 use std::collections::HashSet;
 
@@ -38,7 +38,7 @@ use crate::notebook::{self, Notebook};
 /// them) into a new notebook: its notes with their trees, bodies and tags,
 /// then the pictures they show, which `content` (this device's content
 /// store) serves when a notebook holds only a reference to one. Empty when
-/// no record holds a note or a tag. A record that does not read as a Notes
+/// no resource holds a note or a tag. A resource that does not read as a Notes
 /// notebook is left out and logged; so is a picture whose bytes are not
 /// here, which is then missing from its notes as it was in the old window.
 pub fn adoption(
@@ -50,9 +50,9 @@ pub fn adoption(
     let mut tags = HashSet::<TagId>::new();
     let mut images = HashSet::<String>::new();
     for (record, doc) in records {
-        // A window notebook that does not read as a Notes record — one
+        // A window notebook that does not read as a Notes resource — one
         // written before Notes kept one — is left out; it has no migration,
-        // and the window's own record stays as it was.
+        // and the window's own document stays as it was.
         let mut doc = doc.clone();
         if let Err(error) = ui::tilo_resource::evolution::migrate::<Notebook>(&mut doc) {
             tracing::warn!(%record, %error, "notes: not adopting an unreadable window notebook");

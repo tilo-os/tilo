@@ -18,7 +18,7 @@ its names.
   devices, and visible to everyone else as presence.
 - **Attention is visible inside a workspace.** There's no hidden mode inside a shared one:
   which resource someone is on, and what they selected, shows in every shell.
-- **Drafts are records.** Half-typed text is part of the workspace: others see it as it is
+- **Drafts are resources.** Half-typed text is part of the workspace: others see it as it is
   typed, on every device, like any other change.
 - **A resource is state.** Views and actions belong to it but are separate from it.
 
@@ -32,7 +32,7 @@ its names.
 | **Layout** | what is open where (strips, window groups, windows, canvas places) | with the workspace: everyone has the same windows | until closed |
 | **View state** | what one person keeps in a window: how it shows its resource (which view, sidebar place, sort, filter, active tab) and where they are in it (a draft, what is open); scroll, cursor, selection and focus the platform keeps without a declaration | personal, visible as presence | per person and window, on all their devices |
 
-In code the layout is the workspace's desktop record (`tilo_desktop_model`'s workspace; a
+In code the layout is the workspace's desktop resource (`tilo_desktop_model`'s workspace; a
 strip is `layout::Strip`, a window a `layout::Tab` in a `layout::WindowGroup`).
 
 ## 3. Apps
@@ -130,10 +130,10 @@ default view note_editor for Note
   platform without being declared.
 - An app whose data is each person's own (mail) says so in its header:
   `app so.tilo.lang.mail "Mail" (resources: .own)`. Each member then keeps the app's resources in
-  their own record of the workspace (of the package kind `tl.<app>`, `collab_types::OwnRecord`),
+  their own document of the workspace (of the package kind `tl.<app>`, `collab_types::OwnResource`),
   which only their devices hold the key to and every action API decides as theirs alone, the
   workspace's owner included. Another member opening the app in the same workspace starts from
-  their own, empty record.
+  their own, empty resource.
 - `open(r)` is an action usable from views and from actions.
 
 ## 9. The layout is a resource

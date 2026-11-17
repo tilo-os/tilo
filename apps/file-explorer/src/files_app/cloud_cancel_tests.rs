@@ -6,7 +6,7 @@ use tilo_cloud_files::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse, Import
     clippy::too_many_lines,
     reason = "one sequential action, portal and protocol scenario keeps the observable transfer lifecycle together"
 )]
-fn cancel_action_closes_preparing_export_and_retry_records_only_failed_copy() {
+fn cancel_action_closes_preparing_export_and_retry_resources_only_failed_copy() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let root = tempfile::tempdir().unwrap();
     let runtime = tilo_test_env::runtime_tempdir().unwrap();

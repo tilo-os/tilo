@@ -1,13 +1,13 @@
 //! Chat's direct conversations: the conversation two of the workspace's
 //! people have, opened and sent to by the app's operations
 //! (`open-direct-conversation`, `send-direct-message`); its messages are read
-//! from the record, as every conversation's are.
+//! from the resource, as every conversation's are.
 //!
 //! A direct conversation is not created: its id names its members
 //! ([`Chat::direct_id`]), so every device that opens the same conversation
 //! opens the same one, and neither has to write anything first. Its messages
 //! are the chat's messages in the chat's parts, beside every channel's; its
-//! read mark is this person's, in the record.
+//! read mark is this person's, in the resource.
 
 use tilo_actions::policy::MemberId;
 use ui::framework::{Effected, LiveRow};
@@ -15,10 +15,10 @@ use ui::tilo_resource::Effect as _;
 use ui::tilo_resource::{Id, Invoke};
 
 use crate::app::{ChatApp, Focus};
+use crate::chat::Chat;
 use crate::effects::{ChatEffect, item_row_id};
 use crate::messages::chat_part;
 use crate::parts::ChatPart;
-use crate::record::Chat;
 
 impl ChatApp {
     /// The person `key` (their root key) names here, and the one conversation
@@ -145,7 +145,7 @@ impl ChatApp {
             .map_err(|error| error.to_string())?;
         let message = ui::tilo_resource::take_minted().into_iter().next();
         // The conversation stands where the box stood: a window of the shell,
-        // floated over it, that the workspace's record keeps for every
+        // floated over it, that the workspace's document keeps for every
         // member.
         let anchor = item_row_id("channels", id.as_str());
         if opens {
@@ -276,7 +276,7 @@ impl ChatApp {
     /// by a written address. Every person has one, not only those the
     /// conversation with whom holds a message yet: a caller asks for the
     /// row before it can write the first message. Its messages are read as
-    /// any conversation's, from the chat's record and its parts.
+    /// any conversation's, from the chat's resource and its parts.
     pub(crate) fn direct_conversation_rows(&self) -> Vec<LiveRow> {
         self.channels
             .iter()
@@ -317,7 +317,7 @@ pub(crate) struct SendMessage<'a> {
     pub opens: bool,
 }
 
-/// The record's `post` of `text`, with what it carries, the paragraphs it
+/// The resource's `post` of `text`, with what it carries, the paragraphs it
 /// was written in, and the mentions the window resolved, to the conversation
 /// `id`.
 fn post(

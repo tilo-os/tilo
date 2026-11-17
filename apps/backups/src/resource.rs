@@ -20,7 +20,7 @@ pub struct Backups {
 }
 
 impl Backups {
-    /// What the record holds: the retention policy every device follows.
+    /// What the resource holds: the retention policy every device follows.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

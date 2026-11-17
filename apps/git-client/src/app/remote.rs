@@ -34,7 +34,7 @@ impl GitClientState {
         }
     }
 
-    /// Run an action and record any error for the status line. On success
+    /// Run an action and resource any error for the status line. On success
     /// the model is reloaded from disk so the render reflects reality.
     pub(super) fn run_action(&mut self, result: anyhow::Result<()>) {
         match result {

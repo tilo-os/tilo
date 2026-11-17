@@ -261,7 +261,7 @@ mod tests {
                 let mut message = template.clone();
                 message.id = uuid::Uuid::new_v4();
                 message.folder = Folder::Inbox;
-                message.subject = format!("ordinary record {n}");
+                message.subject = format!("ordinary resource {n}");
                 message.body.clear();
                 mailbox.insert(message);
             }
@@ -271,9 +271,9 @@ mod tests {
             assert!(first.results.len() <= 3);
             assert!(
                 source
-                    .search("record 2999")
+                    .search("resource 2999")
                     .iter()
-                    .any(|hit| hit.title == "ordinary record 2999")
+                    .any(|hit| hit.title == "ordinary resource 2999")
             );
         }
     }

@@ -143,7 +143,7 @@ pub async fn connect(
         .prepare_application(workspace, host, &catalogue, CHAT, &chat_record)
         .await
         .map_err(|error| format!("add Chat: {error}"))?;
-    let connect = discord::Guild::CONNECT.with(discord::record::guild::Connect {
+    let connect = discord::Guild::CONNECT.with(discord::guild::guild::Connect {
         guild_id: link.guild_id.clone(),
         name: link.name.clone(),
         only_channel: link.only_channel.clone(),

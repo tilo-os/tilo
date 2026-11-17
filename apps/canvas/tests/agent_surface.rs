@@ -20,10 +20,10 @@ use ui::prelude::TestApp;
 /// does not repeat its description, nor a description its label. Raised
 /// from 64 KiB when every document resource gained `review-restore` and
 /// `restore-reviewed` (exact-item restore, #4581), and from 68 KiB when the
-/// recent artworks became a record of their own beside the artwork, and
+/// recent artworks became a resource of their own beside the artwork, and
 /// from 72 KiB when the brush, colour and pigment choices became view
 /// effects an agent can make, and from 76 KiB when a field edit's schema
-/// began naming the arguments of each operation the record's paths take, so
+/// began naming the arguments of each operation the resource's paths take, so
 /// an agent's call no longer fails on an argument the schema never mentioned,
 /// and to 86 KiB when a map's entries began offering the operations of the
 /// value type they hold beside `set`, so an edit of one is offered rather

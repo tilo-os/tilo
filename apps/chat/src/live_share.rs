@@ -1,15 +1,15 @@
 //! Windows shared live into a channel.
 //!
-//! A message that shares a window ([`crate::record::WindowShare`]) shows a
+//! A message that shares a window ([`crate::chat::WindowShare`]) shows a
 //! card: the app's mark, the window's title, the sharer's face and whether
 //! they still have it open, over a miniature of the resource at the view's
 //! own proportions. The miniature is not a picture the sharer sends: Chat
 //! asks its desktop to draw the resource's own app there
-//! ([`ui::window_share`]), from this device's copy of the record, so it
-//! follows the sharer's work as the record syncs. Pressing the card grows
+//! ([`ui::window_share`]), from this device's copy of the resource, so it
+//! follows the sharer's work as the resource syncs. Pressing the card grows
 //! the miniature in place to a size to work at: the desktop then runs the
 //! resource's app there on this device's copy, taking the reader's pointer,
-//! keys and text input beside whoever else is in the record, with the access
+//! keys and text input beside whoever else is in the resource, with the access
 //! the workspace gives them. The card's head makes it smaller again, or opens
 //! the resource as a window of the reader's own. On a desktop that draws no
 //! views a press opens the window. A share its sharer stopped turns into a
@@ -35,11 +35,11 @@ use ui::window_share::{Embed, EmbedState, OpenWindow, ResourceView};
 use vello::kurbo::{Point, Rect};
 
 use crate::app::{ChatApp, Hit};
+use crate::chat::ShareAccess;
 use crate::messages::chat_part;
 use crate::model::Message;
 use crate::paint::{line_in, line_of};
 use crate::parts::ChatPart;
-use crate::record::ShareAccess;
 
 /// The miniature's proportions: a window's, wider than tall.
 pub(crate) const ASPECT: f64 = 16.0 / 10.0;
@@ -76,7 +76,7 @@ pub(crate) struct LiveShares {
     /// What the shares grant, and what the workspace lets this person do.
     pub(crate) grants: crate::share_grants::ShareGrants,
     /// The shares this person works in where the conversation shows them,
-    /// by message: how this window presents them, never part of the record.
+    /// by message: how this window presents them, never part of the resource.
     pub(crate) grown: HashSet<String>,
 }
 
@@ -413,7 +413,7 @@ impl ChatApp {
         &self,
         paint: &mut PaintCtx<'_>,
         m: &Message,
-        share: &crate::record::WindowShare,
+        share: &crate::chat::WindowShare,
         (label, app): (&str, &str),
         (header, end): (Rect, Option<f64>),
     ) {
@@ -464,7 +464,7 @@ impl ChatApp {
 
     /// What a live share's card says under its title, to this reader: why
     /// opening it failed, that they may edit it anyway, or the share's access.
-    pub(crate) fn share_caption(&self, m: &Message, share: &crate::record::WindowShare) -> String {
+    pub(crate) fn share_caption(&self, m: &Message, share: &crate::chat::WindowShare) -> String {
         if let Some(Err(why)) = self.resource_navigation.status(&m.id, 0) {
             // Why pressing it opened nothing, where the access stood.
             why.clone()
@@ -483,7 +483,7 @@ impl ChatApp {
     /// Returns where it stands.
     fn draw_share_mark(
         paint: &mut PaintCtx<'_>,
-        share: &crate::record::WindowShare,
+        share: &crate::chat::WindowShare,
         app: &str,
         header: Rect,
     ) -> Rect {
@@ -508,7 +508,7 @@ impl ChatApp {
         &self,
         paint: &mut PaintCtx<'_>,
         m: &Message,
-        share: &crate::record::WindowShare,
+        share: &crate::chat::WindowShare,
         (header, end): (Rect, f64),
     ) -> f64 {
         let theme = paint.theme;
@@ -733,7 +733,7 @@ impl ChatApp {
         if self.active_channel.is_empty() {
             return Err("Open a channel to share a window in".into());
         }
-        // A window on one item of its record (a note of the notebook)
+        // A window on one item of its resource (a note of the notebook)
         // shares that item, under the item's own kind.
         let item_kind = window
             .item

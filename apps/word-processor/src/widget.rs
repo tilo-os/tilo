@@ -1165,7 +1165,7 @@ impl Editor {
         self.last_dispatched.as_ref()
     }
 
-    pub(crate) fn show_record_of(&mut self, path: PathBuf) {
+    pub(crate) fn show_resource_of(&mut self, path: PathBuf) {
         let format = WpFormat::from_path(&path);
         self.set_file(path.clone(), format);
         self.record_file = Some(path);

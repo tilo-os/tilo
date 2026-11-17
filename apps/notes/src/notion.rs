@@ -335,12 +335,12 @@ fn databases_of(name: &str, names: &[String]) -> Vec<String> {
     databases
 }
 
-/// `csv` as a Markdown table: its first row the header, one line per record.
+/// `csv` as a Markdown table: its first row the header, one line per resource.
 /// A quoted field keeps its embedded newlines and commas; `None` when the
 /// file holds no field at all.
 #[must_use]
 pub fn csv_table(csv: &str) -> Option<String> {
-    let records = csv_records(csv);
+    let records = csv_resources(csv);
     let mut records = records.into_iter();
     let header = records.next()?;
     if header.is_empty() {
@@ -382,10 +382,10 @@ fn escape_cell(field: &str) -> String {
         .to_owned()
 }
 
-/// The records of `csv`, each a row of fields: comma apart, quotes kept as
+/// The resources of `csv`, each a row of fields: comma apart, quotes kept as
 /// RFC 4180 keeps them (`""` inside a quoted field is one quote, a quoted
 /// field may hold commas and line breaks).
-fn csv_records(csv: &str) -> Vec<Vec<String>> {
+fn csv_resources(csv: &str) -> Vec<Vec<String>> {
     let mut records = Vec::new();
     let mut record = Vec::new();
     let mut field = String::new();

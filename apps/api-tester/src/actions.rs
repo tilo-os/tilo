@@ -1,7 +1,7 @@
 //! API Tester's effects: the work that reaches outside the workspace. Every change to
-//! the workspace is a field edit or a verb of [`crate::record::Workspace`]; sending is an
+//! the workspace is a field edit or a verb of [`crate::workspace::Workspace`]; sending is an
 //! effect, whose completion records a history entry through a verb. A credential is set
-//! through an effect into this device's secret store and never enters the record.
+//! through an effect into this device's secret store and never enters the resource.
 
 use ui::prelude::Effect;
 // The effect derive names its runtime crate by this path.

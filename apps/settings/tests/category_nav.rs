@@ -60,10 +60,10 @@ fn click(app: &mut Window, target: Category) {
 /// Every category, each in a window of its own: the window opens on the
 /// default category, a click on the category's row selects it and only it,
 /// its pane draws, and the frames an idle window runs afterwards change
-/// nothing in the record. The default category's row is clicked too: the
+/// nothing in the resource. The default category's row is clicked too: the
 /// row already selected stays the one selected.
 #[test]
-fn clicking_a_category_navigates_to_its_pane_and_leaves_the_record_alone() {
+fn clicking_a_category_navigates_to_its_pane_and_leaves_the_resource_alone() {
     for &target in Category::ALL {
         let mut app = window(VIEWPORT);
         assert_eq!(
@@ -105,7 +105,7 @@ fn clicking_a_category_navigates_to_its_pane_and_leaves_the_record_alone() {
         assert_eq!(
             app.read_document(ui::tilo_resource::heads_of),
             heads,
-            "{target:?} idle frames must leave the record unchanged"
+            "{target:?} idle frames must leave the resource unchanged"
         );
     }
 }

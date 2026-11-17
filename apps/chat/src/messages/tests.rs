@@ -140,7 +140,7 @@ fn a_post_is_read_against_the_chat_record_where_it_is_invoked() {
             .say(&MemberId::person("u_aria"), "c_nowhere", "hello?")
             .is_err()
     );
-    // A mention is resolved against the record's people, whatever the
+    // A mention is resolved against the resource's people, whatever the
     // caller sent.
     let mut post = crate::demo::post("c_general", "@Aria Chen look", None);
     post.arguments.insert(
@@ -225,7 +225,7 @@ fn read_marks_are_positions_in_the_chain() {
     workspace
         .apply_as(
             crate::model::ME,
-            crate::resource::Chat::MARK_READ.with(crate::record::chat::MarkRead {
+            crate::resource::Chat::MARK_READ.with(crate::chat::chat::MarkRead {
                 channel: general.clone(),
                 part: 1,
                 seen: 2,
@@ -242,7 +242,7 @@ fn read_marks_are_positions_in_the_chain() {
     workspace
         .apply_as(
             crate::model::ME,
-            crate::resource::Chat::MARK_READ.with(crate::record::chat::MarkRead {
+            crate::resource::Chat::MARK_READ.with(crate::chat::chat::MarkRead {
                 channel: general,
                 part: 0,
                 seen: 1,
@@ -266,7 +266,7 @@ struct TwoDevices {
     guest: Chain<ChatPart>,
     guest_store: ui::resource::ResourceStore,
     guest_backend: Rc<durable_store::MemoryStore>,
-    /// The record the guest's window shows beside the chain.
+    /// The resource the guest's window shows beside the chain.
     shown: ui::resource::DocumentId,
 }
 
@@ -337,7 +337,7 @@ impl TwoDevices {
         }
     }
 
-    /// The guest window's sync: it reads the record it shows, which holds
+    /// The guest window's sync: it reads the resource it shows, which holds
     /// the store meanwhile, and the chain's revision.
     fn guest_syncs(&self) -> u64 {
         self.guest_store
@@ -346,7 +346,7 @@ impl TwoDevices {
     }
 
     /// The poster's first post, its part kept in the guest's store as the
-    /// workspace's replication keeps a record no window there has open.
+    /// workspace's replication keeps a resource no window there has open.
     fn first_post_reaches_the_guest(&self) {
         use durable_store::DurableStore as _;
         self.poster
@@ -403,7 +403,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_store_told_of_a_kept_part_has_the_window_look_at_once;
-    // A store told that a record arrived ([`ui::resource::ResourceStore::note_kept`],
+    // A store told that a resource arrived ([`ui::resource::ResourceStore::note_kept`],
     // as the browser's workspace replication tells it) has the window look at its
     // next settle, not a moment later.
     {
@@ -450,7 +450,7 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    /// The order messages are read and counted in, and the place a post records.
+    /// The order messages are read and counted in, and the place a post resources.
     /// Each case was a test of its own, on a fixture of its own; a failure
     /// names the cases that failed.
     fn the_timeline_and_unread_counts_follow_the_order_the_parts_hold;
@@ -470,7 +470,7 @@ tilo_test_env::scenario! {
         ] {
             part.messages.push(
                 Id::from_raw(id),
-                crate::record::Message::new(
+                crate::chat::Message::new(
                     channel.clone(),
                     MemberId::person(author),
                     ts,
@@ -495,8 +495,8 @@ tilo_test_env::scenario! {
     phase replicas_taking_the_same_posts_in_opposite_orders_read_one_timeline;
     // Two devices write offline from the same part, take each other's changes
     // in the opposite order, and write again: both read one timeline, in the
-    // same order. The order is the one the part records hold
-    // ([`Messages::iter`]), which every replica computes from the same records,
+    // same order. The order is the one the part resources hold
+    // ([`Messages::iter`]), which every replica computes from the same resources,
     // so it stays the same whether a change arrives before or after another.
     {
         let chat = crate::demo::demo(crate::model::ME);
@@ -505,7 +505,7 @@ tilo_test_env::scenario! {
         let mut seeded = ChatPart::default();
         seeded.messages.push(
             Id::from_raw("m_seeded"),
-            crate::record::Message::new(
+            crate::chat::Message::new(
                 Id::from_raw("c_general"),
                 MemberId::person("u_aria"),
                 4_000_000_000,
@@ -559,7 +559,7 @@ tilo_test_env::scenario! {
             .ids()
             .map(ToString::to_string)
             .collect();
-        assert_eq!(ours, in_resource, "in the order the records hold them");
+        assert_eq!(ours, in_resource, "in the order the resources hold them");
         let unique: std::collections::BTreeSet<&String> = ours.iter().collect();
         assert_eq!(unique.len(), ours.len(), "each message once: {ours:?}");
         let texts: std::collections::BTreeSet<String> = chat

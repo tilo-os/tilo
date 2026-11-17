@@ -1,5 +1,5 @@
 //! The new-container form: one labelled field per draft entry, each showing the draft's
-//! text at its path. An edit is a field edit through the record's dispatcher, so the
+//! text at its path. An edit is a field edit through the resource's dispatcher, so the
 //! draft merges with a second person typing in the same form.
 
 use std::cell::RefCell;

@@ -99,7 +99,7 @@ impl Controls {
 }
 
 /// A press acts on this device alone: what it changes in the clocks is submitted
-/// as the record's own verbs, so a guest presses it as the owner does.
+/// as the resource's own verbs, so a guest presses it as the owner does.
 fn button(id: &str, label: &str, f: impl FnMut() + 'static) -> Element {
     Box::new(
         Button::new(id, label)
@@ -1707,7 +1707,7 @@ impl ClocksApp {
     }
 
     pub(crate) fn activate_uri(&self, uri: &str) {
-        if let Some(record) = crate::native_timers::activation_record(uri)
+        if let Some(record) = crate::native_timers::activation_resource(uri)
             && self.record.as_ref() != Some(&record)
         {
             if let Some(opener) = &self.opener {

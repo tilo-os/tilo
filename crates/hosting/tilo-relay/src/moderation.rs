@@ -240,7 +240,7 @@ impl<R: Resource> WorkspaceApi for ReplicaApi<'_, R> {
 
     fn decide(
         &mut self,
-        decision: tilo_moderation::record::moderation::Decide,
+        decision: tilo_moderation::model::moderation::Decide,
     ) -> Result<(), String> {
         let args = serde_json::to_value(decision).map_err(|error| error.to_string())?;
         let address = self.address("decide-reports", None)?;

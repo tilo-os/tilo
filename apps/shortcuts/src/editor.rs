@@ -485,7 +485,7 @@ pub fn title(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String {
             joined,
         } => {
             let parts = if *joined { " with its parts" } else { "" };
-            format!("Read record “{record}” of {app}{parts}")
+            format!("Read resource “{record}” of {app}{parts}")
         }
     }
 }
@@ -536,7 +536,7 @@ pub fn substance(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String
         StepKind::Task { instruction, .. } => {
             let _ = write!(line, " ({instruction:?})");
         }
-        // The heading names the record and app; nothing else is held.
+        // The heading names the resource and app; nothing else is held.
         StepKind::Read { .. } => {}
     }
     line

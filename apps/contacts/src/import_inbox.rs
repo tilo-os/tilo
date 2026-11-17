@@ -3,7 +3,7 @@
 //! The installer publishes the cards it holds in this app's own data area;
 //! opening the app parses them through the same bounded vCard reader as a chosen
 //! file and adds only cards the book does not already hold, so reopening a
-//! record is idempotent and a deleted contact is never revived.
+//! resource is idempotent and a deleted contact is never revived.
 
 use std::rc::Rc;
 
@@ -80,7 +80,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonical_cards_become_contacts_in_the_target_record() {
+    fn canonical_cards_become_contacts_in_the_target_resource() {
         let parsed = crate::vcard::parse_vcards(
             "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:ada@example.test\r\nFN:Ada Lovelace\r\nEMAIL:ada@example.test\r\nEND:VCARD\r\n",
         );

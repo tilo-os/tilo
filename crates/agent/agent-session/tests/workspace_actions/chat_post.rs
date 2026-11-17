@@ -217,7 +217,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
             ui::tilo_resource::Id::from_raw(format!("m{index}")),
             // Short: one publication carries the part, and the host reads
             // every message of it all the same.
-            chat::record::Message::new(
+            chat::chat::Message::new(
                 channel.id.clone().into(),
                 ui::tilo_resource::MemberId::person("ada"),
                 i64::try_from(index).unwrap_or(i64::MAX),

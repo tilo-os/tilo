@@ -1,4 +1,4 @@
-//! The platform's transfer receipts, mapped into the changes Files records.
+//! The platform's transfer receipts, mapped into the changes Files resources.
 use crate::file_ops::{Change, Outcome};
 #[cfg(test)]
 use std::path::Path;

@@ -17,7 +17,7 @@ use ui::widget::TileHost;
 type Arrived = Rc<RefCell<HashMap<TabId, AppComponent>>>;
 
 /// Hands each tab its component once it arrives, as the browser desktop
-/// does once a tab's record is loaded.
+/// does once a tab's resource is loaded.
 struct Components(Arrived);
 impl TileSource for Components {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
@@ -34,7 +34,7 @@ impl TileSource for Components {
 const WINDOWS: usize = 6;
 /// Record admissions one window may make in a pan frame: its sync and its
 /// undo status, with room to spare.
-const RECORDS_PER_WINDOW: usize = 4;
+const RESOURCES_PER_WINDOW: usize = 4;
 
 fn six_notes(
     f: &NotebookFixture,
@@ -210,18 +210,18 @@ fn assert_pan_frames(harness: &mut FrameHarness, handle: &DesktopHandle) {
             "{phase} ran on a pan frame: {rows:?}"
         );
     }
-    // Nor is any window's record opened: a sweep that opened the record of
+    // Nor is any window's resource opened: a sweep that opened the resource of
     // every bound widget to look for a bracket would open it once per
     // widget, and each window has far more widgets than that.
     let records = calls(&rows, "ui.record_frame");
     let bound = bound_widgets(&harness.inspection().root, false);
     assert!(
-        bound > RECORDS_PER_WINDOW * WINDOWS,
+        bound > RESOURCES_PER_WINDOW * WINDOWS,
         "the bound below is meaningful: {bound} bound widgets"
     );
     assert!(
-        records < frames.saturating_mul(RECORDS_PER_WINDOW * WINDOWS),
-        "{records} record admissions over {frames} pan frames: the bracket sweep \
+        records < frames.saturating_mul(RESOURCES_PER_WINDOW * WINDOWS),
+        "{records} resource admissions over {frames} pan frames: the bracket sweep \
          opened records it found nothing in"
     );
     assert_pan_frames_replay(harness, replayed, frames);

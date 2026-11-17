@@ -115,7 +115,7 @@ is a new rule at those points, never an app change:
 - **Scopes are whatever the session knows at those points:** the resource or
   path, the actor, the place the view shows it in (a strip, a window, a canvas
   place), the device, and the time. "Only in this strip", "for the next hour",
-  "read-only while shared in a call", "this agent, these three records": each is
+  "read-only while shared in a call", "this agent, these three resources": each is
   a grant over those facts. Today a grant (`action-policy` `Grant`) names a path
   at seven levels (workspace, app, kind, resource, item, field, action), a subject
   (person, role, agent, task, shortcut, app, bot, foreign device) and a lifetime
@@ -130,7 +130,7 @@ is a new rule at those points, never an app change:
   action", so it can't tell a new restriction from a quiet state, and needs no
   code for it.
 - **Creators, not owners.** A workspace's resources belong to the workspace. Who
-  made or changed something is in its history, and a person's own records
+  made or changed something is in its history, and a person's own documents
   (`resources: .own`) are theirs. A grant can name any of these facts; no app
   declares an owner.
 

@@ -350,5 +350,5 @@ ebook-library-note-page = Add a note to this page
 ebook-library-highlight-selection = Highlight selection
 ebook-library-note-selection = Add a note to the selection
 
-## What the records are called, and the actions on them
+## What the resources are called, and the actions on them
 settings-books-catalogues = Book catalogues

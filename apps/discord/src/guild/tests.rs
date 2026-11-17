@@ -97,7 +97,7 @@ tilo_test_env::scenario! {
         }));
         assert!(
             again.is_err(),
-            "a connected record is never pointed at another server"
+            "a connected resource is never pointed at another server"
         );
     }
 
@@ -469,7 +469,7 @@ tilo_test_env::scenario! {
             .unwrap()
             .clone();
         assert_eq!(offered.check, link_check(&link_proof("T0KEN")));
-        assert_ne!(offered.check, "T0KEN", "the record never holds the token");
+        assert_ne!(offered.check, "T0KEN", "the resource never holds the token");
         assert_eq!(offered.interaction.as_deref(), Some("i_1"));
 
         let mut ada = bot.fork().as_author(ADA);
@@ -499,7 +499,7 @@ tilo_test_env::scenario! {
         eve.set_now_ms(1_000);
         let forged = take(&mut eve, "GUESSED").unwrap_err();
         assert!(forged.contains("already used or has run out"), "{forged}");
-        // The check the record shows opens nothing: only the token's proof does.
+        // The check the resource shows opens nothing: only the token's proof does.
         let check = eve
             .state()
             .unwrap()

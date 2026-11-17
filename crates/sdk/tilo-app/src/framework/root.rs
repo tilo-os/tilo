@@ -1719,7 +1719,7 @@ impl RootModel for ResourceRoot {
         );
         handlers.insert(super::history::VIEW_TYPE.to_owned());
         handlers.insert(super::person::HISTORY_TYPE.to_owned());
-        handlers.insert(super::record::RESOURCE_ACTION_TYPE.to_owned());
+        handlers.insert(super::resources::RESOURCE_ACTION_TYPE.to_owned());
         handlers.insert(super::chain::CHAIN_ACTION_TYPE.to_owned());
         handlers.insert(super::chain::CHAIN_READ_TYPE.to_owned());
         handlers.insert(tilo_resource::share::SHARE_TYPE.to_owned());
@@ -1923,7 +1923,7 @@ impl ResourceRoot {
         };
         let output = if request.type_id == super::history::VIEW_TYPE {
             super::history::answer(doc, request.payload)?
-        } else if request.type_id == super::record::RESOURCE_ACTION_TYPE {
+        } else if request.type_id == super::resources::RESOURCE_ACTION_TYPE {
             self.storage
                 .resource_action(self.dispatch.me(), request.payload)?
         } else if request.type_id == super::chain::CHAIN_ACTION_TYPE {

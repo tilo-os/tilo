@@ -280,7 +280,7 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
             "scrolling never edits the note"
         );
         // Build a real short-note fixture. Replacing just the live projection of
-        // the long note would be overwritten by its canonical record on sync.
+        // the long note would be overwritten by its canonical resource on sync.
         let mut app = note_at("Fits on screen", 1000, 600, 1.0);
         let (texts, scrollbar) = panel(&mut app, |panel| {
             (

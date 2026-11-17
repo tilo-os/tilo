@@ -41,7 +41,7 @@ impl HexEditor {
 }
 
 impl HexEditor {
-    /// What the record holds: the open buffer's bytes, its name and where it was
+    /// What the resource holds: the open buffer's bytes, its name and where it was
     /// opened.
     pub fn read_document(
         &self,
@@ -211,8 +211,8 @@ impl ResourceApp for HexEditorShell {
         Some(&CATALOG)
     }
 
-    /// A file's buffer is a record of its own, derived from the file's, so another
-    /// app's record of the same file is left alone.
+    /// A file's buffer is a resource of its own, derived from the file's, so another
+    /// app's resource of the same file is left alone.
     fn launch_resource(input: &LaunchInput<'_>) -> Option<DocumentId> {
         input
             .argument()
@@ -317,7 +317,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_record_pages_its_bytes_refuses_bad_offsets_and_merges;
+        fn the_resource_pages_its_bytes_refuses_bad_offsets_and_merges;
 
         phase edits_change_the_bytes_and_rewrite_only_the_pages_they_touch;
         {
@@ -439,7 +439,7 @@ mod tests {
             assert_eq!(state(&replica).opened, 1);
         }
 
-        phase an_empty_record_has_no_file_and_typing_starts_its_first_page;
+        phase an_empty_resource_has_no_file_and_typing_starts_its_first_page;
         {
             let mut replica = Replica::<HexEditor>::new();
             assert!(!state(&replica).has_file());

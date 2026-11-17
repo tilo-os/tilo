@@ -61,7 +61,7 @@ impl ChatApp {
         id.id().to_owned()
     }
 
-    /// What the workspace calls the agent `agent` (its bare id): the name its own record keeps for
+    /// What the workspace calls the agent `agent` (its bare id): the name its own document keeps for
     /// it, else the name its device announced while here, else the name it introduced itself by.
     /// `None` for one the workspace names not.
     pub(crate) fn known_agent_name(&self, agent: &str) -> Option<String> {
@@ -174,7 +174,7 @@ impl ChatApp {
         }
     }
 
-    /// The presence hue `id` wears: an agent's is the one its own record gives it (its keeper's
+    /// The presence hue `id` wears: an agent's is the one its own document gives it (its keeper's
     /// choice, else the one rule's), a person's the one the workspace announced for them, else
     /// the one rule every surface draws a member by ([`ui::tokens::PresenceHue::of_member`]) —
     /// so a face, a chip and a byline are one colour, here as in every app of the workspace.
@@ -209,7 +209,7 @@ impl ChatApp {
 
     /// The chat's people as the composers' `@` lists offer them beside the
     /// workspace's roster: someone who wrote here stays mentionable after they
-    /// left the workspace, and the workspace's own record of its agents is offered
+    /// left the workspace, and the workspace's own document of its agents is offered
     /// too, so an agent is there to name whether or not a device of theirs is here.
     pub(crate) fn mention_people(&self) -> Vec<ui::widget::MentionCandidate> {
         let mut people: Vec<ui::widget::MentionCandidate> = self
@@ -239,15 +239,15 @@ impl ChatApp {
 
     /// Everyone a message's `@name`s bind to when it is sent: the
     /// document's own users, plus anyone the workspace is talking about who has
-    /// not yet written themselves into it, and the agents the workspace's record says it
+    /// not yet written themselves into it, and the agents the workspace's document says it
     /// has.
-    pub fn members(&self) -> Vec<crate::record::Person> {
-        let mut out: Vec<crate::record::Person> = self
+    pub fn members(&self) -> Vec<crate::chat::Person> {
+        let mut out: Vec<crate::chat::Person> = self
             .member_ids()
             .into_iter()
-            .map(|id| crate::record::Person {
+            .map(|id| crate::chat::Person {
                 name: self.display_name(&id),
-                ..crate::record::Person::unnamed(id)
+                ..crate::chat::Person::unnamed(id)
             })
             .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -255,15 +255,15 @@ impl ChatApp {
     }
 
     /// The workspace's agents as the `@` list offers them and a message binds their names by:
-    /// the ones its agents record keeps, under the names that record gives them.
-    pub(crate) fn agent_members(&self) -> Vec<crate::record::Person> {
+    /// the ones its agents resource keeps, under the names that resource gives them.
+    pub(crate) fn agent_members(&self) -> Vec<crate::chat::Person> {
         self.workspace_agent_names
             .keys()
             .map(|id| {
                 let id = MemberId::agent(id.clone());
-                crate::record::Person {
+                crate::chat::Person {
                     name: self.display_name(&id),
-                    ..crate::record::Person::unnamed(id)
+                    ..crate::chat::Person::unnamed(id)
                 }
             })
             .collect()
@@ -271,8 +271,8 @@ impl ChatApp {
 
     /// The mentions `text` writes of the workspace's agents, by the one rule a name binds by
     /// ([`crate::mention::resolve`]): a `@Name` typed by hand asks the agent it names, as it asks
-    /// a person. The chat's own record does not list the workspace's agents, so the window, which
-    /// reads their record, binds theirs where the message is written.
+    /// a person. The chat's own document does not list the workspace's agents, so the window, which
+    /// reads their resource, binds theirs where the message is written.
     pub(crate) fn agent_mentions(&self, text: &str) -> Vec<crate::mention::Mention> {
         crate::mention::resolve(text, &self.agent_members())
     }
@@ -351,7 +351,7 @@ impl ChatApp {
         rows
     }
 
-    /// Whether `person` is here now. The record keeps the status someone
+    /// Whether `person` is here now. The resource keeps the status someone
     /// introduced themselves with, and nobody writes "Offline" when a tab
     /// closes, so a departed visitor would read "Online" forever. While
     /// presence answers who is present, that answer decides: present people

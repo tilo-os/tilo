@@ -1,5 +1,5 @@
 //! What typing in a note repaints when Notes runs as the desktop runs an app
-//! in a tile (`ui::app::EmbeddedApp`): the real window, its real record and
+//! in a tile (`ui::app::EmbeddedApp`): the real window, its real resource and
 //! saver, driven through `App::surface_input` and painted by
 //! `App::surface_frame_with_damage` into a scene the host compares part by
 //! part (`ui::scene_parts`), exactly as the shell does.
@@ -497,7 +497,7 @@ fn open_a_new_note(app: &mut App, host: &mut Host, theme: Theme) {
     hold_edit_clock(app, 1_790_000_000);
 }
 
-/// Let the note's record finish saving and show it, with no input, as it
+/// Let the note's resource finish saving and show it, with no input, as it
 /// does between a person's keystrokes.
 fn let_the_save_land(app: &mut App, host: &mut Host) {
     let deadline = tilo_test_env::hang_deadline();
@@ -508,7 +508,7 @@ fn let_the_save_land(app: &mut App, host: &mut Host) {
             return;
         }
     }
-    panic!("the note's record never finished saving");
+    panic!("the note's resource never finished saving");
 }
 
 /// Let the window come to rest with no input: the save bubble shown for the

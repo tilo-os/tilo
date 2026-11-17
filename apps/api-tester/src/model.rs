@@ -1,4 +1,4 @@
-//! The values the window works on, projected from the record in [`crate::record`].
+//! The values the window works on, projected from the resource in [`crate::workspace`].
 //! Credentials are the exception: a request's auth secret and a secret variable's value
 //! stay on this device.
 
@@ -158,7 +158,7 @@ impl Serialize for Auth {
 }
 
 impl Auth {
-    /// The scheme's public name as records carry it: a credential's stored scheme is
+    /// The scheme's public name as resources carry it: a credential's stored scheme is
     /// matched back to its fields by exactly this word, so it stays the same in every
     /// language.
     pub fn scheme(&self) -> &'static str {

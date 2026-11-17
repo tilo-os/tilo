@@ -5,7 +5,7 @@
 //! The app has one surface on a computer and another in a page. A computer's
 //! Files browses the mounts of the device; a page has no disk, so its Files is
 //! the workspace's own tree, the Files record every member holds
-//! ([`tree`]), and it reads that record over the page's session instead.
+//! ([`tree`]), and it reads that resource over the page's session instead.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set

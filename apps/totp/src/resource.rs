@@ -17,8 +17,8 @@ pub use crate::model::Totp;
 use crate::model::{Account, StoredAccount, demo_accounts};
 
 impl Totp {
-    /// What the record holds: the accounts' metadata in list order. Seeds stay in
-    /// this device's secret store and never reach the record.
+    /// What the resource holds: the accounts' metadata in list order. Seeds stay in
+    /// this device's secret store and never reach the resource.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

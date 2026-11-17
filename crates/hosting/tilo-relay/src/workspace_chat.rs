@@ -46,7 +46,7 @@ pub(crate) fn settle_chat(
     doc: &mut automerge::AutoCommit,
     channels: &[String],
 ) -> Result<(), String> {
-    use chat::record::{CHAT_CHANNEL, Conversation, VOICE_CHANNEL};
+    use chat::chat::{CHAT_CHANNEL, Conversation, VOICE_CHANNEL};
     use tilo_resource::Id;
 
     tilo_relay::workspace_bots::opened::<chat::Chat>(doc)
@@ -110,7 +110,7 @@ pub(crate) fn settle_feedback_channel(
     doc: &mut automerge::AutoCommit,
     name: &str,
 ) -> Result<(), String> {
-    use chat::record::{Conversation, VOICE_CHANNEL};
+    use chat::chat::{Conversation, VOICE_CHANNEL};
     use tilo_resource::Id;
 
     tilo_relay::workspace_bots::opened::<chat::Chat>(doc)
@@ -151,7 +151,7 @@ pub(crate) fn settle_feedback_channel(
 /// in plain words, instead of posting one that never reaches it.
 pub(crate) fn settle_files(
     doc: &mut automerge::AutoCommit,
-    files: chat::record::WorkspaceFiles,
+    files: chat::chat::WorkspaceFiles,
 ) -> Result<(), String> {
     tilo_relay::workspace_bots::opened::<chat::Chat>(doc)
         .map_err(|error| format!("read the chat: {error}"))?;
@@ -238,7 +238,7 @@ mod tests {
             let mut chat = chat::Chat::read_fields(&doc, &automerge::ROOT).unwrap();
             let before = chat.clone();
             chat.read.entry("host".into()).or_default().insert(
-                chat::record::CHAT_CHANNEL.into(),
+                chat::chat::CHAT_CHANNEL.into(),
                 chat::parts::ReadMark::default(),
             );
             chat.write_changed_fields(
@@ -278,7 +278,7 @@ mod tests {
             chat::demo::apply_as(
                 &mut doc,
                 "host",
-                chat::Chat::DELETE_CHANNEL.with(chat::record::chat::DeleteChannel {
+                chat::Chat::DELETE_CHANNEL.with(chat::chat::chat::DeleteChannel {
                     channel: tilo_resource::Id::from_raw("c_feedback"),
                 }),
             )
@@ -311,7 +311,7 @@ mod tests {
             chat::demo::apply_as(
                 &mut doc,
                 "host",
-                chat::Chat::DELETE_CHANNEL.with(chat::record::chat::DeleteChannel {
+                chat::Chat::DELETE_CHANNEL.with(chat::chat::chat::DeleteChannel {
                     channel: tilo_resource::Id::from_raw("c_help"),
                 }),
             )
@@ -343,7 +343,7 @@ mod tests {
             chat::demo::apply_as(
                 &mut doc,
                 "host",
-                chat::Chat::SET_CHANNEL_CATEGORY.with(chat::record::chat::SetChannelCategory {
+                chat::Chat::SET_CHANNEL_CATEGORY.with(chat::chat::chat::SetChannelCategory {
                     channel: Id::from_raw("c_general"),
                     category: Some(Id::from_raw("k_chat")),
                 }),
@@ -366,7 +366,7 @@ mod tests {
         // it again only when that changed.
         {
             let mut doc = prepared_chat();
-            let files = chat::record::WorkspaceFiles {
+            let files = chat::chat::WorkspaceFiles {
                 largest: 25 << 20,
                 member_hourly: 250 << 20,
             };

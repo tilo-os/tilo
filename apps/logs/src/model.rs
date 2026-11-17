@@ -34,7 +34,7 @@ impl Priority {
 
     /// Map a journal `PRIORITY` integer to a [`Priority`]. Anything out of the 0..=7 range
     /// clamps to `Debug` (the most verbose bucket), which is the safe default for an
-    /// unknown record.
+    /// unknown resource.
     pub fn from_level(n: i64) -> Priority {
         match n {
             0 => Priority::Emerg,
@@ -102,7 +102,7 @@ impl Priority {
     }
 }
 
-/// One flattened journal record.
+/// One flattened journal resource.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct LogEntry {
     pub realtime_us: u64,

@@ -1,5 +1,5 @@
 //! What a frame painted and where: the vocabulary of clickable areas it
-//! records, the parts of each message row it kept, and the inventory those
+//! resources, the parts of each message row it kept, and the inventory those
 //! derive — one row per control, with its role, spoken name, value and state —
 //! that pointer, keyboard and assistive technology all read.
 
@@ -117,7 +117,7 @@ pub(crate) enum Hit {
     /// Stop sharing the window a message of yours shares.
     StopShare(Id),
     /// Let the others do this with the window a message of yours shares.
-    SwitchShare(Id, crate::record::ShareAccess),
+    SwitchShare(Id, crate::chat::ShareAccess),
     /// The protected field under a question that asks for a secret: a press
     /// gives it the keyboard.
     SecretField(Id),
@@ -129,7 +129,7 @@ pub(crate) enum Hit {
     /// Open the "Share a window" panel from the attach menu.
     ShareWindowPanel,
     /// What the people a window is shared with may do there.
-    ShareAccess(crate::record::ShareAccess),
+    ShareAccess(crate::chat::ShareAccess),
     /// Choose the window of this tab in the "Share a window" panel.
     SharePick(u64),
     /// Share the window the panel has chosen.

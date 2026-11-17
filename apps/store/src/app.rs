@@ -957,7 +957,7 @@ impl StoreState {
         }
     }
 
-    /// Merge an enriched record into the current list and keep the app's page
+    /// Merge an enriched resource into the current list and keep the app's page
     /// focused on it.
     pub fn set_detail(&mut self, detail: StoreItem) {
         if let Some(item) = self.items.iter_mut().find(|item| item.id == detail.id) {
@@ -2299,7 +2299,7 @@ impl StoreState {
         status: &str,
         cx: &EffectCx<Store>,
     ) -> Result<(), String> {
-        match case_record(app_id, package_id, case_id, status) {
+        match case_resource(app_id, package_id, case_id, status) {
             Ok(record) => {
                 cx.submit(Store::RECORD_MODERATION_CASE.with(record));
                 self.status_line = format!("Moderation case {case_id} is {status}.");
@@ -2581,7 +2581,7 @@ impl StoreState {
     }
 }
 
-fn case_record(
+fn case_resource(
     app_id: &str,
     package_id: &str,
     case_id: &str,
@@ -3348,7 +3348,7 @@ mod tests {
             visible.contains("When its connector reports an event"),
             "{visible}"
         );
-        assert!(visible.contains("When a record changes"));
+        assert!(visible.contains("When a resource changes"));
         assert!(visible.contains("so.tilo.discord"));
         assert!(
             visible.contains("May post under other names and avatars. Always tagged as a bot.")
@@ -5890,7 +5890,8 @@ mod tests {
         }
 
         {
-            let record = case_record("id.notes", "id.notes", "case-authoritative", "Open").unwrap();
+            let record =
+                case_resource("id.notes", "id.notes", "case-authoritative", "Open").unwrap();
             assert_eq!(
                 (
                     record.app_id.as_str(),
@@ -5899,8 +5900,8 @@ mod tests {
                 ),
                 ("id.notes", "case-authoritative", "Open")
             );
-            assert!(case_record("id.notes", "id.notes", "case-../../outside", "Open").is_err());
-            assert!(case_record("id.notes", "id.other", "case-authoritative", "Open").is_err());
+            assert!(case_resource("id.notes", "id.notes", "case-../../outside", "Open").is_err());
+            assert!(case_resource("id.notes", "id.other", "case-authoritative", "Open").is_err());
         }
 
         {

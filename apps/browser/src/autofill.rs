@@ -1,4 +1,4 @@
-//! Opt-in address profiles ([`AddressBook`]), a record Browser keeps beside
+//! Opt-in address profiles ([`AddressBook`]), a resource Browser keeps beside
 //! its own in the workspace it is open in, synced with the workspace; a
 //! private window has none.
 
@@ -86,7 +86,7 @@ pub struct AddressBook {
 }
 
 impl AddressBook {
-    /// What the record holds: whether autofill is on and the profiles it fills forms from.
+    /// What the resource holds: whether autofill is on and the profiles it fills forms from.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -115,7 +115,7 @@ impl AddressBook {
     }
 }
 
-/// The address book a window fills forms from: the person's record, or nothing in a
+/// The address book a window fills forms from: the person's resource, or nothing in a
 /// private window. Deliberately has no Debug implementation.
 pub struct AutofillStore {
     record: Option<PersonResource<AddressBook>>,
@@ -224,7 +224,7 @@ pub mod tests {
             ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
         let record = app
             .person::<AddressBook>()
-            .expect("a test profile keeps person records");
+            .expect("a test profile keeps person resources");
         (app, record)
     }
 

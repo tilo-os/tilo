@@ -85,7 +85,7 @@ fn reasoning_history_grows_linearly_with_received_content() {
 }
 
 tilo_test_env::scenario! {
-    /// What a streamed reply records of its events.
+    /// What a streamed reply resources of its events.
     /// Each case was a test of its own, on a fixture of its own; a failure
     /// names the cases that failed.
     fn a_reply_stream_keeps_its_text_work_and_outcome;
@@ -209,7 +209,7 @@ tilo_test_env::scenario! {
     {
         let mut doc = fixture();
         let summons = Id::from_raw("m_concept");
-        let reply = crate::record::reply_id(&summons, &MemberId::person(crate::model::ME));
+        let reply = crate::chat::reply_id(&summons, &MemberId::person(crate::model::ME));
         let output = |sequence, event| {
             ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
                 channel: Id::from_raw("c_crit"),
@@ -239,12 +239,12 @@ tilo_test_env::scenario! {
             crate::model::ME,
             ChatPart::RECORD_WORK.with(chat_part::RecordWork {
                 message: summons,
-                work: crate::record::WorkUpdate {
+                work: crate::chat::WorkUpdate {
                     state: "doing".into(),
                     app: None,
                     did: Some("Read source".into()),
                     about: Some("Evidence".into()),
-                    trace: vec![crate::record::StepUpdate {
+                    trace: vec![crate::chat::StepUpdate {
                         id: "step".into(),
                         sequence: 0,
                         resource: "notes".into(),

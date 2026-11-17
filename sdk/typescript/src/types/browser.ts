@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.browser@118ee95647821b37";
+export const SURFACE = "so.tilo.browser@bc6bc9a8c42a95bc";
 
 export interface Bookmark {
   url: string;
@@ -355,7 +355,7 @@ export function browsingHistory(ws: tilo.Workspace, path: string): BrowsingHisto
   return resourceProxy(ws, path, SURFACE, BROWSINGHISTORY_ACTIONS) as unknown as BrowsingHistory;
 }
 
-/** Page record — `browser.page-record`. */
+/** Page resource — `browser.page-record`. */
 export interface PageRecord extends tilo.Resource {
   readonly actions: Record<string, PageAction>;
   readonly tabs: Record<string, Tab>;

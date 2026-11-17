@@ -1,6 +1,6 @@
 //! What members see of the repository: its branches, history,
 //! remotes, tags, stashes and identity, read from the repository on disk
-//! and stored whole in the record (see [`crate::resource::GitClient`]).
+//! and stored whole in the resource (see [`crate::resource::GitClient`]).
 //! Working-tree status is never part of it; it stays a live row of the
 //! window. The diff preferences are the person's (see [`crate::settings`]).
 

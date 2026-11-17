@@ -212,7 +212,7 @@ struct Profile {
     icons: Vec<(String, Option<vello::peniko::ImageData>)>,
 }
 
-/// The extensions as the toolbar knows them beside their records, so each Library
+/// The extensions as the toolbar knows them beside their resources, so each Library
 /// row shows its own buttons; one Chromium could not name is left out of both.
 fn paired(infos: Vec<ExtensionInfo>) -> (Vec<ExtensionInfo>, Vec<Installed>) {
     infos
@@ -1160,7 +1160,7 @@ impl ExtensionController {
         changed
     }
 
-    /// The record of the extension Chromium knows as `id` from the last read; never
+    /// The resource of the extension Chromium knows as `id` from the last read; never
     /// the disk, since this runs on the frame.
     fn info_of(&self, id: &str) -> Option<&ExtensionInfo> {
         self.infos

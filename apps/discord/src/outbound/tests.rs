@@ -1,8 +1,8 @@
 use serde_json::{Value, json};
 
 use super::*;
+use crate::guild::{Link, Mapping, Ownership};
 use crate::layout::tests::mapping;
-use crate::record::{Link, Mapping, Ownership};
 
 fn guild() -> Guild {
     let mut g = Guild {
@@ -19,7 +19,7 @@ fn guild() -> Guild {
     g
 }
 
-/// `author` as the record stores a member, as its JSON text: `agent:<id>` an
+/// `author` as the resource stores a member, as its JSON text: `agent:<id>` an
 /// agent's, else a person's.
 fn member(author: &str) -> Value {
     let member = author.strip_prefix("agent:").map_or_else(
@@ -405,7 +405,7 @@ tilo_test_env::scenario! {
 
     phase clearing_an_attachment_caption_queues_an_empty_discord_edit;
     {
-        use crate::record::{guild, tests};
+        use crate::guild::{guild, tests};
 
         let mut bot = tests::connected();
         for action in [

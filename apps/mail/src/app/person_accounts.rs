@@ -1,5 +1,5 @@
 //! The person's accounts in a window: each account's settings from their
-//! record, its secret from this device's custody (in a session, released by
+//! resource, its secret from this device's custody (in a session, released by
 //! the session's account custody, [`crate::custody`]).
 
 use super::{AccountConfig, AccountStore, EngineRequest, MailApp, MessageId};

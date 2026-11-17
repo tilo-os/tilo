@@ -6,7 +6,7 @@
 //! script asks for through an [`OskEffect`], which the view answers on it.
 //! The view publishes the preferences as live rows beside the resource.
 //! What typing teaches the keyboard is kept in the keyboard's [`Learned`]
-//! record, synced with the workspace it is open in. In the keyboard's own
+//! resource, synced with the workspace it is open in. In the keyboard's own
 //! process ([`crate::service::serve`]) a live window also connects to the
 //! session: it follows the focused field over the input method and types
 //! into it.

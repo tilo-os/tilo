@@ -1,5 +1,5 @@
 //! The markup of one PDF: the page plan, annotations, comment threads, signatures and
-//! form values, against the immutable bytes the record names. Markup names its page by
+//! form values, against the immutable bytes the resource names. Markup names its page by
 //! durable occurrence id, never by position, and stores geometry in the page's PDF user
 //! space, so reordering, deleting and annotating concurrently compose. The reading
 //! position is a resume hint only; the tool, selection and panels stay per window.
@@ -134,7 +134,7 @@ impl StoredSignature {
 #[model(check = PdfMarkup::valid)]
 pub struct PdfMarkup {
     /// The PDF bytes the markup is made against. The first pin wins: a
-    /// record never silently re-targets its markup at different bytes.
+    /// resource never silently re-targets its markup at different bytes.
     #[model(readonly)]
     pub source: Bytes,
     /// The file name the source was opened under; empty when unnamed.
@@ -143,7 +143,7 @@ pub struct PdfMarkup {
     /// Whether the page plan was made from the source.
     #[model(readonly)]
     pub page_plan_seeded: bool,
-    /// The source whose own markup this record has taken over; empty
+    /// The source whose own markup this resource has taken over; empty
     /// until it has.
     #[model(atom, readonly)]
     pub imported_source: String,
@@ -158,7 +158,7 @@ pub struct PdfMarkup {
     pub signatures: Keyed<StoredSignature>,
     /// Form values, by the field's fully qualified name.
     pub form_values: BTreeMap<String, FormEntry>,
-    /// Where taken-over annotations came from, by record id.
+    /// Where taken-over annotations came from, by resource id.
     #[model(readonly)]
     pub adopted: BTreeMap<String, AdoptedEntry>,
     /// The page occurrence the reader last left off on; empty before the
@@ -171,7 +171,7 @@ pub struct PdfMarkup {
     pub reading_zoom: f64,
 }
 
-/// The PDF bytes a record's markup is made against.
+/// The PDF bytes a resource's markup is made against.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PinnedSource {
     /// The bytes, kept where this window keeps content: its hash and the
@@ -213,7 +213,7 @@ impl PdfMarkup {
         *doc = std::mem::take(replica.doc_mut());
     }
 
-    /// A record holding a plan of `pages` source pages, as bytes every test
+    /// A resource holding a plan of `pages` source pages, as bytes every test
     /// replica loads: the shared genesis two peers start from.
     #[cfg(test)]
     pub(crate) fn planned(pages: usize) -> Vec<u8> {
@@ -316,7 +316,7 @@ impl PdfMarkup {
     }
 
     /// Annotations on pages that are part of the document now. Those on a
-    /// deleted page stay in the record but are not listed until the page
+    /// deleted page stay in the resource but are not listed until the page
     /// comes back.
     #[must_use]
     pub fn list_annotations(&self) -> Vec<Annotation> {
@@ -326,7 +326,7 @@ impl PdfMarkup {
             .collect()
     }
 
-    /// Every annotation in the record, those on a deleted page with
+    /// Every annotation in the resource, those on a deleted page with
     /// `page == 0`.
     #[must_use]
     pub fn annotations_with_hidden(&self) -> Vec<Annotation> {

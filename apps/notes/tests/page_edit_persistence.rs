@@ -61,7 +61,7 @@ fn dictation_ime_replaces_a_note_selection_with_one_undoable_final() {
 
 #[test]
 fn typed_paragraphs_and_headings_survive_a_reopen() {
-    eprintln!("phase split_paragraphs_round_trip_through_the_record");
+    eprintln!("phase split_paragraphs_round_trip_through_the_resource");
     {
         let (mut app, page) = with_note("First note", "");
         type_in_body(&mut app, &["First", "Enter", "Second"]);

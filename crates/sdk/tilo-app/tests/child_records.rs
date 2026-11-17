@@ -55,8 +55,8 @@ impl ResourceApp for TopicsApp {
     const ID: &'static str = "so.tilo.test-child-records";
     const TITLE: &'static str = "Topics";
 
-    fn records(records: &mut Records<'_>) {
-        records.children::<Topic>();
+    fn resources(resources: &mut Resources<'_>) {
+        resources.children::<Topic>();
     }
 
     fn view(cx: &mut ViewCx<Workspace>) -> Element {

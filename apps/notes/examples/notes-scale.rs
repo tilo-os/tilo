@@ -7,7 +7,7 @@
 //! sections each), `BATCH` notes per change. It prints, in milliseconds:
 //!
 //! * **load**: loading the saved notebook as a peer's bytes are loaded, every
-//!   change rebuilt and hashed (what the page's record worker now does);
+//!   change rebuilt and hashed (what the page's resource worker now does);
 //! * **load with hashes**: loading it with the change hashes that load
 //!   computed (what is left on the page's main thread);
 //! * **note dates**: the open note's created and edited time;

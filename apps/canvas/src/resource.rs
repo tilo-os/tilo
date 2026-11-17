@@ -672,12 +672,12 @@ mod prepare {
 }
 
 impl Artwork {
-    /// What the record holds: the artwork's size and ground, its layers, and the marks and text
+    /// What the resource holds: the artwork's size and ground, its layers, and the marks and text
     /// each holds.
     ///
     /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
+    /// with no window open reads the resource as it reads any app's resource, and
+    /// a named item is read from the resource's table or by the read its own
     /// type gives it.
     pub fn read_document(
         &self,
@@ -1084,7 +1084,7 @@ impl Artwork {
 impl Artwork {
     /// Apply `invoke` to `doc` through the API, as a replica of it does. A
     /// blank document is initialized first, its genesis and its storage
-    /// version, as an action API's record is before its first change.
+    /// version, as an action API's resource is before its first change.
     #[cfg(test)]
     pub(crate) fn apply_to(doc: &mut Doc, invoke: impl Into<Invoke<Self>>) {
         use tilo_resource::__private::ReadDoc as _;

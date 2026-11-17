@@ -4,7 +4,7 @@
 //! its words.
 
 use super::{
-    AutoCommit, Chrome, DeckRecord, Dispatcher, Element, ElementKind, ElementState, Embedded,
+    AutoCommit, Chrome, DeckResource, Dispatcher, Element, ElementKind, ElementState, Embedded,
     FieldOutcome, Mode, Modifiers, MouseButton, Palette, Point, PresenceCtx, Rect, RichTextField,
     RichTextSurface, RoutedEvent, SlidesApp, SplitLayout, SubmitKey, TextRenderer, Theme, Widget,
     WindowEvent, actions, render,
@@ -35,7 +35,7 @@ impl TextBoxEditor {
         doc: &AutoCommit,
         slide_id: &str,
         element: &Element,
-        deck: &Dispatcher<DeckRecord>,
+        deck: &Dispatcher<DeckResource>,
     ) -> Self {
         let body = crate::deck::body_object(doc, slide_id, &element.id);
         let field = RichTextField::view_only(move |doc| {
@@ -58,7 +58,7 @@ impl TextBoxEditor {
         editor
     }
 
-    pub(super) fn attach(&mut self, deck: &Dispatcher<DeckRecord>) {
+    pub(super) fn attach(&mut self, deck: &Dispatcher<DeckResource>) {
         let (slide, element) = (self.slide_id.clone(), self.element_id.clone());
         self.host
             .widget_mut()

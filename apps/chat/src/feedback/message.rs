@@ -2,17 +2,17 @@
 //! read out from the report's structured entries in the reader's language
 //! ([`ui::feedback_read_out`]),
 //! with its masked picture as the message's image and the reactions people
-//! answered it with. Nothing of this is stored: the record keeps the
+//! answered it with. Nothing of this is stored: the resource keeps the
 //! reviewed submission, and this is how it reads.
 
 use tilo_document::ClipBlock;
 use ui::tilo_resource::Id;
 
-use crate::record::FeedbackReport;
+use crate::chat::FeedbackReport;
 
 /// `report` as the message its channel shows, `None` for a report whose
 /// submission is missing.
-pub(crate) fn message(report: &FeedbackReport) -> Option<crate::record::Message> {
+pub(crate) fn message(report: &FeedbackReport) -> Option<crate::chat::Message> {
     let submission = report.submission.as_ref()?;
     let feedback = &submission.feedback;
     let lines = ui::feedback_read_out::lines(feedback);
@@ -37,14 +37,14 @@ pub(crate) fn message(report: &FeedbackReport) -> Option<crate::record::Message>
             w: picture.width,
             h: picture.height,
         })
-        .filter(crate::record::valid_attached)
+        .filter(crate::chat::valid_attached)
         .into_iter()
         .collect();
-    Some(crate::record::Message {
+    Some(crate::chat::Message {
         body,
         reactions: report.reactions.clone(),
         attachments,
-        ..crate::record::Message::new(
+        ..crate::chat::Message::new(
             Id::from_raw(submission.destination.channel.clone()),
             report.author.clone(),
             report.ts,

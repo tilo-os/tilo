@@ -1,7 +1,7 @@
 //! What the shared workspace stores: collections of requests, environments with their
 //! variables, the request in the builder, and the history of what was sent.
 //! `#[derive(Model)]` is the storage contract. A credential never enters the record: the
-//! document holds references into this device's secret store, keyed by the record they
+//! document holds references into this device's secret store, keyed by the resource they
 //! belong to.
 
 use ui::tilo_resource::{self, Atom, Collection, Id, Model, Refusal};
@@ -129,7 +129,7 @@ impl Credentials {
 }
 
 #[derive(Model, Clone, Debug, Default, PartialEq)]
-pub struct RequestRecord {
+pub struct RequestResource {
     /// Name
     #[model(label)]
     pub name: String,
@@ -154,7 +154,7 @@ pub struct RequestRecord {
     pub form: Collection<Row>,
 }
 
-impl RequestRecord {
+impl RequestResource {
     pub fn named(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -209,7 +209,7 @@ pub struct SavedCollection {
     #[model(label)]
     pub name: String,
     /// Requests
-    pub requests: Collection<RequestRecord>,
+    pub requests: Collection<RequestResource>,
 }
 
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
@@ -354,7 +354,7 @@ pub struct Workspace {
     /// Active environment: whose variables resolve into what is sent.
     pub active_environment: Option<Id>,
     /// The request in the builder.
-    pub request: RequestRecord,
+    pub request: RequestResource,
     /// The saved request the builder holds (or holds a copy of): its
     /// credential is the builder's. Changed by opening and saving.
     #[model(readonly)]
@@ -425,7 +425,7 @@ impl Workspace {
     }
 
     /// The saved request `request`, and the collection holding it.
-    pub fn saved(&self, request: &Id) -> Option<(&Id, &RequestRecord)> {
+    pub fn saved(&self, request: &Id) -> Option<(&Id, &RequestResource)> {
         self.collections.iter().find_map(|(collection, saved)| {
             saved
                 .requests
@@ -440,10 +440,10 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn a_record_and_its_route_keep_credentials_out;
+        fn a_resource_and_its_route_keep_credentials_out;
 
         phase a_request_round_trips_without_its_credential;
-        // A request keeps everything but its credential through the record,
+        // A request keeps everything but its credential through the resource,
         // rows keeping their ids.
         {
             let mut request = model::Request::new("List users");
@@ -458,7 +458,7 @@ mod tests {
                 username: "ada".into(),
                 password: "hunter2".into(),
             };
-            let record = RequestRecord::of(&request);
+            let record = RequestResource::of(&request);
             assert_eq!(record.auth.username, "ada");
             let shown = record.shown(&request.id);
             assert_eq!(
@@ -467,7 +467,7 @@ mod tests {
                     username: "ada".into(),
                     password: String::new(),
                 },
-                "the password is not in the record"
+                "the password is not in the resource"
             );
             assert_eq!(
                 model::Request {

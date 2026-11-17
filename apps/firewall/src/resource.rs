@@ -16,7 +16,7 @@ use crate::model::{FirewallConfig, ZoneKind};
 use ui::capability::Resolved;
 
 impl Firewall {
-    /// What the record holds: the stored configuration — each zone's policy, members and
+    /// What the resource holds: the stored configuration — each zone's policy, members and
     /// rules, and the active zone.
     pub fn read_document(
         &self,
@@ -184,7 +184,7 @@ pub struct AppliedConfig {
 }
 
 impl AppliedConfig {
-    /// What the record holds: what each device last pushed to, or read from, its firewalld.
+    /// What the resource holds: what each device last pushed to, or read from, its firewalld.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -364,8 +364,8 @@ impl ResourceApp for FirewallShell {
         invokes
     }
 
-    /// A new record starts with what firewalld already holds on the creating device; a
-    /// record created without a window is no device's and starts empty with a retry.
+    /// A new resource starts with what firewalld already holds on the creating device; a
+    /// resource created without a window is no device's and starts empty with a retry.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Firewall>> {
         if cx.host().is_none_or(|host| host.capture().is_some()) {
             return Vec::new();
@@ -634,10 +634,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_record_round_trips_reconciles_and_merges;
+        fn the_resource_round_trips_reconciles_and_merges;
 
-        phase the_record_round_trips_and_an_import_reconciles;
-        // The record reads back as the canonical configuration, and an import removes the
+        phase the_resource_round_trips_and_an_import_reconciles;
+        // The resource reads back as the canonical configuration, and an import removes the
         // members and rules firewalld no longer reports.
         {
             let config = sample_config();

@@ -1,4 +1,4 @@
-//! What Ctrl+K finds in Files: the person's places, the mount's records and the
+//! What Ctrl+K finds in Files: the person's places, the mount's resources and the
 //! remote accounts.
 
 use std::collections::BTreeMap;
@@ -10,7 +10,7 @@ use ui::tilo_actions::ResourceSpec;
 use ui::tilo_resource::SearchEntry;
 
 use crate::favorites::Favorite;
-use crate::model::WorkspaceRecord;
+use crate::model::WorkspaceDocument;
 use crate::remote_accounts::RemoteAccount;
 use ui::lock::RwLockRecover as _;
 
@@ -41,7 +41,7 @@ pub fn entry_resource_id(path: &std::path::Path) -> String {
     format!("files.entry:{}", path_identity_suffix(path))
 }
 
-pub fn record_resource_id(document_id: uuid::Uuid) -> String {
+pub fn resource_resource_id(document_id: uuid::Uuid) -> String {
     format!("files.record:{document_id}")
 }
 
@@ -133,29 +133,29 @@ impl PlacesSearch {
 }
 
 #[derive(Clone)]
-pub struct CollaborativeRecordSearch {
-    snapshot: Arc<RwLock<RecordSnapshot>>,
+pub struct CollaborativeResourceSearch {
+    snapshot: Arc<RwLock<ResourceSnapshot>>,
     kind: String,
 }
 
 #[derive(Clone, Debug, Default)]
-struct RecordSnapshot {
+struct ResourceSnapshot {
     revision: Option<u64>,
-    records: BTreeMap<String, WorkspaceRecord>,
+    records: BTreeMap<String, WorkspaceDocument>,
 }
 
-impl CollaborativeRecordSearch {
-    pub(crate) fn new(entries: &[WorkspaceRecord]) -> Self {
-        let kind = crate::i18n::t("files-search-collaborative-records");
+impl CollaborativeResourceSearch {
+    pub(crate) fn new(entries: &[WorkspaceDocument]) -> Self {
+        let kind = crate::i18n::t("files-search-collaborative-files");
         let provider = Self {
-            snapshot: Arc::new(RwLock::new(RecordSnapshot::default())),
+            snapshot: Arc::new(RwLock::new(ResourceSnapshot::default())),
             kind,
         };
         provider.refresh(0, entries);
         provider
     }
 
-    pub(crate) fn refresh(&self, revision: u64, entries: &[WorkspaceRecord]) -> bool {
+    pub(crate) fn refresh(&self, revision: u64, entries: &[WorkspaceDocument]) -> bool {
         {
             let snapshot = self.snapshot.read_recover();
             if snapshot.revision == Some(revision) {
@@ -170,7 +170,7 @@ impl CollaborativeRecordSearch {
         true
     }
 
-    pub(crate) fn append_page(&self, revision: u64, entries: &[WorkspaceRecord]) -> bool {
+    pub(crate) fn append_page(&self, revision: u64, entries: &[WorkspaceDocument]) -> bool {
         let mut snapshot = self.snapshot.write_recover();
         if snapshot.revision != Some(revision) {
             return false;
@@ -178,7 +178,7 @@ impl CollaborativeRecordSearch {
         for entry in entries {
             snapshot
                 .records
-                .insert(record_resource_id(entry.document_id), entry.clone());
+                .insert(resource_resource_id(entry.document_id), entry.clone());
         }
         true
     }
@@ -192,10 +192,10 @@ impl CollaborativeRecordSearch {
             .values()
             .map(|entry| {
                 SearchEntry::new(entry.name.clone(), String::new())
-                    .anchored(record_resource_id(entry.document_id))
+                    .anchored(resource_resource_id(entry.document_id))
                     .grouped(self.kind.clone())
                     .subtitled(crate::i18n::t_args(
-                        "files-search-record-provenance",
+                        "files-search-provenance",
                         &[
                             crate::i18n::arg("path", entry.path.display().to_string()),
                             crate::i18n::arg("record", entry.document_id.to_string()),
@@ -206,12 +206,12 @@ impl CollaborativeRecordSearch {
             .collect()
     }
 
-    pub(crate) fn record(&self, document_id: uuid::Uuid) -> Option<WorkspaceRecord> {
+    pub(crate) fn record(&self, document_id: uuid::Uuid) -> Option<WorkspaceDocument> {
         self.snapshot
             .read()
             .ok()?
             .records
-            .get(&record_resource_id(document_id))
+            .get(&resource_resource_id(document_id))
             .cloned()
     }
 
@@ -358,8 +358,8 @@ mod tests {
         ]
     }
 
-    fn collaborative_entry(name: &str) -> WorkspaceRecord {
-        WorkspaceRecord {
+    fn collaborative_entry(name: &str) -> WorkspaceDocument {
+        WorkspaceDocument {
             document_id: uuid::Uuid::nil(),
             name: name.into(),
             path: PathBuf::from(name),
@@ -570,7 +570,7 @@ mod tests {
                     .map(|index| RemoteAccount {
                         id: accounts::AccountId::from(format!("account-{index}")),
                         kind: crate::remote_accounts::RemoteAccountKind::WebDav,
-                        label: format!("Shared record {index}"),
+                        label: format!("Shared resource {index}"),
                         host: format!("host-{index}.example"),
                         health: crate::remote_accounts::RemoteAccountHealth::Healthy,
                         files_mode: accounts::cloud_types::FilesMode::Sync,
@@ -617,15 +617,15 @@ mod tests {
                 let mut entry = collaborative_entry("old-name.txt");
                 entry.path = PathBuf::from("/Workspace/old-name.txt");
                 entry.document_id = document_id;
-                let provider = source(CollaborativeRecordSearch::new(&[entry]).entries());
+                let provider = source(CollaborativeResourceSearch::new(&[entry]).entries());
                 let hit = provider.search("workspace").pop().expect("path matches");
-                assert_eq!(hit.action_id, record_resource_id(document_id));
+                assert_eq!(hit.action_id, resource_resource_id(document_id));
                 assert!(hit.subtitle.unwrap().contains("/Workspace/old-name.txt"));
             }
 
             {
-                const RECORD_COUNT: usize = 276;
-                let entries: Vec<_> = (0..RECORD_COUNT)
+                const RESOURCE_COUNT: usize = 276;
+                let entries: Vec<_> = (0..RESOURCE_COUNT)
                     .flat_map(|index| {
                         let id = uuid::Uuid::from_u128(index as u128 + 1);
                         let mut first = collaborative_entry(&format!("file-{index}"));
@@ -634,7 +634,7 @@ mod tests {
                         [first, duplicate]
                     })
                     .collect();
-                let provider = source(CollaborativeRecordSearch::new(&entries).entries());
+                let provider = source(CollaborativeResourceSearch::new(&entries).entries());
                 // Result presentation is capped; the index is complete, so a match
                 // past the cap is still found.
                 assert_eq!(provider.search("file-275").len(), 1);
@@ -656,13 +656,13 @@ mod tests {
                                 entry
                             })
                             .collect();
-                        source(CollaborativeRecordSearch::new(&entries).entries())
+                        source(CollaborativeResourceSearch::new(&entries).entries())
                     },
                     3_000,
                 );
                 assert_eq!(
                     hit.title,
-                    format!("ordinary record 2999 {LATE_HIT_NEEDLE}-文書")
+                    format!("ordinary resource 2999 {LATE_HIT_NEEDLE}-文書")
                 );
 
                 let page =

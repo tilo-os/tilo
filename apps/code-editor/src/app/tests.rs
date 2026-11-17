@@ -331,7 +331,7 @@ fn the_embedded_terminal_is_the_projects_terminal_child() {
                 .is_some_and(|text| text.contains("CHILD_TERM_OK"))
     };
     tilo_test_env::wait_until(
-        "the shell's output to show, in the session the project records",
+        "the shell's output to show, in the session the project resources",
         || {
             app.settle();
             shown(&mut app)
@@ -575,7 +575,7 @@ fn new_file_command_dispatches_the_durable_create_file_action() {
         let created = EditorDoc::files(doc)
             .into_iter()
             .find(|file| !before.contains(&file.id))
-            .expect("the action created a file record");
+            .expect("the action created a file resource");
         assert!(EditorDoc::read_buffer_key(doc, &created.id).is_some());
         created
     });

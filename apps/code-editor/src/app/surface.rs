@@ -38,7 +38,7 @@ impl CodeApp {
     }
 
     /// Show the project the document holds, and its terminal session, when
-    /// it changed since the editor last showed it. Shared file records are
+    /// it changed since the editor last showed it. Shared file resources are
     /// adopted only: an unpublished local tree is never wiped.
     pub(super) fn follow_document(&mut self) {
         let Some(shown) = self

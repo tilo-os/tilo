@@ -2,13 +2,13 @@
 //! change or a Discord event, means for both sides.
 //!
 //! The bot's program only sequences steps, so everything it does comes from
-//! one effect. The program reads Chat's records through the record api, and
+//! one effect. The program reads Chat's resources through the resource api, and
 //! `plan-event` answers a [`BridgePlan`]: one list per verb, each element holding exactly that
 //! verb's arguments, so the program is a fixed run of loops with no
 //! conditions. Work that needs an earlier result (a thread before the reply
 //! in it, an avatar before the post shown with it, a category before its
 //! channels) is planned on the next pass, after the earlier step's mapping
-//! is in the record; [`BridgePlan::again`] asks for that pass.
+//! is in the resource; [`BridgePlan::again`] asks for that pass.
 
 use discord_wire::event::{
     Authorized, Command, LayoutChanged, MemberChanged, MessageCreated, MessageDeleted,
@@ -19,19 +19,19 @@ use serde_json::{Value, json};
 use ui::tilo_actions::Acting;
 use ui::tilo_resource::MemberId;
 
+use crate::guild::{Guild, MappedKind, Ownership};
 use crate::inbound::{self, InboundPlan};
 use crate::outbound::{self, Context};
-use crate::record::{Guild, MappedKind, Ownership};
 use crate::tilo::{self, WorkspaceChat};
 use crate::{import, layout, order, roles};
 
-/// The Chat record kind the bridge mirrors.
+/// The Chat resource kind the bridge mirrors.
 pub const CHAT_KIND: &str = "chat.workspace";
-/// The kind of the parts Chat keeps its messages in, beside its record.
+/// The kind of the parts Chat keeps its messages in, beside its resource.
 pub const MESSAGES_KIND: &str = "chat.messages";
 /// The workspace's own emoji, which the bridge uploads to the server.
 pub const EMOJI_KIND: &str = "tilo.workspace.emoji";
-/// The workspace's own governance record kind, whose role changes the
+/// The workspace's own governance resource kind, whose role changes the
 /// bridge mirrors.
 pub const WORKSPACE_KIND: &str = "tilo.workspace";
 /// Chat's verb filing a feedback report in a channel.
@@ -174,7 +174,7 @@ enum Fired<'e> {
     },
     /// The workspace's emoji changed.
     Emoji,
-    /// A change to the bridged guild record itself, such as a Moderator's
+    /// A change to the bridged guild resource itself, such as a Moderator's
     /// `block-persona`.
     Guild {
         verbs: Vec<String>,
@@ -249,7 +249,7 @@ fn reacted(edit: &Value) -> Option<Reacted> {
     if path.len() != 3 || step(2, "field")? != "reactions" {
         return None;
     }
-    // A filed report takes reactions in the chat record, on its message.
+    // A filed report takes reactions in the chat resource, on its message.
     let message = match step(0, "field")? {
         "messages" => step(1, "item")?.to_owned(),
         "feedback" => report_message(step(1, "item")?),
@@ -341,7 +341,7 @@ fn values<T: Serialize>(items: impl IntoIterator<Item = T>) -> Vec<Value> {
         .collect()
 }
 
-/// What a plan reads: the guild, Chat's records of the workspace, and where
+/// What a plan reads: the guild, Chat's resources of the workspace, and where
 /// links point.
 #[derive(Clone, Copy)]
 pub struct Reading<'a> {
@@ -640,7 +640,7 @@ fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &
     }
 }
 
-/// Record what Discord reported first; once the record holds it, reconcile.
+/// Record what Discord reported first; once the resource holds it, reconcile.
 fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChanged) {
     let mut observed = read.guild.clone();
     observed.observe(

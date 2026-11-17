@@ -4,7 +4,7 @@
 //! A timeline is a canvas — clips positioned by time, trim handles on sub-pixel
 //! edges, a playhead across every lane — which is far cleaner as direct drawing
 //! and geometric hit-tests than as a layout tree. The edit itself lives in the
-//! record; only view state (playhead, zoom, selection) is held here.
+//! resource; only view state (playhead, zoom, selection) is held here.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -356,7 +356,7 @@ struct PaneCursor {
 }
 
 /// A collapsible block of inspector controls. Which are folded is presentation —
-/// this reader's panel, not the clip — so it never reaches the record, and it
+/// this reader's panel, not the clip — so it never reaches the resource, and it
 /// persists across selections.
 ///
 /// A folded header still states what is inside it (see `section_summary`), so
@@ -865,7 +865,7 @@ pub struct VideoEditorApp {
     faces: ui::widget::FaceMotions,
     content: Option<ui::framework::content::ContentStore>,
     /// Optimistic actions diff this against the local result, then check only those
-    /// old values against the live record. Diffing a stale local result against a
+    /// old values against the live resource. Diffing a stale local result against a
     /// newer remote projection would turn unrelated remote edits into reverse
     /// patches.
     clip_edit_bases: HashMap<ClipId, Clip>,

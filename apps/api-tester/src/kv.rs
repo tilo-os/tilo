@@ -16,7 +16,7 @@ use ui::{Arrival, LocalState};
 
 use crate::commands::{Cmd, RowEdit, Sink, Table};
 use crate::model::KeyValue;
-use crate::record::Row;
+use crate::workspace::Row;
 
 #[derive(Clone)]
 pub(crate) struct KvRow {

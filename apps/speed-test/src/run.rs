@@ -247,7 +247,7 @@ impl Runs {
     }
 }
 
-/// The action that records `result`, measured against `server` on `device`.
+/// The action that resources `result`, measured against `server` on `device`.
 pub(crate) fn recorded(
     result: &ResultSet,
     server: &str,

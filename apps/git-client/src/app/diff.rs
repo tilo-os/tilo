@@ -271,7 +271,7 @@ impl GitClientState {
             self.set_focus(None);
             self.screen = Screen::Changes;
             self.drawer.resolve(self.rect);
-            // The record opens this repository from now on, on every device
+            // The resource opens this repository from now on, on every device
             // that opens it.
             if let Some(path) = &self.repo_path {
                 let path = path.to_string_lossy().into_owned();

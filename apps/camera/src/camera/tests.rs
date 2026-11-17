@@ -1,4 +1,4 @@
-//! The record through the API the host uses: the scan history, the
+//! The resource through the API the host uses: the scan history, the
 //! capture handoff, merging and what history says.
 
 use super::*;
@@ -20,15 +20,15 @@ fn capture(id: &str, label: &str) -> SharedCapture {
 }
 
 tilo_test_env::scenario! {
-    fn the_record_keeps_scans_and_handoffs_and_converges;
+    fn the_resource_keeps_scans_and_handoffs_and_converges;
 
     phase scans_are_newest_first_deduped_and_capped;
     // Scans go to the front, a code scanned again moves there, and the
     // history is capped.
     {
-        let mut record = Replica::<Record>::new();
+        let mut record = Replica::<Camera>::new();
         for raw in ["https://a", "https://b", "https://a"] {
-            record.apply(Record::RECORD_SCAN.with(raw)).unwrap();
+            record.apply(Camera::RECORD_SCAN.with(raw)).unwrap();
         }
         let scans = record.state().unwrap().scans;
         assert_eq!(
@@ -40,33 +40,33 @@ tilo_test_env::scenario! {
         );
         for index in 0..(MAX_SCANS + 10) {
             record
-                .apply(Record::RECORD_SCAN.with(format!("code-{index}").as_str()))
+                .apply(Camera::RECORD_SCAN.with(format!("code-{index}").as_str()))
                 .unwrap();
         }
         assert_eq!(record.state().unwrap().scans.len(), MAX_SCANS);
-        assert!(record.apply(Record::RECORD_SCAN.with("")).is_err());
+        assert!(record.apply(Camera::RECORD_SCAN.with("")).is_err());
     }
 
     phase a_capture_is_handed_off_with_verified_metadata_only;
     // A capture is handed off only with verified bytes and sane metadata, and
-    // the record's fields change only through its verbs.
+    // the resource's fields change only through its verbs.
     {
-        let mut record = Replica::<Record>::new();
+        let mut record = Replica::<Camera>::new();
         record
-            .apply(Record::REGISTER_CAPTURE.with(capture("IMG_1.jpg", "Harbour")))
+            .apply(Camera::REGISTER_CAPTURE.with(capture("IMG_1.jpg", "Harbour")))
             .unwrap();
         assert_eq!(record.state().unwrap().recent.unwrap().label, "Harbour");
         let mut forged = capture("IMG_2.jpg", "Forged");
         forged.media_id = "/home/someone/IMG_2.jpg".into();
         assert!(
-            record.apply(Record::REGISTER_CAPTURE.with(forged)).is_err(),
+            record.apply(Camera::REGISTER_CAPTURE.with(forged)).is_err(),
             "a path is never a capture's identity"
         );
         let mut empty = capture("IMG_3.jpg", "Empty");
         empty.w = 0;
-        assert!(record.apply(Record::REGISTER_CAPTURE.with(empty)).is_err());
+        assert!(record.apply(Camera::REGISTER_CAPTURE.with(empty)).is_err());
         assert!(
-            ui::tilo_resource::Invoke::edit(&Record::paths().scans.set(Vec::new()))
+            ui::tilo_resource::Invoke::edit(&Camera::paths().scans.set(Vec::new()))
                 .ok()
                 .and_then(|invoke| record.apply(invoke).ok())
                 .is_none(),
@@ -78,14 +78,14 @@ tilo_test_env::scenario! {
     // Two devices scanning at once converge on one history; the capture
     // handed off last stays whole.
     {
-        let mut ours = Replica::<Record>::new();
+        let mut ours = Replica::<Camera>::new();
         let mut theirs = ours.fork();
-        ours.apply(Record::RECORD_SCAN.with("ours")).unwrap();
-        ours.apply(Record::REGISTER_CAPTURE.with(capture("IMG_ours.jpg", "Ours")))
+        ours.apply(Camera::RECORD_SCAN.with("ours")).unwrap();
+        ours.apply(Camera::REGISTER_CAPTURE.with(capture("IMG_ours.jpg", "Ours")))
             .unwrap();
-        theirs.apply(Record::RECORD_SCAN.with("theirs")).unwrap();
+        theirs.apply(Camera::RECORD_SCAN.with("theirs")).unwrap();
         theirs
-            .apply(Record::REGISTER_CAPTURE.with(capture("IMG_theirs.jpg", "Theirs")))
+            .apply(Camera::REGISTER_CAPTURE.with(capture("IMG_theirs.jpg", "Theirs")))
             .unwrap();
         ours.sync_with(&mut theirs).unwrap();
         let merged = ours.state().unwrap();
@@ -105,7 +105,7 @@ fn history_entries_render_as_the_apps_sentences() {
 
     let mut app = TestApp::<crate::CameraShell>::new().unwrap();
     let agent = ActionInvoker::agent("claude").acting_for("ada");
-    let kind = <Record as ui::tilo_resource::Resource>::KIND;
+    let kind = <Camera as ui::tilo_resource::Resource>::KIND;
     app.call_by(
         agent.clone(),
         kind,

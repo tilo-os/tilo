@@ -6,9 +6,9 @@ use ui::tilo_resource::{Replica, scope_contains};
 
 tilo_test_env::scenario! {
     /// An event with a copy on a server, when the server refuses it and when its upload is undone.
-    fn remote_copies_keep_their_record_through_refusal_and_undo;
+    fn remote_copies_keep_their_resource_through_refusal_and_undo;
 
-    phase read_only_upload_refusal_keeps_the_event_and_queued_outbox_in_the_source_record;
+    phase read_only_upload_refusal_keeps_the_event_and_queued_outbox_in_the_source_resource;
     {
         let server = test_http::Responder::silent();
         let person = "cb".repeat(32);
@@ -38,7 +38,7 @@ tilo_test_env::scenario! {
                 ..EventData::default()
             },
         }))
-        .expect("create in the source record");
+        .expect("create in the source resource");
         let configured = app
             .with_widget(|surface: &mut CalendarApp| surface.configured_for_test().clone())
             .unwrap();
@@ -1065,7 +1065,7 @@ mod person_accounts {
     }
 
     #[test]
-    fn the_persons_caldav_accounts_reach_the_calendar_from_their_record() {
+    fn the_persons_caldav_accounts_reach_the_calendar_from_their_resource() {
         let mut settings = TestApp::<AccountsOwner>::for_person(&person()).unwrap();
         let mut calendar = TestApp::<CalendarShell>::for_person(&person()).unwrap();
         let kept = settings.shared_person::<PersonAccounts>().unwrap();
@@ -1099,7 +1099,7 @@ mod person_accounts {
         assert!(
             !String::from_utf8_lossy(&kept.record().document().unwrap())
                 .contains("kept-on-the-device"),
-            "the password never enters the record"
+            "the password never enters the resource"
         );
     }
 }

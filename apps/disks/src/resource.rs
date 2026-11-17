@@ -46,7 +46,7 @@ impl Disks {
 }
 
 impl Disks {
-    /// What the record holds: the names the person gives their drives.
+    /// What the resource holds: the names the person gives their drives.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -760,7 +760,7 @@ mod tests {
     fn the_usage_link_names_the_analyzer_in_the_persons_own_workspace() {
         assert_eq!(
             USAGE_LINK, "tilo://open#/me/so.tilo.disk-usage",
-            "an app and no record opens the app as launching it would"
+            "an app and no resource opens the app as launching it would"
         );
         assert!(
             ui::tilo_reference::link::Link::parse_native(USAGE_LINK).is_ok(),

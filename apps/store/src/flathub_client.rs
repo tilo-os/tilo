@@ -3,7 +3,7 @@
 //! We only touch the endpoints the store actually renders:
 //!
 //!   * `GET /collection/popular?page=1&per_page=200` — popular apps.
-//!   * `GET /appstream/<app-id>`             — full `AppStream` record for
+//!   * `GET /appstream/<app-id>`             — full `AppStream` resource for
 //!     the detail sheet (categories, screenshots, descriptions).
 //!
 //! Every request runs on the worker thread with a bounded timeout so a
@@ -105,7 +105,7 @@ pub fn remote_error(remote: &Remote, error: &app_host::client::CatalogueError) -
     }
 }
 
-/// Trimmed `AppStream` record — only the fields the store surfaces.
+/// Trimmed `AppStream` resource — only the fields the store surfaces.
 ///
 /// The real response has ~30 fields; declaring only the ones we
 /// need keeps this stable against Flathub's ongoing shape changes
@@ -132,7 +132,7 @@ pub struct AppStreamRecord {
     #[serde(default)]
     pub urls: Option<UrlsField>,
     /// Optional preview screenshot URLs; we only take the first
-    /// image per record so the detail sheet has a hero to show.
+    /// image per resource so the detail sheet has a hero to show.
     #[serde(default)]
     pub screenshots: Vec<ScreenshotRef>,
     #[serde(default)]
@@ -176,7 +176,7 @@ fn client() -> Result<Client, FlathubError> {
         .map_err(|e| FlathubError::Http(e.to_string()))
 }
 
-fn decode_records(text: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
+fn decode_resources(text: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| FlathubError::Decode(e.to_string()))?;
     let rows = value
@@ -329,7 +329,7 @@ pub fn fetch_collection(
         per_page.clamp(1, 250),
         locale_parameter(locale)
     ))?;
-    decode_records(&text)
+    decode_resources(&text)
 }
 
 pub fn fetch_catalogue_page(
@@ -361,7 +361,7 @@ pub fn fetch_catalogue_page(
                 .and_then(serde_json::Value::as_u64)
         })
         .map_or(1, |pages| usize::try_from(pages).unwrap_or(1));
-    Ok((decode_records(&text)?, pages))
+    Ok((decode_resources(&text)?, pages))
 }
 
 pub fn search_localized(query: &str, locale: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
@@ -379,7 +379,7 @@ pub fn search_localized(query: &str, locale: &str) -> Result<Vec<AppStreamRecord
         .and_then(reqwest::blocking::Response::error_for_status)
         .and_then(reqwest::blocking::Response::text)
         .map_err(|e| FlathubError::Http(e.to_string()))?;
-    decode_records(&text)
+    decode_resources(&text)
 }
 
 pub fn fetch_appstream_document(
@@ -627,7 +627,7 @@ mod tests {
                 "{request}"
             );
             assert_eq!(rows[0].app_id, "org.gnome.Calculator");
-            let item = crate::sources::flathub_record_to_item(&rows[0], &[]);
+            let item = crate::sources::flathub_resource_to_item(&rows[0], &[]);
             assert_eq!(item.name, "Calculator");
             assert_eq!(item.tagline, "Solve equations");
             assert_eq!(item.categories, vec!["Utility"]);
@@ -637,7 +637,7 @@ mod tests {
         // Every Flathub search/detail response shape decodes; the remotes parser is bounded without a binary.
         {
             {
-                let out = decode_records(
+                let out = decode_resources(
                 r#"{"hits":[{"app_id":"org.example.App","name":"Example","summary":"Useful","main_categories":["Utility"]}]}"#,
             )
             .unwrap();
@@ -662,7 +662,7 @@ mod tests {
 
             // Collection IDs are search-index keys; only app_id is a Flatpak ref.
             let current_collection = r#"{"hits":[{"id":"org_gnome_Calculator","app_id":"org.gnome.Calculator","name":"Calculator","summary":"Solve equations","icon":"https://dl.flathub.org/icon.png","main_categories":["Utility"]}],"page":1,"totalPages":1}"#;
-            let records = decode_records(current_collection).unwrap();
+            let records = decode_resources(current_collection).unwrap();
             assert_eq!(records[0].app_id, "org.gnome.Calculator");
             assert_eq!(records[0].summary, "Solve equations");
             assert_eq!(records[0].categories[0].name, "Utility");
@@ -671,7 +671,7 @@ mod tests {
                 {"app_id": "org.example.Native", "arches": [std::env::consts::ARCH]},
                 {"app_id": "org.example.Foreign", "arches": ["different-device"]}
             ]});
-            let rows = decode_records(&architecture_rows.to_string()).unwrap();
+            let rows = decode_resources(&architecture_rows.to_string()).unwrap();
             assert_eq!(
                 rows.iter()
                     .map(|row| row.app_id.as_str())

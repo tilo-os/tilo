@@ -327,7 +327,7 @@ tilo_test_env::scenario! {
         let address = tilo_app::tilo_actions::ActionAddress::new("settings:test.lock", "field-edit");
         let invoker = tilo_app::tilo_actions::ActionInvoker::person("ada");
 
-        let records = tilo_app::framework::SettingsResources::new(LockApp::ID, LockApp::records);
+        let records = tilo_app::framework::SettingsResources::new(LockApp::ID, LockApp::resources);
         let resources = records.resources();
         let spec = tilo_app::tilo_actions::api::resolve(&resources, &address)
             .expect("the section's field edit is published");
@@ -578,8 +578,8 @@ impl ResourceApp for DeclaringApp {
         Box::new(Column::new())
     }
 
-    fn records(records: &mut Records<'_>) {
-        records.settings::<Display>().person::<Playback>();
+    fn resources(resources: &mut Resources<'_>) {
+        resources.settings::<Display>().person::<Playback>();
     }
 }
 
@@ -764,8 +764,8 @@ impl ResourceApp for LockApp {
         Box::new(Column::new())
     }
 
-    fn records(records: &mut Records<'_>) {
-        records.settings::<Lock>();
+    fn resources(resources: &mut Resources<'_>) {
+        resources.settings::<Lock>();
     }
 }
 
@@ -795,9 +795,9 @@ impl ResourceApp for KeptApp {
         .unwrap_or_else(|| Box::new(Column::new()))
     }
 
-    fn records(records: &mut Records<'_>) {
-        records.kept_by("test.host", |records| {
-            records.settings::<Display>().settings::<Lock>();
+    fn resources(resources: &mut Resources<'_>) {
+        resources.kept_by("test.host", |resources| {
+            resources.settings::<Display>().settings::<Lock>();
         });
     }
 }

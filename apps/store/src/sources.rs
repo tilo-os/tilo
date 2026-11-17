@@ -1,4 +1,4 @@
-//! Merger: Tilo registry entries + Flathub records + local install
+//! Merger: Tilo registry entries + Flathub resources + local install
 //! snapshot → one canonical [`StoreItem`] list.
 //!
 //! The merge rule the task calls out: **a Tilo entry with the same
@@ -374,7 +374,7 @@ pub fn apply_flatpak_origin<S: std::hash::BuildHasher>(
     }
 }
 
-pub fn flathub_record_to_item(
+pub fn flathub_resource_to_item(
     r: &AppStreamRecord,
     installed_flatpaks: &[(String, String)],
 ) -> StoreItem {
@@ -850,7 +850,7 @@ pub(crate) mod tests {
                 screenshots: Vec::new(),
                 ..AppStreamRecord::default()
             };
-            flathub_record_to_item(&record, &[])
+            flathub_resource_to_item(&record, &[])
         };
         {
             let tilo_entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
@@ -898,7 +898,7 @@ pub(crate) mod tests {
                 ..AppStreamRecord::default()
             };
             assert_eq!(
-                flathub_record_to_item(&record, &[]).description,
+                flathub_resource_to_item(&record, &[]).description,
                 "Long description"
             );
         }

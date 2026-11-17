@@ -1,8 +1,8 @@
 //! Feedback reports are attributed reports with an immutable submission
-//! identity, kept with their triage in the chat record
-//! ([`crate::record::Chat::feedback`]) and shown among their channel's
+//! identity, kept with their triage in the chat resource
+//! ([`crate::chat::Chat::feedback`]) and shown among their channel's
 //! messages. A receipt is only offered after the
-//! host confirms the record is durable.
+//! host confirms the resource is durable.
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionError, Doc};
@@ -101,8 +101,8 @@ pub fn report_of_message(message: &str) -> Option<&str> {
         .filter(|report| !report.is_empty())
 }
 
-/// The report `id` as the record keeps it, its triage oldest first.
-fn report_of(id: &Id, report: &crate::record::FeedbackReport) -> Result<Report, ActionError> {
+/// The report `id` as the resource keeps it, its triage oldest first.
+fn report_of(id: &Id, report: &crate::chat::FeedbackReport) -> Result<Report, ActionError> {
     let submission = report
         .submission
         .clone()
@@ -159,7 +159,7 @@ pub fn reports(doc: &Doc) -> Result<Vec<Report>, ActionError> {
 }
 
 /// Called by the authenticated host's receipt reader after its canonical
-/// record reports `Saved`; the source is retained transport identity, not input.
+/// resource reports `Saved`; the source is retained transport identity, not input.
 pub fn durable_receipt(
     doc: &Doc,
     id: &str,
@@ -215,13 +215,13 @@ pub fn canonical_feedback_projection(
     Ok((receipt, report.author.id().to_owned()))
 }
 
-/// Read the report from its canonical owner after checking that exact record's
+/// Read the report from its canonical owner after checking that exact resource's
 /// current save status. The store is single-threaded, and no callback or yield
 /// separates this status check from the immutable document read.
 ///
 /// Hosts retain the admitted workspace/provider identity; neither the report nor an
-/// external URL selects this store or record.
-pub fn receipt_from_record(
+/// external URL selects this store or resource.
+pub fn receipt_from_resource(
     store: &ui::resource::ResourceStore,
     record: &ui::resource::DocumentId,
     id: &str,
@@ -248,13 +248,13 @@ pub fn receipt_from_record(
             }
             durable_receipt(doc, id, actual_destination, &status)
         })
-        .ok_or_else(|| refused("feedback destination record is missing or busy"))?
+        .ok_or_else(|| refused("feedback destination resource is missing or busy"))?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record::chat;
+    use crate::chat::chat;
     use crate::resource::Chat;
     use crate::testing::apply_as;
     use automerge::ROOT;
@@ -468,7 +468,7 @@ mod tests {
         apply_as(doc, "visitor-one", action(submission)).unwrap();
     }
 
-    /// The record the reporter's window showed: a chat whose channels they
+    /// The resource the reporter's window showed: a chat whose channels they
     /// were reorganising, and the changes they made to it, oldest first.
     fn reorganised() -> (Doc, usize) {
         let mut shown = crate::testing::demo_chat();
@@ -525,7 +525,7 @@ mod tests {
             apply_as(&mut destination, "visitor-one", action(&submission)).unwrap();
 
             // Another member: their replica of the destination's chat, and the
-            // recording's bytes as the record's route hands them over.
+            // recording's bytes as the resource's route hands them over.
             let mut member = Doc::new();
             member.merge_incoming(&mut destination.fork()).unwrap();
             let filed = report(&member, &submission.id).unwrap().unwrap();
@@ -614,7 +614,7 @@ mod tests {
         /// names the cases that failed.
         fn a_receipt_is_given_only_for_a_saved_attributed_report;
 
-        phase canonical_owner_receipt_refuses_newer_unsaved_edits_and_memory_only_records;
+        phase canonical_owner_receipt_refuses_newer_unsaved_edits_and_memory_only_resources;
         {
             use ui::resource::{DocumentCheckout, DocumentId, ResourceType, ResourceOwners, ResourceStore};
             let (_, submission) = seeded();
@@ -634,7 +634,7 @@ mod tests {
                 .unwrap();
             store.try_flush().unwrap();
             assert!(
-                receipt_from_record(
+                receipt_from_resource(
                     &store,
                     &checkout.id,
                     &submission.id,
@@ -654,7 +654,7 @@ mod tests {
                 })
                 .unwrap();
             assert!(
-                receipt_from_record(
+                receipt_from_resource(
                     &store,
                     &checkout.id,
                     &submission.id,
@@ -664,7 +664,7 @@ mod tests {
             );
             store.try_flush().unwrap();
             assert!(
-                receipt_from_record(
+                receipt_from_resource(
                     &store,
                     &checkout.id,
                     &submission.id,
@@ -680,7 +680,7 @@ mod tests {
                 .with(&checkout.id, |doc| filed(doc, &submission))
                 .unwrap();
             assert!(
-                receipt_from_record(
+                receipt_from_resource(
                     &memory,
                     &checkout.id,
                     &submission.id,
@@ -690,7 +690,7 @@ mod tests {
             );
         }
 
-        phase primary_chat_receipt_uses_its_saved_store_namespace_without_a_fake_record_stamp;
+        phase primary_chat_receipt_uses_its_saved_store_namespace_without_a_fake_resource_stamp;
         {
             use ui::resource::{DocumentCheckout, ResourceType, ResourceOwners};
             let (_, submission) = seeded();
@@ -719,12 +719,12 @@ mod tests {
                     .unwrap()
             );
             assert!(
-                receipt_from_record(&store, &primary.id, &submission.id, &submission.destination)
+                receipt_from_resource(&store, &primary.id, &submission.id, &submission.destination)
                     .is_ok()
             );
             let mut elsewhere = submission.destination.clone();
             elsewhere.workspace = "another-workspace".into();
-            assert!(receipt_from_record(&store, &primary.id, &submission.id, &elsewhere).is_err());
+            assert!(receipt_from_resource(&store, &primary.id, &submission.id, &elsewhere).is_err());
             store
                 .with(&primary.id, |doc| {
                     ui::tilo_resource::write_key(
@@ -737,7 +737,7 @@ mod tests {
                 })
                 .unwrap();
             assert!(
-                receipt_from_record(&store, &primary.id, &submission.id, &submission.destination)
+                receipt_from_resource(&store, &primary.id, &submission.id, &submission.destination)
                     .is_err()
             );
         }

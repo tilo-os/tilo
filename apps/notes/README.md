@@ -41,7 +41,7 @@ cargo run -p notes --release
 ```
 
 The binary opens the host-owned default notebook. A new notebook starts empty
-and presents **New note**. The shared record host supplies persistence,
+and presents **New note**. The shared resource host supplies persistence,
 history, undo and collaboration. Saving is silent: the note's header says
 something only when a write stalls or fails.
 
@@ -60,7 +60,7 @@ cargo run -p notes --release -- --shots out.png --scenario drawer
 
 ## Storage
 
-Notes stores one host-owned `notes.notebook` Automerge record. Notes, blocks,
+Notes stores one host-owned `notes.notebook` Automerge resource. Notes, blocks,
 tags, note memberships and image references share that document, so platform
 history, undo and collaboration observe the same operations; image bytes live
 in the device content store.

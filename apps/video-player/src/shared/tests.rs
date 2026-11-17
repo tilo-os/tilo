@@ -46,7 +46,7 @@ tilo_test_env::scenario! {
         clippy::arithmetic_side_effects,
         reason = "the lint exempts a test function's body, not the closure a phase is"
     )]
-    fn the_shared_library_record_changes_and_converges;
+    fn the_shared_library_resource_changes_and_converges;
 
     phase playlists_and_annotations_change_through_verbs_and_field_edits;
     // Playlists hold their videos in order; renaming, reordering and editing a note are field

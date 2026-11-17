@@ -281,7 +281,7 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
 }
 
 #[test]
-fn resources_navigate_by_stable_ranges_and_files_are_records() {
+fn resources_navigate_by_stable_ranges_and_files_are_resources() {
     {
         let mut state = crate::initialized_state();
         let mut wp = Editor::detached();
@@ -4853,7 +4853,7 @@ fn tracked_changes_render_and_accept_individually() {
         );
         assert!(
             !after.changes.iter().any(|ch| ch.id == ins_id),
-            "the change record is dropped after accept"
+            "the change resource is dropped after accept"
         );
         assert!(
             block_change_decos(b).0.is_empty(),
@@ -4902,7 +4902,7 @@ fn tracked_changes_render_and_accept_individually() {
         );
         assert!(
             !after.changes.iter().any(|ch| ch.id == del_id),
-            "the change record is dropped after accept"
+            "the change resource is dropped after accept"
         );
         assert!(
             block_change_decos(b).1.is_empty(),
@@ -4948,7 +4948,7 @@ fn tracked_changes_reject_and_accept_all() {
         assert_eq!(b.text, "keep gone", "rejecting a deletion keeps the text");
         assert!(
             !after.changes.iter().any(|ch| ch.id == del_id),
-            "the change record is dropped after reject"
+            "the change resource is dropped after reject"
         );
         assert!(
             block_change_decos(b).1.is_empty(),

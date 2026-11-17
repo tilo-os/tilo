@@ -1115,7 +1115,7 @@ fn saves_persist_and_refusals_never_claim_success() {
             .unwrap();
         app.begin_edit(contact.clone(), false);
         set_title(&app, "Unsaved draft");
-        // A member deletes the record while it is being edited.
+        // A member deletes the resource while it is being edited.
         app.app
             .chain_invoke(&ContactPart::delete(contact.id))
             .unwrap();
@@ -1142,7 +1142,7 @@ fn saves_persist_and_refusals_never_claim_success() {
     }
 
     {
-        // A peer deletes the record after this replica rendered its detail
+        // A peer deletes the resource after this replica rendered its detail
         // controls. Both mutations go to the API, which refuses them; the
         // stale projection is taken back and the refusal announced.
         let mut app = Live::sample(1280, 800);
@@ -1981,12 +1981,12 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
                 "a fresh toast survives an immediate frame"
             );
 
-            // The animation clock does not advance the real record writer.
+            // The animation clock does not advance the real resource writer.
             // Await the production durability boundary before asking whether
             // the whole host, including its save-status feedback, is idle.
             app.app
                 .flush()
-                .expect("the actual delete reaches durable record storage");
+                .expect("the actual delete reaches durable resource storage");
             assert!(
                 toast(&app).is_some(),
                 "durable storage completion does not dismiss a fresh notice"
@@ -2216,7 +2216,7 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
 // never `set_text`.
 // =================================================================
 
-/// Typing does not commit, cancel discards (no phantom new record), the edit affordance opens and returns, and Ctrl-S commits through the keystroke path.
+/// Typing does not commit, cancel discards (no phantom new resource), the edit affordance opens and returns, and Ctrl-S commits through the keystroke path.
 #[allow(
     clippy::too_many_lines,
     reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
@@ -2294,7 +2294,7 @@ fn edits_commit_only_on_save_and_cancel_discards() {
         assert_eq!(
             h.app.store.len(),
             store_before,
-            "Cancel on New leaves no phantom record"
+            "Cancel on New leaves no phantom resource"
         );
         assert!(
             !h.app
@@ -2332,7 +2332,10 @@ fn edits_commit_only_on_save_and_cancel_discards() {
                 form.draft.id, sel,
                 "the form edits the same contact the view showed"
             );
-            assert!(!form.is_new, "editing an existing record, not creating one");
+            assert!(
+                !form.is_new,
+                "editing an existing resource, not creating one"
+            );
         }
 
         // Leaving is just as direct: Cancel returns to the read view, no form.
@@ -2456,7 +2459,7 @@ fn search_field_focus_and_typing_narrow_the_list() {
     assert_eq!(
         people.len(),
         1,
-        "the canonical query finds the single Hopper record"
+        "the canonical query finds the single Hopper resource"
     );
     let grace = id_named(&h.app, "Grace Hopper");
     assert_eq!(
@@ -3154,7 +3157,7 @@ fn export_asks_a_format_and_writes_the_chosen_file() {
 #[serial_test::serial]
 fn saved_book_persists_across_restarts_and_imports() {
     // The production restart path: a contact created through the real edit
-    // flow goes into the book's document, which the app's record keeps, and
+    // flow goes into the book's document, which the app's resource keeps, and
     // a second launch on the same profile finds the contact again.
     {
         let mut app = Live::empty(1280, 800);
@@ -3242,7 +3245,7 @@ fn saved_book_persists_across_restarts_and_imports() {
         assert_eq!(
             reloaded.len(),
             before - 1,
-            "the removal was written to the record"
+            "the removal was written to the resource"
         );
         assert!(!reloaded.iter().any(|c| c.id == removed));
     }
@@ -4147,7 +4150,7 @@ fn check_seeds_sample_contacts_and_selects_one() {
     app.sync(&doc, &ROOT);
     assert_eq!(app.store.len(), 7);
     assert!(app.selected.is_some(), "a contact must be auto-selected");
-    // The seeded selection points at a real, richly-populated record.
+    // The seeded selection points at a real, richly-populated resource.
     let sel = app.store.contact(app.selected.unwrap()).unwrap();
     assert!(!sel.phones.is_empty());
 }

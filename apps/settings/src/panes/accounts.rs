@@ -1,7 +1,7 @@
 //! External Accounts: one inventory over the canonical account stores that
 //! installed clients consume. Accounts are added and edited in one device-local
 //! form; removing one clears its metadata, its sealed credential and its sync
-//! record together.
+//! resource together.
 
 use std::rc::Rc;
 
@@ -212,7 +212,7 @@ pub enum AccountsEffect {
         #[param("The account's id")]
         account: String,
     },
-    /// Remove an account, its saved credential and its sync record.
+    /// Remove an account, its saved credential and its sync resource.
     #[effect(row, job, destructive)]
     RemoveAccount {
         #[param("The account's id")]

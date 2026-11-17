@@ -5,9 +5,9 @@
 //! sentence of what happened, in their own terms, and at most what they may
 //! do next. Anything else — the transport's error, the partial answer, the
 //! provider's own exposed reasoning, the recovery instruction written for
-//! the agent — is the run's working record, kept so a failure can be looked
+//! the agent — is the run's working resource, kept so a failure can be looked
 //! at later, never shown as the reply. The two are separate values for that
-//! reason: a caller that wants the person's sentence cannot get the record by
+//! reason: a caller that wants the person's sentence cannot get the resource by
 //! accident.
 
 use agent_provider_config::protocol::{ErrorKind, ModelError};
@@ -39,7 +39,7 @@ pub(crate) struct Failure {
     /// for the agent, never model reasoning.
     message: String,
     /// The transport's error, the partial answer and the provider's exposed
-    /// reasoning, as the turn left them: kept in the run's working record for
+    /// reasoning, as the turn left them: kept in the run's working resource for
     /// debugging, never shown to people in the conversation.
     detail: String,
     /// Whether the model, asked again, may answer: the turn ran none of its
@@ -52,7 +52,7 @@ pub(crate) struct Failure {
 
 impl Failure {
     /// A failure the run itself decided, with no provider detail: the
-    /// sentence is both what a person reads and the whole record.
+    /// sentence is both what a person reads and the whole resource.
     pub(crate) fn said(message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
@@ -97,7 +97,7 @@ impl Failure {
     }
 
     /// A model call whose transport failed: the person reads that the model
-    /// could not be reached, and the transport's own error is the record.
+    /// could not be reached, and the transport's own error is the resource.
     pub(crate) fn unreachable(error: impl Into<String>) -> Self {
         Self {
             message: crate::i18n::t(FAILURE_TRANSPORT),
@@ -112,7 +112,7 @@ impl Failure {
         &self.message
     }
 
-    /// What the reply's work record keeps for debugging.
+    /// What the reply's work resource keeps for debugging.
     #[must_use]
     pub(crate) fn detail(&self) -> &str {
         &self.detail
@@ -125,7 +125,7 @@ impl Failure {
         self.again
     }
 
-    /// The record, with what the turn streamed before it ended, kept under
+    /// The resource, with what the turn streamed before it ended, kept under
     /// labels: the partial answer and the provider's own exposed reasoning
     /// are for debugging, never the reply.
     #[must_use]
@@ -147,7 +147,7 @@ impl Failure {
     }
 }
 
-/// The failure's record, as a log line reads it: the detail, never mistaken
+/// The failure's resource, as a log line reads it: the detail, never mistaken
 /// for the sentence a person reads.
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -186,7 +186,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_failure_is_one_sentence_a_person_can_read;
 
-        phase a_model_failure_keeps_its_record_out_of_the_persons_sentence;
+        phase a_model_failure_keeps_its_resource_out_of_the_persons_sentence;
         // The sentence a person reads never carries the record: no recovery
         // instruction written for the agent, no partial answer, no reasoning.
         {
@@ -221,11 +221,11 @@ mod tests {
                 // One sentence: it names what happened, in the person's terms.
                 assert!(message.ends_with('.'), "{message}");
                 assert!(!message.contains('\n'), "{message}");
-                // The record keeps everything the sentence leaves out.
+                // The resource keeps everything the sentence leaves out.
                 assert!(failure.detail().contains("Partial answer (not completed)"));
                 assert!(failure.detail().contains("Provider-exposed summary"));
             }
-            // A timeout's record keeps the recovery the agent itself may take,
+            // A timeout's resource keeps the recovery the agent itself may take,
             // which is never the person's sentence.
             let failure = Failure::model(&ModelError {
                 kind: ErrorKind::TimedOut,

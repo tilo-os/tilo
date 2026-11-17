@@ -1658,7 +1658,7 @@ fn bot_does(bot: &crate::model::BotListing) -> Element {
         .map(|(index, trigger)| {
             let key = match trigger.as_str() {
                 "connector" => Some("store-bot-trigger-connector"),
-                "resource_changed" => Some("store-bot-trigger-record-changed"),
+                "resource_changed" => Some("store-bot-trigger-resource-changed"),
                 "schedule" => Some("store-bot-trigger-schedule"),
                 "manual" => Some("store-bot-trigger-manual"),
                 "incoming_message" => Some("store-bot-trigger-incoming-message"),

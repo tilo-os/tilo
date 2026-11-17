@@ -385,7 +385,7 @@ fn live_personal_bookmark_folder_rasterizes_in_both_themes_and_scaled_viewports(
 }
 
 #[test]
-fn a_library_kept_before_the_record_opens_with_its_bookmarks_and_trees() {
+fn a_library_kept_before_the_resource_opens_with_its_bookmarks_and_trees() {
     use automerge::ReadDoc as _;
     use ui::tilo_resource::{Atom, Slot, evolution, write_key};
     let mut doc = ui::tilo_resource::Doc::new();
@@ -457,7 +457,7 @@ fn a_library_kept_before_the_record_opens_with_its_bookmarks_and_trees() {
 
     assert!(
         evolution::read_checked::<PersonalBookmarks>(&doc).is_err(),
-        "an unmigrated library never reads as the record"
+        "an unmigrated library never reads as the resource"
     );
     assert!(evolution::migrate::<PersonalBookmarks>(&mut doc).unwrap());
     let library = evolution::read_checked::<PersonalBookmarks>(&doc).unwrap();

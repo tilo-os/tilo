@@ -157,7 +157,7 @@ fn every_task_row_is_a_named_item_a_reader_opens_and_finishes() {
 
 /// The issue page a capture shows names the people it shows: the assignee
 /// reads as who they are, the thread's author too, and never as the id the
-/// record spells them by. The fields are one row; the description needs no
+/// resource spells them by. The fields are one row; the description needs no
 /// heading to be read as one.
 #[test]
 fn a_captured_issue_page_names_its_people() {
@@ -187,7 +187,7 @@ fn a_captured_issue_page_names_its_people() {
     );
     assert!(
         !labels.iter().any(|label| label.contains("person:")),
-        "no record id is shown: {labels:?}"
+        "no resource id is shown: {labels:?}"
     );
     assert!(
         labels.iter().any(|label| label == "Status: In progress"),

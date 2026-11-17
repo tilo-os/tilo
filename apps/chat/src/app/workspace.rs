@@ -24,11 +24,11 @@ pub(crate) struct ChannelRows {
 }
 
 impl ChatApp {
-    /// Keep the workspace's record of its agents, as the window reads it: the
+    /// Keep the workspace's document of its agents, as the window reads it: the
     /// agent identity record every app of the workspace opens. Chat keeps it,
     /// and names every author it spells `agent:<id>` by it.
     #[must_use]
-    pub(crate) fn with_agents_record(
+    pub(crate) fn with_agents_resource(
         mut self,
         record: Option<ui::framework::WorkspaceResource<ui::tilo_workspace_agent::WorkspaceAgents>>,
     ) -> Self {
@@ -42,7 +42,7 @@ impl ChatApp {
     #[must_use]
     pub(crate) fn with_agents_opener(
         mut self,
-        opener: ui::framework::RecordOpener<ui::tilo_workspace_agent::WorkspaceAgents>,
+        opener: ui::framework::ResourceOpener<ui::tilo_workspace_agent::WorkspaceAgents>,
     ) -> Self {
         self.agents_opener = Some(opener);
         self
@@ -51,8 +51,8 @@ impl ChatApp {
     /// Follow the workspace's agents record: what each agent is called, by its bare id.
     ///
     /// An agent is a member of the workspace like a person is, and its
-    /// name is the workspace's answer, kept in its own record ([`WorkspaceAgents`]).
-    /// Presence only names an agent while its device works here; the record
+    /// name is the workspace's answer, kept in its own document ([`WorkspaceAgents`]).
+    /// Presence only names an agent while its device works here; the resource
     /// names it always, so an author reads by its name whether or not it is
     /// running. Whether any name changed, so the window shows them again.
     pub(super) fn follow_agents(&mut self) -> bool {
@@ -101,12 +101,12 @@ impl ChatApp {
     /// while the conversation is put away and not drawn). In a call they show
     /// who speaks, which moves every frame.
     pub(super) fn take_workspace(&mut self) -> bool {
-        // The workspace's agents are named by its own record, not by presence: an
+        // The workspace's agents are named by its own document, not by presence: an
         // author reads by its name after it stopped working here too.
         let agents_changed = self.follow_agents();
         if agents_changed {
             // A conversation's name is what its members are called: read them
-            // again, as this pass does when the record moved.
+            // again, as this pass does when the resource moved.
             self.synced = None;
         }
         let permissions = ui::presence::frame::frame(PresenceCtx::permission_context).flatten();
@@ -120,7 +120,7 @@ impl ChatApp {
             self.adopt_workspace(&capture);
         } else if ui::presence::frame::frame(|presence| self.adopt_workspace(presence)).is_none() {
             // No presence this frame: nobody's answer says who is here, so the
-            // record's own words about each person stand (`live_status`).
+            // resource's own words about each person stand (`live_status`).
             self.workspace_presence_answers = false;
             return perms_changed || agents_changed;
         }
@@ -132,7 +132,7 @@ impl ChatApp {
         // Who is in a call is not presence: it arrives from the host and from
         // the call's own service while this frame is being built, and a call
         // this window never joined changes nothing else here — so a channel
-        // names everyone the last build saw, not everyone the record says.
+        // names everyone the last build saw, not everyone the resource says.
         let rows = self.channel_rows();
         let changed = perms_changed || rows != self.shown_rows;
         if changed || self.call.active {
@@ -154,7 +154,7 @@ impl ChatApp {
     }
 
     pub fn adopt_workspace(&mut self, presence: &PresenceCtx) {
-        // Presence answered: from here on it, not the record, says who is
+        // Presence answered: from here on it, not the resource, says who is
         // here. An answer naming nobody besides this window's own person is
         // still an answer — the workspace is otherwise empty.
         self.workspace_presence_answers = true;

@@ -985,7 +985,7 @@ mod tests {
             StartupInputs {
                 initial_dir: path.into(),
                 workspace_roots: vec![path.into()],
-                record_roots: Vec::new(),
+                resource_roots: Vec::new(),
                 remote_accounts: Vec::new(),
                 trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
             },

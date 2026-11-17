@@ -20,7 +20,7 @@ use crate::target::SessionTarget;
 
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
-/// A terminal session, as its record holds it. Only the terminal running the session records these:
+/// A terminal session, as its resource holds it. Only the terminal running the session records these:
 /// facts about the world outside the document that no undo takes back.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Terminal {
@@ -188,7 +188,7 @@ pub struct FinishedCommand {
     pub started_ms: i64,
     pub ended_ms: i64,
     pub exit: i32,
-    /// The raw output, kept in the window's content store; the reference is what the record names it by.
+    /// The raw output, kept in the window's content store; the reference is what the resource names it by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Bytes>,
     pub truncated: bool,
@@ -238,7 +238,7 @@ impl Terminal {
         self.holder = cx.author().cloned();
     }
 
-    /// The session stored under `obj` of another record's document: a terminal nested in an editor's
+    /// The session stored under `obj` of another resource's document: a terminal nested in an editor's
     /// panel.
     ///
     /// # Errors
@@ -247,7 +247,7 @@ impl Terminal {
         <Self as Fields>::read_fields(doc, obj)
     }
 
-    /// Apply one of the session's actions to a session stored under `obj` of another record's document.
+    /// Apply one of the session's actions to a session stored under `obj` of another resource's document.
     ///
     /// # Errors
     /// The action's refusal; nothing is written then.
@@ -271,7 +271,7 @@ impl Terminal {
 }
 
 impl Terminal {
-    /// What the record holds, as JSON: an app with no window open reads a record through this.
+    /// What the resource holds, as JSON: an app with no window open reads a resource through this.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -596,7 +596,7 @@ pub enum TerminalEffect {
     /// Binds a host folder into the environment, read-write.
     #[effect(destructive)]
     GrantFolder {
-        #[param("The environment's record")]
+        #[param("The environment's resource")]
         record: String,
         #[param("An absolute folder path; it appears at the same path in the environment")]
         path: AbsolutePath,
@@ -604,7 +604,7 @@ pub enum TerminalEffect {
     /// Rename environment
     #[effect(destructive)]
     RenameEnvironment {
-        #[param("The environment's record")]
+        #[param("The environment's resource")]
         record: String,
         #[param("The new name")]
         name: String,
@@ -673,8 +673,8 @@ impl ResourceApp for TerminalShell {
         Some(&CATALOG)
     }
 
-    fn records(records: &mut ui::framework::Records<'_>) {
-        records.person::<crate::history::CommandHistory>();
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        resources.person::<crate::history::CommandHistory>();
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {

@@ -1,7 +1,7 @@
 //! How the calculator's changes show in the shared History view: a calculation
 //! typeset as the display sets it with its result, a graph change as the
 //! function it plotted. A face is made from the change's recorded facts alone,
-//! so it reads the same after the record dropped it.
+//! so it reads the same after the resource dropped it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

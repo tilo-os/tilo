@@ -189,7 +189,7 @@ pub struct OskWidget {
     key_size: KeyboardSize,
     /// Whether the keyboard may adapt rankings and tap targets to this
     /// person's typing. What it learns is theirs alone: their host keeps it
-    /// in the person's own record ([`crate::learned`]).
+    /// in the person's own document ([`crate::learned`]).
     personalization_enabled: bool,
 
     // --- frame caches (populated in apply_layout) ---
@@ -2762,7 +2762,7 @@ impl Widget for OskWidget {
                 let p = ctx.logical(position);
                 self.pointer = Some(p);
                 if let Some(path) = self.gesture_path.as_mut() {
-                    // Only record once the pointer has moved a touch, to keep
+                    // Only resource once the pointer has moved a touch, to keep
                     // the path tight.
                     if path.last().is_none_or(|&l| l.distance(p) > 1.0) {
                         if path.len() < MAX_GESTURE_POINTS {

@@ -417,7 +417,7 @@ fn a_change_costs_the_same_in_a_tracker_ten_times_the_size() {
     );
     assert!(
         record_large <= record_small + record_small / 10,
-        "the record a change is written to is no larger: {record_small} then {record_large} bytes"
+        "the resource a change is written to is no larger: {record_small} then {record_large} bytes"
     );
 }
 

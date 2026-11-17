@@ -1,7 +1,7 @@
 //! What Tasks does with the workspace beyond editing the tracker: opening
 //! an issue, showing a place, writing a note.
 //!
-//! The vocabulary travels with the record so a typed reference to one of
+//! The vocabulary travels with the resource so a typed reference to one of
 //! these effects names the tracker wherever it is read from. The Tasks app
 //! answers them; nothing here touches another app.
 

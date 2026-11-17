@@ -251,13 +251,13 @@ async fn ended(
     workspaces: &tilo_relay::workspaces::Workspaces,
     workspace: &str,
     message: &Id,
-) -> chat::record::Message {
+) -> chat::chat::Message {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let part = conversation_part(workspaces, workspace).await;
         let reply = part
             .messages
-            .get(&chat::record::reply_id(message, &MemberId::agent(SCOUT)));
+            .get(&chat::chat::reply_id(message, &MemberId::agent(SCOUT)));
         if let Some(reply) = reply
             && !chat::summons::unanswered(Some(reply))
         {
@@ -273,7 +273,7 @@ async fn ended(
 }
 
 /// How the work a reply records ended.
-fn end_of(reply: &chat::record::Message) -> Option<chat::agent_stream::AgentFinish> {
+fn end_of(reply: &chat::chat::Message) -> Option<chat::agent_stream::AgentFinish> {
     match reply.work.as_ref()?.state.as_ref()?.state {
         chat::model::AgentWorkState::ProviderFinished { outcome } => Some(outcome),
         _ => None,
@@ -731,7 +731,7 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     let part = conversation_part(&workspaces, &workspace).await;
     assert!(
         part.messages
-            .get(&chat::record::reply_id(&second, &MemberId::agent(SCOUT)))
+            .get(&chat::chat::reply_id(&second, &MemberId::agent(SCOUT)))
             .is_some_and(|reply| chat::summons::unanswered(Some(reply))),
         "the turn was taken and has not ended"
     );

@@ -11,7 +11,7 @@ use ui::widget::block_editor::{Block, CursorPlacement};
 
 #[test]
 fn remote_notes_caret_names_the_same_block_on_both_peers_across_inserted_blocks() {
-    // Two windows over one notebook record, both on the same note.
+    // Two windows over one notebook resource, both on the same note.
     let f = NotebookFixture::rich();
     let checkout = notebook(&f);
     let mut a = driver(&f, 11, &checkout);

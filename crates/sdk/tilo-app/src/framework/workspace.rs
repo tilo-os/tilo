@@ -33,14 +33,14 @@ pub struct WorkspaceResource<P: Resource> {
 
 /// Opens the record `id` of `P` that one owner keeps, later, from a widget that outlives the
 /// view that built it: a page's Files window opens each chunk of the workspace's tree as the
-/// tree lists it ([`ResourceEnv::record_opener`](super::ResourceEnv::record_opener)).
-pub struct RecordOpener<P: Resource> {
+/// tree lists it ([`ResourceEnv::resource_opener`](super::ResourceEnv::resource_opener)).
+pub struct ResourceOpener<P: Resource> {
     storage: Rc<super::settings::ViewStorage>,
     owner: &'static str,
     resource: std::marker::PhantomData<fn() -> P>,
 }
 
-impl<P: Resource> Clone for RecordOpener<P> {
+impl<P: Resource> Clone for ResourceOpener<P> {
     fn clone(&self) -> Self {
         Self {
             storage: Rc::clone(&self.storage),
@@ -50,7 +50,7 @@ impl<P: Resource> Clone for RecordOpener<P> {
     }
 }
 
-impl<P: Resource> RecordOpener<P> {
+impl<P: Resource> ResourceOpener<P> {
     pub(crate) fn new(storage: Rc<super::settings::ViewStorage>, owner: &'static str) -> Self {
         Self {
             storage,
@@ -457,7 +457,7 @@ impl<P: Resource> WorkspaceResource<P> {
     /// record does, or the record cannot be changed right now (for that,
     /// [`Self::invoke_then`] waits).
     pub fn invoke(&self, invoke: &Invoke<P>) -> Result<(), ActionError> {
-        self.invoke_as(&super::record::acting(&self.shared.me), invoke)
+        self.invoke_as(&super::resources::acting(&self.shared.me), invoke)
     }
 
     /// [`Self::invoke`] as `invoker` (an agent, a script), which the change is attributed to —
@@ -502,7 +502,7 @@ impl<P: Resource> WorkspaceResource<P> {
             .waiting
             .try_borrow()
             .is_ok_and(|waiting| waiting.is_empty());
-        let invoker = super::record::acting(&shared.me);
+        let invoker = super::resources::acting(&shared.me);
         if first && let Applied::Done(result) = shared.apply_as(&action, &invoker) {
             shared.refresh();
             return then(result);
@@ -577,7 +577,7 @@ pub(crate) struct WorkspaceState {
     /// Wakes the window when another replica's change arrives.
     wake: Option<WakeHandle>,
     opened: RefCell<HashMap<OpenKey, Rc<dyn Any>>>,
-    /// Records still on their way from the workspace when a view asked for them, with what had
+    /// Resources still on their way from the workspace when a view asked for them, with what had
     /// arrived in their stores then ([`Self::arrivals`]): each is tried again once something
     /// arrives, not on every draw that asks for it.
     unopened: RefCell<HashMap<OpenKey, u64>>,

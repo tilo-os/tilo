@@ -12,7 +12,7 @@ use crate::model;
 use super::{ChatApp, Focus, Hit, MenuAction, MenuTarget};
 
 impl ChatApp {
-    /// Stage the view state of screenshot `scenario` over the record its
+    /// Stage the view state of screenshot `scenario` over the resource its
     /// actions wrote, once the frame is laid out. The demo scenarios read the
     /// design-crit conversation; the default is an ordinary reading frame, and
     /// collaboration states are explicit so a capture does not teach a

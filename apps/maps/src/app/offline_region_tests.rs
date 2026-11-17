@@ -5,7 +5,7 @@ use super::*;
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
+fn offline_regions_resource_delete_and_clear_without_losing_shared_tiles() {
     {
         let mut a = app_at(1280.0, 720.0);
         let uniq = ui::time::unix_now_ns();

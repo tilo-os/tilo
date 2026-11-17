@@ -193,7 +193,7 @@ mod tests {
     }
 
     /// A note nobody named reads as the word for one in the language of whoever looks it up, and
-    /// the record itself holds no title at all.
+    /// the resource itself holds no title at all.
     #[test]
     fn a_note_nobody_named_reads_in_the_readers_own_language() {
         crate::metadata::CATALOG.ensure();
@@ -230,7 +230,9 @@ mod tests {
             tilo_content::ContentStore::memory(),
         );
         let _in_the_window = window.enter();
-        let texts: Vec<String> = (0..3_000).map(|n| format!("ordinary record {n}")).collect();
+        let texts: Vec<String> = (0..3_000)
+            .map(|n| format!("ordinary resource {n}"))
+            .collect();
         let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
         let (mut notebook, pages) = populated();
         with_blocks(&mut notebook, pages[0], &refs);
@@ -241,9 +243,9 @@ mod tests {
         assert!(first.results.len() <= 3);
         assert!(
             source
-                .search("record 2999")
+                .search("resource 2999")
                 .iter()
-                .any(|hit| hit.title == "ordinary record 2999"),
+                .any(|hit| hit.title == "ordinary resource 2999"),
             "the last block is as findable as the first"
         );
     }

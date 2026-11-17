@@ -204,7 +204,7 @@ fn concurrent_markup_edits_converge_across_replicas() {
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn form_edits_history_and_read_only_roles_govern_record_changes() {
+fn form_edits_history_and_read_only_roles_govern_resource_changes() {
     let (mut left, mut right) = replicas();
     apply(
         &mut left,
@@ -382,7 +382,7 @@ fn engine_fixture(name: &str) -> std::path::PathBuf {
 #[serial_test::serial(pdfium)]
 #[test]
 fn exports_are_deterministic_and_carry_page_operations() {
-    eprintln!("phase export_is_deterministic_and_reloads_with_the_records");
+    eprintln!("phase export_is_deterministic_and_reloads_with_the_resources");
     'phase: {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("form.pdf");
@@ -391,7 +391,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
             break 'phase;
         };
         let mut state = crate::scenarios::record_state();
-        tests::settle_record(&mut app, &mut state);
+        tests::settle_resource(&mut app, &mut state);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
         app.sync_viewport_frame();
@@ -408,7 +408,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
                 ui::tilo_resource::Bytes::Blob { len: stored, .. }
                     if stored == bytes.len() as u64
             ),
-            "the record references the bytes as a blob"
+            "the resource references the bytes as a blob"
         );
 
         app.tool = Tool::Ink;
@@ -507,7 +507,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
             break 'phase;
         };
         let mut state = crate::scenarios::record_state();
-        tests::settle_record(&mut app, &mut state);
+        tests::settle_resource(&mut app, &mut state);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
         app.sync_viewport_frame();
@@ -605,7 +605,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
 #[test]
 fn a_reading_position_records_a_page_fraction_and_zoom() {
     let bytes = PdfMarkup::planned(3);
-    let mut doc = AutoCommit::load(&bytes).expect("a planned record");
+    let mut doc = AutoCommit::load(&bytes).expect("a planned resource");
     let page = PdfMarkup::of(&doc).page_plan()[1].id.clone();
     apply(
         &mut doc,
@@ -629,7 +629,7 @@ fn markup_that_does_not_read_is_not_exported_as_none() {
         return;
     };
     let mut state = crate::scenarios::record_state();
-    tests::settle_record(&mut app, &mut state);
+    tests::settle_resource(&mut app, &mut state);
     app.create_note(&mut Edits::lend(&mut state.doc), 1, (250.0, 30.0));
     app.editing.as_mut().unwrap().set_text("Please confirm");
     app.commit_edit(&mut Edits::lend(&mut state.doc));

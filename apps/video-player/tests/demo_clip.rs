@@ -1,5 +1,5 @@
 //! The capture's demo clip plays on every VP9 decoder: Profile 0, 8-bit, 4:2:0, read from
-//! the pinned fixture's own `vpcC` record.
+//! the pinned fixture's own `vpcC` resource.
 
 #![allow(
     clippy::expect_used,
@@ -66,7 +66,7 @@ fn the_demo_clip_is_vp9_profile_0_8_bit_4_2_0() {
     let fixture = Path::new(env!("OUT_DIR")).join("vp9-aac.mp4");
     let file = std::fs::read(&fixture).expect("the pinned demo clip is staged");
     let (profile, bit_depth, chroma) =
-        vp9_config(&file).expect("the clip has a VP9 track with a vpcC record");
+        vp9_config(&file).expect("the clip has a VP9 track with a vpcC resource");
     assert_eq!(profile, 0, "VP9 Profile 0, which every VP9 decoder plays");
     assert_eq!(bit_depth, 8, "8-bit samples");
     // 0 and 1 are 4:2:0, 2 is 4:2:2, 3 is 4:4:4.

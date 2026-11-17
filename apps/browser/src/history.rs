@@ -1,7 +1,7 @@
 //! Browsing history: a flat list of [`HistoryEntry`] rows keyed by URL, and the
 //! fuzzy ranking behind the address bar's suggestions.
 //!
-//! It is the person's own record ([`BrowsingHistory`]): it follows them to their
+//! It is the person's own document ([`BrowsingHistory`]): it follows them to their
 //! other devices and never reaches a member. [`History::suggest`] matches
 //! the query as a case-insensitive subsequence of the title and URL, then ranks
 //! survivors on match quality first, then recency, then frequency.
@@ -682,7 +682,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn history_dedups_matches_ranks_and_merges;
 
-        phase record_dedups_keeps_titles_and_evicts_at_the_bound;
+        phase resource_dedups_keeps_titles_and_evicts_at_the_bound;
         {
             {
                 let mut h = History::new();
@@ -863,7 +863,7 @@ mod tests {
             assert_eq!(out.len(), 3, "the result is capped at the limit");
         }
 
-        phase browsing_history_record_counts_visits_and_merges_devices;
+        phase browsing_history_resource_counts_visits_and_merges_devices;
         {
             use ui::tilo_resource::Replica;
             let visit = |url: &str, title: &str, at: u64| {

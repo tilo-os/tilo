@@ -64,7 +64,7 @@ impl MailApp {
     }
 }
 
-/// What registering `message`, fetched or kept, tells the mailbox record.
+/// What registering `message`, fetched or kept, tells the mailbox resource.
 pub(super) fn kept_baseline(
     mail: &crate::resource::Mail,
     message: &Message,
@@ -208,9 +208,9 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             &automerge::ROOT,
         );
 
-        // The person's record names both, by a sealed reference to what the
+        // The person's resource names both, by a sealed reference to what the
         // server sent; the ciphertext went to the first device's host, which
-        // keeps it with the record, and the window let go of its own copy.
+        // keeps it with the resource, and the window let go of its own copy.
         let kept = first_resource.get();
         let named = |message: &Message| {
             kept.copies
@@ -281,7 +281,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             "nothing is here before it arrives"
         );
 
-        // It asks the record's route, newest first, and the first device's
+        // It asks the resource's route, newest first, and the first device's
         // host answers with what it keeps.
         let wanted = second_lane.take_requests().wants;
         assert_eq!(
@@ -322,7 +322,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             })
         );
         assert!(second.shared.borrow().mailbox.get(newer.id).is_some());
-        // The mailbox record knows where its server holds it, as for mail
+        // The mailbox resource knows where its server holds it, as for mail
         // fetched here.
         let mail = read_mail(&second_doc).unwrap();
         assert!(mail.knows(&old.id.to_string()));

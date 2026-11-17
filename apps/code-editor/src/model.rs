@@ -2,7 +2,7 @@
 //! open buffers, and language detection. No rendering, no IO, no CRDT — this
 //! layer is the in-memory source of truth the widgets read from.
 //!
-//! The [`Project`] record keeps the files and folders as a collection under
+//! The [`Project`] resource keeps the files and folders as a collection under
 //! `files` and each file's text as an Automerge `Text` under `buffers`, keyed
 //! by the file's id.
 
@@ -308,7 +308,7 @@ impl Project {
         }
     }
 
-    /// Materialise a shared file record in this process's tree. The caller owns the durable `resource_id`;
+    /// Materialise a shared file resource in this process's tree. The caller owns the durable `resource_id`;
     /// the arena id is local and never goes in a payload.
     pub fn adopt_collaborative_file(
         &mut self,
@@ -437,7 +437,7 @@ impl Project {
             .find_map(|(id, node)| (node.resource_id == resource_id).then_some(*id))
     }
 
-    /// Remove a file projection once its durable record is a tombstone; the tombstone stays in the CRDT,
+    /// Remove a file projection once its durable resource is a tombstone; the tombstone stays in the CRDT,
     /// so a later sync cannot resurrect it.
     pub fn remove_collaborative_file(&mut self, resource_id: &str) -> Option<NodeId> {
         let id = self.node_for_resource(resource_id)?;

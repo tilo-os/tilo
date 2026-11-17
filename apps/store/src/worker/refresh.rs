@@ -718,7 +718,7 @@ mod tests {
             .unwrap();
             refresh.apply(
                 &mut state,
-                Response::Flathub(Ok(FlathubFeed::from_records(
+                Response::Flathub(Ok(FlathubFeed::from_resources(
                     "en-US",
                     &[record],
                     &[],

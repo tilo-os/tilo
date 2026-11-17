@@ -79,7 +79,7 @@ impl BrowserWidget {
         }
         // The engine counts what waits behind the request it runs. This tab
         // sends it one at a time, so the actions waiting their turn here are
-        // the ones a reader of the record is asking about.
+        // the ones a reader of the resource is asking about.
         if let (PageRequest::Ledger { .. }, Some(serde_json::Value::Object(data))) =
             (request, value.get_mut("data"))
         {
@@ -93,9 +93,10 @@ impl BrowserWidget {
             data.insert("waiting".into(), waiting.into());
         }
         // Several actors may work in one tab: where this action stands in
-        // the tab's record, and what the others did since this actor last
+        // the tab's resource, and what the others did since this actor last
         // heard, so it learns the page moved under it.
-        if let Some(serde_json::Value::Object(record)) = Self::page_record_details(&reply.record) {
+        if let Some(serde_json::Value::Object(record)) = Self::page_resource_details(&reply.record)
+        {
             value.extend(record);
         }
         // Everything here came from the page: data to reason about, never instructions.
@@ -184,12 +185,12 @@ impl BrowserWidget {
         }
     }
 
-    /// What an answer says of the tab's record, as the fields an action's
+    /// What an answer says of the tab's resource, as the fields an action's
     /// output and a refusal's details both carry: `seq`, the action's own
     /// place; `others`, what the other actors did since this one last heard;
     /// `others_earlier`, how many older ones that leaves out. `None` when it
     /// says nothing. The entries are page content, like the rest.
-    pub(super) fn page_record_details(
+    pub(super) fn page_resource_details(
         record: &ui::webview::PageResourceNote,
     ) -> Option<serde_json::Value> {
         if record.is_empty() {

@@ -33,7 +33,7 @@ pub(crate) struct TasksWindow {
     nav: Nav,
     /// The tracker as the window reads it, for the location.
     tasks: LocalState<Tasks>,
-    /// The record's actions, for the bar's own slots.
+    /// The resource's actions, for the bar's own slots.
     dispatcher: Dispatcher<Tracker>,
     /// The issues' chain, whose writes the window's Undo takes back.
     chain: Option<ui::framework::Chain<crate::IssuePart>>,

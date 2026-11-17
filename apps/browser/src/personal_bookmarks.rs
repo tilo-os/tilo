@@ -1,5 +1,5 @@
 //! The person's own bookmark library. Importing it never edits the workspace's
-//! Browser record.
+//! Browser resource.
 //!
 //! A bookmark is an add under a tag minted when it was made; removing it tombstones
 //! the adds of it that were seen, so an add made meanwhile on another device survives
@@ -64,7 +64,7 @@ fn url_refused() -> Refusal {
 }
 
 impl PersonalBookmarks {
-    /// What the record holds: the person's own bookmarks, by the tag each was added
+    /// What the resource holds: the person's own bookmarks, by the tag each was added
     /// under.
     pub fn read_document(
         &self,
@@ -312,7 +312,7 @@ impl PersonalBookmarks {
     fn import_batch(&mut self, batch: &ImportBatch) -> Result<(), Refusal> {
         if !batch.history.is_empty() {
             return Err(Refusal::new(
-                "History belongs to its private history record",
+                "History belongs to its private history resource",
             ));
         }
         let Some((key, digest)) = self.receipt(batch)? else {
@@ -330,7 +330,7 @@ impl PersonalBookmarks {
     }
 }
 
-/// The root keys the library kept its parts under before it was a record.
+/// The root keys the library kept its parts under before it was a resource.
 mod legacy {
     pub const ADD: &str = "browser.bookmarks.v2.add:";
     pub const REMOVE: &str = "browser.bookmarks.v2.remove:";
@@ -340,7 +340,7 @@ mod legacy {
 }
 
 /// Bring a library of version 1, which kept its adds, tombstones, receipts and trees
-/// as prefixed keys at the document's root, up to the record.
+/// as prefixed keys at the document's root, up to the resource.
 fn upgrade(doc: &mut ui::tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
     use automerge::transaction::Transactable as _;
     use automerge::{ObjType, ROOT, ReadDoc as _, Value};
@@ -380,7 +380,7 @@ fn upgrade(doc: &mut ui::tilo_resource::Doc, from: u32) -> Result<(), ModelError
         } else if let Some(source) = key.strip_prefix(legacy::TREE) {
             let text = scalar(doc, &ROOT, &key)
                 .ok_or_else(|| ModelError::invalid("an imported tree is no text").at(&key))?;
-            // Read the way the record reads a kept tree (`json_model!`): as JSON first,
+            // Read the way the resource reads a kept tree (`json_model!`): as JSON first,
             // then the tree.
             let tree: ImportedTree = serde_json::from_str(&text)
                 .and_then(serde_json::from_value)

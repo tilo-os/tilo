@@ -1,6 +1,6 @@
 //! The chat window as the view mounts it: the [`ChatApp`] it shows, shared
 //! with the view's effect handler and what the view publishes beside the
-//! record, so an effect answers from, and acts on, the window it is about.
+//! resource, so an effect answers from, and acts on, the window it is about.
 //!
 //! The window lays out, draws and handles input as the chat does; it adds
 //! the scenario a capture stages, done on the next sync.

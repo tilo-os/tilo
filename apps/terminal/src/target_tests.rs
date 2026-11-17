@@ -259,7 +259,7 @@ fn a_new_tab_opens_the_most_recent_environment_and_records_it() {
     assert_eq!(
         recorded(&app),
         Some(SessionTarget::environment("work")),
-        "the target is part of the synced session record"
+        "the target is part of the synced session resource"
     );
 
     on_tab(&mut app, |_| ());
@@ -507,7 +507,7 @@ tilo_test_env::scenario! {
             {"key":"../x","name":"Bad"}]}"#,
         )
         .unwrap();
-        assert_eq!(list.len(), 1, "a key no record may have is dropped");
+        assert_eq!(list.len(), 1, "a key no resource may have is dropped");
         assert_eq!(list[0].tools, vec!["git".to_string()]);
         assert_eq!(
             crate::sessions::parse_directory_reply(r#"{"result":"denied","reason":"nope"}"#),
@@ -775,7 +775,7 @@ fn native_widget_exposes_the_permission_request_and_retries_after_the_answer() {
     assert_eq!(
         app.versions().len(),
         versions,
-        "consuming host intent does not write the record"
+        "consuming host intent does not write the resource"
     );
     *allowed.borrow_mut() = true;
     reply.upgrade().unwrap().borrow_mut().answer = Some(true);
@@ -857,7 +857,7 @@ fn a_refused_device_shell_is_not_where_the_next_session_opens() {
     assert_eq!(
         recorded(&app),
         Some(SessionTarget::default_environment()),
-        "the refusal hands the record back to where a new tab opens"
+        "the refusal hands the resource back to where a new tab opens"
     );
 
     let mut app = app.reopen().unwrap();
@@ -1342,7 +1342,7 @@ fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_w
     let keep = handed.clone();
     let up = reachable.clone();
     attach_with(&mut app, &attaches, move |target, _| {
-        if target.environment_record().is_some() && !up.get() {
+        if target.environment_resource().is_some() && !up.get() {
             return Err(OpenError::Failed("the session cannot be reached".into()));
         }
         let (output, supervisor_output) = std::os::unix::net::UnixStream::pair().unwrap();

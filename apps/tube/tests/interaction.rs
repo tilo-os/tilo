@@ -1137,7 +1137,7 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
         assert_eq!(
             model.channel("UC_A").unwrap().avatar_url,
             avatar_url,
-            "reconcile stamps the same-name record's avatar onto the primary record",
+            "reconcile stamps the same-name resource's avatar onto the primary resource",
         );
 
         let app = TubeApp::sample()

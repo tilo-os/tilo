@@ -13,7 +13,7 @@
 //! that is not moving. A caller that gives up on a waiting action takes it
 //! out before it ran, so it is known to have changed nothing.
 //!
-//! Reading the tab's record takes no turn. It reads nothing of the page, so
+//! Reading the tab's resource takes no turn. It reads nothing of the page, so
 //! the engine answers it at once whatever is running, and it goes to the
 //! engine at once: whoever reviews a tab is never queued behind the actors
 //! they are watching.
@@ -36,8 +36,8 @@ pub(super) const MAX_WAITING_PAGE_ACTIONS: usize = 8;
 /// the same wait the engine gives a request behind another.
 pub(super) const PAGE_TURN_WAIT: Duration = Duration::from_secs(30);
 
-/// How many reads of the tab's record may be with the engine at once.
-pub(super) const MAX_RECORD_READS: usize = 8;
+/// How many reads of the tab's resource may be with the engine at once.
+pub(super) const MAX_RESOURCE_READS: usize = 8;
 
 /// A read of the tab's record that is with the engine. It holds no turn.
 pub(super) struct ResourceRead {
@@ -98,7 +98,7 @@ impl BrowserWidget {
 
     /// Read the tab's record: sent to the engine at once, beside whatever
     /// action holds the tab, and answered as its own invocation.
-    pub(super) fn read_page_record(
+    pub(super) fn read_page_resource(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
         actor: Option<PageActor>,
@@ -106,26 +106,26 @@ impl BrowserWidget {
     ) -> Result<(), String> {
         // An answer whose caller is gone is spent, as a page action's is.
         let replies = &self.pending_replies;
-        self.page_record_answers.retain(|update| {
+        self.page_resource_answers.retain(|update| {
             replies
                 .iter()
                 .any(|(waiting, _)| *waiting == update.invocation())
         });
-        if self.page_record_reads.len() >= MAX_RECORD_READS {
+        if self.page_resource_reads.len() >= MAX_RESOURCE_READS {
             return Err(format!(
-                "This tab is already reading its record for {} callers; ask again once they \
+                "This tab is already reading its resource for {} callers; ask again once they \
                  have answered",
-                self.page_record_reads.len()
+                self.page_resource_reads.len()
             ));
         }
         self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
-        self.page_record_reads.push(ResourceRead {
+        self.page_resource_reads.push(ResourceRead {
             invocation,
             request_id: self.page_request_seq,
             acted: request.clone(),
             deadline: Instant::now() + PAGE_OPERATION_TIMEOUT,
         });
-        let request = self.page_record_request(request);
+        let request = self.page_resource_request(request);
         self.engine.send(ui::webview::WebViewCommand::Page {
             request_id: self.page_request_seq,
             actor,
@@ -135,63 +135,63 @@ impl BrowserWidget {
     }
 
     /// Whether `request_id` is a read of the tab's record this tab sent.
-    pub(super) fn reads_page_record(&self, request_id: u32) -> bool {
-        self.page_record_reads
+    pub(super) fn reads_page_resource(&self, request_id: u32) -> bool {
+        self.page_resource_reads
             .iter()
             .any(|read| read.request_id == request_id)
     }
 
     /// The engine answered a read of the tab's record: its caller's answer
     /// waits to be read, and no action's turn is touched.
-    pub(super) fn accept_page_record(
+    pub(super) fn accept_page_resource(
         &mut self,
         request_id: u32,
         result: Result<ui::webview::PageReply, ui::webview::PageFailure>,
     ) {
         let Some(index) = self
-            .page_record_reads
+            .page_resource_reads
             .iter()
             .position(|read| read.request_id == request_id)
         else {
             return;
         };
-        let read = self.page_record_reads.remove(index);
-        let result = self.page_record_reply(&read.acted, result);
+        let read = self.page_resource_reads.remove(index);
+        let result = self.page_resource_reply(&read.acted, result);
         let answer = match result {
             Ok(reply) => self.page_success(read.invocation, &reply, &read.acted, None),
             Err(failure) => action_failed(
                 read.invocation,
                 format!("browser.page.{}", failure.code),
                 failure.message,
-                Self::page_record_details(&failure.record),
+                Self::page_resource_details(&failure.record),
             ),
         };
-        self.page_record_answers.push(answer);
+        self.page_resource_answers.push(answer);
     }
 
-    /// The answer to the read of the record `invocation` started, once the
+    /// The answer to the read of the resource `invocation` started, once the
     /// engine gave one or the read ran out of time.
-    pub(super) fn take_page_record_answer(
+    pub(super) fn take_page_resource_answer(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
     ) -> Option<ui::tilo_actions::InvocationUpdate> {
         if let Some(index) = self
-            .page_record_answers
+            .page_resource_answers
             .iter()
             .position(|update| update.invocation() == invocation)
         {
-            return Some(self.page_record_answers.remove(index));
+            return Some(self.page_resource_answers.remove(index));
         }
         let now = Instant::now();
         let index = self
-            .page_record_reads
+            .page_resource_reads
             .iter()
             .position(|read| read.invocation == invocation && now >= read.deadline)?;
-        let read = self.page_record_reads.remove(index);
-        // The record is Browser's resource: an engine that does not answer
+        let read = self.page_resource_reads.remove(index);
+        // The resource is Browser's resource: an engine that does not answer
         // leaves it as readable as it was.
         if self.page_resource.attached()
-            && let Ok(reply) = self.page_record_reply(
+            && let Ok(reply) = self.page_resource_reply(
                 &read.acted,
                 Err(ui::webview::PageFailure::new(
                     "timeout",
@@ -201,11 +201,11 @@ impl BrowserWidget {
         {
             return Some(self.page_success(invocation, &reply, &read.acted, None));
         }
-        // Reading the record changes nothing, so nothing is unknown here.
+        // Reading the resource changes nothing, so nothing is unknown here.
         Some(action_failed(
             invocation,
             "browser.page.timeout",
-            "The tab did not answer with its record in time; reading it changes nothing, so \
+            "The tab did not answer with its resource in time; reading it changes nothing, so \
              ask again.",
             Some(serde_json::json!({
                 "timeout_seconds": PAGE_OPERATION_TIMEOUT.as_secs(),
@@ -214,20 +214,20 @@ impl BrowserWidget {
         ))
     }
 
-    /// Give up on the read of the record `invocation` started: the engine is
+    /// Give up on the read of the resource `invocation` started: the engine is
     /// told which request nobody waits for. `false` when it reads none here.
-    pub(super) fn withdraw_page_record_read(
+    pub(super) fn withdraw_page_resource_read(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
     ) -> bool {
         let Some(index) = self
-            .page_record_reads
+            .page_resource_reads
             .iter()
             .position(|read| read.invocation == invocation)
         else {
             return false;
         };
-        let read = self.page_record_reads.remove(index);
+        let read = self.page_resource_reads.remove(index);
         self.engine.send(ui::webview::WebViewCommand::CancelPage {
             request_id: read.request_id,
         });
@@ -336,12 +336,12 @@ impl BrowserWidget {
     }
 
     /// When the action that has waited longest has waited as long as it may,
-    /// or a read of the record has, so the window wakes to answer it.
+    /// or a read of the resource has, so the window wakes to answer it.
     pub(super) fn page_wait_deadline(&self) -> Option<Instant> {
         self.page_waiting
             .iter()
             .map(|waiting| waiting.until)
-            .chain(self.page_record_reads.iter().map(|read| read.deadline))
+            .chain(self.page_resource_reads.iter().map(|read| read.deadline))
             .min()
     }
 
@@ -417,7 +417,7 @@ impl BrowserWidget {
             return Err(Self::refused_page_request(&request));
         }
         if matches!(request, PageRequest::Ledger { .. }) {
-            return self.read_page_record(invocation, actor, request);
+            return self.read_page_resource(invocation, actor, request);
         }
         self.take_page_turn(invocation, actor, request)?;
         self.drive_page_operation();
@@ -465,21 +465,21 @@ impl BrowserWidget {
         });
     }
 
-    /// What the engine answered a request: the tab's record takes it, a read
-    /// of the record, the review or the forms is answered, and the page action
+    /// What the engine answered a request: the tab's resource takes it, a read
+    /// of the resource, the review or the forms is answered, and the page action
     /// that held the tab settles or waits for the page it opened.
     pub(super) fn accept_page_result(
         &mut self,
         request_id: u32,
         result: Result<PageReply, PageFailure>,
     ) {
-        // What the engine set down is written into the tab's record, which
+        // What the engine set down is written into the tab's resource, which
         // is Browser's resource, and every place is named as it counts them.
         let Some(result) = self.record_page_result(request_id, result) else {
             return;
         };
-        if self.reads_page_record(request_id) {
-            self.accept_page_record(request_id, result);
+        if self.reads_page_resource(request_id) {
+            self.accept_page_resource(request_id, result);
             return;
         }
         if self.reads_page_review(request_id) {
@@ -489,7 +489,7 @@ impl BrowserWidget {
         let Some(result) = self.take_forms_read(request_id, result) else {
             return;
         };
-        // Another request answered: the tab's record may have moved.
+        // Another request answered: the tab's resource may have moved.
         self.page_review_moved();
         let Some(operation) = self.page_operation.take_if(|operation| {
             operation.request_id == request_id && matches!(operation.phase, PagePhase::Sent)
@@ -542,7 +542,7 @@ impl BrowserWidget {
                 operation.invocation,
                 format!("browser.page.{}", failure.code),
                 failure.message,
-                Self::page_record_details(&failure.record),
+                Self::page_resource_details(&failure.record),
             ),
         });
     }

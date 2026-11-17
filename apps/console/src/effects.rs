@@ -1,5 +1,5 @@
 //! What a person asks of an agent through Console's effects ([`ConsoleEffect`], the
-//! record's vocabulary in `console-model`): which agent an effect is about, and what it
+//! resource's vocabulary in `console-model`): which agent an effect is about, and what it
 //! asks of it.
 
 pub use console_model::ConsoleEffect;

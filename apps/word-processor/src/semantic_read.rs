@@ -115,7 +115,7 @@ struct Candidate {
 fn compare(order: &[u8], id: &str, other_order: &[u8], other_id: &str) -> Ordering {
     tilo_resource::order::bytes::cmp(order, other_order).then(id.cmp(other_id))
 }
-/// The text of a Writer record's body; the owner still supplies/stamps the canonical record route.
+/// The text of a Writer resource's body; the owner still supplies/stamps the canonical resource route.
 pub fn read_text(
     doc: &AutoCommit,
     owner_heads: &[automerge::ChangeHash],

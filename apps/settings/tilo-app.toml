@@ -12,7 +12,7 @@
 # Print portal. The launcher also binds the parts of `~/.config/tilo` this
 # app is custodian of (the account stores and their credential vault) and,
 # read-only, the workspace tree; never the settings document, the identity
-# store, trust lists, app registries or settings records. The device's
+# store, trust lists, app registries or settings resources. The device's
 # settings it reads and writes through the shell's settings service, as
 # every app does: `settings.system` asks for every section, which the
 # image grants to this package alone. The

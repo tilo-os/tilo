@@ -1,5 +1,5 @@
 //! A tab worked in by more actors than its window remembers the admission
-//! of ([`MAX_ACTORS`]): what the record, a reviewer's reads and the review
+//! of ([`MAX_ACTORS`]): what the resource, a reviewer's reads and the review
 //! screen then say of the actor admitted longest ago.
 //!
 //! The window knows whom the action system admitted under a name, and from
@@ -72,12 +72,12 @@ fn crowd(n: usize) -> ActionInvoker {
     agent(&format!("crowd-{n}"))
 }
 
-/// What `tab`'s record holds, as a reader of it is answered.
+/// What `tab`'s resource holds, as a reader of it is answered.
 pub(super) fn entries(record: &PersonResource<PageResource>, tab: &str) -> Vec<Value> {
     record.with(|state| state.page(tab, 0).entries)
 }
 
-/// The device each change an agent authored in the record's history names.
+/// The device each change an agent authored in the resource's history names.
 pub(super) fn devices_in_history(
     record: &PersonResource<PageResource>,
 ) -> Vec<Option<InvokerDevice>> {
@@ -92,7 +92,7 @@ pub(super) fn devices_in_history(
                 .map(|invoker| invoker.device)
                 .collect()
         })
-        .expect("the record is open")
+        .expect("the resource is open")
 }
 
 /// Who set a field, as the engine's review of the page says it: by name and
@@ -209,11 +209,11 @@ fn an_actor_whose_action_waits_its_turn_is_not_forgotten_for_a_crowd() {
 }
 
 /// The engine answers an agent's fill and says where it set it down, and
-/// before the window has read that entry from the engine's record as many
+/// before the window has read that entry from the engine's resource as many
 /// other actors as it remembers read the tab's record: agents turned away
 /// from a busy tab ask again the moment an action answers. The entry is
 /// still set down as the agent the API admitted, from its laptop. The
-/// window owes the record that entry, and does not forget its actor before
+/// window owes the resource that entry, and does not forget its actor before
 /// it is written.
 #[test]
 fn an_actor_is_not_forgotten_before_its_answered_action_is_set_down() {
@@ -222,7 +222,7 @@ fn an_actor_is_not_forgotten_before_its_answered_action_is_set_down() {
     let laptop = laptop();
     let far = agent_on("task-x", &laptop);
     let filled = field_filled(1, "agent:task-x", "Given names");
-    // The fill's answer names its place in the engine's record. What the
+    // The fill's answer names its place in the engine's resource. What the
     // engine lists there is read a moment later.
     engine.push_page_reply(Ok(PageReply {
         record: PageResourceNote {
@@ -236,7 +236,7 @@ fn an_actor_is_not_forgotten_before_its_answered_action_is_set_down() {
     let record = record(&mut app);
     assert!(
         record.with(|state| state.tabs.keys().next().is_none()),
-        "the fill is not in the tab's record yet"
+        "the fill is not in the tab's resource yet"
     );
     for n in 0..MAX_ACTORS {
         act(
@@ -244,7 +244,7 @@ fn an_actor_is_not_forgotten_before_its_answered_action_is_set_down() {
             Some(&crowd(n)),
             &BrowserEffect::ReadPageRecord { since: None },
         )
-        .expect("the record answers each of the crowd");
+        .expect("the resource answers each of the crowd");
     }
 
     // The engine lists the fill from now on, and the next read writes it.
@@ -297,7 +297,7 @@ fn an_actor_is_forgotten_before_its_answer_is_set_down(
             Some(&crowd(n)),
             &BrowserEffect::ReadPageRecord { since: None },
         )
-        .expect("the record answers each of the crowd");
+        .expect("the resource answers each of the crowd");
     }
     let kept = engine_ends_hold(engine, 3, 1);
     assert_eq!(
@@ -313,7 +313,7 @@ fn an_actor_is_forgotten_before_its_answer_is_set_down(
 /// as that actor's, and says that where the actor worked from is not known:
 /// it names no device, and does not read as an actor on the device that runs
 /// the page. What the same actor did while the window knew it keeps its
-/// device, in the record, in a reviewer's read of it and in who set a field.
+/// device, in the resource, in a reviewer's read of it and in who set a field.
 /// The actor's next action is admitted again and is set down with its device.
 #[test]
 fn what_is_set_down_under_a_forgotten_name_says_its_device_is_not_known() {
@@ -348,7 +348,7 @@ fn what_is_set_down_under_a_forgotten_name_says_its_device_is_not_known() {
         "only what was set down after the window forgot says so: {kept:?}"
     );
 
-    // A reviewer's read of the record answers the same.
+    // A reviewer's read of the resource answers the same.
     let read = review(&mut app, None);
     let listed = read["data"]["entries"].as_array().expect("entries");
     assert_eq!(
@@ -358,7 +358,7 @@ fn what_is_set_down_under_a_forgotten_name_says_its_device_is_not_known() {
     );
     assert_eq!(unknown(listed), [false, false, true], "{read}");
 
-    // Who set a field: the record's own word where it keeps the action, and
+    // Who set a field: the resource's own word where it keeps the action, and
     // not known where it keeps none and the window has forgotten the actor.
     engine.set_page_data(
         "fields",
@@ -388,7 +388,7 @@ fn what_is_set_down_under_a_forgotten_name_says_its_device_is_not_known() {
         ]
     );
 
-    // The record's history says no more than the record: the change that
+    // The resource's history says no more than the record: the change that
     // set the answer down names the actor and no device.
     assert_eq!(devices_in_history(&record), [Some(laptop), None]);
 
@@ -448,7 +448,7 @@ fn the_review_screen_says_a_forgotten_actors_device_is_not_known() {
     {
         assert!(
             std::time::Instant::now() < deadline,
-            "the review names the laptop where the record keeps it and says where it is not \
+            "the review names the laptop where the resource keeps it and says where it is not \
              known; the window says {:?}",
             app.texts()
         );

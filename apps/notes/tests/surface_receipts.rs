@@ -21,8 +21,8 @@ fn call(app: &mut TestApp<NotesShell>, resource: &str, action: &str, arguments: 
 }
 
 /// The receipt the committed surface gives the newest change, with the
-/// storage units it wrote read from the record as it was before it, as a
-/// receiver holding the record reads them.
+/// storage units it wrote read from the resource as it was before it, as a
+/// receiver holding the resource reads them.
 fn receipt_of_newest(app: &TestApp<NotesShell>) -> (String, Receipt) {
     let mut doc = app.peer_document();
     let change = doc
@@ -30,14 +30,14 @@ fn receipt_of_newest(app: &TestApp<NotesShell>) -> (String, Receipt) {
         .last()
         .map(|change| (*change).clone())
         .expect("a change");
-    let before = doc.fork_at(change.deps()).expect("the record before it");
+    let before = doc.fork_at(change.deps()).expect("the resource before it");
     let hash = change.hash().0;
     let units = collab_types::units::units_by_change(before, std::slice::from_ref(&change))
         .and_then(|mut by| by.written.remove(&hash))
         .map_or_else(|| vec![Vec::new()], |written| written.units);
     let claim =
         ChangeClaim::of_change(hash, change.message(), units).expect("the change names its action");
-    // The harness runs the app under its own id; the record is that app's.
+    // The harness runs the app under its own id; the resource is that app's.
     let (app_id, kind) = claim
         .action
         .members()
@@ -106,7 +106,7 @@ fn editing_a_notes_body_is_decided_by_the_committed_surface() {
 }
 
 /// What the committed surface decides of every change made since `before`,
-/// with the kind each claims (the record's own when it names none).
+/// with the kind each claims (the resource's own when it names none).
 fn receipts_since(
     doc: &automerge::AutoCommit,
     before: &[automerge::ChangeHash],
@@ -117,7 +117,7 @@ fn receipts_since(
     changes
         .iter()
         .map(|change| {
-            let before = doc.fork_at(change.deps()).expect("the record before it");
+            let before = doc.fork_at(change.deps()).expect("the resource before it");
             let hash = change.hash().0;
             let units = collab_types::units::units_by_change(before, std::slice::from_ref(change))
                 .and_then(|mut by| by.written.remove(&hash))
@@ -196,7 +196,7 @@ fn typing_into_a_notes_body_is_decided_by_the_committed_surface() {
         .records
         .read(&checkout.id, |doc| receipts_since(doc, &before))
         .unwrap();
-    assert!(!receipts.is_empty(), "typing changed the record");
+    assert!(!receipts.is_empty(), "typing changed the resource");
     for (kind, receipt) in receipts {
         assert_eq!(
             kind, "notes.notebook",
@@ -209,7 +209,7 @@ fn typing_into_a_notes_body_is_decided_by_the_committed_surface() {
 /// Renaming a note from its title applies the notebook's `rename` verb from
 /// the window, not through an invocation. The verb's claim must name Notes
 /// itself: a claim naming an app guessed from the action type
-/// (`org.tilo.Notes`) is one the record's app does not publish, and the
+/// (`org.tilo.Notes`) is one the resource's app does not publish, and the
 /// identity service refused it and turned the window's collaboration off.
 ///
 /// Each keystroke in the title is one rename, so the page tree, the window's

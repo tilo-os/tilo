@@ -22,8 +22,8 @@ use ui::tilo_actions::{InvocationId, InvocationUpdate};
 use ui::{Arrival, InvocationCall, LocalState};
 
 use crate::effects::DiscordEffect;
+use crate::guild::Guild;
 use crate::locales::CATALOG;
-use crate::record::Guild;
 
 /// The bridge bot's entry in the registry's directory.
 pub const BRIDGE_ENTRY: &str = "so.tilo.bots.discord-bridge";

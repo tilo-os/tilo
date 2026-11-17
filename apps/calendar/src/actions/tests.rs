@@ -224,7 +224,7 @@ tilo_test_env::scenario! {
                         .set("forged".into()),
                 ))
                 .is_err(),
-            "what a server confirmed is written only by the server's own records"
+            "what a server confirmed is written only by the server's own documents"
         );
         let (mut events, tasks) = import_payload(
             "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:batch-event\r\n\

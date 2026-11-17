@@ -612,7 +612,7 @@ mod tests {
                 chat::demo::apply_as(
                     &mut doc,
                     author,
-                    chat::Chat::SUBMIT_FEEDBACK.with(chat::record::chat::SubmitFeedback {
+                    chat::Chat::SUBMIT_FEEDBACK.with(chat::chat::chat::SubmitFeedback {
                         channel: tilo_resource::Id::from_raw("c_general"),
                         submission,
                     }),

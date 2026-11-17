@@ -1936,7 +1936,7 @@ tilo_test_env::scenario! {
             .photos
             .iter_mut()
             .next()
-            .expect("opening creates a library record");
+            .expect("opening creates a library resource");
         photo.captured_at = Some("2026-09-19 at dusk".to_owned());
         photo.people = crate::model::labels(["Ada".to_owned(), "Mina".to_owned()]);
         photo.tags = crate::model::labels(["harbour".to_owned(), "travel".to_owned()]);

@@ -1,5 +1,5 @@
 //! Device-local cloud transfers: their approval, consent and progress, none
-//! of it in the record.
+//! of it in the resource.
 use crate::file_ops::{FileOp, Outcome, TransferProgress};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,7 +22,7 @@ struct Job {
 }
 
 thread_local! {
-    // Issuers never enter a record. Each checked component lifetime has its own.
+    // Issuers never enter a resource. Each checked component lifetime has its own.
     static APPROVALS: std::cell::RefCell<HashMap<uuid::Uuid, tilo_cloud_files::ImportAuthority>> = std::cell::RefCell::new(HashMap::new());
 }
 

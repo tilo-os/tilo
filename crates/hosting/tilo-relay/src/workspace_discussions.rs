@@ -12,7 +12,7 @@
 //! slug: the page opens `chat.channel:c_<slug>`, the channel this step
 //! seeded.
 
-use chat::record::{Chat, Conversation};
+use chat::chat::{Chat, Conversation};
 use tilo_resource::{Fields, Id};
 
 use crate::workspace_chat::channel_id;

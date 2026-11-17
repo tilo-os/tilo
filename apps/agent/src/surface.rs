@@ -79,13 +79,13 @@ pub const APPLICATION_KIND: &str = "applications.app";
 /// The resource prefix of an open of a document the workspace already has:
 /// `record.<app id>.<record id>#open`. Opening it puts that document's
 /// operations on the list; `app.<app id>#open` creates a new one.
-pub const RECORD_OPEN_PREFIX: &str = "record.";
+pub const RESOURCE_OPEN_PREFIX: &str = "record.";
 
 /// The address that opens `record`, a document of `app_id` the workspace
 /// already has.
 pub fn open_document_address(app_id: &str, record: &str) -> ActionAddress {
     ActionAddress::new(
-        format!("{RECORD_OPEN_PREFIX}{app_id}.{record}"),
+        format!("{RESOURCE_OPEN_PREFIX}{app_id}.{record}"),
         OPEN_ACTION,
     )
 }
@@ -93,15 +93,15 @@ pub fn open_document_address(app_id: &str, record: &str) -> ActionAddress {
 /// The app and record an open of an existing document names
 /// ([`open_document_address`]), or `None` when `address` is no such open.
 ///
-/// An app id is dotted and never holds a `:`; a record id names its scheme
-/// before a `:` (`uuid:…`) and may hold dots after it. So the record starts
-/// at the last `.` before the first `:`, or, for a record id without a
+/// An app id is dotted and never holds a `:`; a resource id names its scheme
+/// before a `:` (`uuid:…`) and may hold dots after it. So the resource starts
+/// at the last `.` before the first `:`, or, for a resource id without a
 /// scheme, at the last `.`.
 pub fn opens_document(address: &ActionAddress) -> Option<(&str, &str)> {
     if address.action != OPEN_ACTION {
         return None;
     }
-    let rest = address.resource.strip_prefix(RECORD_OPEN_PREFIX)?;
+    let rest = address.resource.strip_prefix(RESOURCE_OPEN_PREFIX)?;
     let head = rest.split_once(':').map_or(rest, |(head, _)| head);
     let (app_id, record) = rest.split_at_checked(head.rfind('.')?)?;
     let record = record.strip_prefix('.')?;

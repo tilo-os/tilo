@@ -273,7 +273,7 @@ fn text_operations_group_retains_contextual_refusal_and_one_undo_step() {
 }
 
 #[test]
-fn text_operations_snapshot_public_read_stamps_canonical_record() {
+fn text_operations_snapshot_public_read_stamps_canonical_resource() {
     let (_directory, mut app, file) = fixture("snapshot fixture");
     let descriptor = app
         .actions()

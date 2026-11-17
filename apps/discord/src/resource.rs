@@ -1,4 +1,4 @@
-//! The connector as an app: one bridged server per record. People see which
+//! The connector as an app: one bridged server per resource. People see which
 //! server it is, how far the bridge got, the channels it carries and who
 //! linked their account — their own with the way to link or unlink it — and
 //! everything else is the bridge bot's.
@@ -12,8 +12,8 @@ use ui::widget::{ListRow, Section};
 use discord_wire::op::ChannelKind;
 
 use crate::effects::{self, DiscordEffect};
+use crate::guild::{Guild, Link, Ownership};
 use crate::locales::CATALOG;
-use crate::record::{Guild, Link, Ownership};
 use crate::setup::{self, Setup, SetupClient};
 
 /// A channel of the server, as the page lists it.
@@ -27,7 +27,7 @@ struct Channel {
 }
 
 /// Someone who linked their Discord account here: the account, as Discord
-/// names it. The workspace's own id for the person stays in the record.
+/// names it. The workspace's own id for the person stays in the resource.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Linked {
     discord_user: String,
@@ -392,7 +392,7 @@ impl ResourceApp for Discord {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = "Discord";
     const TITLE_KEY: &'static str = "discord-app-title";
-    // A workspace bridges one server, so its guild record is the workspace's own.
+    // A workspace bridges one server, so its guild resource is the workspace's own.
     const WORKSPACE_RESOURCE: bool = true;
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -400,7 +400,7 @@ impl ResourceApp for Discord {
     }
 
     /// A bridged server cannot be staged by a capture: the bridge observes
-    /// it from Discord, so the scene is written as the record's start.
+    /// it from Discord, so the scene is written as the resource's start.
     #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         crate::sample::SCENARIOS

@@ -11,13 +11,13 @@ layout, text, fonts, rendering): about 50 MB before its data.
 | Part | Is | Holds | One per |
 |---|---|---|---|
 | **UI host** | the workspace's render service, extended | widgets, layout, text, fonts, rendering, input, accessibility | workspace |
-| **tilolang host** | a small process without the toolkit (crate `tilolang-host`) | the apps' wasm instances, their records, undo and history | workspace and author |
+| **tilolang host** | a small process without the toolkit (crate `tilolang-host`) | the apps' wasm instances, their resources, undo and history | workspace and author |
 | **App instance** | wasm in a tilolang host | its module and memory | open app |
 
 - An app sends **component patches**, not pixels. The UI host applies them to that app's
   widgets and draws them with one shared font set, glyph cache and GPU device.
 - Input goes back as events. Typing happens in the UI host's text field, so it shows on the
-  next frame without a round trip; the edit then goes to the app's record.
+  next frame without a round trip; the edit then goes to the app's resource.
 - Apps by one author in one workspace share a tilolang host, isolated as wasm instances.
   Different authors get different processes, so a stranger's code never shares memory with
   yours. An author is the app's verified publisher, the person for their own builds, or the
@@ -25,8 +25,8 @@ layout, text, fonts, rendering): about 50 MB before its data.
 
 ## 2. What stays
 
-- **Identity, custody, sandbox.** Each instance gets its own launch record with its app's
-  creation record and ticket. The launcher opens each instance's connections (broker, identity,
+- **Identity, custody, sandbox.** Each instance gets its own launch resource with its app's
+  creation resource and ticket. The launcher opens each instance's connections (broker, identity,
   window) with that app's own custody and hands them over. Nothing trusts a host's claim about
   which app it is.
 - **Windows belong to apps.** Each app window keeps its launch identity for its surface and
@@ -55,7 +55,7 @@ locally.
 | 0 | The commit path (broker client, managed sender) in crate `collaboration`, without the toolkit | done |
 | 1 | The patch protocol; the app half without the toolkit; the UI half (`tilo-ui-host`) | done, in one process |
 | 2a | Undo, history steps and save state in `collaboration`, shared with native apps | done |
-| 2b | The tilolang host process: launch kind, sandbox, instances, `InstanceRecord` holding each record; the shell starting one host per workspace and author and handing it each window's instance; the window as presentation only | done |
+| 2b | The tilolang host process: launch kind, sandbox, instances, `InstanceResource` holding each resource; the shell starting one host per workspace and author and handing it each window's instance; the window as presentation only | done |
 | 2c / 3 | The UI host draws every app's windows | next |
 | 4 | Measure against the goal, including a slow device (2 cores, 4 GB) | partly: 2.7 MiB per extra instance, first frame 2.4 ms median |
 | 5 | Thin mode | later |
@@ -71,8 +71,8 @@ Decisions made on the way:
   instance is what the window speaks, its app's catalogue and the frames' words alike. A
   language chosen in Settings later is said on the host's action API with the formats, and every
   window relabels where it stands.
-- The record store (`RecordStore`) stays with native apps. The tilolang host holds records
-  through `InstanceRecord`, using the same history and save code.
+- The resource store (`RecordStore`) stays with native apps. The tilolang host holds resources
+  through `InstanceResource`, using the same history and save code.
 - One undo, one history: the history verbs every app publishes (Undo, Redo, History, Restore,
   Checkpoint, Diff) live in `collaboration::history_source::verbs`, below the toolkit. Native
   apps and tilolang instances publish and answer the same verbs; the window's own Undo is the

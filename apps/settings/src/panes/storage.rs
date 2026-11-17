@@ -1346,7 +1346,7 @@ mod tests {
     }
 
     /// Opening the page changes nothing of the person's: nothing about looking at a page is a
-    /// change of one of their records, so nothing is offered to their history.
+    /// change of one of their resources, so nothing is offered to their history.
     #[test]
     fn opening_the_storage_page_writes_no_change() {
         fn documents(
@@ -1368,7 +1368,7 @@ mod tests {
         let after = documents(&app);
         assert_eq!(
             before, after,
-            "opening the page wrote a change to the window's records"
+            "opening the page wrote a change to the window's resources"
         );
     }
 

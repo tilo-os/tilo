@@ -39,7 +39,7 @@ integration journeys.
 
 Use the authorized session's `tilo-control` socket. Run `actions list` for
 permission-filtered descriptors, then invoke the returned provider and id.
-Keep the caller, workspace and record fixed.
+Keep the caller, workspace and resource fixed.
 
 - **Completion:** `accepted` only means admitted. Save `broker_invocation_id`;
   follow it with `tilo-control actions status ID --wait`. If unavailable,
@@ -55,7 +55,7 @@ Keep the caller, workspace and record fixed.
   device-owner socket. Use existing authorized diagnostics and retain
   publication checks. These observations do not prove durable-owner ACK.
 - **Reopen:** close the view; restart the owned session if under test; reopen
-  normally with the same caller and workspace. Verify the original record and
+  normally with the same caller and workspace. Verify the original resource and
   edit without replay. A closed-tab undo stack is no reopen API.
 - **Durability and sync:** saved bytes and a repainted view prove only those
   facts. Observe required owner ACK or remote delivery separately with the

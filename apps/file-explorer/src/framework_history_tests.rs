@@ -502,8 +502,8 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         let directory = tempfile::tempdir().unwrap();
         let a = directory.path().join("A");
         let b = directory.path().join("B");
-        let (record_a, version_a) = install(&a, 3);
-        let (record_b, version_b) = install(&b, 4);
+        let (resource_a, version_a) = install(&a, 3);
+        let (resource_b, version_b) = install(&b, 4);
         let returned = Arc::new(SubmitReturns::default());
         let target = |path: &std::path::Path, record, label: &str| {
             let target = crate::framework_history::target(
@@ -524,7 +524,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
             }
         };
         let (mut app, source) = hosted();
-        source.set_target(Some(target(&a, record_a, "A")));
+        source.set_target(Some(target(&a, resource_a, "A")));
         let driver = app.harness();
         source.open(None);
         let select = entry_of(version_a);
@@ -553,9 +553,9 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         )
         .unwrap();
         xattr::remove(&a, CHECKED_HISTORY_RESTORE_XATTR).unwrap();
-        source.set_target(Some(target(&b, record_b, "B")));
+        source.set_target(Some(target(&b, resource_b, "B")));
         wait(driver, &entry_of(version_b));
-        source.set_target(Some(target(&a, record_a, "A again")));
+        source.set_target(Some(target(&a, resource_a, "A again")));
         wait(driver, &select);
         assert!(
             !driver.inspection_json().unwrap().contains(UNAVAILABLE_ACK),
@@ -597,7 +597,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         );
         let revision = |id| fs_protocol::ContentRevisionV1 {
             schema_version: 1,
-            document_id: record_a,
+            document_id: resource_a,
             version_id: fs_protocol::FileVersionId(uuid::Uuid::from_u128(id)),
             content_hash: Some(fs_protocol::ContentHash([5; 32])),
             byte_len: 16,
@@ -608,7 +608,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
             intent_id: original.intent_id,
             workspace_id: original.review.workspace_id,
             mount_lifetime: original.review.mount_lifetime,
-            document_id: record_a,
+            document_id: resource_a,
             selected_version: version_a,
             prior_revision: revision(200),
             restored_revision: revision(201),
@@ -629,9 +629,9 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         .unwrap();
         driver.click_named("history-files-result").unwrap();
         wait(driver, "Restored version");
-        source.set_target(Some(target(&b, record_b, "B again")));
+        source.set_target(Some(target(&b, resource_b, "B again")));
         wait(driver, &entry_of(version_b));
-        source.set_target(Some(target(&a, record_a, "A third")));
+        source.set_target(Some(target(&a, resource_a, "A third")));
         wait(driver, "history-files-undo");
         wait(driver, &select);
         driver.click_named("history-files-undo").unwrap();

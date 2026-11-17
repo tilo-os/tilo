@@ -1634,12 +1634,12 @@ fn a_reload_at_the_same_address_reads_the_page_again() {
     assert!(asked(&engine).is_empty());
 }
 
-/// The window's reads take no place in the tab's record and name no actor:
+/// The window's reads take no place in the tab's resource and name no actor:
 /// each is the read `read-page-forms` makes, which only observes the page,
-/// sent as the tab's unnamed actor, and the record holds nothing after
+/// sent as the tab's unnamed actor, and the resource holds nothing after
 /// them.
 #[test]
-fn the_windows_reads_take_no_place_in_the_record() {
+fn the_windows_reads_take_no_place_in_the_resource() {
     let (engine, mut app) = open_on(APPLY, &[visa_form()]);
     engine.send(WebViewCommand::Reload);
     settle(&mut app);
@@ -1654,7 +1654,7 @@ fn the_windows_reads_take_no_place_in_the_record() {
         );
     }
     let record = run(&mut app, "read-page-record", &serde_json::json!({}))
-        .answer("the tab's record is read");
+        .answer("the tab's resource is read");
     assert_eq!(record["data"]["entries"], serde_json::json!([]));
     assert_eq!(record["data"]["next"], 0);
 }

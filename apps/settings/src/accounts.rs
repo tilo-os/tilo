@@ -20,7 +20,7 @@ pub struct AccountMutationJournal {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AccountRoot {
     explicit: Option<PathBuf>,
-    person: Option<PersonAccountsRecord>,
+    person: Option<PersonAccountsResource>,
     #[cfg(test)]
     vault_gate: VaultGate,
 }
@@ -97,21 +97,21 @@ impl VaultOpener {
 }
 
 #[derive(Clone)]
-struct PersonAccountsRecord(ui::framework::PersonResource<accounts::person::PersonAccounts>);
+struct PersonAccountsResource(ui::framework::PersonResource<accounts::person::PersonAccounts>);
 
-impl std::fmt::Debug for PersonAccountsRecord {
+impl std::fmt::Debug for PersonAccountsResource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("PersonAccounts")
     }
 }
 
-impl PartialEq for PersonAccountsRecord {
+impl PartialEq for PersonAccountsResource {
     fn eq(&self, _: &Self) -> bool {
         true
     }
 }
 
-impl Eq for PersonAccountsRecord {}
+impl Eq for PersonAccountsResource {}
 
 impl AccountRoot {
     pub fn live() -> Self {
@@ -137,7 +137,7 @@ impl AccountRoot {
         mut self,
         record: ui::framework::PersonResource<accounts::person::PersonAccounts>,
     ) -> Self {
-        self.person = Some(PersonAccountsRecord(record));
+        self.person = Some(PersonAccountsResource(record));
         self
     }
 
@@ -164,7 +164,7 @@ impl AccountRoot {
     }
 
     pub fn store(&self) -> accounts::AccountStore {
-        if let Some(PersonAccountsRecord(record)) = &self.person {
+        if let Some(PersonAccountsResource(record)) = &self.person {
             return record.get().store();
         }
         self.path()
@@ -175,11 +175,11 @@ impl AccountRoot {
     pub fn revision(&self) -> Option<u64> {
         self.person
             .as_ref()
-            .map(|PersonAccountsRecord(record)| record.revision())
+            .map(|PersonAccountsResource(record)| record.revision())
     }
 
     pub fn take_in_device_accounts(&self) -> std::io::Result<()> {
-        let Some(PersonAccountsRecord(record)) = &self.person else {
+        let Some(PersonAccountsResource(record)) = &self.person else {
             return Ok(());
         };
         let Some(root) = self.path() else {
@@ -200,8 +200,8 @@ impl AccountRoot {
         origin: String,
         display_name: String,
     ) -> Result<(), String> {
-        let Some(PersonAccountsRecord(record)) = &self.person else {
-            return Err("Settings' personal account record is unavailable".into());
+        let Some(PersonAccountsResource(record)) = &self.person else {
+            return Err("Settings' personal account resource is unavailable".into());
         };
         record
             .invoke(
@@ -219,8 +219,8 @@ impl AccountRoot {
         account: String,
         enabled: bool,
     ) -> Result<(), String> {
-        let Some(PersonAccountsRecord(record)) = &self.person else {
-            return Err("Settings' personal account record is unavailable".into());
+        let Some(PersonAccountsResource(record)) = &self.person else {
+            return Err("Settings' personal account resource is unavailable".into());
         };
         let current = record
             .get()
@@ -244,8 +244,8 @@ impl AccountRoot {
     }
 
     pub fn remove_browser_identity(&self, account: String) -> Result<(), String> {
-        let Some(PersonAccountsRecord(record)) = &self.person else {
-            return Err("Settings' personal account record is unavailable".into());
+        let Some(PersonAccountsResource(record)) = &self.person else {
+            return Err("Settings' personal account resource is unavailable".into());
         };
         let current = record
             .get()
@@ -306,7 +306,7 @@ impl AccountRoot {
 
     pub fn project(&self) -> std::io::Result<()> {
         match &self.person {
-            Some(PersonAccountsRecord(record)) => {
+            Some(PersonAccountsResource(record)) => {
                 record.get().project_in(&self.require_io()?).map(|_| ())
             }
             None => Ok(()),
@@ -315,7 +315,7 @@ impl AccountRoot {
 
     pub fn save_store(&self, store: &accounts::AccountStore) -> std::io::Result<()> {
         let root = self.require_io()?;
-        let Some(PersonAccountsRecord(record)) = &self.person else {
+        let Some(PersonAccountsResource(record)) = &self.person else {
             return store.save_in(&root);
         };
         let refused =
@@ -872,7 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_identity_publication_is_a_settings_owned_personal_record_action() {
+    fn browser_identity_publication_is_a_settings_owned_personal_resource_action() {
         use accounts::person::PersonAccounts;
         let root_key = "ab".repeat(32);
         let mut app =
@@ -971,7 +971,7 @@ mod tests {
     /// In a host the accounts are the person's record: saving edits it,
     /// reading reads it, and this device's file follows as its projection.
     #[test]
-    fn in_a_host_the_accounts_are_the_persons_record_and_the_file_follows() {
+    fn in_a_host_the_accounts_are_the_persons_resource_and_the_file_follows() {
         use accounts::person::PersonAccounts;
         let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
             .expect("settings opens headlessly");
@@ -993,7 +993,7 @@ mod tests {
         assert_eq!(
             accounts::AccountStore::load_in(dir.path()).get(&account.id),
             Some(&account),
-            "the device file is the record's projection"
+            "the device file is the resource's projection"
         );
 
         store.remove(&account.id);
@@ -1003,10 +1003,10 @@ mod tests {
     }
 
     /// The accounts this device's file held before it followed the person's
-    /// record are taken in once, the record's own accounts stay, and a file
-    /// that is the record's projection brings nothing back.
+    /// resource are taken in once, the resource's own accounts stay, and a file
+    /// that is the resource's projection brings nothing back.
     #[test]
-    fn the_device_files_accounts_are_taken_into_the_persons_record_once() {
+    fn the_device_files_accounts_are_taken_into_the_persons_resource_once() {
         use accounts::person::PersonAccounts;
         let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
             .expect("settings opens headlessly");

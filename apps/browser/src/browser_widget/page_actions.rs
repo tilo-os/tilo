@@ -1672,10 +1672,10 @@ fn an_action_that_waited_too_long_is_answered_as_never_run() {
     );
 }
 
-/// The tab's record and the review of its fields are page reads like the
+/// The tab's resource and the review of its fields are page reads like the
 /// others: typed requests, answered in the shape every page read has.
 #[test]
-fn the_record_and_the_fields_are_read_typed_and_answer_in_the_declared_shape() {
+fn the_resource_and_the_fields_are_read_typed_and_answer_in_the_declared_shape() {
     let (engine, mut widget, mut doc, root) = page_on("https://shop.test/form");
     let record = serde_json::json!({
         "entries": [
@@ -1744,7 +1744,7 @@ fn the_record_and_the_fields_are_read_typed_and_answer_in_the_declared_shape() {
         assert!(value["message"].is_string() && value["title"].is_string());
         assert_eq!(value["navigation"], "none");
     }
-    // The record is who did what, by the description that still names the
+    // The resource is who did what, by the description that still names the
     // element later, with what was written.
     assert_eq!(answers[0]["message"], "2 actions");
     assert_eq!(answers[0]["data"], record);
@@ -1780,11 +1780,11 @@ fn the_record_and_the_fields_are_read_typed_and_answer_in_the_declared_shape() {
     assert_eq!(page_requests(&engine).len(), 4);
 }
 
-/// Reading the record takes no turn: it reads nothing of the page, so it is
+/// Reading the resource takes no turn: it reads nothing of the page, so it is
 /// with the engine at once whatever holds the tab, and whoever reviews a tab
 /// is never queued behind the actors they are watching.
 #[test]
-fn reading_the_record_takes_no_turn() {
+fn reading_the_resource_takes_no_turn() {
     let (engine, mut widget, doc, root) = page_on("https://shop.test/");
     let (ada, ben, rev) = (
         agent("ada"),
@@ -1819,7 +1819,7 @@ fn reading_the_record_takes_no_turn() {
             (Some("agent:ada".to_owned()), "fill"),
             (Some("rev".to_owned()), "ledger"),
         ],
-        "the record is asked for while the fill still runs, ahead of what waits"
+        "the resource is asked for while the fill still runs, ahead of what waits"
     );
     assert_eq!(
         widget.page_waiting.len(),
@@ -1832,7 +1832,7 @@ fn reading_the_record_takes_no_turn() {
     let value = succeeded(
         widget
             .poll_invocation(record)
-            .expect("the record answers whatever runs"),
+            .expect("the resource answers whatever runs"),
     );
     assert_eq!(value["data"]["next"], 7);
     assert_eq!(value["data"]["waiting"], 2);
@@ -1849,7 +1849,7 @@ fn reading_the_record_takes_no_turn() {
         vec!["fill", "ledger", "click", "outline"]
     );
 
-    // A caller that gives up on a read of the record stops that request and
+    // A caller that gives up on a read of the resource stops that request and
     // no other.
     let running = start_as(&mut widget, Some(&ada), "read-page", &serde_json::json!({})).unwrap();
     let given_up = start_as(
@@ -1862,7 +1862,7 @@ fn reading_the_record_takes_no_turn() {
     let stopped = failed(
         widget
             .poll_invocation_cancelling(given_up, true)
-            .expect("a read of the record is answered when its caller gives up"),
+            .expect("a read of the resource is answered when its caller gives up"),
     );
     assert_eq!(stopped.code, "browser.page.cancelled");
     assert_eq!(stopped.details.unwrap()["outcome"], "not_run");
@@ -1904,7 +1904,7 @@ fn what_the_others_did_reaches_the_callers_output() {
     .unwrap();
     let value = succeeded(settled(&mut widget, &doc, &root, fill));
     assert_eq!(value["message"], "Filled searchbox \"Search\"");
-    assert_eq!(value["seq"], 6, "its own place in the record");
+    assert_eq!(value["seq"], 6, "its own place in the resource");
     assert_eq!(value["others"], theirs);
     assert_eq!(value["others_earlier"], 3);
     assert_eq!(
@@ -2337,7 +2337,7 @@ fn a_pages_forms_are_read_and_answered_by_the_names_they_ask_under() {
             .is_some_and(|outline| outline.contains("signature=5f1c2a9be0"))
     );
     // What came of each answer, what the form asks now, and the action's
-    // place in the tab's record.
+    // place in the tab's resource.
     assert_eq!(answers[1]["data"], placed);
     assert_eq!(answers[1]["data"]["results"][3]["code"], "secret_field");
     assert_eq!(
@@ -2569,7 +2569,7 @@ fn answering_a_form_takes_its_turn_and_completes_on_the_page_it_sent_to() {
     );
     assert_eq!(value["data"], sent);
     assert_eq!(value["data"]["submitted"], true);
-    assert_eq!(value["seq"], 2, "it took a place in the tab's record");
+    assert_eq!(value["seq"], 2, "it took a place in the tab's resource");
     assert_eq!(
         value["others"], theirs,
         "and was told of the click before it"

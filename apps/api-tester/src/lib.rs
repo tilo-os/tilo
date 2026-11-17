@@ -1,7 +1,7 @@
 //! API Tester: an HTTP client. Requests are built from the method, URL, params,
 //! headers, auth and body, sent through `tilo_net`, and their responses shown with
 //! status, timing and a highlighted body. Collections, environments, the active request
-//! and history are the [`Workspace`] record, so they collaborate; credentials stay on the
+//! and history are the [`Workspace`] resource, so they collaborate; credentials stay on the
 //! device.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
@@ -23,13 +23,13 @@ mod kv;
 pub mod locales;
 mod model;
 mod palette;
-mod record;
 mod request;
 pub mod resource;
 mod response;
 mod seed;
 mod sidebar;
 mod vars;
+mod workspace;
 
 pub use app::ApiTesterApp;
 pub use resource::{ApiTesterShell, Workspace};

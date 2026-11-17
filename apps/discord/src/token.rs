@@ -1,5 +1,5 @@
 //! The bot token and the webhook tokens live in the host's secret store,
-//! never in the record (bots.md §6). The token is set on the host through
+//! never in the resource (bots.md §6). The token is set on the host through
 //! the `set-bot-token` effect; the worker asks the host for it.
 
 use ui::secrets::SecretStore;

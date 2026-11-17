@@ -143,7 +143,7 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
     );
 }
 
-/// A launch opens the workspace's notebook, the one record every Notes window in
+/// A launch opens the workspace's notebook, the one resource every Notes window in
 /// the workspace opens (not one per window), so they edit one notebook.
 #[test]
 fn a_launch_opens_the_workspaces_notebook() {
@@ -163,7 +163,7 @@ fn a_launch_opens_the_workspaces_notebook() {
     assert!(workspace.join("state.automerge").is_file(), "{workspace:?}");
     assert!(
         !workspace.join("documents").exists(),
-        "no per-window record beside the workspace's notebook"
+        "no per-window resource beside the workspace's notebook"
     );
 }
 

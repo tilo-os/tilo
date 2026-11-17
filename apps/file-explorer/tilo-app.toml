@@ -19,7 +19,7 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
 # On a computer it browses the local file system by path; in a page it shows
-# the workspace's own files, the record every member holds (`src/tree.rs`).
+# the workspace's own files, the resource every member holds (`src/tree.rs`).
 platforms = ["linux", "macos", "web"]
 
 [package.names]

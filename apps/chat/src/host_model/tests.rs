@@ -122,7 +122,7 @@ fn mounted_oversized_stream_and_final_persist_utf8_truncation_and_safe_continuat
         // middle of a character, which is what the truncation must respect.
         // Emoji would too, but laying out sixteen thousand of them made this
         // the slowest test in the app without testing anything more.
-        let oversized = format!("a{}", "é".repeat(crate::record::MAX_MESSAGE_TEXT_BYTES));
+        let oversized = format!("a{}", "é".repeat(crate::chat::MAX_MESSAGE_TEXT_BYTES));
         let backend = backend(if final_only { "" } else { &oversized });
         if final_only {
             *backend.final_text.borrow_mut() = Some(oversized.clone());
@@ -136,7 +136,7 @@ fn mounted_oversized_stream_and_final_persist_utf8_truncation_and_safe_continuat
             .unwrap();
         assert_eq!(
             original.text,
-            utf8_prefix(&oversized, crate::record::MAX_MESSAGE_TEXT_BYTES)
+            utf8_prefix(&oversized, crate::chat::MAX_MESSAGE_TEXT_BYTES)
         );
         let work = original.work.as_ref().unwrap();
         let stream = work.stream.as_ref().unwrap();
@@ -195,7 +195,7 @@ fn mounted_reasoning_overflow_splits_deltas_and_persists_terminal_without_contin
     assert_eq!(stream.finish, Some(AgentFinish::Truncated));
     assert_eq!(
         stream.sequence,
-        (MAX_REASONING_BYTES / crate::record::MAX_MESSAGE_TEXT_BYTES + 1) as u64
+        (MAX_REASONING_BYTES / crate::chat::MAX_MESSAGE_TEXT_BYTES + 1) as u64
     );
     assert!(work.trace.is_empty());
     app.with_chat(|surface| {
@@ -458,11 +458,11 @@ tilo_test_env::scenario! {
         let mut base = reply(&doc, &start["reply"]);
         base.work = None;
         let channel = base.channel.clone();
-        let mut record = crate::record::Chat::default();
+        let mut record = crate::chat::Chat::default();
         for (id, name) in [("u_dana", "Dana"), ("u_other_dana", "Dana")] {
-            record.people.push(crate::record::Person {
+            record.people.push(crate::chat::Person {
                 name: name.into(),
-                ..crate::record::Person::unnamed(MemberId::person(id))
+                ..crate::chat::Person::unnamed(MemberId::person(id))
             });
         }
         let mut other = base.clone();

@@ -23,7 +23,7 @@ pub trait CompatibilityProvider: Send {
         true
     }
     /// Live UI controls emit inert resource/action addresses so the host can re-authorize,
-    /// record, and dispatch them.
+    /// resource, and dispatch them.
     fn action_native_controls(&self) -> bool {
         false
     }

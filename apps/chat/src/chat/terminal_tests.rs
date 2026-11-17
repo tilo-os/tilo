@@ -70,7 +70,7 @@ fn provider_terminal_state_and_accessibility_report_output_not_applied_actions()
             expected
         );
 
-        // A saved record from before terminal states were added still projects
+        // A saved resource from before terminal states were added still projects
         // its received outcome, without requiring a document migration.
         let mut legacy = record.clone();
         legacy.work.as_mut().unwrap().state.as_mut().unwrap().state = AgentWorkState::Taken;

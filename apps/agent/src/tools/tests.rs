@@ -1041,7 +1041,7 @@ tilo_test_env::scenario! {
     phase describe_operation_names_an_edit_verbs_fields;
     // `edit-text` names the type's editable fields in its `field` parameter, so
     // `describe_operation` and the refusal hint show an agent the field to set instead of its
-    // guessing at an internal record id.
+    // guessing at an internal resource id.
     {
         let mut catalogue = workspace();
         let mut edit = offer(

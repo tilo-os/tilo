@@ -1,4 +1,4 @@
-//! Git client as a resource: the record is the repository it opens and what
+//! Git client as a resource: the resource is the repository it opens and what
 //! members see of its history ([`GitClient`]); working-tree status, the
 //! history the window shows and an in-flight transfer are live rows the view
 //! publishes.
@@ -24,7 +24,7 @@ use crate::shared::SharedRepo;
 pub struct GitClient {
     /// Repository
     ///
-    /// The path of the repository the record opens; empty until one was
+    /// The path of the repository the resource opens; empty until one was
     /// opened, when the client looks around its working directory.
     pub repository: Atom,
     /// Shared history
@@ -42,9 +42,9 @@ impl GitClient {
 }
 
 impl GitClient {
-    /// What the record holds, answered through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads it as it reads any app's record, and a named item is read from the
-    /// record's table or by the read its own type gives it.
+    /// What the resource holds, answered through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads it as it reads any app's resource, and a named item is read from the
+    /// resource's table or by the read its own type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -332,7 +332,7 @@ mod tests {
     }
 
     /// The repository api carries what the window shows of the history,
-    /// branches and remotes with their item effects; the record holds only
+    /// branches and remotes with their item effects; the resource holds only
     /// the repository it opens and the projection, never the working tree.
     #[test]
     fn the_repository_api_publishes_what_the_window_shows() {
@@ -379,7 +379,7 @@ mod tests {
     /// Two devices that record the repository and open it at once
     /// converge; recording is nobody's undo step.
     #[test]
-    fn the_record_converges_and_recording_is_no_undo_step() {
+    fn the_resource_converges_and_recording_is_no_undo_step() {
         let (model, _) = crate::sample::model();
         let mut ours = Replica::<GitClient>::new();
         let mut theirs = ours.fork();
@@ -556,10 +556,10 @@ mod tests {
         );
     }
 
-    /// A repository named on the command line is the record's, opened again
+    /// A repository named on the command line is the resource's, opened again
     /// on the next launch; its projection reaches the document.
     #[test]
-    fn a_launched_repository_is_the_records_and_its_projection_syncs() {
+    fn a_launched_repository_is_the_resources_and_its_projection_syncs() {
         let (_dir, path) = scratch_repository("scratch-repo");
         let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
         app.settle();
@@ -567,7 +567,7 @@ mod tests {
         assert_eq!(
             state.opened(),
             Some(path.to_str().unwrap()),
-            "the launch opened the repository in the record"
+            "the launch opened the repository in the resource"
         );
         assert_eq!(
             state.shared.name, "scratch-repo",
@@ -580,11 +580,11 @@ mod tests {
         let shown = reopened.harness().inspection_json().unwrap();
         assert!(
             shown.contains("new.txt"),
-            "the record reopens its repository"
+            "the resource reopens its repository"
         );
     }
 
-    /// Work on the repository reaches outside the record, so the person's
+    /// Work on the repository reaches outside the resource, so the person's
     /// answers decide it like any outside effect; the diff preferences only
     /// read; choosing the repository opens a chooser for the person.
     #[test]
@@ -646,7 +646,7 @@ mod tests {
         assert!(error.to_string().contains("approved"));
     }
 
-    /// Undo takes back what the launch did in the record — opening the
+    /// Undo takes back what the launch did in the resource — opening the
     /// repository — but not the projection read from the repository on
     /// disk, which is nobody's edit.
     #[test]

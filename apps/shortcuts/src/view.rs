@@ -2720,7 +2720,7 @@ fn step_fields(at: &StepEditor<'_>, step: &Step) -> (Column, Vec<Element>) {
                 },
             ));
         }
-        // A record read is written in the program's text; its heading says it.
+        // A resource read is written in the program's text; its heading says it.
         StepKind::Read { .. } => {}
     }
     (body, nested)

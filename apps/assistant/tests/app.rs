@@ -45,7 +45,7 @@ fn chat_api() -> TestHost {
     })
 }
 
-/// The agents working in the window's workspace, as its own record of them has them.
+/// The agents working in the window's workspace, as its own document of them has them.
 fn agents(app: &mut TestApp<App>) -> Vec<(String, String, Option<String>)> {
     let record = app
         .shared_workspace::<WorkspaceAgents>(workspace_agent::OWNER)
@@ -137,7 +137,7 @@ fn a_task_is_listed_where_it_stands_and_never_under_another_stage() {
 }
 
 #[test]
-fn a_window_someone_uses_says_what_no_record_answers_instead_of_none() {
+fn a_window_someone_uses_says_what_no_resource_answers_instead_of_none() {
     english();
     let mut app = TestApp::<App>::in_workspace(WORKSPACE).expect("the window");
     app.frame();
@@ -165,7 +165,7 @@ fn creating_the_assistant_makes_an_agent_of_the_workspace_the_person_keeps() {
     assert_eq!(
         made.len(),
         1,
-        "one agent, in Chat's record of them: {made:?}"
+        "one agent, in Chat's resource of them: {made:?}"
     );
     assert_eq!(made[0].0, "assistant", "the id its actor works under");
     assert_eq!(made[0].1, "Assistant");

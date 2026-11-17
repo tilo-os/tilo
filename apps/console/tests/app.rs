@@ -165,7 +165,7 @@ fn a_program_or_a_page_offers_no_undo_and_a_stopped_agent_no_stop() {
     let mut app = TestApp::<App>::capture(Some("command")).expect("capture");
     assert!(
         !shows(&mut app, "console-action-0-undo"),
-        "a program that ran changed no record to take back"
+        "a program that ran changed no resource to take back"
     );
     assert!(!shows(&mut app, "console-action-3-undo"));
     let mut app = TestApp::<App>::capture(Some("agents")).expect("capture");
@@ -373,7 +373,7 @@ fn undoing_a_run_or_one_action_asks_the_history_by_what_it_changed() {
     assert_eq!(
         (one.app_id.as_str(), one.id.as_str()),
         ("so.tilo.notes", "record:plan"),
-        "the record the action changed, not the resource its view shows"
+        "the resource the action changed, not the resource its view shows"
     );
 }
 

@@ -39,7 +39,7 @@ impl Default for Publisher {
 }
 
 impl Publisher {
-    /// What the record holds: the registry the key publishes to, and the namespaces claimed
+    /// What the resource holds: the registry the key publishes to, and the namespaces claimed
     /// on it.
     pub fn read_document(
         &self,

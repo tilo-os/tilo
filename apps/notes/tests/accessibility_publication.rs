@@ -1,6 +1,6 @@
 //! What the host's accessibility walk costs and publishes when Notes runs
 //! as the desktop runs an app in a tile (`ui::app::EmbeddedApp`): the real
-//! window over its real record, driven through `App::surface_input`, framed
+//! window over its real resource, driven through `App::surface_input`, framed
 //! by `App::surface_frame_with_damage`, then the semantic tree refreshed as
 //! the host reads it after every frame.
 //!

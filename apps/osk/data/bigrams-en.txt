@@ -9113,7 +9113,7 @@ sky	was	5976
 the	burning	5976
 the	internet	5976
 the	patient	5976
-the	record	5976
+the	resource	5976
 turns	to	5976
 was	leaving	5976
 a	favor	5975
@@ -13722,7 +13722,7 @@ is	time	5799
 it	says	5799
 keep	in	5799
 little	sister	5799
-record	of	5799
+resource	of	5799
 the	dying	5799
 the	exception	5799
 the	legal	5799
@@ -18720,7 +18720,7 @@ very	short	5660
 was	somewhat	5660
 were	any	5660
 will	return	5660
-a	record	5659
+a	resource	5659
 and	hair	5659
 and	rather	5659
 and	sank	5659
@@ -20996,7 +20996,7 @@ the	almost	5607
 the	dancing	5607
 the	establishment	5607
 the	lightning	5607
-the	records	5607
+the	resources	5607
 the	romans	5607
 they	carried	5607
 think	how	5607
@@ -26641,7 +26641,7 @@ the	winding	5499
 then	smiled	5499
 they	broke	5499
 to	demand	5499
-to	record	5499
+to	resource	5499
 twelve	hours	5499
 understand	your	5499
 way	before	5499
@@ -26860,7 +26860,7 @@ one	final	5495
 only	sound	5495
 or	may	5495
 our	business	5495
-records	of	5495
+resources	of	5495
 seen	what	5495
 shame	and	5495
 she	arched	5495
@@ -37683,7 +37683,7 @@ or	does	5334
 picked	at	5334
 raw	and	5334
 reception	desk	5334
-record	for	5334
+resource	for	5334
 remain	a	5334
 said	another	5334
 seeing	what	5334

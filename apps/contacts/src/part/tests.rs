@@ -73,7 +73,7 @@ fn held(app: &TestApp<ContactsShell>) -> Book {
 }
 
 tilo_test_env::scenario! {
-    fn the_address_book_record_adds_saves_merges_and_publishes_its_contacts;
+    fn the_address_book_resource_adds_saves_merges_and_publishes_its_contacts;
 
     phase contacts_are_added_once_and_a_deleted_id_stays_deleted;
     {
@@ -817,6 +817,6 @@ fn a_change_costs_the_same_in_a_book_ten_times_the_size() {
     );
     assert!(
         record_large <= record_small + record_small / 10,
-        "the record a change is written to is no larger: {record_small} then {record_large} bytes"
+        "the resource a change is written to is no larger: {record_small} then {record_large} bytes"
     );
 }

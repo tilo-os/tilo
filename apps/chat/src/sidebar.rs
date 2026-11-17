@@ -186,7 +186,7 @@ impl ChatApp {
     /// message is found again rather than lost in a composer the person has
     /// to remember to open.
     fn draft_lines(&self) -> BTreeMap<String, String> {
-        let Some(record) = &self.drafts_record else {
+        let Some(record) = &self.drafts_resource else {
             return BTreeMap::new();
         };
         let keys: Vec<String> = record.get().drafts.keys().cloned().collect();

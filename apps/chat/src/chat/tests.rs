@@ -124,7 +124,7 @@ pub(super) fn post(text: &str) -> Invoke<ChatPart> {
 
 tilo_test_env::scenario! {
     /// Who a post is by, and what its author, a member, a guest and a moderator may change.
-    fn authors_and_moderators_decide_what_changes_in_the_record;
+    fn authors_and_moderators_decide_what_changes_in_the_resource;
 
     phase a_bridges_post_keeps_the_name_it_showed_and_a_persons_does_not;
     {
@@ -283,14 +283,14 @@ tilo_test_env::scenario! {
         assert_eq!(report.item, Some(message.to_string()));
         assert!(
             bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
-                person: crate::record::member_slot(&MemberId::person(BO)),
+                person: crate::chat::member_slot(&MemberId::person(BO)),
                 reason: "me".parse().unwrap(),
             }))
             .is_err(),
             "nobody reports themselves"
         );
         bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
-            person: crate::record::member_slot(&MemberId::person(ADA)),
+            person: crate::chat::member_slot(&MemberId::person(ADA)),
             reason: "spamming the channel".parse().unwrap(),
         }))
         .unwrap();
@@ -362,8 +362,8 @@ fn post_fields(channel: &str, text: &str) -> NewMessage {
 }
 
 tilo_test_env::scenario! {
-    /// What the record takes as a field edit or only through an action, and what it offers of its items.
-    fn the_record_changes_through_its_actions_and_offers_its_items;
+    /// What the resource takes as a field edit or only through an action, and what it offers of its items.
+    fn the_resource_changes_through_its_actions_and_offers_its_items;
 
     phase a_resource_reference_with_no_kind_yet_attaches_until_a_catalogue_names_it;
     {
@@ -385,7 +385,7 @@ tilo_test_env::scenario! {
             "Write",
         );
         assert!(
-            crate::record::valid_attached(&attached),
+            crate::chat::valid_attached(&attached),
             "a published id with its kind unresolved still attaches"
         );
         // What is still refused: an address naming nothing, a path, a URL, and — because an empty
@@ -401,7 +401,7 @@ tilo_test_env::scenario! {
                 at.reference.id = id.to_owned();
             }
             assert!(
-                !crate::record::valid_attached(&nameless),
+                !crate::chat::valid_attached(&nameless),
                 "{id:?} is no published resource address"
             );
         }
@@ -436,7 +436,7 @@ tilo_test_env::scenario! {
         .unwrap();
         let status = Chat::paths()
             .people
-            .item(&crate::record::member_slot(&MemberId::person(ADA)))
+            .item(&crate::chat::member_slot(&MemberId::person(ADA)))
             .status
             .set(crate::model::Presence::Dnd);
         ada.apply(Invoke::edit(&status).unwrap()).unwrap();
@@ -517,7 +517,7 @@ tilo_test_env::scenario! {
         assert_eq!(chat.state().unwrap(), before);
     }
 
-    phase the_record_offers_each_item_its_views_with_no_window_open;
+    phase the_resource_offers_each_item_its_views_with_no_window_open;
     {
         let mut talk = Talk::new();
         talk.apply(post("the deck is up")).unwrap();
@@ -572,7 +572,7 @@ tilo_test_env::scenario! {
 
         let general = item("channels", &id("c_chat"));
         assert!(actions(&general).iter().any(|id| id == "open-channel"));
-        let person = item("people", &crate::record::member_slot(&MemberId::person(BO)));
+        let person = item("people", &crate::chat::member_slot(&MemberId::person(BO)));
         assert!(actions(&person).iter().any(|id| id == "open-person"));
     }
 
@@ -636,7 +636,7 @@ tilo_test_env::scenario! {
     /// The workspace's channels and categories, and how far each person read them.
     /// Each case was a test of its own, on a fixture of its own; a failure
     /// names the cases that failed.
-    fn channels_categories_and_read_marks_are_kept_in_the_chat_record;
+    fn channels_categories_and_read_marks_are_kept_in_the_chat_resource;
 
     phase a_new_chat_starts_with_its_creator_and_the_workspaces_two_channels;
     {
@@ -968,15 +968,15 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    /// Concurrent writers and a replayed log end in one record.
+    /// Concurrent writers and a replayed log end in one resource.
     /// Each case was a test of its own, on a fixture of its own; a failure
     /// names the cases that failed.
-    fn replicas_converge_and_a_replayed_log_reproduces_the_record;
+    fn replicas_converge_and_a_replayed_log_reproduces_the_resource;
 
     phase first_opens_on_two_devices_converge_on_exactly_chat_and_voice;
     {
         let mut genesis = Replica::<Chat>::new().as_author(ADA);
-        // Each device seeds the record it found empty, at once: Ada's laptop
+        // Each device seeds the resource it found empty, at once: Ada's laptop
         // and phone, and Bo in the same workspace. Each device writes its own
         // changes for the person at it, as a host does: two devices writing as
         // one actor would each make that actor's first change, which no sync
@@ -1064,7 +1064,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase replaying_the_log_reproduces_the_record;
+    phase replaying_the_log_reproduces_the_resource;
     {
         let mut ada = Talk::new();
         let mut fresh = ada.part.fork();
@@ -1284,7 +1284,7 @@ tilo_test_env::scenario! {
         assert_eq!(row.text, "the plan, @Bo");
         assert_eq!(
             row.history,
-            [crate::model::EditRecord {
+            [crate::model::EditEntry {
                 ts: 20,
                 text: "teh plan".into(),
             }],
@@ -1324,7 +1324,7 @@ tilo_test_env::scenario! {
         );
         let row = ada.rows("c_chat").remove(0);
         assert_eq!(row.text, "short", "a refused edit changes nothing");
-        assert!(!row.edited, "and records no edit");
+        assert!(!row.edited, "and resources no edit");
         ada.apply(edit("x".repeat(MAX_MESSAGE_TEXT_BYTES))).unwrap();
         let row = ada.rows("c_chat").remove(0);
         assert_eq!(row.text.len(), MAX_MESSAGE_TEXT_BYTES);
@@ -1414,7 +1414,7 @@ tilo_test_env::scenario! {
             .apply(
                 ChatPart::RECORD_WORK.with(crate::messages::chat_part::RecordWork {
                     message: summons.clone(),
-                    work: crate::record::WorkUpdate {
+                    work: crate::chat::WorkUpdate {
                         state: "provider_failed".into(),
                         app: None,
                         did: None,
@@ -1476,7 +1476,7 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    /// What a post, a reply, a quote and an attachment record, and which of them are refused.
+    /// What a post, a reply, a quote and an attachment resource, and which of them are refused.
     /// Each case was a test of its own, on a fixture of its own; a failure
     /// names the cases that failed.
     fn posts_replies_quotes_and_attachments_are_recorded_or_refused;
@@ -1595,8 +1595,8 @@ tilo_test_env::scenario! {
     {
         // A tlolang app publishes each of its resources by its address (`tl:<app>:<id>`, the root
         // of Tasks among them): a reference to one names the address and the app the address
-        // spells, and the catalogue names its kind. It attaches as any shared record does, and it
-        // reads back from the record unchanged — the address the drag carried, never a second form
+        // spells, and the catalogue names its kind. It attaches as any shared resource does, and it
+        // reads back from the resource unchanged — the address the drag carried, never a second form
         // invented for it.
         const ROOT: &str = "tl:so.tilo.lang.tasks:root-fjqi4yze";
         let mut ada = Talk::new();
@@ -1614,7 +1614,7 @@ tilo_test_env::scenario! {
             "Tasks",
         );
         assert!(
-            crate::record::valid_attached(&attached),
+            crate::chat::valid_attached(&attached),
             "a published resource address is a bounded address"
         );
         ada.apply(ChatPart::POST.with(chat_part::Post {
@@ -1666,7 +1666,7 @@ tilo_test_env::scenario! {
         let chosen = "flat from April to June";
         let start = answered.find(chosen).expect("the words are in the message");
         let end = start + chosen.len();
-        let quote = crate::record::Quote {
+        let quote = crate::chat::Quote {
             text: chosen.to_owned(),
             start: u64::try_from(start).expect("an offset"),
             end: u64::try_from(end).expect("an offset"),
@@ -1719,7 +1719,7 @@ tilo_test_env::scenario! {
         let mut ada = Talk::new();
         ada.apply(post("A short note")).unwrap();
         let parent = ada.said("A short note");
-        let quote = |start: u64, end: u64| crate::record::Quote {
+        let quote = |start: u64, end: u64| crate::chat::Quote {
             text: "short".to_owned(),
             start,
             end,

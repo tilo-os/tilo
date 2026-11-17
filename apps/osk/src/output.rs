@@ -202,7 +202,7 @@ impl TextMirror {
                     Symbol::Tab => self.push("\t"),
                     Symbol::Space => self.push(" "),
                     Symbol::Unicode(c) => self.push(c.encode_utf8(&mut [0; 4])),
-                    // The mirror keeps no caret; it stays a record of what
+                    // The mirror keeps no caret; it stays a resource of what
                     // was typed, in order.
                     Symbol::Left | Symbol::Right | Symbol::Up | Symbol::Down | Symbol::Escape => {}
                 }

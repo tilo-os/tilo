@@ -177,7 +177,7 @@ impl ChatApp {
         // A direct conversation not listed yet (no message in it) is named by its id.
         let members = match channel {
             Some(channel) => channel.direct.then(|| channel.members.clone()),
-            None => crate::record::Chat::direct_members(&ui::tilo_resource::Id::from_raw(
+            None => crate::chat::Chat::direct_members(&ui::tilo_resource::Id::from_raw(
                 self.active_channel.clone(),
             )),
         };

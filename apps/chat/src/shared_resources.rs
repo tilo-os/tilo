@@ -133,8 +133,8 @@ fn opened(call: &InvocationCall) -> Option<Result<(), String>> {
     })
 }
 
-/// The `record:<app>:<record>` provider of the record `at` lives in, its
-/// record empty for the app's own.
+/// The `record:<app>:<record>` provider of the resource `at` lives in, its
+/// resource empty for the app's own.
 fn provider(at: &tilo_reference::ResourceAt) -> String {
     format!("record:{}:{}", at.app, at.record.as_deref().unwrap_or(""))
 }
@@ -268,7 +268,7 @@ impl ChatApp {
     }
 
     /// Open the resource a message shares where it lives: its own app
-    /// opens at it, launched on its record when no window shows it.
+    /// opens at it, launched on its resource when no window shows it.
     pub(crate) fn open_shared_resource(&mut self, message: &str, attachment: usize) {
         let started = self.request_open(message, attachment);
         self.finish_starting(message, attachment, true, started);
@@ -380,7 +380,7 @@ impl ChatApp {
             .ok_or_else(|| "This message does not share a resource here".to_owned())
     }
 
-    /// Ask the app behind `at`'s resource, in its own record, for its link.
+    /// Ask the app behind `at`'s resource, in its own document, for its link.
     fn ask_resource_link(&self, at: tilo_reference::ResourceAt) -> Asked {
         let call = self.resource_navigation.remote.invoke(
             ui::tilo_resource::share::share_link_target(provider(&at), at.reference.id.clone()),
@@ -880,8 +880,8 @@ mod tests {
         );
     }
 
-    /// Words quoted from a record get the same controls as a whole resource:
-    /// the chip opens the record they came from.
+    /// Words quoted from a resource get the same controls as a whole resource:
+    /// the chip opens the resource they came from.
     #[test]
     fn a_quoted_run_opens_the_record_it_came_from() {
         use crate::resource::ChatShell;
@@ -920,7 +920,7 @@ mod tests {
             api.asked()
                 .into_iter()
                 .find(|request| request.target.address.action == "open")
-                .expect("the chip asked the API to open the record")
+                .expect("the chip asked the API to open the resource")
                 .target,
             page.open_target(WORKSPACE_ID, "so.tilo.notes", Some("plan"))
         );

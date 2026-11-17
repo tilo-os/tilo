@@ -125,7 +125,7 @@ fn an_agents_paragraphs_land_in_a_note_a_following_window_shows() {
             .filter(|text| !text.is_empty())
             .collect()
     };
-    // The window wrote nothing back over them: every change the record
+    // The window wrote nothing back over them: every change the resource
     // holds past its genesis is the agent's.
     let genesis = Some(tilo_actions::FrameworkChange::Genesis.change_message());
     let agent_actor = agent.get_actor().clone();

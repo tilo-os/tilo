@@ -1,4 +1,4 @@
-//! Days a record stores, as the window reads them.
+//! Days a resource stores, as the window reads them.
 
 #[must_use]
 pub fn shown(stored: &str) -> String {
@@ -15,7 +15,7 @@ mod tests {
 
         phase a_stored_day_reads_as_the_window_reads_dates;
         // A stored day is read the way the toolkit reads any day: the window's
-        // language and Region & Formats, never the record's `2026-06-30`.
+        // language and Region & Formats, never the resource's `2026-06-30`.
         {
             for (stored, (year, month, day)) in [
                 ("2026-06-30", (2026, 6, 30)),

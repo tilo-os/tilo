@@ -312,7 +312,7 @@ fn merged_scalar<S: std::hash::BuildHasher>(
     }
 }
 
-/// The reviewed survivor contact. An empty scalar fills from the other record;
+/// The reviewed survivor contact. An empty scalar fills from the other resource;
 /// a conflict stays with the survivor until the review selects a `MergeField`.
 /// Repeated rows are a lossless union: source rows keep their ids and join the
 /// survivor's.

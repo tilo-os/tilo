@@ -101,7 +101,7 @@ pub fn notebook(f: &NotebookFixture) -> ui::resource::DocumentCheckout {
 pub fn assert_closed(report: &ui::application::ComponentCloseReport) {
     assert!(
         report.resource_error.is_none(),
-        "record close: {:?}",
+        "resource close: {:?}",
         report.resource_error
     );
     assert!(

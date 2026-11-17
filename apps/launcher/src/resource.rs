@@ -12,7 +12,7 @@ use ui::widget::Element;
 pub struct Launcher {}
 
 impl Launcher {
-    /// What the record holds: nothing — what is being searched is the window's own, and the
+    /// What the resource holds: nothing — what is being searched is the window's own, and the
     /// keys that search are settings.
     pub fn read_document(
         &self,

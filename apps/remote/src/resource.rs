@@ -25,7 +25,7 @@ pub fn connection_resource_id(id: ConnectionId) -> String {
 }
 
 impl Remote {
-    /// What the record holds: the saved connections.
+    /// What the resource holds: the saved connections.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -84,7 +84,7 @@ impl Remote {
             .ok_or_else(|| Refusal::new("no such connection"))
     }
 
-    /// Record that a session was opened at `at_ms`. The later of two concurrent records wins
+    /// Record that a session was opened at `at_ms`. The later of two concurrent resources wins
     /// on every replica.
     #[action(housekeeping, item = connections)]
     pub fn mark_used(
@@ -298,7 +298,7 @@ mod tests {
             assert_eq!(
                 only(&remote).last_used_ms,
                 Some(2_000),
-                "a late, older record does not move last used back"
+                "a late, older resource does not move last used back"
             );
 
             let delete = || {

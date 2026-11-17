@@ -3,7 +3,7 @@
 //! A mention is **not** a string that happens to start with `@`. It is a
 //! resolved pointer to one member of the workspace, minted when the message is
 //! authored and stored in the shared CRDT next to the body (see
-//! [`crate::record`]). That is what lets anything else — the person mentioned, an
+//! [`crate::chat`]). That is what lets anything else — the person mentioned, an
 //! agent watching the workspace, a notification badge, a search index — ask a
 //! message *who it mentions* without re-parsing prose and re-guessing which
 //! "@ada" meant which Ada.
@@ -85,9 +85,9 @@ impl Mention {
 /// binds `@Ada Lovelace` to the longer one rather than to "Ada" plus stray
 /// prose. An `@` that matches nobody is left as ordinary text — no mention is
 /// invented for a name the workspace does not have.
-pub fn resolve(text: &str, people: &[crate::record::Person]) -> Vec<Mention> {
+pub fn resolve(text: &str, people: &[crate::chat::Person]) -> Vec<Mention> {
     // Longest first so "Ada Lovelace" wins over "Ada" at the same offset.
-    let mut by_len: Vec<&crate::record::Person> = people.iter().collect();
+    let mut by_len: Vec<&crate::chat::Person> = people.iter().collect();
     by_len.sort_by_key(|p| std::cmp::Reverse(p.name.len()));
 
     // Case-insensitive matching runs against a lowered copy. `to_lowercase` can
@@ -119,7 +119,7 @@ pub fn resolve(text: &str, people: &[crate::record::Person]) -> Vec<Mention> {
         }
         let after = at + '@'.len_utf8();
         let mut matched: Option<usize> = None;
-        let mut who: Option<&crate::record::Person> = None;
+        let mut who: Option<&crate::chat::Person> = None;
         for p in &by_len {
             if p.name.is_empty() {
                 continue;
@@ -180,16 +180,16 @@ mod tests {
     use super::*;
     use ui::tilo_resource::MemberId;
 
-    fn workspace() -> Vec<crate::record::Person> {
+    fn workspace() -> Vec<crate::chat::Person> {
         [
             ("u_ada", "Ada"),
             ("u_lovelace", "Ada Lovelace"),
             ("agent:agent_scribe", "Scribe"),
         ]
         .into_iter()
-        .map(|(id, name)| crate::record::Person {
+        .map(|(id, name)| crate::chat::Person {
             name: name.into(),
-            ..crate::record::Person::unnamed(
+            ..crate::chat::Person::unnamed(
                 id.strip_prefix("agent:")
                     .map_or_else(|| MemberId::person(id), MemberId::agent),
             )

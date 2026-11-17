@@ -91,7 +91,7 @@ tilo_test_env::scenario! {
         let first = records.first().expect("the reply was told the run started");
         assert_eq!(first["message"], "asked", "on the reply to the message");
         assert_eq!(first["work"]["state"], "taken");
-        // How the run was planned is the run's own record, never the reply's.
+        // How the run was planned is the run's own document, never the reply's.
         for record in &records {
             let work = &record["work"];
             assert!(
@@ -153,7 +153,7 @@ tilo_test_env::scenario! {
                 .is_some_and(|say| !say.contains("provider stream reset")),
             "the reply never carries the transport's own error: {last:?}"
         );
-        // The transport's error is the run's record, kept beside the reply's
+        // The transport's error is the run's resource, kept beside the reply's
         // words for whoever debugs the failure, never the reply itself.
         assert!(
             last["work"]["detail"]

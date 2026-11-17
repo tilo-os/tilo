@@ -334,7 +334,7 @@ pub struct Video {
     pub channel_name: String,
     pub channel_seed: String,
     /// Real uploader avatar URL carried on a feed/search list item (`YouTube`
-    /// returns it on the channel tag). Used to populate the channel record's
+    /// returns it on the channel tag). Used to populate the channel resource's
     /// [`Channel::avatar_url`] so Home/Search cards show the real creator icon
     /// without a separate channel-page fetch. Empty on the offline sample.
     #[serde(default)]
@@ -997,7 +997,7 @@ mod tests {
             clippy::too_many_lines,
             reason = "merged scenario: each former test is a labelled case block with its own fixture"
         )]
-        fn the_model_keeps_its_settings_filters_and_channel_records;
+        fn the_model_keeps_its_settings_filters_and_channel_resources;
 
         phase sponsorblock_categories_default_cycle_and_round_trip;
         {
@@ -1114,7 +1114,7 @@ mod tests {
             }
         }
 
-        phase channel_records_reconcile_avatars_without_losing_data;
+        phase channel_resources_reconcile_avatars_without_losing_data;
         {
             {
                 let mut m = TubeModel::default();
@@ -1161,7 +1161,7 @@ mod tests {
                 assert_eq!(
                     m.channel("UC_A").unwrap().avatar_url,
                     "https://yt3/bs",
-                    "avatar-less record filled from the same-name record that had one",
+                    "avatar-less resource filled from the same-name record that had one",
                 );
             }
             {

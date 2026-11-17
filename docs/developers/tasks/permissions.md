@@ -9,7 +9,7 @@ changes the document (`ActionKind::Undoable`), and an effect or a verb that
 queues an outside consequence reaches outside it (`ActionKind::Outside`). The
 kind decides Undo and confirmation. The workspace's grants answer what each action
 needs at each place in the published tree: allow, ask first, or deny. The need
-is the kind, except that a verb of the person's own record and an effect on
+is the kind, except that a verb of the person's own document and an effect on
 their own device need only reading, since no workspace governs them. `#[action(field = "comments")]` puts a verb under the comments
 a commenter may add. Bind controls to the generated descriptors: they follow
 current access automatically. Scripts, agents and accessibility invoke the

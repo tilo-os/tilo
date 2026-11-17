@@ -954,7 +954,7 @@ pub fn action_user_turn(rest: &str, catalogue: &Catalogue, revealed: &mut Reveal
     }
 }
 
-/// [`action_user_turn`] for a planner whose records keep publishing
+/// [`action_user_turn`] for a planner whose resources keep publishing
 /// resources as a task runs (clips, sheets, messages): at most `most`
 /// operations, with look-alike resources in one line and every resource
 /// `rest` names listed whatever the cap

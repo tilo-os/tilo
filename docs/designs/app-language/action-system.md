@@ -9,7 +9,7 @@ agent calls a tilolang action exactly as it calls a native one.
 
 - `DynAction` implements `tilo_actions::Action`: same registry, envelope, executor and
   `ActionContext`.
-- Records are `tilo_resource` models; edits are `tilo_resource::Edit`.
+- Resources are `tilo_resource` models; edits are `tilo_resource::Edit`.
 - History describes changes through `Did`; undo coalescing and search entries are the
   platform's.
 - Both sides describe an app as a `tilo_actions::surface::Surface`.
@@ -18,7 +18,7 @@ agent calls a tilolang action exactly as it calls a native one.
 
 | Concept | Today | One system |
 |---|---|---|
-| Description | tilolang → catalogue only, lossy: enum parameters fall to `Array {}`, record parameters to `Text`, risk/confirmation/icon/result not set; `FieldSurface.ty` holds Rust or tilolang type text | The catalogue is the one description. `Surface` carries a language-neutral field type and value schema (from `FieldShape.schema`). A tilolang declaration is a rendering of a catalogue entry, both ways; `describe` prints native and tilolang entries alike |
+| Description | tilolang → catalogue only, lossy: enum parameters fall to `Array {}`, resource parameters to `Text`, risk/confirmation/icon/result not set; `FieldSurface.ty` holds Rust or tilolang type text | The catalogue is the one description. `Surface` carries a language-neutral field type and value schema (from `FieldShape.schema`). A tilolang declaration is a rendering of a catalogue entry, both ways; `describe` prints native and tilolang entries alike |
 | Invocation | Every tilolang change reaches the action API as `tl:host/commit`, so grants are decided at that node, not the target action, resource or field. Cross-package calls are runtime transactions. tilolang resources are published only while a window is open | Changes are decided at the carried action's own node. Calls to another package or app are broker invocations, children of the caller (`Caller::within(reach)`); a pending call suspends the run that made it. tilolang resources are published without a live window |
 | Policy | The runtime's `SimpleAuthority` repeats deny lists, Outside grants and Ask; `Host` keeps a copy of agent defaults that never reads the person's agent answers; production invoker verdict is a constant Allow | `action-policy` decides, with the person's real agent answers. Code authorship is one more bound party (`Authority::bounded_by`), minimum wins. Deny lists and Outside grants are grants. The runtime's Ask becomes the action API's AsksFirst |
 | Refs | `ResourceRef` and `tl:<app>:<id>` strings | The catalogue's reference (`Pick::Resource`: app, kind, id, label) |
@@ -32,7 +32,7 @@ search filters and sort, views (to be published as `ResourceViewSpec`).
 
 ## 3. Order
 
-1. **Publish correctly.** Enum parameters as choices with labels, record parameters as resource
+1. **Publish correctly.** Enum parameters as choices with labels, resource parameters as resource
    picks, icon/result/destructive passed through.
 2. **One policy.** Delete `Host`'s agent rights and the constant Allow; decide through
    `action-policy` with the person's agent answers and code authorship as a bound party.
@@ -41,7 +41,7 @@ search filters and sort, views (to be published as `ResourceViewSpec`).
    process (ui-host.md step 2b), which changes the commit path.
 4. **One schema.** Language-neutral field types in `Surface`; catalogue ↔ tilolang rendering.
    `tilo_actions::field_type::FieldType` is the field type: `Model::field_type` (derived) and the
-   tilolang surface generator emit it, named records and enums are declared once in
+   tilolang surface generator emit it, named resources and enums are declared once in
    `Surface::types`, and `tilolang_tilo::catalogue::package_of` reads any surface as a package,
    which `tilolang describe` prints and `use so.tilo.chat as chat` checks against (compile-time
    only so far). Verb parameters carry it too (`JsonSchema::field_type`, derived); a parameter

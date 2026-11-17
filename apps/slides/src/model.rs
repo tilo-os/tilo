@@ -1,6 +1,6 @@
 //! The deck as the window draws it, with the pure logic the editor needs:
 //! geometry, palette resolution and the seed deck. Nothing here touches the
-//! record, the renderer or winit.
+//! resource, the renderer or winit.
 
 // The `from_str(s: &str) -> Self` methods here are infallible tag parsers with a
 // default fallback, not `std::str::FromStr`: the trait would force a `Result`
@@ -141,7 +141,7 @@ pub struct Element {
     /// Empty for an element built from plain `text`, which
     /// [`Self::rich_blocks`] derives.
     pub blocks: Vec<BlockContent>,
-    /// Only the path travels in the record; the decoded pixels are a per-peer
+    /// Only the path travels in the resource; the decoded pixels are a per-peer
     /// cache keyed by it.
     pub src: String,
     /// A colour role (see [`Palette::resolve`]); `"none"` makes a shape
@@ -844,7 +844,7 @@ pub const STROKE_ROLES: [&str; 7] = [
 // ===========================================================================
 
 /// A single blank title slide, so a live launch never opens on fabricated
-/// content; the real deck comes from the record.
+/// content; the real deck comes from the resource.
 pub fn starter_deck() -> Deck {
     let mut s = Slide::new(Layout::Title);
     s.background = Background::Surface;
