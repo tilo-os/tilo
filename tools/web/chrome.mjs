@@ -288,21 +288,6 @@ const MEDIA = ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-st
   '--autoplay-policy=no-user-gesture-required'];
 const MEDIA_ASKS = ['--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'];
 
-/** A headless browser on a fresh profile. `args` are the flags a test adds to
- * [`BASELINE`]; `media` is `true` for a page that captures and plays media,
- * or `'ask'` for one that answers the microphone prompt itself.
- *
- * `TILO_CHROME_ARGS` adds flags of the machine's own, space separated, after
- * every other: a run that wants the machine's GPU (a recording) passes
- * `--enable-gpu --use-angle=vulkan --enable-features=Vulkan
- * --ignore-gpu-blocklist` there, and Chromium takes the switch it read last. */
-/**
- * The page-side wait `waitFor` evaluates: `expression` read now and again on
- * each change the page tells (`globalThis.tiloChanges`), each change to its
- * document, and each step of its loading, until it is truthy (answered) or
- * `withinMs` passed (answered `undefined`). A read that throws counts as not
- * yet. An expression may answer a promise.
- */
 /**
  * The page-side pause until the page's next change (`globalThis.tiloChanges`),
  * or a change to its document while its modules are not in yet: answers
@@ -317,6 +302,13 @@ export function nextChange(withinMs) {
   }))`;
 }
 
+/**
+ * The page-side wait `waitFor` evaluates: `expression` read now and again on
+ * each change the page tells (`globalThis.tiloChanges`), each change to its
+ * document, and each step of its loading, until it is truthy (answered) or
+ * `withinMs` passed (answered `undefined`). A read that throws counts as not
+ * yet. An expression may answer a promise.
+ */
 export function untilTruthy(expression, withinMs) {
   return `new Promise(resolve => {
     let done = false, reading = false, again = false;
@@ -366,6 +358,14 @@ export function untilTruthy(expression, withinMs) {
   })`;
 }
 
+/** A headless browser on a fresh profile. `args` are the flags a test adds to
+ * [`BASELINE`]; `media` is `true` for a page that captures and plays media,
+ * or `'ask'` for one that answers the microphone prompt itself.
+ *
+ * `TILO_CHROME_ARGS` adds flags of the machine's own, space separated, after
+ * every other: a run that wants the machine's GPU (a recording) passes
+ * `--enable-gpu --use-angle=vulkan --enable-features=Vulkan
+ * --ignore-gpu-blocklist` there, and Chromium takes the switch it read last. */
 export async function launch({args = [], media = false} = {}) {
   sweepProfiles();
   const profile = mkdtempSync(join(throwawayDir(), 'tilo-chrome-'));
