@@ -37,6 +37,15 @@
 //! skill of one person never reaches a turn another person started, or an agent another
 //! person keeps.
 //!
+//! What its keeper bounds an agent to holds here too ([`lets`]). Each of the list's verbs,
+//! the read among them, is decided where Chat's own verb of that name on the person's list
+//! is decided, by the rules the turn's agent carries. An agent bounded off the list is told
+//! none of its keeper's skills, is offered none of the verbs its bound refuses, has a call
+//! of one refused, and hands no skill to a sub-agent. An agent bounded off one skill is not
+//! told that skill, does not find it in the list it reads, neither changes it nor writes one
+//! of its name again, and does not hand it on. A bound only ever narrows this. What a
+//! sub-agent was handed before its starter was bounded stays with that sub-agent.
+//!
 //! A skill says how work is done. It decides nothing about what a turn may do: every call
 //! the turn then makes is decided where it always was. Nothing a skill says is written to a
 //! log.
@@ -45,6 +54,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
+use tilo_action_policy::{Answer, Context, Grantee, Party, TreePath};
 use tilo_actions::remote::ActionCallError as NotTaken;
 use tilo_actions::remote::{
     Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeArgument, InvokeRequest,
@@ -54,11 +64,11 @@ use tilo_actions::{
     ActionContract, ActionDescriptor, ActionFailure, ActionKind, ActionOutput, ActionParam,
     InvocationUpdate, ParamType,
 };
-use tilo_workspace_agent::skills::{Skill, Skills};
+use tilo_workspace_agent::skills::{KIND, Skill, Skills};
 use tilo_workspace_agent::{Agent, NewSubAgent};
 
 use super::turn_provider::{Ending, Rows};
-use super::{Turn, TurnProvider, TurnScope, WorkspaceId, learned};
+use super::{CHAT, Turn, TurnProvider, TurnScope, WorkspaceId, learned};
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::HostedTurn;
 use crate::workspaces::person_skills::{self, HandedSkill, NotChanged, SkillView};
@@ -109,16 +119,66 @@ const HANDED: &str = "\n\nYou work by a skill your person keeps: how this kind o
 /// one.
 pub(super) const NOT_HANDED: &str = "No skill is handed on here. A skill is handed to a \
      sub-agent by its person's own agent, in a turn of theirs in their own conversation with \
-     it: this is not such a turn. Start it without `skill`.";
+     it, where what they let the agent do lets it read their skills: this is not such a \
+     turn. Start it without `skill`.";
 
 /// What a turn is answered when it asks for a coding program to be handed a skill.
 pub(super) const NOT_TO_CODING: &str = "No skill is handed to a coding program: what it is \
      asked is kept in the workspace's machine, where it is not its person's alone. Start it \
      without `skill`.";
 
-/// What a turn that keeps skills is told about doing so; nothing for any other turn.
-pub(super) fn told_how(turn: &Turn) -> &'static str {
-    if learned::keeps(turn).is_some() {
+/// What a turn is answered when what its keeper bounds its agent to keeps it from the one
+/// skill it asks to hand on.
+const NOT_READ: &str = "what your person lets you do here does not let you read that skill, so \
+     it is not handed on: start the sub-agent without `skill`";
+
+/// The keeper whose skills `turn` is told, and hands to a sub-agent it starts, in
+/// `workspace`: its agent's keeper, where the turn is the keeper's own in their own
+/// conversation with the agent ([`learned::keeps`]) and what the keeper bounds the agent to
+/// lets it read the list ([`lets`]). `None` for every other turn.
+pub(super) fn keeps(turn: &Turn, workspace: &str) -> Option<[u8; 32]> {
+    learned::keeps(turn).filter(|_| lets(&turn.agent, workspace, person_skills::READ, None))
+}
+
+/// Whether what its keeper bounds `agent` to lets a turn of it take `verb` of the list in
+/// `workspace`, on the skill `on` where the verb names one the list keeps. Decided as the
+/// agent, with the rules every turn of it carries ([`Agent::turn_rules`]), where Chat's own
+/// verb of that name on the person's list is decided: at the list, and for a verb on one
+/// skill at that skill as well. So a rule on Chat, on the list's kind, on one of its verbs
+/// or on one skill holds here, and an agent nothing narrows takes every verb. It never
+/// decides whose turn a turn is: that is asked first ([`learned::keeps`]).
+fn lets(agent: &Agent, workspace: &str, verb: &str, on: Option<&str>) -> bool {
+    let kind = if verb == person_skills::READ {
+        tilo_action_policy::ActionKind::Read
+    } else {
+        tilo_action_policy::ActionKind::Undoable
+    };
+    let list = TreePath::workspace(workspace).app(CHAT);
+    let mut nodes = vec![list.clone().kind(KIND).resource(KIND).action(verb)];
+    if let Some(skill) = on {
+        nodes.push(
+            list.kind(format!("{KIND}.skills"))
+                .resource(format!("{KIND}/skills/{skill}"))
+                .action(verb),
+        );
+    }
+    let grants = tilo_action_policy::roles::agent_grants(
+        workspace,
+        &agent.id.0,
+        &agent.keeper,
+        &agent.turn_rules(workspace),
+    );
+    let party = Party::new(vec![Grantee::agent(agent.id.0.clone())], &grants);
+    // Its grants hold until they are taken back: no time decides them.
+    nodes
+        .iter()
+        .all(|node| party.decide(node, kind, &Context::at(0)).answer == Answer::Allow)
+}
+
+/// What a turn that keeps skills in `workspace` is told about doing so; nothing for any
+/// other turn.
+pub(super) fn told_how(turn: &Turn, workspace: &str) -> &'static str {
+    if keeps(turn, workspace).is_some() {
         TOLD_HOW
     } else {
         ""
@@ -183,30 +243,34 @@ async fn tell_handed(workspaces: &Workspaces, workspace: &str, turn: &mut Turn) 
     }
 }
 
-/// Tell `turn` its keeper's skills with its request, where the turn is the keeper's own
-/// ([`learned::keeps`]): all by name, and in full those that fit what it is asked. Nothing is
-/// told to any other turn, and nothing while the keeper keeps no skill.
+/// Tell `turn` its keeper's skills with its request, where the turn is the keeper's own and
+/// its agent may read them ([`keeps`]): all by name, and in full those that fit what it is
+/// asked. Nothing is told to any other turn, and nothing while the keeper keeps no skill.
 async fn tell(workspaces: &Workspaces, workspace: &str, turn: &mut Turn) {
-    let Some(keeper) = learned::keeps(turn) else {
+    let Some(keeper) = keeps(turn, workspace) else {
         return;
     };
-    let (workspaces, workspace) = (workspaces.clone(), workspace.to_owned());
-    let kept = tokio::task::spawn_blocking(move || workspaces.skills_of(&keeper, &workspace))
+    let (workspaces, kept_in) = (workspaces.clone(), workspace.to_owned());
+    let kept = tokio::task::spawn_blocking(move || workspaces.skills_of(&keeper, &kept_in))
         .await
         .ok()
         .flatten();
     if let Some(kept) = kept {
-        let told = told(&kept, &turn.request);
+        // A skill its keeper bounds the agent off is told neither by name nor in full.
+        let reads = |skill: &str| lets(&turn.agent, workspace, person_skills::READ, Some(skill));
+        let told = told(&kept, &turn.request, reads);
         turn.request.push_str(&told);
     }
 }
 
-/// What a turn asked with `request` is told of the skills `kept`: each by its name and what it
-/// is for, the one changed last first, then in full those that fit the request's own words.
-fn told(kept: &Skills, request: &str) -> String {
+/// What a turn asked with `request` is told of the skills `kept` that its agent `reads`: each
+/// by its name and what it is for, the one changed last first, then in full those that fit
+/// the request's own words.
+fn told(kept: &Skills, request: &str, reads: impl Fn(&str) -> bool) -> String {
     let mut skills: Vec<&Skill> = kept
         .skills
         .iter()
+        .filter(|(id, _)| reads(id.as_str()))
         .map(|(_, skill)| skill)
         .filter(|skill| !skill.name.trim().is_empty())
         .collect();
@@ -313,21 +377,22 @@ async fn keep_handed(
         .map_err(|error| error.to_string())?
 }
 
-/// What a sub-agent of `keeper`'s agent is handed when it is started in `workspace` with the
-/// skill `named`: which skill, and its model. Whoever calls this has decided that the turn is
-/// told the keeper's skills.
+/// What a sub-agent `agent` starts for its keeper is handed when it is started in `workspace`
+/// with the skill `named`: which skill, and its model. Whoever calls this has decided that
+/// the turn is told the keeper's skills ([`keeps`]).
 ///
 /// # Errors
-/// The keeper keeps no skill under that id or name, or the skill names a model they no longer
-/// link on this server: in words the turn that asked is told.
+/// The keeper keeps no skill under that id or name, what they bound the agent to keeps it
+/// from that skill, or the skill names a model they no longer link on this server: in words
+/// the turn that asked is told.
 pub(super) async fn for_sub_agent(
     workspaces: &Workspaces,
     workspace: &str,
-    keeper: &[u8; 32],
+    (agent, keeper): (&Agent, &[u8; 32]),
     named: &str,
 ) -> Result<Handed, String> {
     let (workspaces, workspace) = (workspaces.clone(), workspace.to_owned());
-    let (keeper, named) = (*keeper, named.to_owned());
+    let (agent, keeper, named) = (agent.clone(), *keeper, named.to_owned());
     tokio::task::spawn_blocking(move || {
         let kept = workspaces
             .skills_of(&keeper, &workspace)
@@ -338,6 +403,10 @@ pub(super) async fn for_sub_agent(
                  the skills there are, or start the sub-agent without one"
             )
         })?;
+        // Handing it on is reading it: a rule on this one skill holds as well.
+        if !lets(&agent, &workspace, person_skills::READ, Some(id.as_str())) {
+            return Err(NOT_READ.to_owned());
+        }
         if let Some(model) = &skill.model {
             workspaces
                 .person_links_model(&keeper, model)
@@ -361,12 +430,27 @@ pub(super) async fn for_sub_agent(
 
 /// Make `scope`'s service answer as well for the skills of the keeper of `turn`'s agent.
 pub(super) fn join(workspaces: &Workspaces, turn: &Turn, scope: &mut TurnScope) {
+    let keeper = learned::keeps(turn);
+    // What the turn is offered: of the keeper's own turn, the verbs its agent's bound lets.
+    let offered = if keeper.is_some() {
+        rows()
+            .into_iter()
+            .filter(|row| {
+                row.action.as_ref().is_some_and(|action| {
+                    lets(&turn.agent, &scope.workspace, &action.address.action, None)
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let skills = Arc::new(TurnSkills {
         workspaces: workspaces.clone(),
         workspace: scope.workspace.clone(),
         workspace_id: scope.workspace_id,
         agent: turn.agent.clone(),
-        keeper: learned::keeps(turn),
+        keeper,
+        offered,
     });
     let service = &mut scope.provider;
     *service = service.clone().answering(skills);
@@ -382,6 +466,9 @@ struct TurnSkills {
     /// The keeper whose skills the turn is told and changes: none for a turn that is not
     /// its keeper's own in their own conversation with the agent, which is offered nothing.
     keeper: Option<[u8; 32]>,
+    /// What the turn is offered: the read and the list's verbs, less what its keeper bounds
+    /// the agent off ([`lets`]); nothing for a turn that is not its keeper's own.
+    offered: Vec<CatalogueRow>,
 }
 
 impl TurnSkills {
@@ -423,9 +510,24 @@ impl TurnSkills {
         };
         let action = address.action.clone();
         let (workspaces, workspace) = (self.workspaces.clone(), self.workspace.clone());
-        let agent = self.agent.id.0.clone();
+        let agent = self.agent.clone();
         // The list is a file of the keeper's store: read and written off the runtime's workers.
         let done = tokio::task::spawn_blocking(move || {
+            // What its keeper bounds the agent to is decided before the list is asked for
+            // anything but which skill the call is about: the one it names, and for a write
+            // the one of that name, which the list would write again.
+            let key = if action == person_skills::WRITE {
+                "name"
+            } else {
+                "skill"
+            };
+            let on = given.get(key).and_then(Value::as_str).and_then(|named| {
+                let kept = workspaces.skills_of(&keeper, &workspace)?;
+                kept.named(named).map(|(id, _)| id.to_string())
+            });
+            if !lets(&agent, &workspace, &action, on.as_deref()) {
+                return Err(NotTaken::NotPermitted);
+            }
             carried_out(
                 &workspaces,
                 (&keeper, &workspace, &agent),
@@ -462,16 +564,18 @@ impl TurnSkills {
 /// the call was not taken at all.
 fn carried_out(
     workspaces: &Workspaces,
-    (keeper, workspace, agent): (&[u8; 32], &str, &str),
+    (keeper, workspace, agent): (&[u8; 32], &str, &Agent),
     (action, given): (&str, &Map<String, Value>),
 ) -> Result<Result<Value, String>, NotTaken> {
+    let whose = (keeper, workspace, agent);
     if action == person_skills::READ {
-        return Ok(read(workspaces, (keeper, workspace), given));
+        return Ok(read(workspaces, whose, given));
     }
-    match workspaces.skills_action(keeper, workspace, Some(agent), (action, given)) {
+    let by = Some(agent.id.0.as_str());
+    match workspaces.skills_action(keeper, workspace, by, (action, given)) {
         Ok(Some(id)) => Ok(read(
             workspaces,
-            (keeper, workspace),
+            whose,
             &Map::from_iter([("skill".to_owned(), Value::String(id))]),
         )),
         Ok(None) => Ok(Ok(json!({"forgotten": true}))),
@@ -481,14 +585,17 @@ fn carried_out(
     }
 }
 
-/// What a turn reads of the skills this server keeps for `keeper` in `workspace`: the one
-/// `given` names by `skill` in full, or all of them by name, the one changed last first.
+/// What a turn of `agent` reads of the skills this server keeps for `keeper` in `workspace`:
+/// the one `given` names by `skill` in full, or all of them by name, the one changed last
+/// first. A skill its keeper bounds the agent off reading ([`lets`]) is not among them, and of
+/// one it changed and may not read it is told the id alone.
 fn read(
     workspaces: &Workspaces,
-    (keeper, workspace): (&[u8; 32], &str),
+    (keeper, workspace, agent): (&[u8; 32], &str, &Agent),
     given: &Map<String, Value>,
 ) -> Result<Value, String> {
     let kept = workspaces.skills_of(keeper, workspace).unwrap_or_default();
+    let reads = |skill: &str| lets(agent, workspace, person_skills::READ, Some(skill));
     let named = given
         .get("skill")
         .and_then(Value::as_str)
@@ -497,7 +604,13 @@ fn read(
     if let Some(named) = named {
         return kept
             .named(named)
-            .map(|(id, skill)| json!({"skill": SkillView::of(&id, skill)}))
+            .map(|(id, skill)| {
+                if reads(id.as_str()) {
+                    json!({"skill": SkillView::of(&id, skill)})
+                } else {
+                    json!({"changed": id.to_string()})
+                }
+            })
             .ok_or_else(|| {
                 format!(
                     "no skill is kept under the id or the name {named:?}: read `skills/list` \
@@ -505,7 +618,11 @@ fn read(
                 )
             });
     }
-    let mut skills: Vec<_> = kept.skills.iter().collect();
+    let mut skills: Vec<_> = kept
+        .skills
+        .iter()
+        .filter(|(id, _)| reads(id.as_str()))
+        .collect();
     skills.sort_by_key(|(_, skill)| std::cmp::Reverse(skill.at));
     let skills: Vec<Value> = skills
         .into_iter()
@@ -526,7 +643,7 @@ impl TurnProvider for TurnSkills {
     /// The skills' provider, as a listing of everything names it beside the workspace's
     /// resources: to a turn that is offered none of it, not at all.
     fn providers(&self, _caller: &Caller) -> Vec<CatalogueProvider> {
-        if self.keeper.is_none() {
+        if self.offered.is_empty() {
             return Vec::new();
         }
         vec![CatalogueProvider {
@@ -540,8 +657,8 @@ impl TurnProvider for TurnSkills {
 
     /// The rows `query` asks for, when it asks the skills' provider.
     fn rows(&self, _caller: &Caller, query: &CatalogueQuery) -> Option<Rows> {
-        (query.provider.as_deref() == Some(PROVIDER) && self.keeper.is_some())
-            .then(|| Pending::ready(Ok(rows())))
+        (query.provider.as_deref() == Some(PROVIDER) && !self.offered.is_empty())
+            .then(|| Pending::ready(Ok(self.offered.clone())))
     }
 
     /// Everything asked of the skills' provider on a turn is this one's to answer, also what
@@ -765,7 +882,7 @@ mod tests {
         let kept = kept();
         let names = "\n- Market analysis: Analysing a market for the person\
                      \n- Weekly report: A request for the weekly report";
-        let told_for = |request: &str| told(&kept, request);
+        let told_for = |request: &str| told(&kept, request, |_| true);
 
         let analysis = told_for("Please analyse the market for cargo bikes.");
         assert_eq!(
@@ -786,7 +903,21 @@ mod tests {
         assert_eq!(told_for(&recalled), format!("{TOLD}{names}"));
         assert_eq!(own_words(&recalled), "Book a table for two.");
         // Nothing is told while nothing is kept.
-        assert_eq!(told(&Skills::default(), "Anything."), "");
+        assert_eq!(told(&Skills::default(), "Anything.", |_| true), "");
+    }
+
+    /// A skill its agent may not read is told to its turn neither by name nor in full, and the
+    /// others are told as before. Where it may read none, nothing is told.
+    #[test]
+    fn a_skill_its_agent_may_not_read_is_not_told() {
+        let kept = kept();
+        let (off, _) = kept.named("Market analysis").unwrap();
+        let job = "Please analyse the market for cargo bikes.";
+        assert_eq!(
+            told(&kept, job, |skill| skill != off.as_str()),
+            format!("{TOLD}\n- Weekly report: A request for the weekly report")
+        );
+        assert_eq!(told(&kept, job, |_| false), "");
     }
 
     /// What a sub-agent is handed gives the workspace's list its skill's model, unless its
@@ -919,5 +1050,103 @@ mod tests {
             offered[0].action.as_ref().unwrap().contract.kind,
             ActionKind::Read
         );
+    }
+
+    /// The agent `scout` one person keeps, bounded to `rules`.
+    fn bounded(rules: &[tilo_action_policy::Rule]) -> Agent {
+        let mut agent = Agent {
+            keeper: "ada".to_owned(),
+            bound: rules.iter().map(tilo_workspace_agent::Bound::of).collect(),
+            ..Agent::default()
+        };
+        agent.id.0 = "scout".to_owned();
+        agent
+    }
+
+    /// What its keeper bounds an agent to decides which of the list's verbs a turn of it takes.
+    /// A rule on Chat or on the list's kind holds for every verb, on a skill as well; one for
+    /// changes alone leaves the read; one on a verb by name takes that verb; one on a skill
+    /// holds for that skill and no other. A sub-agent takes none, whatever its entry says.
+    #[test]
+    fn a_bound_decides_which_of_the_lists_verbs_a_turn_of_its_agent_takes() {
+        use tilo_action_policy::{KindSet, Rule};
+        const VERBS: [&str; 6] = [
+            person_skills::READ,
+            person_skills::WRITE,
+            person_skills::CORRECT,
+            person_skills::KEEP_EXAMPLE,
+            person_skills::DROP_EXAMPLE,
+            person_skills::FORGET,
+        ];
+        let chat = || TreePath::workspace("w").app(CHAT);
+        let all = KindSet::READ.union(KindSet::UNDOABLE);
+        let taken = |agent: &Agent, on: Option<&str>| -> Vec<&str> {
+            VERBS
+                .into_iter()
+                .filter(|verb| lets(agent, "w", verb, on))
+                .collect()
+        };
+
+        // Nothing narrows it: every verb, on the list and on one skill.
+        let free = bounded(&[]);
+        assert_eq!(taken(&free, None), VERBS);
+        assert_eq!(taken(&free, Some("s1")), VERBS);
+
+        // Bounded off Chat, or off the kind the list is: none of them, on a skill neither.
+        for off in [
+            Rule::new(chat(), all, Answer::Deny),
+            Rule::new(chat().kind(KIND), all, Answer::Deny),
+        ] {
+            let agent = bounded(&[off]);
+            assert!(taken(&agent, None).is_empty());
+            assert!(taken(&agent, Some("s1")).is_empty());
+        }
+
+        // Kept from changing the list, it still reads it.
+        let reads = bounded(&[Rule::new(
+            chat().kind(KIND),
+            KindSet::UNDOABLE,
+            Answer::Deny,
+        )]);
+        assert_eq!(taken(&reads, None), [person_skills::READ]);
+        assert_eq!(taken(&reads, Some("s1")), [person_skills::READ]);
+
+        // One verb by its name.
+        let forgets_none = bounded(&[Rule::new(
+            chat()
+                .kind(KIND)
+                .resource(KIND)
+                .action(person_skills::FORGET),
+            KindSet::UNDOABLE,
+            Answer::Deny,
+        )]);
+        assert_eq!(
+            taken(&forgets_none, None),
+            [
+                person_skills::READ,
+                person_skills::WRITE,
+                person_skills::CORRECT,
+                person_skills::KEEP_EXAMPLE,
+                person_skills::DROP_EXAMPLE,
+            ]
+        );
+
+        // One skill: that one is neither read nor changed, every other is.
+        let one = bounded(&[Rule::new(
+            chat()
+                .kind(format!("{KIND}.skills"))
+                .resource(format!("{KIND}/skills/s1")),
+            all,
+            Answer::Deny,
+        )]);
+        assert!(taken(&one, Some("s1")).is_empty());
+        assert_eq!(taken(&one, Some("s2")), VERBS);
+        assert_eq!(taken(&one, None), VERBS);
+
+        // A sub-agent reads nothing Chat keeps and calls none of its verbs but its own team's.
+        let mut sub_agent = bounded(&[]);
+        sub_agent.sub = Some(tilo_workspace_agent::sub::Sub::default());
+        assert!(taken(&sub_agent, None).is_empty());
+        assert!(taken(&sub_agent, Some("s1")).is_empty());
     }
 }

@@ -15,6 +15,7 @@ use tilo_server::workspaces::person_model::{
     Events, ModelProvider, ProviderCall, ProviderFuture, ProviderProtocol,
 };
 use tilo_server::workspaces::person_skills;
+use ui::tilo_workspace_agent::Bound;
 
 /// A turn's own provider of its keeper's skills, as the agent tools name it, and its verbs.
 const SKILLS: &str = "skills/list";
@@ -907,6 +908,448 @@ async fn a_handed_skill_stands_in_nothing_the_workspace_shares_and_reaches_no_ot
             }
         }
     }
+    assert!(
+        roster(&workspaces, &workspace)
+            .await
+            .get(&Id::from_raw("check-again"))
+            .is_none(),
+        "no sub-agent was started with her skill"
+    );
+
+    his_page.peer.close();
+    page.peer.close();
+}
+
+/// What her keeper bounds the agent to holds for her skills. Bounded off the kind her skills
+/// are, her own turn in her own conversation with it is told none of them and nothing about
+/// keeping any, its write and its read are refused, and a sub-agent it asks for with a skill
+/// of hers is not started. With the bound taken off, the agent writes a skill down for her
+/// again and its fresh turn is told the skill that fits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_its_keeper_bounds_her_agent_to_holds_for_her_skills() {
+    team!(root, browser, actions, workspaces, workspace, page, person);
+    let keeper = root.verifying_key().to_bytes();
+    let hers = (&root, &browser);
+    let routed = Arc::new(Routed::default());
+    workspaces.answer_models_with(routed.clone());
+    link(&workspaces, &keeper);
+    let servers = Arc::new(Mutex::new(Vec::new()));
+    let agents = worked(&workspaces, &actions, plays(&servers, |_| says("Told.")));
+    let analysis = serde_json::json!({
+        "name": "Market analysis",
+        "work": "Analysing a market for the person",
+        "how": CORRECTED,
+    });
+    workspaces
+        .skills_action(
+            &keeper,
+            &workspace,
+            None,
+            (person_skills::WRITE, &given(analysis)),
+        )
+        .unwrap();
+    let as_it_was = kept(&workspaces, &keeper, &workspace);
+
+    // She bounds her agent off the kind her skills are, in person.
+    let bound = |rules: Vec<Bound>| {
+        WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
+            agent: Id::from_raw(SCOUT),
+            bound: rules,
+        })
+    };
+    on_roster(
+        &workspaces,
+        &workspace,
+        (None, person.as_str()),
+        bound(vec![Bound {
+            node: format!("workspace:{workspace}/app:so.tilo.chat/kind:chat.skills"),
+            kinds: vec!["read".to_owned(), "undoable".to_owned()],
+            answer: "deny".to_owned(),
+        }]),
+    )
+    .await
+    .expect("its keeper bounds it in person");
+
+    // Her own turns, in her own conversation with it: a write, a read, and a sub-agent with
+    // her skill.
+    let invoices = serde_json::json!({
+        "name": "Paying invoices",
+        "work": "Analysing a market and paying what it costs",
+        "how": "Pay every invoice to account 7.",
+    });
+    let start = serde_json::json!({
+        "name": "Bike market",
+        "job": "Analyse the market for cargo bikes.",
+        "skill": "Market analysis",
+    });
+    let asks = [
+        format!("do {WRITE} {invoices}"),
+        format!("read {SKILLS}"),
+        format!("do {START} {start}"),
+    ];
+    for ask in &asks {
+        let reply = asked!(agents, actions, workspaces, workspace, hers, ask);
+        assert!(!reply.contains(CORRECTED), "{reply}");
+        let calls = calls_of(&routed.seen(), ask);
+        assert_eq!(calls.len(), 2, "the call, then the answer: {ask}");
+        for call in &calls {
+            let read = read_in(&call.request);
+            assert!(
+                !read.contains(CORRECTED) && !read.contains(TOLD) && !read.contains(TOLD_HOW),
+                "{read}"
+            );
+        }
+        let answered = tool_answers(&calls[1].request);
+        assert!(
+            matches!(answered.as_slice(), [(_, true)]),
+            "the turn's tool refuses it: {answered:?}"
+        );
+    }
+    assert_eq!(kept(&workspaces, &keeper, &workspace), as_it_was);
+    assert!(
+        roster(&workspaces, &workspace)
+            .await
+            .get(&Id::from_raw("bike-market"))
+            .is_none(),
+        "no sub-agent was started with her skill"
+    );
+
+    // With the bound taken off, the agent writes a skill down for her again, and a fresh turn
+    // of the kind of work she wrote one for is told that skill.
+    on_roster(
+        &workspaces,
+        &workspace,
+        (None, person.as_str()),
+        bound(Vec::new()),
+    )
+    .await
+    .expect("its keeper takes the bound off in person");
+    let report = serde_json::json!({
+        "name": "Weekly report",
+        "work": "A request for the weekly report",
+        "how": OTHER,
+    });
+    let wrote = asked!(
+        agents,
+        actions,
+        workspaces,
+        workspace,
+        hers,
+        &format!("do {WRITE} {report}")
+    );
+    assert!(wrote.contains("Weekly report"), "{wrote}");
+    assert_eq!(kept(&workspaces, &keeper, &workspace).len(), 2);
+    let job = "Please analyse the market for cargo bikes.";
+    asked!(agents, actions, workspaces, workspace, hers, job);
+    let own = calls_of(&routed.seen(), job);
+    let told = asked_with(&own.first().expect("her turn asks its model").request);
+    assert!(told.contains(TOLD) && told.contains(CORRECTED), "{told}");
+    page.peer.close();
+}
+
+/// Ada writes her skill [`REVIEW`] down with a result she accepted, on a device of hers: no
+/// word of it is said in a conversation. Its id in her list.
+fn keeps_review(workspaces: &Workspaces, keeper: &[u8; 32], workspace: &str) -> String {
+    let [work, how, form, example, note] = REVIEW_SAYS;
+    let review = serde_json::json!({
+        "name": REVIEW,
+        "work": work,
+        "how": how,
+        "form": form,
+        "model": "Anthropic/claude-research",
+    });
+    let liked = serde_json::json!({
+        "skill": REVIEW,
+        "text": example,
+        "accepted": true,
+        "note": note,
+    });
+    for (verb, said) in [
+        (person_skills::WRITE, review),
+        (person_skills::KEEP_EXAMPLE, liked),
+    ] {
+        workspaces
+            .skills_action(keeper, workspace, None, (verb, &given(said)))
+            .unwrap();
+    }
+    let kept = workspaces.skills_of(keeper, workspace).unwrap();
+    let (id, _) = kept.named(REVIEW).expect("the skill she wrote");
+    id.to_string()
+}
+
+/// What the workspace shares, once the device of Bo, another member, holds `in_list` in the
+/// list of the workspace's agents and `in_messages` in its messages: the list and the
+/// messages as the server keeps them and as his device holds them, each with what it is.
+async fn shared_with_him(
+    workspaces: &Workspaces,
+    workspace: &str,
+    his_page: &mut Browser,
+    (in_list, in_messages): (&str, &str),
+) -> Vec<(&'static str, String)> {
+    let list = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
+    let messages = chat::parts::part(0);
+    let mut shared = Vec::new();
+    for (which, document) in [
+        ("the workspace's list of its agents", list.as_str()),
+        ("the workspace's messages", messages.as_str()),
+    ] {
+        let saved = workspaces
+            .resource_document(workspace, CHAT, document)
+            .await
+            .unwrap()
+            .unwrap();
+        shared.push((which, held([&saved])));
+    }
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        his_page.pump();
+        let on_his_device = |document: &str| {
+            let route = DocumentRoute {
+                app_id: CHAT.into(),
+                cluster_id: workspace.into(),
+                document: document.into(),
+            };
+            let changes = his_page.documents.get(&route);
+            held(changes.into_iter().flatten().map(|(_, saved)| saved))
+        };
+        let (his_list, his_messages) = (on_his_device(&list), on_his_device(messages.as_str()));
+        if his_list.contains(in_list) && his_messages.contains(in_messages) {
+            shared.push(("the list of agents on his device", his_list));
+            shared.push(("the messages on his device", his_messages));
+            return shared;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "his device never held {in_list:?} and {in_messages:?}; it could not open {:?}",
+            his_page.unopened()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// No sentence of her skill, and nothing a turn is told before a handed skill, stands in any
+/// of `shared`, and the list of agents does not name the skill. Each holds `control`, so each
+/// was read.
+fn holds_nothing_of_her_skill(shared: &[(&str, String)], control: &str) {
+    for (which, holds) in shared {
+        assert!(
+            holds.contains(control),
+            "{which} holds {control:?}: {holds}"
+        );
+        for said in [HANDED].iter().chain(&REVIEW_SAYS) {
+            assert!(!holds.contains(said), "{which} holds {said:?}");
+        }
+    }
+    for (which, holds) in shared.iter().filter(|(which, _)| which.contains("list")) {
+        assert!(!holds.contains(REVIEW), "{which} names her skill");
+    }
+}
+
+/// The turns Bo starts with her agent get nothing of her skill: for each of `$asks` his turn's
+/// tool answers, and neither the reply nor anything a model reads in the turn holds a sentence
+/// of the skill, what a turn is told before a handed skill, or what opens its keeper's skills.
+macro_rules! his_turns_get_nothing {
+    ($agents:ident, $actions:ident, $workspaces:ident, $workspace:ident, $his:expr, $routed:ident, $asks:expr) => {{
+        for ask in $asks {
+            let reply = asked!($agents, $actions, $workspaces, $workspace, $his, ask);
+            let calls = calls_of(&$routed.seen(), ask);
+            assert!(calls.len() >= 2, "the call, then the answer: {ask}");
+            let answered = calls.last().map(|call| tool_answers(&call.request));
+            assert!(
+                answered.is_some_and(|answered| !answered.is_empty()),
+                "its tool answered: {ask}"
+            );
+            for said in [HANDED, TOLD].iter().chain(&REVIEW_SAYS) {
+                assert!(!reply.contains(said), "{said:?} in {reply}");
+                for call in &calls {
+                    let read = read_in(&call.request);
+                    assert!(!read.contains(said), "{said:?} in {read}");
+                }
+            }
+        }
+    }};
+}
+
+/// What her keeper bounds the agent to holds where a skill is handed on, and nothing of the
+/// skill reaches another member either way. Ada keeps a skill she never said in a conversation
+/// and bounds her agent off that one skill. Her own turn is then told nothing of it, does not
+/// find it in the list it reads, and its start of a sub-agent with it is refused in words:
+/// nothing is started, and her store keeps nothing as handed. With the bound taken off her
+/// agent hands the skill to a sub-agent, whose turn the server gives it. Through all of it the
+/// workspace's list of its agents and its messages hold no sentence of the skill, as the
+/// server keeps them and as the device of Bo, another member, holds them, and the turns Bo
+/// starts with her agent get none of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bound_on_one_skill_refuses_handing_it_on_and_no_word_of_it_reaches_another_member() {
+    team!(
+        ada_root,
+        ada_browser,
+        actions,
+        workspaces,
+        workspace,
+        page,
+        person,
+        served,
+        device
+    );
+    let (bo_root, _) = tilo_user_identity::UserIdentity::generate("Bo", 1);
+    let bo_browser = enrol(&bo_root, "bo-browser", DeviceCapabilities::member());
+    admit(&workspaces, &workspace, &bo_browser).await;
+    // His page joins as a member's does, before anything is asked: from here on his device
+    // holds what the workspace sends a member.
+    let mut his_page = crate::workspace_actions::resource_support::open_admitted_at(
+        &served,
+        &bo_browser,
+        &device,
+        &workspace,
+    )
+    .await;
+    let (hers, his) = ((&ada_root, &ada_browser), (&bo_root, &bo_browser));
+    let ada_key = ada_root.verifying_key().to_bytes();
+    let routed = Arc::new(Routed::default());
+    workspaces.answer_models_with(routed.clone());
+    link(&workspaces, &ada_key);
+    let servers = Arc::new(Mutex::new(Vec::new()));
+    let agents = worked(&workspaces, &actions, plays(&servers, |_| says("Told.")));
+    let skill = keeps_review(&workspaces, &ada_key, &workspace);
+
+    // She bounds her agent off that one skill, in person: the list stays its to read.
+    let bound = |rules: Vec<Bound>| {
+        WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
+            agent: Id::from_raw(SCOUT),
+            bound: rules,
+        })
+    };
+    let off = tilo_action_policy::Rule::new(
+        tilo_action_policy::TreePath::workspace(workspace.as_str())
+            .app(CHAT)
+            .kind("chat.skills.skills")
+            .resource(format!("chat.skills/skills/{skill}")),
+        tilo_action_policy::KindSet::READ.union(tilo_action_policy::KindSet::UNDOABLE),
+        tilo_action_policy::Answer::Deny,
+    );
+    on_roster(
+        &workspaces,
+        &workspace,
+        (None, person.as_str()),
+        bound(vec![Bound::of(&off)]),
+    )
+    .await
+    .expect("its keeper bounds it in person");
+
+    // Her own turns: the start of a sub-agent with that skill is refused in words, and the
+    // list her agent reads does not hold it. No model call of either reads a sentence of it.
+    let job = "Look at Brightway before the next order.";
+    let start = serde_json::json!({"name": "Check Brightway", "job": job, "skill": REVIEW});
+    let ask = format!("do {START} {start}");
+    let refusal = "does not let you read that skill";
+    let refused = asked!(agents, actions, workspaces, workspace, hers, &ask);
+    assert!(refused.contains(refusal), "{refused}");
+    let read_list = format!("read {SKILLS}");
+    let listed = asked!(agents, actions, workspaces, workspace, hers, &read_list);
+    for said in [REVIEW].iter().chain(&REVIEW_SAYS) {
+        assert!(!listed.contains(said), "{said:?} in {listed}");
+    }
+    let answered = calls_of(&routed.seen(), &read_list)
+        .last()
+        .map(|call| tool_answers(&call.request))
+        .unwrap_or_default();
+    assert!(
+        matches!(answered.as_slice(), [(_, false)]),
+        "the list is read, without that skill: {answered:?}"
+    );
+    let bounded = routed.seen();
+    assert!(bounded.len() >= 4, "two turns, each a call and its answer");
+    for call in &bounded {
+        let read = read_in(&call.request);
+        for said in [HANDED].iter().chain(&REVIEW_SAYS) {
+            assert!(!read.contains(said), "{said:?} in {read}");
+        }
+    }
+    assert!(
+        roster(&workspaces, &workspace)
+            .await
+            .get(&Id::from_raw("check-brightway"))
+            .is_none(),
+        "no sub-agent was started with the skill its agent is bounded off"
+    );
+    assert!(
+        workspaces
+            .skill_handed(&ada_key, &workspace, "check-brightway")
+            .is_none(),
+        "and her store keeps nothing as handed"
+    );
+
+    // With the bound taken off, her agent hands the skill to a sub-agent, and the server gives
+    // it to that sub-agent's turn, whole.
+    on_roster(
+        &workspaces,
+        &workspace,
+        (None, person.as_str()),
+        bound(Vec::new()),
+    )
+    .await
+    .expect("its keeper takes the bound off in person");
+    // She asks again in other words: a message is found again by what it says.
+    let role = "Reviewer";
+    let free =
+        serde_json::json!({"name": "Check Brightway", "job": job, "skill": REVIEW, "role": role});
+    let started = asked!(
+        agents,
+        actions,
+        workspaces,
+        workspace,
+        hers,
+        &format!("do {START} {free}")
+    );
+    assert!(started.contains("check-brightway"), "{started}");
+    let own = chat::Chat::direct_id([
+        MemberId::person(person.clone()),
+        MemberId::agent("check-brightway"),
+    ]);
+    agents.look(&workspace).await.unwrap();
+    let jobs = caused(&workspaces, &workspace, (own.as_str(), "job"), 1).await;
+    let done = replied!(agents, workspaces, workspace, &jobs[0].0, "check-brightway");
+    assert_eq!(done, "Done the way the skill says.");
+    let subs: Vec<Seen> = routed.seen().into_iter().filter(|call| call.sub).collect();
+    assert!(!subs.is_empty(), "the sub-agent's turn asked a model");
+    for call in &subs {
+        let read = read_in(&call.request);
+        for said in [HANDED, REVIEW].iter().chain(&REVIEW_SAYS) {
+            assert!(read.contains(said), "{said:?} in {read}");
+        }
+    }
+    let handed = workspaces
+        .skill_handed(&ada_key, &workspace, "check-brightway")
+        .expect("her store says which skill it was handed");
+    assert_eq!(handed.skill, skill);
+
+    // What the workspace shares holds the refusal and the sub-agent with its answer, and no
+    // sentence of her skill: as the server keeps it, and as Bo's device holds it.
+    let shared = shared_with_him(
+        &workspaces,
+        &workspace,
+        &mut his_page,
+        ("check-brightway", &done),
+    )
+    .await;
+    assert_eq!(shared.len(), 4);
+    holds_nothing_of_her_skill(&shared, job);
+    for (which, holds) in shared
+        .iter()
+        .filter(|(which, _)| which.contains("messages"))
+    {
+        assert!(holds.contains(refusal), "{which} holds the refusal");
+    }
+
+    // The turns Bo starts with her agent get none of it.
+    let again = serde_json::json!({"name": "Check again", "job": job, "skill": REVIEW});
+    let asks = [
+        format!("do {START} {again}"),
+        format!("read {TEAM}"),
+        "read chat/Messages".to_owned(),
+    ];
+    his_turns_get_nothing!(agents, actions, workspaces, workspace, his, routed, &asks);
     assert!(
         roster(&workspaces, &workspace)
             .await
