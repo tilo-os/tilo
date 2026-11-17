@@ -8,7 +8,7 @@ use std::rc::Rc;
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc};
 use collab_types::MemberId;
-use collab_types::record::RecordId;
+use collab_types::document::DocumentId;
 use collaboration::history_source::authors::{HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME};
 use collaboration::history_source::steps::{self, Scope};
 use collaboration::history_source::verbs::HistoryEdit;
@@ -57,7 +57,7 @@ fn step_authors(doc: &mut AutoCommit) -> Vec<String> {
 fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
     let profile = tempfile::tempdir().unwrap();
     let documents: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(profile.path()));
-    let record = RecordId::minted().storage_key();
+    let record = DocumentId::minted().storage_key();
     let ada = MemberId::person("ada");
 
     // The record, its undo log and the writer of its on-disk copy.

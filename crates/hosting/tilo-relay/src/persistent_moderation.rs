@@ -119,7 +119,7 @@ const REVIEW_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 6
 /// their reports before they send them: the reporter's page never holds the
 /// key, and it asks through its feedback admission, so only people the workspace
 /// admits to report may ask, and only the review contract is asked
-/// (`tilo_agent_participant::FeedbackReviewer`).
+/// (`tilo_agent_session::FeedbackReviewer`).
 pub(crate) struct WorkspaceReviewer {
     judge: std::sync::Arc<AnthropicJudge>,
     runtime: tokio::runtime::Handle,
@@ -182,7 +182,7 @@ impl WorkspaceReviewer {
     }
 }
 
-impl tilo_agent_participant::FeedbackReviewer for WorkspaceReviewer {
+impl tilo_agent_session::FeedbackReviewer for WorkspaceReviewer {
     fn name(&self) -> String {
         format!(
             "Anthropic {}",

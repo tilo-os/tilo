@@ -2,7 +2,7 @@
 //! posted, and recorded as `Invocation` resources.
 //!
 //! Rendering never runs an action. An action asks the host, with `run_block`, to evaluate a
-//! block after it commits; the host does that under the poster's principal, applies the block's
+//! block after it commits; the host does that under the poster's actor, applies the block's
 //! action through the authority (so it runs, or becomes a suggestion), and stores the outcome
 //! as an `Invocation` resource that syncs like any other. The embed only draws that resource.
 //! A suggestion is decided later, by any replica, with [`Core::resolve_invocation`].
@@ -16,7 +16,7 @@ use crate::error::RuntimeError;
 use crate::exec::{ActionOutcome, ExecCtx, InvokeOutcome};
 use crate::handles::QueuedBlock;
 use crate::host_res::to_scalar;
-use crate::ids::{AppId, ModuleHash, Principal};
+use crate::ids::{Actor, AppId, ModuleHash};
 use crate::project::{ProjectOptions, project};
 use crate::run::{Resolution, RunOutcome};
 use crate::store::{ChangeNote, Mutation};
@@ -54,7 +54,7 @@ pub struct InvocationRecord {
     pub app: String,
     /// The arguments as JSON text.
     pub args: String,
-    pub author: Principal,
+    pub author: Actor,
     /// `done`, `suggested`, `declined`, `failed` or `denied`.
     pub state: String,
     pub result: String,
@@ -89,18 +89,18 @@ fn field_id(name: &str) -> String {
 }
 
 fn note(
-    who: &Principal,
+    who: &Actor,
     identity: &ModuleHash,
     action: &str,
-    approved_by: Option<&Principal>,
+    approved_by: Option<&Actor>,
 ) -> ChangeNote {
     ChangeNote {
         action: action.to_owned(),
         args: serde_json::Value::Null,
-        invoker: who.0.clone(),
+        invoker: Some(who.clone()),
         chain: vec![identity.0.clone()],
         module: "host".to_owned(),
-        approved_by: approved_by.map(|p| p.0.clone()),
+        approved_by: approved_by.cloned(),
         ..ChangeNote::default()
     }
 }
@@ -113,7 +113,7 @@ impl Core {
     /// A store failure while recording an invocation.
     pub(crate) fn settle_blocks(
         &self,
-        invoker: &Principal,
+        invoker: &Actor,
         queued: Vec<QueuedBlock>,
     ) -> Result<(), RuntimeError> {
         for q in queued {
@@ -122,7 +122,7 @@ impl Core {
         Ok(())
     }
 
-    fn settle_block(&self, invoker: &Principal, q: &QueuedBlock) -> Result<(), RuntimeError> {
+    fn settle_block(&self, invoker: &Actor, q: &QueuedBlock) -> Result<(), RuntimeError> {
         // A block that does not compile has nothing to record: the embed shows the diagnostics.
         let Ok(block) = self.embed_block(&q.source) else {
             return Ok(());
@@ -130,7 +130,7 @@ impl Core {
         if block.block.kind != BlockKind::Action {
             return Ok(());
         }
-        let identity = ModuleHash::principal(&invoker.0);
+        let identity = ModuleHash::written_by(invoker);
         let (record, made) = self.run_posted_block(invoker, &identity, &block);
         let inv = match made {
             Some(inv) => inv,
@@ -153,11 +153,11 @@ impl Core {
     /// A store failure while recording.
     pub(crate) fn record_suggestion(
         &self,
-        invoker: &Principal,
+        invoker: &Actor,
         aref: &ActionRef,
         suggestion: &crate::run::Suggestion,
     ) -> Result<ResourceRef, RuntimeError> {
-        let identity = ModuleHash::principal(&invoker.0);
+        let identity = ModuleHash::written_by(invoker);
         let record = self.record_of(invoker, Some(aref), "suggested", "", &suggestion.run);
         self.create_invocation(&record, &note(invoker, &identity, "$invocation", None))
     }
@@ -171,13 +171,13 @@ impl Core {
     /// A store failure while recording it.
     pub(crate) fn propose(
         &self,
-        proposer: &Principal,
+        proposer: &Actor,
         aref: &ActionRef,
     ) -> Result<ResourceRef, RuntimeError> {
         let aref = &self.completed(aref)?;
         let mut record = self.record_of(proposer, Some(aref), "suggested", "", "");
         record.proposed = true;
-        let identity = ModuleHash::principal(&proposer.0);
+        let identity = ModuleHash::written_by(proposer);
         self.create_invocation(&record, &note(proposer, &identity, "$suggest", None))
     }
 
@@ -188,7 +188,7 @@ impl Core {
     /// A store failure while recording an invocation, or a block that traps.
     pub(crate) fn run_agent_block(
         &self,
-        agent: &Principal,
+        agent: &Actor,
         source: &str,
     ) -> Result<AgentBlock, RuntimeError> {
         if tilolang::written::is_declaration(source) {
@@ -223,7 +223,7 @@ impl Core {
                 ));
             }
         };
-        let identity = ModuleHash::principal(&agent.0);
+        let identity = ModuleHash::written_by(agent);
         match block.block.kind {
             BlockKind::View => {
                 let target = crate::render::ViewTarget {
@@ -269,7 +269,7 @@ impl Core {
     /// that is the block's own (`None` for an outcome the caller records).
     fn run_posted_block(
         &self,
-        invoker: &Principal,
+        invoker: &Actor,
         identity: &ModuleHash,
         block: &EmbedBlock,
     ) -> (InvocationRecord, Option<ResourceRef>) {
@@ -333,7 +333,7 @@ impl Core {
 
     fn record_of(
         &self,
-        author: &Principal,
+        author: &Actor,
         aref: Option<&ActionRef>,
         state: &str,
         result: &str,
@@ -387,7 +387,7 @@ impl Core {
                 text("name", &record.name),
                 text("app", &record.app),
                 text("args", &record.args),
-                (field_id("author"), Value::Principal(record.author.clone())),
+                (field_id("author"), Value::Actor(record.author.clone())),
                 text("state", &record.state),
                 text("result", &record.result),
                 text("run", &record.run),
@@ -465,9 +465,8 @@ impl Core {
         let text = |name: &str| -> Result<String, RuntimeError> {
             Ok(get(name)?.as_text().unwrap_or_default().to_owned())
         };
-        let author = match get("author")? {
-            Value::Principal(p) => p,
-            _ => Principal::new(""),
+        let Value::Actor(author) = get("author")? else {
+            return Err(RuntimeError::NotFound("the invocation's author".into()));
         };
         let subject = match get("subject")? {
             Value::Opt(Some(held)) => match *held {
@@ -519,7 +518,7 @@ impl Core {
     /// An `ask` is the very decision they are making, so only a denial refuses. It is what a view
     /// offers them too: an action their standing denies stands disabled. Their standing is theirs
     /// alone, so a view that asked runs again when it changes.
-    pub(crate) fn may_decide(&self, who: &Principal, action: &str) -> bool {
+    pub(crate) fn may_decide(&self, who: &Actor, action: &str) -> bool {
         self.read_person();
         self.info_of(action)
             .is_none_or(|info| self.authority.decide(who, &[], &info) != Decision::Deny)
@@ -539,7 +538,7 @@ impl Core {
     pub fn resolve_invocation(
         &self,
         inv: &ResourceRef,
-        approver: &Principal,
+        approver: &Actor,
         resolution: Resolution,
     ) -> Result<String, RuntimeError> {
         let rec = self.read_invocation(inv)?;
@@ -552,7 +551,7 @@ impl Core {
                 rec.name
             )));
         }
-        let identity = ModuleHash::principal(&rec.author.0);
+        let identity = ModuleHash::written_by(&rec.author);
         let (state, result, run) = match resolution {
             Resolution::Decline => (
                 "declined".to_owned(),
@@ -581,7 +580,7 @@ impl Core {
         origin: &str,
         rec: &InvocationRecord,
         identity: &ModuleHash,
-        approver: &Principal,
+        approver: &Actor,
     ) -> Result<(String, String, String), RuntimeError> {
         // The record names the run that waits on the person: approving it goes on from its
         // journal, so the calls it already made and the effects it already queued are not made

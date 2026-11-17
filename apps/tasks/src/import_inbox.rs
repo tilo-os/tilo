@@ -60,7 +60,7 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
     if entries.is_empty() {
         return Ok(());
     }
-    let author = context.author().key();
+    let author = context.author().clone();
     context.migrate_record(move |doc| apply(doc, &entries, &author))?;
     for name in names {
         let _ = tilo_files::blocking::remove(&data, &name);
@@ -98,9 +98,9 @@ fn by_page(replica: &Replica<Tracker>) -> Result<BTreeMap<String, Id>, String> {
 pub(crate) fn apply(
     doc: &mut automerge::AutoCommit,
     entries: &[Value],
-    author: &str,
+    author: &ui::tilo_resource::MemberId,
 ) -> Result<bool, String> {
-    let mut replica = Replica::<Tracker>::from_doc(doc.clone()).as_author(author);
+    let mut replica = Replica::<Tracker>::from_doc(doc.clone()).as_member(author.clone());
     let held = by_page(&replica)?;
     let fresh: Vec<&Value> = entries
         .iter()
@@ -340,7 +340,14 @@ mod tests {
         ];
         let mut replica = Replica::<Tracker>::new();
         let mut doc = replica.doc_mut().clone();
-        assert!(apply(&mut doc, &entries, "person:ada").unwrap());
+        assert!(
+            apply(
+                &mut doc,
+                &entries,
+                &ui::tilo_resource::MemberId::person("ada")
+            )
+            .unwrap()
+        );
         let tracker = <Tracker as ui::tilo_resource::Resource>::read(&doc).unwrap();
         let find = |identifier: &str| {
             tracker
@@ -397,7 +404,12 @@ mod tests {
         );
 
         assert!(
-            !apply(&mut doc, &entries, "person:ada").unwrap(),
+            !apply(
+                &mut doc,
+                &entries,
+                &ui::tilo_resource::MemberId::person("ada")
+            )
+            .unwrap(),
             "nothing lands twice"
         );
         let again = <Tracker as ui::tilo_resource::Resource>::read(&doc).unwrap();

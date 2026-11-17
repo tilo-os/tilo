@@ -44,7 +44,7 @@
 "crates/browser/tilo-browser-runtime/src/browser.rs" = 3500
 "crates/collab/collaboration/src/broker.rs" = 7500
 "crates/collab/collaboration/src/broker_tests.rs" = 6000
-"crates/collab/tilo-action-broker/src/collab_app_broker.rs" = 15500
+"crates/collab/tilo-action-broker/src/collab_app_broker.rs" = 15000
 "crates/collab/tilo-action-broker/src/collab_app_broker/action_host.rs" = 4000
 "crates/dev/tilo-app-cli/src/lib.rs" = 10000
 "crates/dev/tilo-app-cli/src/main.rs" = 4500

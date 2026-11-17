@@ -1067,8 +1067,8 @@ enum Memory {
 /// is remembered for the program by the id its client proposed (`claude-code`), and what the answer
 /// admits is that program at this device, as an instance of its own (`claude-code@host#2`): its own
 /// id begins with the one remembered, at a place or an instance of it.
-fn same_program(remembered: &str, seated: &str) -> bool {
-    let rest = seated.strip_prefix(remembered);
+fn same_program(remembered: &str, running: &str) -> bool {
+    let rest = running.strip_prefix(remembered);
     match rest {
         Some(rest) => rest.is_empty() || rest.starts_with(['@', '#']),
         None => false,

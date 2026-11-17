@@ -681,7 +681,20 @@ impl PermissionContext {
         read: impl FnOnce(&policy::Verdict<'_>) -> R,
     ) -> Result<R, String> {
         let now = self.policy_now()?;
-        let cx = policy::Context::at_secs(now.unwrap_or(0));
+        let mut cx = policy::Context::at_secs(now.unwrap_or(0));
+        // A node in the actor's own record is decided as theirs.
+        let named = |level| {
+            node.segments().iter().find_map(|segment| match segment {
+                policy::Segment::Name(at, name) if *at == level => Some(name.as_str()),
+                _ => None,
+            })
+        };
+        if let (Some(app), Some(record)) =
+            (named(policy::Level::App), named(policy::Level::Resource))
+            && let Some(person) = self.own_person(app, record)
+        {
+            cx = cx.with_own_record(record, person);
+        }
         let sampled;
         let held = match &self.action_authority {
             Some(authority) if authority.matches(node) => {
@@ -818,9 +831,10 @@ impl PermissionContext {
         let need = action.need_for(json, argument);
         // A window on a member's own record decides on that record
         // ([`Self::action_decider_on`]).
-        let resource_id = match policy::member_record(record) {
-            Some(_) => record,
-            None => resource.id.as_str(),
+        let resource_id = if self.own_person(app_id, record).is_some() {
+            record
+        } else {
+            resource.id.as_str()
         };
         let node = tilo_actions::action_node(
             &TreePath::root(),
@@ -876,7 +890,7 @@ impl PermissionContext {
         record: &str,
         resource: tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ResourceSpec> {
-        if policy::member_record(record).is_none() {
+        if self.own_person(app_id, record).is_none() {
             return self.permitted_resource(app_id, resource);
         }
         let decider = self.action_decider_on(app_id, record);
@@ -933,14 +947,29 @@ impl PermissionContext {
     }
 
     /// [`Self::action_decider`] for the actions a window on the record
-    /// `record` publishes. A member's own record
-    /// ([`policy::member_record`]) is that person's alone whatever their role,
-    /// so every action such a window publishes is decided on that record,
-    /// where the policy lets its person do anything and no one else anything.
+    /// `record` publishes. The actor's own record
+    /// ([`collab_types::OwnRecord`]) is theirs alone whatever their role, so
+    /// every action such a window publishes is decided on that record, where
+    /// the policy lets its person do anything and no one else anything.
     pub fn action_decider_on<'a>(&'a self, app_id: &'a str, record: &'a str) -> ActionDecider<'a> {
         let mut decider = self.action_decider(app_id);
-        decider.own_record = policy::member_record(record).map(|_| record);
+        if let Some(person) = self.own_person(app_id, record) {
+            decider.own_record = Some(record);
+            if let Some(answers) = &mut decider.answers {
+                answers.cx = answers.cx.with_own_record(record, person);
+            }
+        }
         decider
+    }
+
+    /// The actor's person (the hex of their user root key) when `record` of
+    /// `app_id` is their own record, of a kind the app's manifest declares
+    /// each member's own ([`collab_types::OwnRecord::recognise`]).
+    fn own_person(&self, app_id: &str, record: &str) -> Option<&str> {
+        let person = self.standing.person_id()?;
+        let mut root = [0; 32];
+        hex::decode_to_slice(person, &mut root).ok()?;
+        collab_types::OwnRecord::recognise(app_id, record, root).map(|_| person)
     }
 
     /// `decide` with one authority for the standing as it is, for answers
@@ -1011,7 +1040,7 @@ impl ActionDecider<'_> {
 struct PublishedAnswers<'s> {
     authority: policy::Authority<'s>,
     workspace: TreePath,
-    cx: policy::Context<'static>,
+    cx: policy::Context<'s>,
 }
 
 impl PublishedAnswers<'_> {
@@ -1355,7 +1384,9 @@ mod own_record_tests {
     #[test]
     fn a_window_on_a_members_own_record_is_its_persons_alone() {
         let ada = "ad".repeat(32);
-        let own = policy::member_record_id(&ada, "mail.mailbox");
+        let own = collab_types::OwnRecord::of_person(&ada, "mail.mailbox")
+            .unwrap()
+            .record_id();
         let effect =
             ActionSpec::operation("add", "Add", OperationKind::Effect, "t.add", &()).unwrap();
         let mut edit =
@@ -1378,15 +1409,12 @@ mod own_record_tests {
                 action.id
             );
         }
+        // Another member derives another id: Ada's record is not theirs to
+        // decide on as their own. What keeps them out of it is that its writes
+        // carry Ada as its person, which the workspace's hosts and every
+        // member's replica check, and that it reaches none of their devices.
         let owner = PermissionContext::member("bb".repeat(32), Role::Owner);
-        assert!(
-            !owner.action_decider_on("so.tilo.mail", &own).permits(
-                "mail.mailbox",
-                "mail.mailbox",
-                &edit
-            ),
-            "the workspace's owner changes nothing of another member's own record"
-        );
+        assert!(owner.own_person("so.tilo.mail", &own).is_none());
         let mailbox = tilo_actions::ResourceSpec::new("mail.mailbox", "mail.mailbox", "Mail")
             .with_action(edit.clone());
         assert!(

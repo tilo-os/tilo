@@ -54,7 +54,7 @@ pub fn records(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<HistoryEntry>
         if tree.trashed(id) {
             continue;
         }
-        let Some(record_id) = node.record_id else {
+        let Some(document_id) = node.document_id else {
             continue;
         };
         let path = fs_protocol::tree::path_of(&tree, id);
@@ -64,13 +64,13 @@ pub fn records(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<HistoryEntry>
             }
             _ => "/".to_owned(),
         };
-        let versions: Vec<_> = history::record_versions(doc, record_id)
+        let versions: Vec<_> = history::record_versions(doc, document_id)
             .into_values()
             .collect();
         if versions.is_empty() {
             continue;
         }
-        let attributed = history::record_attributions(doc, record_id);
+        let attributed = history::record_attributions(doc, document_id);
         let attributions: BTreeMap<_, _> = attributed
             .iter()
             .map(|(version, attributed)| (*version, attributed.attribution.clone()))

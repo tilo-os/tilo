@@ -2,7 +2,7 @@
 //! device, and how it reaches the person's other devices.
 //!
 //! The shell keeps the person's shell choices in its own record (`records: .own`): the style,
-//! the bar and the dock, the strips' and the frames' settings, and the person's arrangement. That
+//! the bar and the dock, the strips' and the frames' settings, and the person's layout. That
 //! record is the person's as any app's is, so it is kept where an app's own record of the person's
 //! is kept: one document opened through `app_state` — the store `ui::record` opens a record
 //! through — under the app's own person scope (`ui::record::person::PERSONAL_SCOPE`), in the
@@ -67,7 +67,7 @@ impl ShellRecord {
         let key = durable_store::StorageKey::document(
             APP,
             ui::record::person::PERSONAL_SCOPE,
-            ui::record::RecordId::parse(&id)
+            ui::record::DocumentId::parse(&id)
                 .map_or_else(|| id.clone(), |parsed| parsed.storage_key()),
         );
         let mut opened = match app_state::DocStore::shared(store, key) {
@@ -220,11 +220,11 @@ impl ShellRecord {
 }
 
 /// The record id the shell's own record takes: the one an app declaring `records: .own` names for
-/// `person` (`member:<person>:so.tilo.shell`, read and changed by that person's devices alone),
+/// `person` (of the package kind `tl.so.tilo.shell`, read and changed by that person's devices alone),
 /// and, for a person without a root identity, the id every device derives alike.
 fn record_id(person: &str) -> String {
     tilolang_tilo::member_record_of(APP, person).unwrap_or_else(|| {
-        ui::record::person::record_id(&ui::record::RecordKind::new(APP))
+        ui::record::person::record_id(&ui::record::ResourceType::new(APP))
             .as_str()
             .to_owned()
     })

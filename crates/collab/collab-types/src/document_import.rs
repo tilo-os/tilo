@@ -1,11 +1,11 @@
 //! Signed, two-party proposal to bring a whole document into a workspace.
 //!
 //! A member of a governed workspace proposes that a document, with its whole
-//! history, become a new record there. Its device signs the proposal; the
+//! history, become a new document there. Its device signs the proposal; the
 //! workspace's owner accepts or declines it with a signed decision. Its
-//! governor creates the record only for an accepted proposal, and only
+//! governor creates the document only for an accepted proposal, and only
 //! with the rights an empty creation needs, so the pair adds consent to
-//! record creation and never widens it.
+//! document creation and never widens it.
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,7 @@ pub const MAX_IMPORT_DOCUMENT_BYTES: u64 = 160 * 1024;
 /// How long an owner has to answer, at most.
 pub const MAX_IMPORT_LIFETIME_SECS: u64 = 60 * 60;
 const MAX_APP_BYTES: usize = 128;
-const MAX_RECORD_BYTES: usize = 1024;
+const MAX_DOCUMENT_ID_BYTES: usize = 1024;
 const MAX_TITLE_BYTES: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,8 +35,8 @@ pub struct DocumentImportProposalV1 {
     /// The proposing device's key.
     pub proposer: Ed25519PublicKey,
     pub app: String,
-    /// The record id the document would have there.
-    pub record: String,
+    /// The id the document would have there.
+    pub document_id: String,
     /// What the person moving it calls it, for the owner's sheet.
     pub title: String,
     /// SHA-256 of the saved document the proposal carries.
@@ -53,7 +53,7 @@ pub struct DocumentImportTerms {
     pub workspace: String,
     pub proposal_id: [u8; 32],
     pub app: String,
-    pub record: String,
+    pub document_id: String,
     pub title: String,
     pub document: Vec<u8>,
     pub issued_unix: u64,
@@ -71,7 +71,7 @@ impl DocumentImportProposalV1 {
             proposal_id: terms.proposal_id,
             proposer: Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes()),
             app: terms.app.clone(),
-            record: terms.record.clone(),
+            document_id: terms.document_id.clone(),
             title: terms.title.clone(),
             document_digest: Sha256::digest(&terms.document).into(),
             document_len: u64::try_from(terms.document.len())
@@ -94,7 +94,7 @@ impl DocumentImportProposalV1 {
             self.proposal_id,
             self.proposer,
             &self.app,
-            &self.record,
+            &self.document_id,
             &self.title,
             self.document_digest,
             self.document_len,
@@ -117,7 +117,7 @@ impl DocumentImportProposalV1 {
         };
         if !label(&self.workspace, 64)
             || !label(&self.app, MAX_APP_BYTES)
-            || !label(&self.record, MAX_RECORD_BYTES)
+            || !label(&self.document_id, MAX_DOCUMENT_ID_BYTES)
             || self.title.len() > MAX_TITLE_BYTES
             || self.title.chars().any(char::is_control)
             || self.document_len == 0
@@ -253,7 +253,7 @@ mod tests {
             workspace: "3f2b1c00-0000-4000-8000-00000000000b".into(),
             proposal_id: [5; 32],
             app: "so.tilo.notes".into(),
-            record: "uuid:0f2b1c00-0000-4000-8000-000000000001".into(),
+            document_id: "uuid:0f2b1c00-0000-4000-8000-000000000001".into(),
             title: "Groceries".into(),
             document: document.to_vec(),
             issued_unix: 10,
@@ -290,7 +290,7 @@ mod tests {
             let late = DocumentImportDecisionV1::new(&proposal, true, 100, &owner_key).unwrap();
             assert!(late.verify(&proposal, 99).is_err());
             let mut other = proposal.clone();
-            other.record = "uuid:0f2b1c00-0000-4000-8000-000000000002".into();
+            other.document_id = "uuid:0f2b1c00-0000-4000-8000-000000000002".into();
             assert!(accepted.verify(&other, 30).is_err());
             let mut forged = accepted;
             forged.accepted = false;

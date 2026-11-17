@@ -527,7 +527,7 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
     // The person pins Sheets, as from a menu.
     host.runtime()
         .invoke_action(
-            &tilolang_tilo::runtime::Principal::new("Pat"),
+            &tilolang_tilo::runtime::ids::MemberId::person("Pat").into(),
             (
                 pin.as_str(),
                 vec![

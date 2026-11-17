@@ -30,7 +30,7 @@ impl Checker<'_> {
     }
 
     pub(super) fn agent_me() -> Ex {
-        Ex::host(Imp::Me, vec![], Ty::Principal)
+        Ex::host(Imp::Me, vec![], Ty::Actor)
     }
 
     /// `agent.me` where a package names the library's `me`: the same person a session's bare `me` is.

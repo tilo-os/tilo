@@ -87,34 +87,50 @@ const checkPage = async step => {
 };
 
 // Wait until `expression` holds in the page, or fail naming where the page
-// stopped instead.
+// stopped instead. The page does the waiting: it reads the expression again on
+// each change it shows (its mounts' and session's own), so a step costs no
+// round trips while it waits.
 const until = async (expression, what, timeout = stepLimit(4)) => {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    await checkPage(what);
-    const value = await tab.evaluate(expression).catch(() => false);
-    if (value) return value;
-    if (Date.now() > deadline) {
-      const shown = await tab.evaluate(`JSON.stringify({
-        arrival: document.documentElement.dataset.arrival ?? null,
-        refusal: document.documentElement.dataset.refusal ?? null,
-        entry: document.documentElement.dataset.entry ?? null,
-        status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null,
-        // The mount's own account: which frame it last presented, and how
-        // many frames its GPU left unreported — a page that stopped drawing
-        // while it stayed alive says so here.
-        frames: globalThis.tiloMount?.state()?.frames ?? null,
-        gpuStalls: globalThis.tiloMount?.state()?.gpuStalls ?? null,
-        phase: globalThis.tiloMount?.state()?.phase ?? null,
-        searchPending: globalThis.tiloMount?.state()?.searchPending ?? null,
-        // Each search chord the page saw, as it arrived and 300 ms after:
-        // whether the page took it, and what the shell said of it then.
-        chords: globalThis.__chordStates ?? null,
-      })`).catch(() => 'unreadable');
-      await fail(`${what} never happened: ${shown}`);
-    }
-    await sleep(250);
-  }
+  // A step fails as soon as the page reports a failure, not only when the wait
+  // for what it should show runs out. The tab's log is filled by the browser's
+  // own events, so this wakes on the one that matters.
+  let stop = () => {};
+  const broke = new Promise(resolve => {
+    if (failures().length) return resolve(true);
+    const listening = browser.on(({sessionId, method, params}) => {
+      if (sessionId !== tab.sessionId) return;
+      const reported = method === 'Runtime.exceptionThrown'
+        || (method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(params.type));
+      if (!reported) return;
+      // The tab's own listener logs this same event, in this same turn.
+      queueMicrotask(() => { if (failures().length) { listening(); resolve(true); } });
+    });
+    stop = listening;
+  });
+  const answered = await Promise.race([
+    tab.waitFor(expression, {timeout}).then(value => ({value}), () => ({})),
+    broke.then(() => ({broke: true})),
+  ]);
+  stop();
+  await checkPage(what);
+  if (answered.value) return answered.value;
+  const shown = await tab.evaluate(`JSON.stringify({
+    arrival: document.documentElement.dataset.arrival ?? null,
+    refusal: document.documentElement.dataset.refusal ?? null,
+    entry: document.documentElement.dataset.entry ?? null,
+    status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null,
+    // The mount's own account: which frame it last presented, and how many
+    // frames its GPU left unreported — a page that stopped drawing while it
+    // stayed alive says so here.
+    frames: globalThis.tiloMount?.state()?.frames ?? null,
+    gpuStalls: globalThis.tiloMount?.state()?.gpuStalls ?? null,
+    phase: globalThis.tiloMount?.state()?.phase ?? null,
+    searchPending: globalThis.tiloMount?.state()?.searchPending ?? null,
+    // Each search chord the page saw, as it arrived and 300 ms after: whether
+    // the page took it, and what the shell said of it then.
+    chords: globalThis.__chordStates ?? null,
+  })`).catch(() => 'unreadable');
+  await fail(`${what} never happened: ${shown}`);
 };
 
 // Keys as a person types them on the desktop.
@@ -134,6 +150,8 @@ const type = async text => {
 // The names the search shows, in order, as the desktop publishes them.
 const paletteRows = async () => {
   await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  // The tree is built in a task of its own after the frame it describes, so the
+  // status that carries it is a later one than the request's.
   await sleep(300);
   return JSON.parse(await tab.evaluate(`(() => {
     let rows = null;
@@ -209,20 +227,13 @@ const open = async (name, app) => {
   // nothing before that is its answer to this text (the rows shown right after
   // typing can be the previous query's), and Enter acts on its first row.
   const asked = JSON.stringify(name.toLowerCase());
-  const deadline = Date.now() + stepLimit(3);
-  let card = null;
-  for (;;) {
-    await checkPage(`searching for ${name}`);
-    card = JSON.parse(await tab.evaluate(`(() => {
-      const s = globalThis.tiloMount?.state?.() ?? null;
-      const card = s?.searchCard ?? null;
-      return JSON.stringify(card && s.searchSearching === false && card.query === ${asked} ? card : null);
-    })()`).catch(() => 'null'));
-    if (card?.rows?.[0]?.title === name) break;
-    if (Date.now() > deadline) {
-      await fail(`the search offers no ${name} first: ${JSON.stringify(card?.rows?.map(row => row.title) ?? await paletteRows())}`);
-    }
-    await sleep(250);
+  const card = JSON.parse(await until(`(() => {
+    const s = globalThis.tiloMount?.state?.() ?? null;
+    const card = s?.searchCard ?? null;
+    return card && s.searchSearching === false && card.query === ${asked} ? JSON.stringify(card) : '';
+  })()`, `the search answering ${name}`, stepLimit(3)));
+  if (card?.rows?.[0]?.title !== name) {
+    await fail(`the search offers no ${name} first: ${JSON.stringify(card?.rows?.map(row => row.title) ?? await paletteRows())}`);
   }
   // Which frame showed the window, counted two ways: from the frame counter
   // the page reads when the browser fires Enter, and from the count the shell

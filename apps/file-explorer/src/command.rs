@@ -135,7 +135,7 @@ pub enum FileCommand {
     },
     ToggleHistoryCompare,
     ShowInWorkspaceActivity {
-        record_id: String,
+        document_id: String,
         version_id: fs_protocol::FileVersionId,
     },
     RestoreVersion {

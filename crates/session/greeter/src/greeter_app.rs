@@ -93,7 +93,7 @@ const BACKDROP_PHASE_SECONDS: f64 = ui::auth_backdrop::STILL_SECONDS;
 /// composition; see `GreeterApp::build_composition`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
-    /// The lock screen's arrangement: time and date on the left, the person
+    /// The lock screen's layout: time and date on the left, the person
     /// and passcode on the right.
     Split,
     /// One centred column: the time above, the person and passcode below.
@@ -1030,23 +1030,23 @@ impl GreeterApp {
     /// Before the kiosk resizes the window to a changed layout, the
     /// composition stays centred in the window as on a single display.
     fn output_layout(&self) -> (Option<Rect>, Vec<Rect>) {
-        let Some(arrangement) = self
+        let Some(layout) = self
             .displays
             .as_ref()
-            .map(crate::output_scale::Displays::arrangement)
+            .map(crate::output_scale::Displays::layout)
         else {
             return (None, Vec::new());
         };
-        let Some(extent) = arrangement.extent() else {
+        let Some(extent) = layout.extent() else {
             return (None, Vec::new());
         };
-        if arrangement.displays.len() < 2
+        if layout.displays.len() < 2
             || (extent.width() - self.rect.width()).abs() > 1.0
             || (extent.height() - self.rect.height()).abs() > 1.0
         {
             return (None, Vec::new());
         }
-        (arrangement.primary_in_window(), arrangement.in_window())
+        (layout.primary_in_window(), layout.in_window())
     }
 
     /// Build a greeter pre-seeded for a headless `--shots` render of
@@ -1757,7 +1757,7 @@ impl GreeterApp {
     /// handler rejects a second submit, so that reset lands on it.
     #[allow(
         clippy::too_many_lines,
-        reason = "each arrangement is one declarative tree, kept side by side to compare"
+        reason = "each layout is one declarative tree, kept side by side to compare"
     )]
     fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
         let busy = self.phase.is_busy();
@@ -2632,7 +2632,7 @@ impl Widget for GreeterApp {
         }
         if payload == crate::output_scale::OUTPUTS_WAKE {
             // A display was plugged, removed or rescaled: place the card and
-            // the backdrop for the new arrangement.
+            // the backdrop for the new layout.
             self.dirty_structure = true;
             return;
         }

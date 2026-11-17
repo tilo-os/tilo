@@ -189,6 +189,7 @@ on:
       - "vendor/genawaiter-proc-macro/**"
       - "vendor/hexane/**"
       - "vendor/iroh/**"
+      - "vendor/iroh-blobs/**"
       - "vendor/iroh-relay/**"
       - "vendor/netwatch/**"
       - "vendor/noq-udp/**"

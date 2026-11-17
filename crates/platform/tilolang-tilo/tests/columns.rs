@@ -9,7 +9,7 @@ use tilolang_runtime::meta::FieldKind;
 use tilolang_runtime::query::{Clock, find, resolve, store_pred};
 use tilolang_runtime::store::{FieldSpec, Store as _};
 use tilolang_runtime::value::{ResourceRef, Value};
-use tilolang_runtime::{Meta, Principal};
+use tilolang_runtime::{Actor, Meta};
 
 use crate::fixtures::{Replica, field_id};
 
@@ -23,7 +23,7 @@ type Task {
     status: Status
     effort: Int
     contact: std.Identifier = std.Identifier("tel:+10")
-    assignee: Option<Principal> = .none
+    assignee: Option<Actor> = .none
     tags: Set<Text>
 
     search {
@@ -88,7 +88,7 @@ action tag(t: Task, tag: Text) {
     t.tags.add(tag)
 }
 
-action assign(t: Task, who: Principal) {
+action assign(t: Task, who: Actor) {
     t.assignee = .some(who)
 }
 
@@ -160,7 +160,10 @@ impl Workspace {
         self.ada
             .host
             .runtime()
-            .invoke_action(&Principal::new("ada"), (id.as_str(), args))
+            .invoke_action(
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+                (id.as_str(), args),
+            )
             .unwrap();
         self.ada.commit();
     }
@@ -620,7 +623,7 @@ tilo_test_env::scenario! {
         ada.commit();
         ada.host
             .runtime()
-            .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+            .invoke_action(&Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), (scenario.as_str(), vec![]))
             .unwrap();
         assert_eq!(
             texts(ada.view(INBOX_APP).tree()),
@@ -646,7 +649,9 @@ fn a_person_a_filter_names_is_a_run_of_its_column() {
         "assign",
         vec![
             Value::resource(&first),
-            Value::Principal(Principal::new("ada")),
+            Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
+                "ada",
+            ))),
         ],
     );
     assert_eq!(workspace.listed("assignee:ada"), ["a"]);
@@ -672,7 +677,9 @@ fn a_person_a_filter_names_is_a_run_of_its_column() {
         "assign",
         vec![
             Value::resource(&workspace.tasks()[1].clone()),
-            Value::Principal(Principal::new("ada")),
+            Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
+                "ada",
+            ))),
         ],
     );
     assert_eq!(workspace.listed("assignee:ada"), ["a", "b"]);
@@ -1016,7 +1023,7 @@ tilo_test_env::scenario! {
         ada.host
             .runtime()
             .invoke_action(
-                &Principal::new("ada"),
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 (
                     action.id.as_str(),
                     vec![Value::resource(&first), Value::text(moment)],

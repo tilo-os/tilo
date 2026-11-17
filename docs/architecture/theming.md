@@ -10,7 +10,7 @@ when pressed.
 The rules:
 
 1. **Views say what is there; the theme says how it looks and behaves.**
-   Structure (which components, where, the shell's arrangement) belongs to
+   Structure (which components, where, the shell's layout) belongs to
    views, chosen by the person separately from the theme. A theme reaches
    every component *part* a component declares, never an app's view tree,
    and there is no selector language over app structure.

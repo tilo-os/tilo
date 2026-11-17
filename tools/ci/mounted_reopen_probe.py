@@ -29,7 +29,7 @@ def execute(root, source):
     commands = (
         ['cargo', 'build', '--locked', '-p', 'tilo-app-cli', '--bin', 'tilo-app'],
         ['target/debug/tilo-app', 'build', 'apps/chat', '--platform', 'web'],
-        ['cargo', 'build', '--locked', '-p', 'tilo-agent-participant', '--example', 'mounted-resource'],
+        ['cargo', 'build', '--locked', '-p', 'tilo-agent-session', '--example', 'mounted-resource'],
     )
     for command in commands:
         code = subprocess.run(command, cwd=root).returncode
@@ -37,7 +37,7 @@ def execute(root, source):
             return code
     # Reuse the unchanged fixture and its 130-second bound. This is not a retry
     # of a failed Forgejo run: the first failure ends this diagnostic immediately.
-    command = ['cargo', 'run', '--locked', '-p', 'tilo-agent-participant',
+    command = ['cargo', 'run', '--locked', '-p', 'tilo-agent-session',
                '--example', 'mounted-resource', '--',
                'target/tilo-app/web/chat/bundle', '--disconnect-retry']
     for attempt in range(1, 4):

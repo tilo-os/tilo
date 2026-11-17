@@ -133,11 +133,7 @@ impl WindowFrame {
     /// display, which the display can scan out).
     #[must_use]
     pub const fn square() -> Self {
-        Self {
-            radius: 0.0,
-            shadow: None,
-            edge: None,
-        }
+        Self::corners(0.0)
     }
 
     /// A window whose host paints it whole — its card, the lift under it and the edge around it, in
@@ -168,7 +164,7 @@ impl Default for WindowFrame {
     /// foreign window.
     fn default() -> Self {
         Self {
-            radius: 14.0,
+            radius: f64::from(ui::tokens::Radii::WINDOW),
             shadow: Some(Shadow {
                 offset_y: 2.0,
                 blur: 16.0,

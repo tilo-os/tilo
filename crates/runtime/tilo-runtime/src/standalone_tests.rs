@@ -387,7 +387,7 @@ fn written(session: &Standalone) -> Result<Option<String>, String> {
     use automerge::ReadDoc as _;
     let workspace = WorkspaceId::parse(session.workspace())
         .ok_or_else(|| "the session names no workspace".to_owned())?;
-    let record = ui::record::RecordId::for_file_record(
+    let record = ui::record::DocumentId::for_file_document(
         uuid::Uuid::parse_str(WRITER_RECORD).map_err(|error| error.to_string())?,
     );
     let bytes = session
@@ -469,9 +469,11 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
     // identity service hands out the route's keys, then seals and sends it.
     if std::env::var_os(WRITER_HELPER).is_some() {
         use automerge::transaction::Transactable as _;
-        let checkout = ui::record::RecordCheckout::new(
-            ui::record::RecordId::for_file_record(uuid::Uuid::parse_str(WRITER_RECORD).unwrap()),
-            ui::record::RecordKind::new(WRITER_KIND),
+        let checkout = ui::record::DocumentCheckout::new(
+            ui::record::DocumentId::for_file_document(
+                uuid::Uuid::parse_str(WRITER_RECORD).unwrap(),
+            ),
+            ui::record::ResourceType::new(WRITER_KIND),
         );
         let mut manager = ui::collaboration::CollaborationManager::for_record(&checkout);
         wait_until_joined(&mut manager);
@@ -748,7 +750,7 @@ tilo_test_env::scenario! {
                 .record_effect(
                     &workspace_id,
                     invocation,
-                    "agent-1",
+                    &tilo_actions::MemberId::person("agent-1"),
                     context.clone(),
                     status.clone(),
                 )
@@ -759,7 +761,7 @@ tilo_test_env::scenario! {
                 .record_effect(
                     &WorkspaceId::new().to_string(),
                     invocation,
-                    "a",
+                    &tilo_actions::MemberId::person("a"),
                     context,
                     status
                 )
@@ -797,7 +799,7 @@ tilo_test_env::scenario! {
                 .record_effect(
                     &workspace_id,
                     invocation,
-                    "agent-1",
+                    &tilo_actions::MemberId::person("agent-1"),
                     tilo_actions::ActionContext::default(),
                     status
                 )
@@ -963,7 +965,7 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
             .any(|grant| grant.id.as_str() == id)
     );
     let receipt = workspace.effect_receipts.last().unwrap();
-    assert_eq!(receipt.actor, "owner");
+    assert_eq!(receipt.actor, tilo_actions::MemberId::person("owner"));
     let Some(tilo_actions::Did::Verb(verb)) = &receipt.context.what else {
         panic!("the grant is recorded as a verb: {:?}", receipt.context);
     };

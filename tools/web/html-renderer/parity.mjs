@@ -483,13 +483,12 @@ async function step(tab, name, index, shot) {
     return {...hits[0], x: hits[0].x + dx, y: hits[0].y + dy, matches: hits.length};
   };
   if (name.wait !== undefined) {
-    // Polled rather than slept through: an app that seeds a note answers in
-    // its own time, and the driver must wait for the name, not for a clock.
-    for (let i = 0; i < 60; i++) {
-      const hits = JSON.parse(await tab.evaluate(FIND(name.wait)));
-      if (hits.length) return {found: hits[0]};
-      await sleep(250);
-    }
+    // Waited for in the page, which reads the tree again on each change it
+    // shows: an app that seeds a note answers in its own time, and the driver
+    // must wait for the name, not for a clock.
+    const found = await tab.waitFor(`(() => { const hits = JSON.parse(${FIND(name.wait)}); return hits.length ? JSON.stringify(hits[0]) : ''; })()`,
+      {timeout: 15_000}).catch(() => '');
+    if (found) return {found: JSON.parse(found)};
     const names = JSON.parse(await tab.evaluate(NAMES));
     throw new Error(`waited 15 s for ${JSON.stringify(name.wait)}; the tree names: ${names.join(' | ')}`);
   }

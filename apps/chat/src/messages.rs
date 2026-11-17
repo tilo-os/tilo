@@ -877,7 +877,7 @@ fn takes_posts(chat: &Chat, channel: &Id) -> Result<(), String> {
 impl Chained for ChatPart {
     type Base = Chat;
 
-    fn chain() -> ui::record::RecordId {
+    fn chain() -> ui::record::DocumentId {
         parts::chain()
     }
 

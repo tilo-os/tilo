@@ -377,7 +377,7 @@ pub(super) fn recent_entries_of(paths: &[PathBuf]) -> Vec<Entry> {
                 },
                 sync_state: None,
                 content_hash: None,
-                record_id: None,
+                document_id: None,
                 availability: None,
                 history: None,
                 app: None,

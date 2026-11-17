@@ -23,18 +23,22 @@ impl Instance {
             return false;
         };
         let runtime = host.runtime();
-        let kept = held.of(&host.viewer().0);
+        let kept = held.of(&self.me);
         for slot in &kept.slots {
             if let Some(view) = personal::of_window(tab, &slot.window) {
-                let key = StateKey::view(view, slot.person.clone(), slot.state.clone());
+                let key = StateKey::view(view, personal::actor(&slot.person), slot.state.clone());
                 runtime.set_view_state(key, slot.value.clone());
             }
         }
         for seen in &held.seen {
-            runtime.set_seen(&seen.person, &seen.resource, Some(seen.mark.clone()));
+            runtime.set_seen(
+                &personal::actor(&seen.person),
+                &seen.resource,
+                Some(seen.mark.clone()),
+            );
         }
         let runs: Vec<String> = kept.runs.into_iter().map(|reviewed| reviewed.run).collect();
-        runtime.set_seen_runs(&host.viewer().0, &runs);
+        runtime.set_seen_runs(host.viewer(), &runs);
         true
     }
 
@@ -47,7 +51,8 @@ impl Instance {
             return Vec::new();
         };
         let runtime = host.runtime();
-        let me = host.viewer().0.clone();
+        let me = self.me.clone();
+        let mine = |who: &crate::runtime::Actor| personal::person_of(who) == Some(me.as_str());
         let mut keeps = Vec::new();
         for (key, value) in runtime.take_view_writes() {
             match Keep::view(&key, &value) {
@@ -78,12 +83,12 @@ impl Instance {
                     person,
                     resource,
                     mark,
-                } if person.eq_ignore_ascii_case(&me) => keeps.push(Keep::Seen {
+                } if mine(&person) => keeps.push(Keep::Seen {
                     person: me.clone(),
                     resource,
                     mark,
                 }),
-                SeenWrite::Run { person, run } if person.eq_ignore_ascii_case(&me) => {
+                SeenWrite::Run { person, run } if mine(&person) => {
                     if !runs.contains(&run) {
                         runs.push(run);
                         runs.sort();

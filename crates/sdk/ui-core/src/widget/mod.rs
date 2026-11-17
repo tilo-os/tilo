@@ -2243,7 +2243,6 @@ pub use code_editor::{
 };
 mod editable_label;
 pub use editable_label::{EditOutcome, EditableLabel, EditableLabelProps};
-pub mod acknowledgement;
 pub mod autocomplete;
 pub use autocomplete::{
     Autocomplete, AutocompleteOutcome, AutocompleteProps, CheckColumn, Suggester, Suggestion,
@@ -2793,7 +2792,7 @@ pub(crate) mod control_result_probe;
 pub mod keyboard_map;
 pub use keyboard_map::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};
 /// Logical screen topology canvas shared by local and native peer displays.
-pub mod display_arrangement;
+pub mod display_placement;
 mod graph_canvas;
 pub use graph_canvas::{GraphCanvas, GraphCanvasConnection, GraphCanvasNode};
 

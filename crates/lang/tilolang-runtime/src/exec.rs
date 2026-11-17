@@ -29,7 +29,7 @@ use crate::engine::{CallError, Host, HostFail, Wasm};
 use crate::error::RuntimeError;
 use crate::handles::{ActionState, FrameKind, Invocation, QueuedBlock, RunState};
 use crate::host_res::unboxed;
-use crate::ids::{AppId, ModuleHash, Principal, RunId};
+use crate::ids::{Actor, AppId, ModuleHash, RunId};
 use crate::meta::{ActionMeta, EffectClass, ParamMeta, Repr, Ty, parse_ty, repr};
 use crate::registry::Package;
 use crate::run::{Journal, JournalEntry, Pending, Resolution, RunOutcome, Step, Suggestion};
@@ -44,9 +44,9 @@ const MAX_CALL_DEPTH: usize = 32;
 /// Who an invocation runs for, and through which code.
 #[derive(Clone, Debug)]
 pub struct ExecCtx {
-    pub invoker: Principal,
+    pub invoker: Actor,
     pub chain: Vec<ModuleHash>,
-    pub approved_by: Option<Principal>,
+    pub approved_by: Option<Actor>,
     /// The run this invocation already is, when something every replica reads names it: the
     /// record of a suggestion names the run that waits on a person (`InvocationRecord::run`),
     /// and a device that holds no journal of it runs its action under that run. Every effect the
@@ -60,7 +60,7 @@ pub struct ExecCtx {
     pub at: Option<String>,
     /// Who proposed the action, when the person invoking it accepted a suggestion: recorded in
     /// its change, so history says who suggested it.
-    pub suggested_by: Option<Principal>,
+    pub suggested_by: Option<Actor>,
 }
 
 impl ExecCtx {
@@ -85,7 +85,7 @@ impl ExecCtx {
             chain: self.chain.clone(),
             from: self.from.clone(),
             at: self.at.clone(),
-            suggested_by: self.suggested_by.as_ref().map(|p| p.0.clone()),
+            suggested_by: self.suggested_by.clone(),
             entries: Vec::new(),
             pending: None,
             finished: false,
@@ -145,7 +145,7 @@ enum Delegated {
 struct Change {
     txn: Txn,
     queued: Vec<QueuedBlock>,
-    proposed: Vec<(Principal, ActionRef)>,
+    proposed: Vec<(Actor, ActionRef)>,
     note: ChangeNote,
 }
 
@@ -234,7 +234,7 @@ impl Core {
             | (Ty::Tuple(_) | Ty::Filter(_) | Ty::Sort(_), Value::Tuple(_))
             | (Ty::Action, Value::Action(_))
             | (Ty::File, Value::File(_))
-            | (Ty::Principal, Value::Principal(_))
+            | (Ty::Actor, Value::Actor(_))
             | (Ty::View, _) => true,
             _ => false,
         };
@@ -595,11 +595,11 @@ impl Core {
                     .map(|v| to_json(v).unwrap_or(Json::Null))
                     .collect(),
             ),
-            invoker: ctx.invoker.0.clone(),
+            invoker: Some(ctx.invoker.clone()),
             chain: ctx.chain.iter().map(|m| m.0.clone()).collect(),
             module: pkg.hash.0.clone(),
-            approved_by: ctx.approved_by.as_ref().map(|p| p.0.clone()),
-            suggested_by: ctx.suggested_by.as_ref().map(|p| p.0.clone()),
+            approved_by: ctx.approved_by.clone(),
+            suggested_by: ctx.suggested_by.clone(),
             from: ctx.from.clone(),
             at: ctx.at.clone(),
             ..ChangeNote::default()
@@ -636,7 +636,7 @@ impl Core {
     /// own record's changes apart.
     fn invoke_many(
         &self,
-        invoker: &Principal,
+        invoker: &Actor,
         aref: &ActionRef,
         from: Option<&ResourceRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
@@ -820,14 +820,14 @@ impl Core {
         }
     }
 
-    /// A direct invocation by a principal, or through an action reference some code wrote.
+    /// A direct invocation by an actor, or through an action reference some code wrote.
     ///
     /// # Errors
     ///
     /// As [`Core::run_action`]; a trap is an error here since nobody journals it.
     pub fn invoke_direct(
         &self,
-        invoker: &Principal,
+        invoker: &Actor,
         aref: &ActionRef,
     ) -> Result<InvokeOutcome, RuntimeError> {
         self.invoke_direct_as(None, invoker, aref, aref.from.as_ref())
@@ -844,7 +844,7 @@ impl Core {
     pub(crate) fn invoke_direct_as(
         &self,
         identity: Option<&RunId>,
-        invoker: &Principal,
+        invoker: &Actor,
         aref: &ActionRef,
         from: Option<&ResourceRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
@@ -1019,7 +1019,7 @@ impl Core {
     /// An unknown action, arguments that do not fit, a trap, or a store failure.
     pub fn start_run(
         &self,
-        invoker: &Principal,
+        invoker: &Actor,
         action: &str,
         args: Vec<Value>,
         chain: Vec<ModuleHash>,
@@ -1148,7 +1148,7 @@ impl Core {
         // code, as a block's is.
         let program = pkg.meta.app.starts_with(tilolang::PROGRAM_APP_PREFIX);
         let module = if program {
-            ModuleHash::principal(&journal.invoker.0)
+            ModuleHash::written_by(&journal.invoker)
         } else {
             pkg.hash.clone()
         };
@@ -1168,7 +1168,7 @@ impl Core {
                 run: run.clone(),
                 cursor: 0,
                 invoker: journal.invoker.clone(),
-                suggested_by: journal.suggested_by.clone().map(Principal::new),
+                suggested_by: journal.suggested_by.clone(),
                 clock: clock.clone(),
                 journaled,
                 journal,
@@ -1229,7 +1229,7 @@ impl Core {
             invoker: journal.invoker.clone(),
             chain: journal.chain.clone(),
             approved_by: journal.approved_by.clone(),
-            suggested_by: journal.suggested_by.clone().map(Principal::new),
+            suggested_by: journal.suggested_by.clone(),
             identity: Some(run.clone()),
             from: journal.from.clone(),
             at: journal.at.clone(),
@@ -1346,7 +1346,7 @@ impl Core {
 
     /// Commit `change` as a change of `invoker`'s run, and do what it left for others: settle the
     /// blocks it settled and record what it proposed.
-    fn commit_segment(&self, invoker: &Principal, change: Change) -> Result<(), RuntimeError> {
+    fn commit_segment(&self, invoker: &Actor, change: Change) -> Result<(), RuntimeError> {
         self.store.borrow_mut().commit(change.txn, &change.note)?;
         self.settle_blocks(invoker, change.queued)?;
         for (who, suggested) in change.proposed {
@@ -1378,7 +1378,7 @@ impl Core {
             invoker: step.who.clone().unwrap_or_else(|| journal.invoker.clone()),
             chain,
             approved_by: None,
-            suggested_by: journal.suggested_by.clone().map(Principal::new),
+            suggested_by: journal.suggested_by.clone(),
             identity: None,
             from: step.from.clone().or_else(|| journal.from.clone()),
             at: step.at.clone(),
@@ -1494,7 +1494,7 @@ impl Core {
     pub fn resolve(
         &self,
         run: &RunId,
-        approver: &Principal,
+        approver: &Actor,
         resolution: Resolution,
     ) -> Result<RunOutcome, RuntimeError> {
         let mut journal = self
@@ -1520,7 +1520,7 @@ impl Core {
             invoker: suggestion.invoker.clone(),
             chain: suggestion.chain.clone(),
             approved_by: Some(approver.clone()),
-            suggested_by: journal.suggested_by.clone().map(Principal::new),
+            suggested_by: journal.suggested_by.clone(),
             identity: Some(run.clone()),
             from: journal.from.clone(),
             at: journal.at.clone(),
@@ -2048,7 +2048,7 @@ impl Core {
         let note = ChangeNote {
             action: "$withdraw".to_owned(),
             args: Json::String(reason.clone()),
-            invoker: invoker.0,
+            invoker: Some(invoker),
             ..ChangeNote::default()
         };
         self.store
@@ -2104,10 +2104,10 @@ impl Core {
         }))
     }
 
-    pub(crate) fn principal_arg(&self, h: i32) -> HResult<Principal> {
+    pub(crate) fn actor_arg(&self, h: i32) -> HResult<Actor> {
         self.with_val(h, |v| match v {
-            Value::Principal(p) => Ok(p.clone()),
-            other => trap(format!("expected a principal, got {}", other.kind_name())),
+            Value::Actor(p) => Ok(p.clone()),
+            other => trap(format!("expected an actor, got {}", other.kind_name())),
         })
     }
 
@@ -2261,7 +2261,7 @@ impl Core {
             let mut note = (*state.note).clone();
             match state.invocations.last() {
                 Some(inv) => {
-                    note.invoker.clone_from(&inv.who.0);
+                    note.invoker = Some(inv.who.clone());
                     note.at = Some(inv.at.clone().unwrap_or(at));
                     note.from = inv.from.clone().or_else(|| state.note.from.clone());
                 }
@@ -2533,7 +2533,7 @@ impl Core {
     /// reads it. The run's journal answers a run that replays, so it tells them no more than the
     /// first run did.
     fn notify_import(&self, to: i32, title: i32, body: i32, opens: i32) -> HResult<Option<Wasm>> {
-        let to = self.principal_arg(to)?;
+        let to = self.actor_arg(to)?;
         let title = self.text(title)?;
         let body = self.text(body)?;
         let opens = match self.val(opens)? {
@@ -2617,10 +2617,7 @@ impl Core {
                 NOTICE_TO.to_owned(),
                 crate::store::Mutation::SetRegister {
                     field: NOTICE_TO.to_owned(),
-                    value: scalar(
-                        &Value::Principal(notice.to.clone()),
-                        &crate::meta::Ty::Principal,
-                    )?,
+                    value: scalar(&Value::Actor(notice.to.clone()), &crate::meta::Ty::Actor)?,
                 },
             ),
             (
@@ -2688,11 +2685,11 @@ impl Core {
                     FrameKind::View(view) => &view.viewer,
                     _ => return trap("invoker is only available in actions"),
                 };
-                let who = Value::Principal(who.clone());
+                let who = Value::Actor(who.clone());
                 drop(frames);
                 self.ret_h(who)
             }
-            Imp::PrincipalNamed | Imp::AgentNamed => {
+            Imp::PersonNamed | Imp::AgentNamed => {
                 let name = self.text(a.h(0)?)?;
                 self.scenario_state(|_| ())?;
                 let who = if imp == Imp::AgentNamed {
@@ -2700,10 +2697,10 @@ impl Core {
                 } else {
                     self.named_person(&name)
                 };
-                self.ret_h(Value::Principal(who))
+                self.ret_h(Value::Actor(who))
             }
             Imp::InvocationPush => {
-                let who = self.principal_arg(a.h(0)?)?;
+                let who = self.actor_arg(a.h(0)?)?;
                 let at = match self.val_whole(a.h(1)?)? {
                     Value::Opt(Some(time)) => match *time {
                         Value::Text(t) => Some(t),
@@ -2740,12 +2737,12 @@ impl Core {
                 })?;
                 ret_void()
             }
-            Imp::PrincipalEq => {
-                let (x, y) = (self.principal_arg(a.h(0)?)?, self.principal_arg(a.h(1)?)?);
+            Imp::ActorEq => {
+                let (x, y) = (self.actor_arg(a.h(0)?)?, self.actor_arg(a.h(1)?)?);
                 ret_i32(i32::from(x == y))
             }
-            Imp::PrincipalName => {
-                let p = self.principal_arg(a.h(0)?)?;
+            Imp::ActorName => {
+                let p = self.actor_arg(a.h(0)?)?;
                 self.ret_h(Value::Text(self.named(&p)))
             }
             Imp::QueueBlock => self.queue_block(a.h(0)?, a.h(1)?, a.h(2)?),

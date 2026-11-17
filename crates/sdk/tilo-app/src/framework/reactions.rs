@@ -57,8 +57,8 @@ impl ReactionsIndicator {
             self.show(None);
             return;
         };
-        let me = input.dispatch.me().and_then(tilo_resource::MemberId::parse);
-        if let Some(me) = &me {
+        let me = input.dispatch.me();
+        if let Some(me) = me {
             for emoji in presses {
                 input.dispatch.submit_reaction(
                     vec![Segment::Field(key.to_owned())],
@@ -66,7 +66,7 @@ impl ReactionsIndicator {
                 );
             }
         }
-        let shown = shown(input, reactions, me.as_ref());
+        let shown = shown(input, reactions, me);
         self.show(shown);
     }
 
@@ -113,7 +113,7 @@ fn shown(
                     reactor
                         .name
                         .clone()
-                        .unwrap_or_else(|| input.people.name(&reactor.by.key()))
+                        .unwrap_or_else(|| input.people.name(&reactor.by))
                 })
                 .collect(),
         })

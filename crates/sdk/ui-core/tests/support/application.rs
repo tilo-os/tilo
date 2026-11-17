@@ -12,7 +12,7 @@ use tilo_ui::local_state::LocalState;
 use tilo_ui::permissions::{
     ActionKind, MemberId, PermissionContext, PermissionScope, SharedPermissions,
 };
-use tilo_ui::record::{RecordCheckout, RecordKind, RecordOwners, RecordStore};
+use tilo_ui::record::{DocumentCheckout, RecordOwners, RecordStore, ResourceType};
 use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
 use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, NativeViewLifecycle, Widget};
@@ -257,7 +257,7 @@ pub fn definition(create: tilo_ui::application::ComponentFactory) -> Application
         app_id: APP.into(),
         title: "Probe".into(),
         icon: IconDescriptor::Glyph("P"),
-        record_kind: RecordKind::new("probe"),
+        record_kind: ResourceType::new("probe"),
         required: vec![],
         optional: vec![],
         opens: &[],
@@ -375,13 +375,13 @@ pub fn instantiate_probe(
     let context = host.prepare(probe_definition(), instance, &target)?;
     probe_definition().instantiate(context, target, restore)
 }
-pub fn existing(checkout: &RecordCheckout) -> LaunchTarget {
+pub fn existing(checkout: &DocumentCheckout) -> LaunchTarget {
     LaunchTarget::Record {
         checkout: checkout.clone(),
         reveal: None,
     }
 }
-pub fn body(records: &RecordStore, checkout: &RecordCheckout) -> String {
+pub fn body(records: &RecordStore, checkout: &DocumentCheckout) -> String {
     records
         .read(&checkout.id, |doc| {
             doc.get(ROOT, "body")

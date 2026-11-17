@@ -54,6 +54,12 @@ impl DesktopHandle {
         std::mem::take(&mut self.shared.borrow_mut().menus)
     }
 
+    /// The windows whose menu asked since the last call to go to a new strip ([`MOVE_TO_NEW_STRIP`]),
+    /// in the order they asked. The host makes the strip, as the person's own, and moves each there.
+    pub fn take_new_strip_moves(&self) -> Vec<TabId> {
+        std::mem::take(&mut self.shared.borrow_mut().new_strip_moves)
+    }
+
     /// Ask for the menu of the window covering the display the person works on, standing `at` a
     /// place on the shell, as a secondary click on its bar would. False when no window covers it.
     pub fn ask_covering_window_menu(&self, at: ui::kurbo::Point) -> bool {
@@ -74,6 +80,21 @@ impl DesktopHandle {
         shared.menus.push((tab, at));
         true
     }
+}
+
+/// Give back the display a window of `row` covers when its own bar's control asked to leave full
+/// screen. Whether that changed the tree.
+pub(super) fn give_back_display(
+    tree: &mut Layout,
+    strip: StripId,
+    row: &mut ui::widget::GroupRow,
+) -> bool {
+    let mut changed = false;
+    for group in &mut row.groups {
+        changed |=
+            group.take_pending_exit_fullscreen() && tree.set_fullscreen(strip, group.id, false);
+    }
+    changed
 }
 
 /// The tabs whose bar asked for its menu and where it was pressed, in the row's window order.
@@ -122,6 +143,8 @@ pub const EQUALIZE: &str = "window-width-equal";
 pub const MOVE_LEFT: &str = "window-move-left";
 pub const MOVE_RIGHT: &str = "window-move-right";
 pub const MOVE_TO_STRIP: &str = "window-move-to-strip";
+/// Carry the window into a strip made for it below the last one.
+pub const MOVE_TO_NEW_STRIP: &str = "window-move-to-new-strip";
 pub const MOVE_TO_WORKSPACE: &str = "window-move-to-workspace";
 pub const MOVE_TO_DISPLAY: &str = "window-move-to-display";
 pub const WIDTH: &str = "window-width";
@@ -573,22 +596,34 @@ fn move_rows(tree: &Layout, route: &RouteIds) -> Vec<Row> {
             rows.push(Row::offered(id, t(label)).with_icon(icon));
         }
     }
-    let strips: Vec<Row> = workspace_at(tree, route)
-        .map(|workspace| {
+    let workspace = workspace_at(tree, route);
+    let mut strips: Vec<Row> = workspace
+        .into_iter()
+        .flat_map(|workspace| workspace.strips.iter().enumerate())
+        .filter(|(_, strip)| strip.id != route.strip)
+        .map(|(index, strip)| {
+            Row::offered(
+                move_to_strip_id(strip.id),
+                crate::names::strip_named(&strip.name, index),
+            )
+        })
+        .collect();
+    // Below the last strip, a strip of its own: for a window that shares its strip, as one alone
+    // would leave its strip empty behind it.
+    let shares_its_strip = workspace
+        .and_then(|workspace| {
             workspace
                 .strips
                 .iter()
-                .enumerate()
-                .filter(|(_, strip)| strip.id != route.strip)
-                .map(|(index, strip)| {
-                    Row::offered(
-                        move_to_strip_id(strip.id),
-                        crate::names::strip_named(&strip.name, index),
-                    )
-                })
-                .collect()
+                .find(|strip| strip.id == route.strip)
         })
-        .unwrap_or_default();
+        .is_some_and(|strip| strip.window_groups.len() > 1);
+    if shares_its_strip {
+        strips.push(Row::offered(
+            MOVE_TO_NEW_STRIP,
+            t("strip-switcher-new-strip"),
+        ));
+    }
     if !strips.is_empty() {
         rows.push(
             Row::submenu(MOVE_TO_STRIP, t("window-menu-move-to-strip"), strips)
@@ -864,8 +899,8 @@ pub(super) fn apply(
             ops.push(super::row_op::RowOp::WindowShare(ids.tab, *shared_now));
             true
         }
-        Admitted::SplitRight(ids) => detach(shared, *ids, false),
-        Admitted::MoveToNewGroup(ids) => detach(shared, *ids, true),
+        Admitted::SplitRight(ids) => detach(shared, *ids, false, ops),
+        Admitted::MoveToNewGroup(ids) => detach(shared, *ids, true, ops),
         Admitted::CloseWindow(ids) => close_window(shared, *ids, ops),
         Admitted::StopDesktopControl(ids) => stop_desktop_control(shared, *ids),
         _ => return false,
@@ -1081,8 +1116,14 @@ fn stop_desktop_control(shared: &mut Shared, ids: RouteIds) -> bool {
 }
 
 /// Detach the tab at `ids` into a window of its own, at the strip's end (`at_end`) or right after
-/// the window it is in, and make it the one the strip shows. Whether it moved.
-fn detach(shared: &mut super::Shared, ids: RouteIds, at_end: bool) -> bool {
+/// the window it is in, and make it the one the strip shows: the strip scrolls to it. Whether it
+/// moved.
+fn detach(
+    shared: &mut super::Shared,
+    ids: RouteIds,
+    at_end: bool,
+    ops: &mut Vec<super::row_op::RowOp>,
+) -> bool {
     let Some(strip) = workspace_at(&shared.tree, &ids)
         .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == ids.strip))
     else {
@@ -1102,6 +1143,7 @@ fn detach(shared: &mut super::Shared, ids: RouteIds, at_end: bool) -> bool {
         return false;
     };
     tree.set_active_group(ids.strip, moved.new_group.id);
+    ops.push(super::row_op::RowOp::Reveal(ids.strip, moved.new_group.id));
     shared.replaced = true;
     true
 }
@@ -1231,6 +1273,13 @@ impl crate::surface::DesktopHandle {
         // what they commit there is renamed by the same action an agent names it with.
         if id == RENAME && name.is_none() {
             self.rename_in_bar(tab);
+            return Ok(());
+        }
+        // The new strip is the person's, made by the host that keeps who made each strip.
+        if id == MOVE_TO_NEW_STRIP {
+            let mut shared = self.shared.borrow_mut();
+            shared.new_strip_moves.push(tab);
+            shared.wake.wake();
             return Ok(());
         }
         // The share with the workspace is the session's: the row leaves the ask for it, and the

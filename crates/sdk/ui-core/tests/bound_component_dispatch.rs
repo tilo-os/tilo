@@ -499,8 +499,8 @@ thread_local! {
     static QUEUED_CONTROL: RefCell<Option<tilo_actions::ControlInvocation>> = const { RefCell::new(None) };
     static QUEUED_ORIGIN: Cell<tilo_ui::widget::controls::Origin> = const { Cell::new(tilo_ui::widget::controls::Origin::Person) };
     static LEGACY_INVOKED: Cell<bool> = const { Cell::new(false) };
-    static LEGACY_INTENT: RefCell<Option<tilo_ui::record::RecordCheckout>> = const { RefCell::new(None) };
-    static LEGACY_SCOPES: RefCell<Vec<tilo_ui::record::RecordId>> = const { RefCell::new(vec![]) };
+    static LEGACY_INTENT: RefCell<Option<tilo_ui::record::DocumentCheckout>> = const { RefCell::new(None) };
+    static LEGACY_SCOPES: RefCell<Vec<tilo_ui::record::DocumentId>> = const { RefCell::new(vec![]) };
     static LEGACY_MUTABLE: Cell<bool> = const { Cell::new(false) };
     static LEGACY_DOCUMENTS: RefCell<Vec<(String, bool)>> = const { RefCell::new(vec![]) };
     static LEGACY_START: Cell<Option<bool>> = const { Cell::new(None) };
@@ -908,10 +908,10 @@ impl tilo_ui::view::capability::ViewState for Root {
 }
 
 impl tilo_ui::record::capability::RecordScoped for Root {
-    fn record_intent(&self) -> Option<tilo_ui::record::RecordCheckout> {
+    fn record_intent(&self) -> Option<tilo_ui::record::DocumentCheckout> {
         LEGACY_INTENT.with_borrow(Clone::clone)
     }
-    fn set_record_scope(&mut self, record: &tilo_ui::record::RecordId) {
+    fn set_record_scope(&mut self, record: &tilo_ui::record::DocumentId) {
         if LEGACY_MUTABLE.get() {
             LEGACY_SCOPES.with_borrow_mut(|scopes| scopes.push(record.clone()));
         }

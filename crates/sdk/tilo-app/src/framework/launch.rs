@@ -4,9 +4,9 @@
 //! A launch names things beside the app: a file a person opened with it, the
 //! paths or URLs of its command line. The app answers in two steps, each
 //! through a concept it already has. Which record the launch opens is a
-//! [`RecordId`](ui_core::record::RecordId)
+//! [`DocumentId`](ui_core::record::DocumentId)
 //! ([`ResourceApp::launch_record`](super::ResourceApp::launch_record)): the
-//! file's own record ([`RecordId::identify_file`](ui_core::record::RecordId::identify_file)),
+//! file's own record ([`DocumentId::identify_file`](ui_core::record::DocumentId::identify_file)),
 //! a record derived from it, a minted one. What the launch then does in that
 //! record is the resource's actions
 //! ([`ResourceApp::launch`](super::ResourceApp::launch)), submitted through

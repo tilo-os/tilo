@@ -5,6 +5,7 @@ use super::{
     InvocationEnvelope, InvocationOwner, PublishedAction, PublishedSurface, VerifiedActionCaller,
     mpsc,
 };
+use tilo_action_policy::MemberId;
 use tilo_actions::remote::Caller;
 
 /// Borrowed, genuine caller evidence; never constructed from an actor string.
@@ -199,10 +200,10 @@ impl AppBrokerState {
                     return Err("original local caller does not match invocation workspace".into());
                 }
                 let expected = current.agent_id.as_ref().map_or_else(
-                    || super::person_id_for_root(certificate.user_public_key),
-                    |agent| format!("agent:{}", agent.strip_prefix("agent:").unwrap_or(agent)),
+                    || MemberId::person(super::person_id_for_root(certificate.user_public_key)),
+                    |agent| MemberId::agent(super::delegated_agent_name(agent)),
                 );
-                if actor.id == expected && actor.is_agent == current.agent_id.is_some() {
+                if *actor.member() == expected {
                     InvocationOwner::AuthenticatedLocal {
                         root: certificate.user_public_key,
                         device: certificate.device_public_key,
@@ -215,12 +216,12 @@ impl AppBrokerState {
                     // invocation, is decided as that actor and stays
                     // actor-owned: never attested as the connection's.
                     InvocationOwner::Local {
-                        actor: actor.id.clone(),
+                        actor: actor.member().clone(),
                     }
                 }
             }
             None => InvocationOwner::Local {
-                actor: actor.id.clone(),
+                actor: actor.member().clone(),
             },
         })
     }
@@ -289,7 +290,7 @@ impl AppBrokerState {
         // Ordinary durable observations may reconcile effects too. A workspace
         // that confines its agents keeps an agent from observing on a grant
         // alone: only one in an agent session that still goes observes.
-        if actor.is_agent && !actor.is_app() && self.confines_agents(workspace) {
+        if actor.is_agent() && !actor.is_app() && self.confines_agents(workspace) {
             match self.agent_session_of(Some(caller), Some(origin), workspace) {
                 Some(Ok(_)) => {}
                 Some(Err(ended)) => return Err(unavailable(ended)),

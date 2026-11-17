@@ -20,7 +20,7 @@ fn of_shell(shown: &mut Shown, shell: Option<&ShellPresence>) {
     shown.reaction.clone_from(&shell.reaction);
     shown.focus = shell.focus().map(|(app, record)| ShownFocus {
         app: app.to_owned(),
-        record: hex::encode(record),
+        document: hex::encode(record),
     });
     shown.layout = Some(ShownLayout {
         size: [
@@ -32,7 +32,7 @@ fn of_shell(shown: &mut Shown, shell: Option<&ShellPresence>) {
             .iter()
             .map(|window| collab_types::presence::ShownWindow {
                 app: window.app.clone(),
-                record: hex::encode(window.record),
+                document: hex::encode(window.document),
                 rect: window.rect,
                 focused: window.focused,
             })
@@ -73,7 +73,7 @@ pub fn shown(member: &Present, now_ms: f64) -> Shown {
 }
 
 /// This device's own word as a surface here draws it: the roster's row for
-/// the person at this seat, which the board never carries (a reader hears
+/// the person at this device, which the board never carries (a reader hears
 /// everyone but itself).
 #[must_use]
 pub fn own_shown(own: &Own, publisher: Device) -> Shown {

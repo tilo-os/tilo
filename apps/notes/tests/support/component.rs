@@ -4,10 +4,10 @@ pub use canonical::NotebookFixture;
 use std::rc::Rc;
 use ui::application::{AppComponent, HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 use ui::application_view::InstanceViewStore;
-use ui::record::RecordCheckout;
+use ui::record::DocumentCheckout;
 use ui::widget::Edits;
 
-pub fn existing(checkout: &RecordCheckout) -> LaunchTarget {
+pub fn existing(checkout: &DocumentCheckout) -> LaunchTarget {
     LaunchTarget::Record {
         checkout: checkout.clone(),
         reveal: None,
@@ -94,7 +94,7 @@ pub fn runner_inputs() -> ui::application::ComponentRunnerInputs {
         text_renderer: renderer(),
     }
 }
-pub fn notebook(f: &NotebookFixture) -> ui::record::RecordCheckout {
+pub fn notebook(f: &NotebookFixture) -> ui::record::DocumentCheckout {
     f.write_notebook()
 }
 
@@ -126,7 +126,7 @@ pub fn close_widget(widget: &mut dyn ui::Widget) {
 pub fn driver(
     f: &NotebookFixture,
     instance: u64,
-    checkout: &RecordCheckout,
+    checkout: &DocumentCheckout,
 ) -> ui::headless::FrameHarness {
     component_driver(component(f, instance, existing(checkout)))
 }
@@ -210,7 +210,7 @@ pub fn replace_text_through(
     driver: &mut ui::headless::FrameHarness,
     instance: u64,
     f: &NotebookFixture,
-    checkout: &RecordCheckout,
+    checkout: &DocumentCheckout,
     block: &str,
     text: &str,
 ) {
@@ -385,7 +385,7 @@ pub fn kind_at(doc: &automerge::AutoCommit, page: notes::PageId, index: usize) -
     notes::read::page_blocks(doc, page)[index].kind.stored()
 }
 
-pub fn revision(f: &NotebookFixture, checkout: &RecordCheckout) -> u64 {
+pub fn revision(f: &NotebookFixture, checkout: &DocumentCheckout) -> u64 {
     f.records
         .read_history(&checkout.id, |_, history| history.revision())
         .unwrap()

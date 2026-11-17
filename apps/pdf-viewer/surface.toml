@@ -198,7 +198,7 @@ params = [
 id = "add-typed-signature"
 kind = "undoable"
 params = [
-  { name = "signer", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "signer", type = "text", required = true, schema = { type = "string" } },
   { name = "page", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
 ]
 

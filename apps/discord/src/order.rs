@@ -23,7 +23,7 @@
 //! channel among text channels is the same order as Discord's when each
 //! kind is in the same order.
 //!
-//! An arrangement the bridge asked for reaches Discord as one update per
+//! An order the bridge asked for reaches Discord as one update per
 //! channel, so its layout events show it half done first. Until Discord
 //! shows it whole, it is laid over what Discord shows: those events are
 //! its echo, never a move in Discord to copy back ([`in_flight`]).
@@ -40,7 +40,7 @@ use crate::tilo::WorkspaceChat;
 /// Chat `arrange-channels`: the bridged categories, and the bridged
 /// channels each under its category, in Discord's order.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ChatArrangement {
+pub struct ChatOrder {
     pub categories: Vec<String>,
     pub channels: Vec<ChatPlace>,
 }
@@ -100,7 +100,7 @@ impl Spot {
 }
 
 /// Discord's layout as the order reads it: `guild`'s observed channels,
-/// with the arrangements in flight laid over them.
+/// with the orders in flight laid over them.
 struct Seen<'g> {
     guild: &'g Guild,
     overlay: BTreeMap<String, Spot>,
@@ -164,7 +164,7 @@ fn sort_key(id: &str, position: i64) -> (i64, usize, String) {
     (position, id.len(), id.to_owned())
 }
 
-/// The arrangements the bridge asked for that Discord has not shown whole:
+/// The orders the bridge asked for that Discord has not shown whole:
 /// not answered yet, or done and not all of their places seen. A failed
 /// one changed nothing.
 #[must_use]
@@ -211,7 +211,7 @@ fn shown(guild: &Guild, op: &ArrangeOp, channels: &Keyed<DChannel>) -> bool {
     })
 }
 
-/// The outbox entries of arrangements done with: refused or failed, or
+/// The outbox entries of orders done with: refused or failed, or
 /// shown whole in the layout the record holds or in `after`, the one just
 /// reported.
 #[must_use]
@@ -365,7 +365,7 @@ fn ordered(guild: &Guild) -> bool {
 
 /// Whether Discord's order changed between the layout `before` and the
 /// one just reported, `after`: someone moved a bridged channel or
-/// category there. The arrangements the bridge has in flight are laid
+/// category there. The orders the bridge has in flight are laid
 /// over both, so their echo is no move.
 #[must_use]
 pub fn moved_in_discord(before: &Guild, after: &Guild, workspace: &WorkspaceChat) -> bool {
@@ -380,14 +380,10 @@ pub fn moved_in_discord(before: &Guild, after: &Guild, workspace: &WorkspaceChat
 }
 
 /// Chat arranged as Discord lists the bridged categories and channels, by
-/// the layout `layout` with the arrangements `asked` has in flight laid
+/// the layout `layout` with the orders `asked` has in flight laid
 /// over it; none when Chat lists them so already.
 #[must_use]
-pub fn to_chat(
-    layout: &Guild,
-    asked: &Guild,
-    workspace: &WorkspaceChat,
-) -> Option<ChatArrangement> {
+pub fn to_chat(layout: &Guild, asked: &Guild, workspace: &WorkspaceChat) -> Option<ChatOrder> {
     if !ordered(layout) {
         return None;
     }
@@ -426,7 +422,7 @@ pub fn to_chat(
             }
         }
     }
-    Some(ChatArrangement {
+    Some(ChatOrder {
         categories: discord
             .categories
             .iter()
@@ -455,7 +451,7 @@ fn fill(full: Vec<String>, wanted: &[String], bridged: &BTreeSet<String>) -> Vec
     out
 }
 
-/// The arrangement that puts Discord in Chat's order; none when Discord
+/// The order that puts Discord in Chat's order; none when Discord
 /// shows it already, counting what is in flight. Each list that differs is
 /// numbered anew from 0; only what that moves is placed.
 #[must_use]

@@ -204,7 +204,7 @@ mod tests {
         {
             let mut w = workspace();
             let agent = || {
-                BrokerActor::agent("agent:scribe")
+                BrokerActor::agent("scribe")
                     .for_person(OWNER)
                     .session_delegated()
             };

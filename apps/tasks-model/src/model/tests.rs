@@ -5,11 +5,9 @@
     reason = "in a test these are the assertion"
 )]
 
-use tilo_resource::{Id, NonBlank, Replica};
+use tilo_resource::{Id, MemberId, NonBlank, Replica};
 
-use crate::model::{
-    Imported, ImportedMessage, MessageKind, NewIssue, Status, Tracker, agent_assignee, tracker,
-};
+use crate::model::{MessageKind, NewIssue, Status, Tracker, tracker};
 
 const AGENT: &str = "agent:claude";
 
@@ -57,7 +55,10 @@ fn issues_are_numbered_nested_and_never_under_themselves() {
     let state = replica.state().unwrap();
     assert_eq!(state.issues.get(&parent).unwrap().number, 1);
     assert_eq!(state.issues.get(&child).unwrap().number, 2);
-    assert_eq!(state.issues.get(&child).unwrap().author, "ada");
+    assert_eq!(
+        state.issues.get(&child).unwrap().author,
+        Some(MemberId::person("ada"))
+    );
     assert_eq!(state.progress(&parent), (0, 1));
     assert!(
         replica
@@ -160,7 +161,7 @@ fn a_task_is_a_shared_thread_two_people_take_part_in() {
     ada.sync_with(&mut bob).unwrap();
     for replica in [&ada, &bob] {
         let state = replica.state().unwrap();
-        let said: Vec<(String, String)> = state.issues[&issue]
+        let said: Vec<(Option<MemberId>, String)> = state.issues[&issue]
             .comments
             .values()
             .map(|message| (message.author.clone(), message.text.clone()))
@@ -168,8 +169,11 @@ fn a_task_is_a_shared_thread_two_people_take_part_in() {
         assert_eq!(
             said,
             vec![
-                ("ada".to_owned(), "Book the room".to_owned()),
-                ("bob".to_owned(), "I will write the agenda".to_owned()),
+                (Some(MemberId::person("ada")), "Book the room".to_owned()),
+                (
+                    Some(MemberId::person("bob")),
+                    "I will write the agenda".to_owned()
+                ),
             ],
             "both people read both messages, each attributed to its author"
         );
@@ -181,47 +185,6 @@ fn a_task_is_a_shared_thread_two_people_take_part_in() {
             "a message in the thread reads as a comment"
         );
     }
-}
-
-#[test]
-fn imported_tasks_are_one_issue_whoever_imports_them_and_never_come_back() {
-    let task = Imported {
-        task: "t1".into(),
-        title: "Old task".into(),
-        instruction: "Do the old thing".into(),
-        status: Status::Todo,
-        assignee: Some(agent_assignee("claude").0),
-        author: "ada".into(),
-        created_ms: 5,
-        messages: vec![ImportedMessage {
-            author: AGENT.into(),
-            by_agent: true,
-            at_ms: 6,
-            text: "Started".into(),
-        }],
-    };
-    let import = || {
-        Tracker::IMPORT.with(tracker::Import {
-            tasks: vec![task.clone()],
-        })
-    };
-    let mut left = ada();
-    let mut right = left.fork().as_author("grace");
-    left.apply(import()).unwrap();
-    right.apply(import()).unwrap();
-    left.sync_with(&mut right).unwrap();
-    let state = left.state().unwrap();
-    assert_eq!(state.issues.len(), 1);
-    let issue = state.issues.get(&task.issue_id()).unwrap();
-    assert_eq!(issue.assigned_agent(), Some(AGENT));
-    assert!(issue.body.text().contains("Do the old thing"));
-    assert_eq!(issue.comments.len(), 1);
-    left.apply_confirmed(Tracker::DELETE.with(tracker::Delete {
-        issue: task.issue_id(),
-    }))
-    .unwrap();
-    left.apply(import()).unwrap();
-    assert!(left.state().unwrap().issues.is_empty());
 }
 
 #[test]
@@ -351,7 +314,7 @@ fn the_task_is_published_with_its_verbs_and_its_changes_carry_the_task() {
         })
         .expect("the agent's comment is a version with what it did");
     let invoker = spent.invoker.as_ref().expect("the change names its actor");
-    assert_eq!(invoker.acting.by.key(), AGENT);
+    assert_eq!(invoker.acting.member_id(), Some(&MemberId::agent("claude")));
     assert!(invoker.acting.is_agent());
     assert_eq!(invoker.acting.acted_for_person(), Some("ada"));
 }
@@ -414,9 +377,8 @@ fn rename_writes_the_issue_title_and_refuses_a_blank_one() {
             .invoker
             .expect("the change names its actor")
             .acting
-            .by
-            .key(),
-        AGENT
+            .member_id(),
+        Some(&MemberId::agent("claude"))
     );
     assert!(
         agent
@@ -1000,22 +962,22 @@ fn a_moved_issue_shows_its_original_author_and_date_and_keeps_who_moved_it() {
         .unwrap();
     let state = mover.state().unwrap();
     let issue = state.issues.get(&issue_id).unwrap();
-    assert_eq!(issue.shown_author(), "Jane Doe");
+    assert_eq!(issue.origin.as_ref().unwrap().author, "Jane Doe");
     assert_eq!(issue.shown_created_ms(), written);
     assert_eq!(
         issue.url.as_deref(),
         Some("https://tracker.example.com/acme/issues/12")
     );
     // The record still says who moved it, and when.
-    assert_eq!(issue.author, "agent:grant-a8a42b74");
+    assert_eq!(issue.author, Some(MemberId::agent("grant-a8a42b74")));
     assert_eq!(issue.author_name, "Company mover");
     assert_eq!(issue.created_ms, 1_900_000_000_000);
     let comments: Vec<_> = issue.comments.values().collect();
-    assert_eq!(comments[0].shown_author(), "Sam Roe");
+    assert_eq!(comments[0].origin.as_ref().unwrap().author, "Sam Roe");
     assert_eq!(comments[0].shown_at_ms(), written.saturating_add(5_000));
-    assert_eq!(comments[0].author, "agent:grant-a8a42b74");
+    assert_eq!(comments[0].author, Some(MemberId::agent("grant-a8a42b74")));
     // The agent's own message is by its name, never its key.
-    assert_eq!(comments[1].shown_author(), "Company mover");
+    assert_eq!(comments[1].author_name, "Company mover");
 
     assert!(
         mover
@@ -1062,8 +1024,8 @@ fn an_outsider_is_assigned_by_name_until_they_join() {
             .issues
             .get(&issue)
             .unwrap()
-            .assigned_person(),
-        Some("jane")
+            .assigned_member(),
+        Some(MemberId::person("jane"))
     );
     assert!(
         replica
@@ -1141,7 +1103,7 @@ fn priority_is_named_estimate_is_kept_and_files_attach() {
     let attached = read(&replica);
     let (file_id, file) = attached.attachments.iter().next().unwrap();
     assert_eq!(file.name, "trace.log");
-    assert_eq!(file.author, "ada");
+    assert_eq!(file.author, Some(MemberId::person("ada")));
     assert_ne!(file.bytes, tilo_resource::Bytes::default());
     replica
         .apply(Tracker::DETACH.with(tracker::Detach {

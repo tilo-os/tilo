@@ -513,7 +513,7 @@ mod tests {
     ) -> FileVersionV1 {
         FileVersionV1 {
             id: FileVersionId(Uuid::from_u128(id)),
-            record_id: fs_protocol::FileRecordId(Uuid::from_u128(99)),
+            document_id: fs_protocol::FileDocumentId(Uuid::from_u128(99)),
             parents: Vec::new(),
             actor: FileActor {
                 person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),

@@ -1092,7 +1092,7 @@ fn socket_answers(
 
 /// The agents the shell shows at the person's MCP server: the ones whose work the bar carries as a
 /// presence of its own.
-fn seated_agents(session: &Session) -> Vec<String> {
+fn agents_present(session: &Session) -> Vec<String> {
     session
         .read("session:agents")
         .and_then(|agents| agents.get("sessions").and_then(Value::as_array).cloned())
@@ -1165,12 +1165,12 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
         "it reaches this desktop's actions as the agent it was admitted as: {read:?}"
     );
     pump(&mut session, |session| {
-        seated_agents(session)
+        agents_present(session)
             .iter()
             .any(|agent| agent == "Claude Code #1")
     });
     assert_eq!(
-        seated_agents(&session),
+        agents_present(&session),
         ["Claude Code #1".to_owned()],
         "the bar shows the agent the person let in while it works here"
     );

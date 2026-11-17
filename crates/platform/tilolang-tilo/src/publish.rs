@@ -47,14 +47,14 @@ fn said_of(
     words.word(&key, &args, source)
 }
 
-/// Who is invoking: what the API admitted of the caller, for the runtime's principal.
+/// Who is invoking: what the API admitted of the caller, for the runtime's actor.
 ///
 /// An agent is a task of a person under that person's narrowed rights, and the API tells the
 /// host which task (the delegate's id) and for whom. A person at the window is `None`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Caller {
-    /// The authenticated principal: a person, or an agent task's delegate.
-    pub actor: String,
+    /// The authenticated actor: a person, or an agent task's delegate.
+    pub actor: tilolang_runtime::ids::Actor,
     /// Whether the actor is software acting for a person.
     pub agent: bool,
     /// The person an agent acts for.
@@ -65,7 +65,7 @@ impl From<&tilo_actions::ActionInvoker> for Caller {
     /// What the API admitted of `invoker`, as the runtime reads it.
     fn from(invoker: &tilo_actions::ActionInvoker) -> Self {
         Self {
-            actor: invoker.acting.by.key(),
+            actor: invoker.acting.by.clone(),
             agent: !invoker.acting.is_person(),
             on_behalf_of: invoker.acting.acted_for_person().map(str::to_owned),
         }
@@ -2793,7 +2793,7 @@ fn edit_types(meta: &Meta, type_name: &str, planner: &Arc<dyn Planner>) -> [Arc<
                     // agent's, in history and wherever the field shows who changed it.
                     .map(|mut planned| {
                         if let Some(caller) = planner.caller() {
-                            planned.authorship.invoker = caller.actor;
+                            planned.authorship.invoker = Some(caller.actor);
                         }
                         planned
                     })

@@ -81,7 +81,8 @@ const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000a";
 
 /// The id of `person`'s own watch history in a workspace.
 fn watched_record_of(person: &str) -> String {
-    format!("member:{person}:test.watched")
+    collab_types::OwnRecord::of_person(person, "test.watched")
+        .map_or_else(String::new, |own| own.record_id())
 }
 
 fn videos(record: &PersonRecord<Watched>) -> Vec<String> {
@@ -95,6 +96,7 @@ tilo_test_env::scenario! {
 
     phase a_record_of_a_kind_is_the_same_record_on_each_device_of_the_workspace;
     {
+        crate::own_kinds::declare("so.tilo.test-queue", &["test.watched"]);
         let mut laptop = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
         let mut phone = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
         let on_laptop = laptop.person::<Watched>().unwrap();
@@ -141,7 +143,7 @@ tilo_test_env::scenario! {
             })
             .flatten()
             .expect("the watch is a version of the record");
-        assert_eq!(version.invoker.unwrap().acting.by.key(), ada());
+        assert_eq!(version.invoker.unwrap().acting.by, MemberId::person(ada()).into());
         assert!(on_laptop.undo());
         assert_eq!(videos(&on_laptop), ["on-the-phone"]);
         assert!(on_laptop.redo());
@@ -252,7 +254,7 @@ tilo_test_env::scenario! {
     phase an_owner_shown_by_a_host_keeping_the_persons_records_changes_the_hosts_copy;
     {
         use std::rc::Rc;
-        use tilo_app::record::{RecordKind, RecordOwners, person::PersonRecords};
+        use tilo_app::record::{ResourceType, RecordOwners, person::PersonRecords};
 
         let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
         let held = PersonRecords::open(
@@ -266,7 +268,7 @@ tilo_test_env::scenario! {
         owned.invoke(&Saved::SAVE.with("saved-in-the-app")).unwrap();
 
         let kept = held
-            .open_existing_record(RecordKind::new(Saved::KIND))
+            .open_existing_record(ResourceType::new(Saved::KIND))
             .unwrap()
             .expect("the host keeps the record the app changed");
         assert_eq!(

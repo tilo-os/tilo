@@ -17,7 +17,7 @@ mod construction_owner {
     ) -> Result<PreparedComponentInputs, LaunchError> {
         let root = std::path::PathBuf::from(args.value("--fixture-root").unwrap());
         let workspace = args.value("--fixture-workspace").unwrap();
-        let id = crate::record::RecordId::parse(args.value("--fixture-record").unwrap()).unwrap();
+        let id = crate::record::DocumentId::parse(args.value("--fixture-record").unwrap()).unwrap();
         let mut owners = crate::record::RecordOwners::new(root.clone());
         let records = owners
             .open(definition.app_id(), workspace)
@@ -27,7 +27,7 @@ mod construction_owner {
                 .map_err(LaunchError::Restore)?,
         );
         let target = LaunchTarget::Record {
-            checkout: crate::record::RecordCheckout::new(id, definition.record_kind.clone()),
+            checkout: crate::record::DocumentCheckout::new(id, definition.record_kind.clone()),
             reveal: None,
         };
         let context = HostContext::prepare(
@@ -148,7 +148,7 @@ mod construction_owner {
     fn fixture_args(
         environment: &LaunchFixtureEnv,
         workspace: uuid::Uuid,
-        id: &crate::record::RecordId,
+        id: &crate::record::DocumentId,
     ) -> LaunchArgs {
         let raw = vec![
             "app".into(),
@@ -180,12 +180,12 @@ mod construction_owner {
         RETIRED.set(retired);
         let environment = LaunchFixtureEnv::new();
         let workspace = uuid::Uuid::new_v4();
-        let id = crate::record::RecordId::minted();
+        let id = crate::record::DocumentId::minted();
         let mut history = automerge::AutoCommit::new();
         assert!(crate::record::init_scoped(
             &mut history,
             &id,
-            &crate::record::RecordKind::new("probe"),
+            &crate::record::ResourceType::new("probe"),
             &workspace.to_string(),
             Some(&workspace.to_string())
         ));
@@ -198,8 +198,8 @@ mod construction_owner {
             history = automerge::AutoCommit::new();
             crate::record::init_scoped(
                 &mut history,
-                &crate::record::RecordId::minted(),
-                &crate::record::RecordKind::new("probe"),
+                &crate::record::DocumentId::minted(),
+                &crate::record::ResourceType::new("probe"),
                 &workspace.to_string(),
                 Some(&workspace.to_string()),
             );

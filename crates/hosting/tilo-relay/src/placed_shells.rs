@@ -12,7 +12,7 @@
 //!    saying so once, never refused for workspace;
 //! 2. that host's member device, over the device plane as this host's own
 //!    device, to run the command line
-//!    ([`environment_runs`](tilo_actions::remote::environment_runs)), and
+//!    ([`environment_commands`](tilo_actions::remote::environment_commands)), and
 //!    follows the run until it ends.
 //!
 //! The run comes back as the same [`ShellRan`] a local shell gives, and
@@ -32,10 +32,10 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use legacy_vm::hosted::control::{self, ENVIRONMENT, Reply, Request, VmRequest};
 use legacy_vm::hosted::size::VmSize;
 use serde::Deserialize;
-use tilo_actions::remote::environment_runs::{self, CommandRan, RunCommand, RunOutput};
+use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRan, CommandRequest};
 use tilo_actions::remote::{ActionHost, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_actions::{InvocationId, InvocationUpdate};
-use tilo_agent_participant::workspace_actions::{ShellRan, Watching};
+use tilo_agent_session::workspace_actions::{ShellRan, Watching};
 use tilo_peer_state::actions::ActionPlane;
 
 /// The placer's address (`host:port`).
@@ -233,7 +233,7 @@ impl PlacedShells {
         })?;
         let address = member_address(member)?;
         let device = plane.remote(endpoint, &address, workspace);
-        let asked = RunCommand {
+        let asked = CommandRequest {
             session: session.to_owned(),
             command: command.to_owned(),
             agent,
@@ -324,7 +324,7 @@ pub(crate) fn ask_placer(placer: &str, request: &Request) -> Result<Reply, Strin
 /// it there when asked, until it ends.
 fn run_on(
     device: &tilo_peer_state::actions::RemoteDevice,
-    asked: &RunCommand,
+    asked: &CommandRequest,
     watching: Watching<'_>,
 ) -> Result<CommandRan, String> {
     let serde_json::Value::Object(argument) =
@@ -335,7 +335,7 @@ fn run_on(
     let invocation = InvocationId::new();
     let request = InvokeRequest {
         invocation,
-        target: environment_runs::target(),
+        target: environment_commands::target(),
         argument: InvokeArgument::Json(argument),
         context: None,
         confirmation: None,
@@ -394,7 +394,7 @@ fn run_on(
             InvocationUpdate::Accepted { .. } | InvocationUpdate::Progress { .. } => {}
             InvocationUpdate::Item { value, .. } => {
                 if let Some(seen) = watching.seen
-                    && let Ok(printed) = serde_json::from_value::<RunOutput>(value)
+                    && let Ok(printed) = serde_json::from_value::<CommandOutput>(value)
                 {
                     seen(&printed);
                 }

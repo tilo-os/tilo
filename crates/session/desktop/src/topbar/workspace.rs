@@ -78,7 +78,7 @@ impl TopBarChrome {
         let Some(open) = self.tilo_mark else {
             return;
         };
-        // The mark's seat is one bar control: its own lift from its face,
+        // The mark is one bar control: its own lift from its face,
         // painted nowhere by hand.
         ui::widget::BarControlFace::new(&self.control_name(Self::CONTROL_TILO_MARK))
             .open(open)

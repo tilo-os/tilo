@@ -382,10 +382,10 @@ impl<K> crate::record::capability::RecordScoped for ModelView<K>
 where
     K: PartialEq + 'static,
 {
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+    fn record_intent(&self) -> Option<crate::record::DocumentCheckout> {
         crate::record::capability::record_intent(self.child.as_ref())
     }
-    fn set_record_scope(&mut self, record: &crate::record::RecordId) {
+    fn set_record_scope(&mut self, record: &crate::record::DocumentId) {
         crate::record::capability::set_record_scope(self.child.as_mut(), record);
     }
     fn release_record_scope(&mut self) -> Result<(), String> {

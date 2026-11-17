@@ -28,6 +28,10 @@ pub const PROVIDER: &str = "tilo.accounts";
 pub const RESOURCE: &str = "accounts";
 /// The mail accounts the person's vault keeps, as a [`MailAccounts`].
 pub const LIST: &str = "list";
+/// Live: the same accounts as [`LIST`], sent again whenever they change,
+/// until the caller cancels. What a window follows so an account added in
+/// another one reaches it without asking again.
+pub const WATCH: &str = "watch";
 /// Add a mail account, once its server accepted its sign-in
 /// ([`AddMailAccount`]), and answer it as a [`MailAccount`].
 pub const ADD_MAIL: &str = "add-mail";

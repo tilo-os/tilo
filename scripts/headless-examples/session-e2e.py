@@ -20,7 +20,7 @@ unit tests and found only by starting a session by hand:
            Catches the broker, channel-key and workspace lock deadlock (fixed in b33cc45ace7):
            fails on 08636f201d9 (before the fix), where only one of the four apps presented a
            frame.
-  canvas   every window the four apps opened stands on the canvas the arrangement publishes,
+  canvas   every window the four apps opened stands on the canvas the layout publishes,
            and the window in front is drawn inside the screen's frame.
            Catches windows opened on the canvas being placed off screen (off the canvas, or
            outside the frame the person sees). Where the windows land depends on the order the
@@ -527,12 +527,12 @@ def check_open(session: Session) -> dict:
 
 def canvas_places(session: Session) -> dict[str, dict]:
     """Where each window group of the shell stands on its workspace's canvas, by group: the
-    arrangement's own rows, as the shell publishes them (`arrangement.places` of each workspace,
+    layout's own rows, as the shell publishes them (`layout.places` of each workspace,
     a place being where its top-leading corner is and how wide and tall it stands there)."""
     tree = session.state_dump().get("workspace_tree") or {}
     places: dict[str, dict] = {}
     for workspace in tree.get("workspaces") or []:
-        for group, place in (workspace.get("arrangement") or {}).get("places", {}).items():
+        for group, place in (workspace.get("layout") or {}).get("places", {}).items():
             places[str(group)] = place
     return places
 
@@ -546,7 +546,7 @@ def screen_frame(path: Path) -> tuple[int, int]:
 
 
 def check_canvas(session: Session) -> dict:
-    """Every window the four apps opened stands on the canvas the arrangement publishes, and the
+    """Every window the four apps opened stands on the canvas the layout publishes, and the
     window in front — the one the shell shows — is drawn inside the screen's frame.
 
     Catches an opening placed off the canvas (where the person would go looking for it and find
@@ -723,7 +723,7 @@ def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
 
 def check_restart(session: Session) -> dict:
     """Started again on the same state: the four windows come back, each with a frame and a place
-    on the canvas the arrangement publishes."""
+    on the canvas the layout publishes."""
     session.stop()
     began = time.monotonic()
     session.start(install=False)

@@ -335,15 +335,16 @@ pub(crate) fn not_by_app<P: Resource>(action: &P::Action) -> Result<(), String> 
 /// person over the broker), else `me`, the person at this window. Every write
 /// path reads it, so an agent's change is the agent's in whichever record
 /// it lands, and names the person it acts for.
-pub(crate) fn acting(me: &str) -> ActionInvoker {
-    ui_core::invocation_scope::current_invoker().unwrap_or_else(|| ActionInvoker::person(me))
+pub(crate) fn acting(me: &tilo_resource::MemberId) -> ActionInvoker {
+    ui_core::invocation_scope::current_invoker()
+        .unwrap_or_else(|| ActionInvoker::member(me.clone()))
 }
 
 /// Answer one published action of a record: apply it to the record it
 /// names, for the person whose record it is.
 pub(crate) fn answer(
     apis: &[Rc<dyn RecordApi>],
-    me: Option<&str>,
+    me: Option<&tilo_resource::MemberId>,
     payload: &[u8],
 ) -> Result<tilo_actions::ActionOutput, String> {
     let request: RecordAction =
@@ -354,7 +355,10 @@ pub(crate) fn answer(
         .ok_or_else(|| format!("no record `{}` is open here", request.record))?;
     let me = me.ok_or("this window changes no record of anyone's")?;
     let invoker = acting(me);
-    let theirs = invoker.acting.by.key() == me || invoker.acting.acted_for_person() == Some(me);
+    let theirs = invoker.acting.by.member_id() == Some(me)
+        || me
+            .person_id()
+            .is_some_and(|person| invoker.acting.acted_for_person() == Some(person));
     if !theirs {
         return Err(format!(
             "`{}` is {me}'s own; only they change it",
@@ -601,7 +605,7 @@ impl<'a> Records<'a> {
     }
 
     /// The record `P` that every app of the workspace opens and this app keeps
-    /// (`collab_types::WORKSPACE_RECORDS`; the workspace's emoji are
+    /// (`collab_types::WORKSPACE_DOCUMENTS`; the workspace's emoji are
     /// Chat's): opened with the window, so the app's surface lists it and
     /// every member's change to it is decided against that surface.
     pub fn shared_workspace<P: Resource>(&mut self) -> &mut Self {
@@ -630,11 +634,7 @@ impl<'a> Records<'a> {
             let kind = super::section::SectionKind::of(&settings);
             sections.apis.push(match &sections.person {
                 Some(person) => person.open_section(kind),
-                None => Rc::new(super::section::SectionApi::new(
-                    kind,
-                    String::new(),
-                    Vec::new(),
-                )),
+                None => Rc::new(super::section::SectionApi::new(kind, None, Vec::new())),
             });
         }
         let Some(storage) = self.storage else {
@@ -783,13 +783,13 @@ fn record_dispatch<R: Resource, P: Resource>(
     held: &Rc<Held<P>>,
 ) -> Dispatcher<P> {
     let applying = Rc::downgrade(held);
-    let me = parent.me().map(str::to_owned);
+    let me = parent.me().cloned();
     parent.for_record(held.id(), !held.editable(), move |action| {
         let held = applying
             .upgrade()
             .ok_or_else(|| ActionError::Refused("the record is closed".into()))?;
         let me = me
-            .as_deref()
+            .as_ref()
             .ok_or_else(|| ActionError::Refused("nobody edits a past version".into()))?;
         held.apply(action, &acting(me))
     })

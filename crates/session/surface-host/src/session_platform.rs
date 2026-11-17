@@ -4,7 +4,7 @@
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::Platform;
-use tilolang_tilo::runtime::{NameHost, Principal};
+use tilolang_tilo::runtime::{Actor, NameHost};
 
 /// How a package the session runs is put into its host.
 pub(crate) trait Loads {
@@ -72,20 +72,14 @@ impl<L: Loads> Platform for OnSession<L> {
     }
 }
 
-/// The person at the device, as the session names them.
-pub(crate) struct Person(pub(crate) String);
+/// How the session names the actors its views show.
+pub(crate) struct Person;
 
 impl NameHost for Person {
-    fn name(&self, who: &Principal) -> String {
-        if who.0.is_empty() {
-            self.0.clone()
-        } else if who.1.trim().is_empty() {
-            // Named by what the actor is: an app by its own name in the person's language, an
-            // agent by its name, a person by theirs. Never a principal id.
-            ui::history_source::participant_name(&who.0)
-        } else {
-            who.1.clone()
-        }
+    fn name(&self, who: &Actor) -> String {
+        // Named by what the actor is: an app by its own name in the person's language, an agent
+        // by its name, a person by theirs. Never an id.
+        tilolang_tilo::names::installed(who)
     }
 }
 

@@ -7,4 +7,8 @@ pub use record::{Decision, Moderation, Outcome, Report, Reverted, Ruling, modera
 
 pub const KIND: &str = "tilo.moderation";
 
-pub const AGENT: &str = "agent:moderation";
+/// The workspace host's moderation agent.
+#[must_use]
+pub fn agent() -> ui::tilo_resource::MemberId {
+    ui::tilo_resource::MemberId::agent("moderation")
+}

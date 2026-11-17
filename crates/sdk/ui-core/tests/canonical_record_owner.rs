@@ -2,17 +2,17 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc};
 use tilo_ui::record::{
-    self, RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordOpenOutcome, RecordOwners,
-    RecordSaveStatus, RecordStore,
+    self, DocumentCheckout, DocumentId, RecordOpenError, RecordOpenOutcome, RecordOwners,
+    RecordSaveStatus, RecordStore, ResourceType,
 };
 
-fn target() -> RecordCheckout {
-    RecordCheckout::new(RecordId::minted(), RecordKind::new("note"))
+fn target() -> DocumentCheckout {
+    DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"))
 }
 fn directory(
     state_root: &std::path::Path,
     workspace: &str,
-    want: &RecordCheckout,
+    want: &DocumentCheckout,
 ) -> std::path::PathBuf {
     app_state::DocStore::workspace_document_dir_at(
         state_root,
@@ -25,7 +25,7 @@ fn directory(
 /// The record's save status once the store has settled it. `try_flush` and a
 /// repairing open hand durability to the store's thread, which confirms it
 /// a moment later; until then the record reads, correctly, as Saving.
-fn settled(store: &RecordStore, id: &RecordId) -> RecordSaveStatus {
+fn settled(store: &RecordStore, id: &DocumentId) -> RecordSaveStatus {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let status = store.save_status(id).unwrap();
@@ -35,7 +35,7 @@ fn settled(store: &RecordStore, id: &RecordId) -> RecordSaveStatus {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
-fn body(store: &RecordStore, want: &RecordCheckout) -> String {
+fn body(store: &RecordStore, want: &DocumentCheckout) -> String {
     store
         .read(&want.id, |doc| {
             doc.get(ROOT, "body")
@@ -197,12 +197,12 @@ tilo_test_env::scenario! {
                     let want = target();
                     let mut doc = AutoCommit::new();
                     let id = if case == "record" {
-                        RecordId::minted()
+                        DocumentId::minted()
                     } else {
                         want.id.clone()
                     };
                     let kind = if case == "kind" {
-                        RecordKind::new("wrong")
+                        ResourceType::new("wrong")
                     } else {
                         want.kind.clone()
                     };

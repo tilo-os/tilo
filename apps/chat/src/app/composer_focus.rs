@@ -3,6 +3,7 @@
 //! being written.
 
 use super::{ChatApp, Focus, Id};
+use ui::presence::PresenceKey;
 
 impl ChatApp {
     /// The composer for the surface the user is typing in.
@@ -36,15 +37,22 @@ impl ChatApp {
             .set_focus(self.host_focused && self.editing.is_some());
     }
 
-    /// Presence scope of the composer of a channel or thread, so the others
-    /// there see who is writing. The draft itself is each writer's own.
-    pub(crate) fn draft_presence_key(draft_key: &str) -> ui::presence::PresenceKey {
-        ui::presence::PresenceKey::Widget {
-            path: vec![
-                ui::presence::PathSegment::Field("chat_draft".into()),
-                ui::presence::PathSegment::Field(draft_key.to_owned()),
-            ],
-        }
+    /// Where a composer on `focus` writes, as Chat publishes it: the conversation, or the message
+    /// a thread answers. What a draft there is said under, so the others reading it see who is
+    /// typing.
+    pub(crate) fn composing_key(&self, focus: Focus) -> Option<PresenceKey> {
+        let (id, kind) = match focus {
+            Focus::Main => (
+                crate::views::channel_address(&self.channel(&self.active_channel)?.id),
+                <crate::views::Channel as tilo_view::ViewResource>::KIND.to_owned(),
+            ),
+            Focus::Thread => {
+                let resource =
+                    crate::views::Channel::message_resource(self.thread_open.as_deref()?)?;
+                (resource.id, resource.ty)
+            }
+        };
+        Some(PresenceKey::resource("so.tilo.chat", id, kind))
     }
 
     /// Presence scope of a voice channel: who is in its call.
@@ -80,32 +88,6 @@ impl ChatApp {
             }
         }
         people
-    }
-
-    /// The focused composer's scope while the person is writing something
-    /// in it (not an inline edit or rename): that they are, never what or
-    /// where in it.
-    pub(crate) fn composer_presence(
-        &self,
-    ) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
-        if !self.host_focused
-            || self.editing.is_some()
-            || !self.can_participate()
-            || self.direct_person().is_some()
-        {
-            return None;
-        }
-        let (composer, key) = match self.focus {
-            Focus::Thread => (&self.composer_thread, self.thread_draft_key()?),
-            Focus::Main => (&self.composer_main, self.active_channel.clone()),
-        };
-        if key.is_empty() || composer.value().trim().is_empty() {
-            return None;
-        }
-        Some((
-            Self::draft_presence_key(&key),
-            ui::PresencePayload::Caret { pos: 0 },
-        ))
     }
 
     pub(crate) fn thread_draft_key(&self) -> Option<String> {

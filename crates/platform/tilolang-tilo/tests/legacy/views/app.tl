@@ -17,7 +17,7 @@ type Answer {
     source: Text
     /// Who wrote the block: the agent task that answered with it, or a person. The host records
     /// it, so it cannot be claimed.
-    author: Principal
+    author: Actor
     /// Whether the person kept it among their views.
     kept: Bool = false
 

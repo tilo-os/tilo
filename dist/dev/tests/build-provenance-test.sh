@@ -54,7 +54,8 @@ if "$helper" verify "$build" 2>"$work/why"; then
     fail "a build made before a source change is verified"
 fi
 grep -q "not this tree" "$work/why" || fail "the refusal does not say another tree made it: $(cat "$work/why")"
-pass "a build another tree made is refused, by name"
+grep -q "differs: ./main.rs\|differs: main.rs" "$work/why" || fail "the refusal does not name the changed file: $(cat "$work/why")"
+pass "a build another tree made is refused, by name and the file that changed"
 # The build's own record is unchanged: the refusal is the tree's, not a rewrite.
 grep -q "digest $before" "$build/.tilo-build-provenance" \
     || fail "verify rewrote the build's record"
@@ -79,11 +80,16 @@ printf 'fn main() {}\n' > "$plain/main.rs"
     || fail "a tree outside git does not verify"
 shown=$("$plain/dist/dev/build-provenance.sh" show "$plain/target/nested-session")
 [[ $shown == *"outside git"* ]] || fail "show does not say the tree is outside git: $shown"
+# Bytecode a script of the tree left beside itself after the build is no source change.
+mkdir -p "$plain/tools/__pycache__"
+printf 'bytecode' > "$plain/tools/__pycache__/tool.cpython-314.pyc"
+"$plain/dist/dev/build-provenance.sh" verify "$plain/target/nested-session" \
+    || fail "Python bytecode left in a tree outside git refuses its build"
 printf 'fn main() { println!("changed"); }\n' > "$plain/main.rs"
 if "$plain/dist/dev/build-provenance.sh" verify "$plain/target/nested-session" 2>/dev/null; then
     fail "a tree outside git verifies after a source change"
 fi
-pass "a tree outside git records and verifies by its sources"
+pass "a tree outside git records and verifies by its sources, not its Python bytecode"
 
 # Deleting a tracked file is a change: the digest follows the working tree, not the index.
 git -C "$tree" rm -q main.rs

@@ -11,10 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
 
 use crate::files::{
-    ContentRevisionV1, FileConflictV1, FileHistoryPageV1, FileHistoryReadErrorV1 as Error,
-    FileHistoryReadQueryV1 as Query, FileHistoryReadResponseV1, FileHistoryReadScopeV1 as Scope,
-    FileHistoryReadValueV1 as ReadValue, FileRecordId, FileVersionAttributionV1, FileVersionId,
-    FileVersionV1, MAX_HISTORY_PAGE_VERSIONS, MAX_HISTORY_READ_BYTES,
+    ContentRevisionV1, FileConflictV1, FileDocumentId, FileHistoryPageV1,
+    FileHistoryReadErrorV1 as Error, FileHistoryReadQueryV1 as Query, FileHistoryReadResponseV1,
+    FileHistoryReadScopeV1 as Scope, FileHistoryReadValueV1 as ReadValue, FileVersionAttributionV1,
+    FileVersionId, FileVersionV1, MAX_HISTORY_PAGE_VERSIONS, MAX_HISTORY_READ_BYTES,
 };
 use crate::projection::{
     HISTORY_PROJECTION_VERSION, HistoryProjectionV1, MAX_PROJECTED_CONFLICTS,
@@ -33,7 +33,7 @@ pub const ATTRIBUTIONS_KEY: &str = "attributions";
 /// A record's immutable versions, heads and conflicts, as one bounded copy.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct RecordHistorySnapshot {
-    pub record_id: FileRecordId,
+    pub document_id: FileDocumentId,
     pub versions: Vec<FileVersionV1>,
     pub heads: Vec<FileVersionId>,
     pub conflicts: Vec<FileConflictV1>,
@@ -46,7 +46,7 @@ impl RecordHistorySnapshot {
         let conflicts_start = self.conflicts.len().saturating_sub(MAX_PROJECTED_CONFLICTS);
         HistoryProjectionV1 {
             schema_version: HISTORY_PROJECTION_VERSION,
-            record_id: self.record_id,
+            document_id: self.document_id,
             total_versions,
             versions_truncated: versions_start > 0,
             heads: self.heads,
@@ -72,9 +72,9 @@ impl RecordHistorySnapshot {
 #[must_use]
 pub fn latest<D: ReadDoc>(
     doc: &D,
-    record_id: FileRecordId,
+    document_id: FileDocumentId,
 ) -> Option<(FileVersionV1, Option<FileVersionAttributionV1>)> {
-    let versions = record_versions(doc, record_id);
+    let versions = record_versions(doc, document_id);
     let heads = computed_heads(&versions);
     let version = versions.into_values().max_by_key(|version| {
         (
@@ -83,18 +83,18 @@ pub fn latest<D: ReadDoc>(
             version.id,
         )
     })?;
-    let attribution = record_attributions(doc, record_id).remove(&version.id);
+    let attribution = record_attributions(doc, document_id).remove(&version.id);
     Some((version, attribution))
 }
 
 /// Every record the document holds a history of.
 #[must_use]
-pub fn records<D: ReadDoc>(doc: &D) -> Vec<FileRecordId> {
+pub fn records<D: ReadDoc>(doc: &D) -> Vec<FileDocumentId> {
     let mut records = BTreeSet::new();
     for root in roots(doc) {
         for key in doc.keys(&root) {
             if let Ok(id) = uuid::Uuid::parse_str(&key) {
-                records.insert(FileRecordId(id));
+                records.insert(FileDocumentId(id));
             }
         }
     }
@@ -105,10 +105,10 @@ pub fn records<D: ReadDoc>(doc: &D) -> Vec<FileRecordId> {
 #[must_use]
 pub fn record_versions<D: ReadDoc>(
     doc: &D,
-    record_id: FileRecordId,
+    document_id: FileDocumentId,
 ) -> BTreeMap<FileVersionId, FileVersionV1> {
     let mut versions = BTreeMap::new();
-    for record in record_maps(doc, record_id) {
+    for record in record_maps(doc, document_id) {
         for map in sub_maps(doc, &record, VERSIONS_KEY) {
             for key in doc.keys(&map) {
                 let Some(bytes) = scalar_bytes(doc.get(&map, &key).ok().flatten()) else {
@@ -130,10 +130,10 @@ pub fn record_versions<D: ReadDoc>(
 #[must_use]
 pub fn record_conflicts<D: ReadDoc>(
     doc: &D,
-    record_id: FileRecordId,
+    document_id: FileDocumentId,
 ) -> BTreeMap<uuid::Uuid, FileConflictV1> {
     let mut conflicts = BTreeMap::new();
-    for record in record_maps(doc, record_id) {
+    for record in record_maps(doc, document_id) {
         for map in sub_maps(doc, &record, CONFLICTS_KEY) {
             for key in doc.keys(&map) {
                 let Some(bytes) = scalar_bytes(doc.get(&map, &key).ok().flatten()) else {
@@ -156,10 +156,10 @@ pub fn record_conflicts<D: ReadDoc>(
 #[must_use]
 pub fn record_attributions<D: ReadDoc>(
     doc: &D,
-    record_id: FileRecordId,
+    document_id: FileDocumentId,
 ) -> BTreeMap<FileVersionId, FileVersionAttributionV1> {
     let mut attributions = BTreeMap::new();
-    for record in record_maps(doc, record_id) {
+    for record in record_maps(doc, document_id) {
         for map in sub_maps(doc, &record, ATTRIBUTIONS_KEY) {
             for key in doc.keys(&map) {
                 let Some(bytes) = scalar_bytes(doc.get(&map, &key).ok().flatten()) else {
@@ -181,10 +181,10 @@ pub fn record_attributions<D: ReadDoc>(
 #[must_use]
 pub fn record_history<D: ReadDoc>(
     doc: &D,
-    record_id: FileRecordId,
+    document_id: FileDocumentId,
 ) -> Option<RecordHistorySnapshot> {
-    let versions = record_versions(doc, record_id);
-    let conflicts = record_conflicts(doc, record_id);
+    let versions = record_versions(doc, document_id);
+    let conflicts = record_conflicts(doc, document_id);
     if versions.is_empty() && conflicts.is_empty() {
         return None;
     }
@@ -192,7 +192,7 @@ pub fn record_history<D: ReadDoc>(
     let mut versions: Vec<_> = versions.into_values().collect();
     versions.sort_by_key(|version| (version.timestamp_ms, version.id));
     Some(RecordHistorySnapshot {
-        record_id,
+        document_id,
         versions,
         heads: heads.into_iter().collect(),
         conflicts: conflicts.into_values().collect(),
@@ -204,22 +204,22 @@ pub fn record_history<D: ReadDoc>(
 #[must_use]
 pub fn record_history_projection<D: ReadDoc>(
     doc: &D,
-    record_id: FileRecordId,
+    document_id: FileDocumentId,
 ) -> Option<HistoryProjectionV1> {
-    let mut projection = record_history(doc, record_id).map(RecordHistorySnapshot::projection)?;
+    let mut projection = record_history(doc, document_id).map(RecordHistorySnapshot::projection)?;
     let shown: std::collections::HashSet<FileVersionId> = projection
         .versions
         .iter()
         .map(|version| version.id)
         .collect();
-    projection.attributions = record_attributions(doc, record_id)
+    projection.attributions = record_attributions(doc, document_id)
         .into_values()
         .filter(|attributed| shown.contains(&attributed.version_id))
         .collect();
     Some(projection)
 }
 
-/// The versions `record_id` descends from having no child: its current states.
+/// The versions `document_id` descends from having no child: its current states.
 #[must_use]
 pub fn computed_heads(
     versions: &BTreeMap<FileVersionId, FileVersionV1>,
@@ -370,12 +370,12 @@ fn sub_maps<D: ReadDoc>(doc: &D, parent: &ObjId, key: &str) -> Vec<ObjId> {
         .collect()
 }
 
-/// Every map `record_id`'s history has: two devices that both wrote it each made
+/// Every map `document_id`'s history has: two devices that both wrote it each made
 /// one.
-fn record_maps<D: ReadDoc>(doc: &D, record_id: FileRecordId) -> Vec<ObjId> {
+fn record_maps<D: ReadDoc>(doc: &D, document_id: FileDocumentId) -> Vec<ObjId> {
     let mut maps = Vec::new();
     for root in roots(doc) {
-        maps.extend(sub_maps(doc, &root, &record_id.0.to_string()));
+        maps.extend(sub_maps(doc, &root, &document_id.0.to_string()));
     }
     maps
 }
@@ -386,10 +386,10 @@ mod tests {
     use crate::{ContentHash, Ed25519PublicKey, FileActor, FileProvenance};
     use automerge::transaction::Transactable as _;
 
-    fn version(record: FileRecordId, id: u128, parent: Option<FileVersionId>) -> FileVersionV1 {
+    fn version(record: FileDocumentId, id: u128, parent: Option<FileVersionId>) -> FileVersionV1 {
         FileVersionV1 {
             id: FileVersionId(uuid::Uuid::from_u128(id)),
-            record_id: record,
+            document_id: record,
             parents: parent.into_iter().collect(),
             actor: FileActor {
                 person: Ed25519PublicKey::from_bytes([1; 32]),
@@ -414,10 +414,10 @@ mod tests {
                 .put_object(automerge::ROOT, HISTORY_KEY, ObjType::Map)
                 .unwrap(),
         };
-        let record = match doc.get(&root, version.record_id.0.to_string()) {
+        let record = match doc.get(&root, version.document_id.0.to_string()) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
             _ => doc
-                .put_object(&root, version.record_id.0.to_string(), ObjType::Map)
+                .put_object(&root, version.document_id.0.to_string(), ObjType::Map)
                 .unwrap(),
         };
         let versions = match doc.get(&record, VERSIONS_KEY) {
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn the_latest_version_is_the_head_the_tree_holds_and_carries_its_writer() {
-        let record = FileRecordId::new();
+        let record = FileDocumentId::new();
         let mut doc = automerge::AutoCommit::new();
         let first = version(record, 1, None);
         write(&mut doc, &first, None);
@@ -485,7 +485,7 @@ mod tests {
     #[test]
     fn a_record_the_document_holds_no_version_of_reads_as_none() {
         let doc = automerge::AutoCommit::new();
-        let record = FileRecordId::new();
+        let record = FileDocumentId::new();
         assert!(latest(&doc, record).is_none());
         assert!(record_history(&doc, record).is_none());
     }

@@ -103,7 +103,7 @@ The directory layout is the one the wrapper this image replaces left on the
 volume: a migrated deployment keeps its workspace, its identity and its bot
 state.
 
-The arrangement is the workspace's shared desktop record, so the host has no
+The layout is the workspace's shared desktop record, so the host has no
 layout flag. `TILO_WORKSPACES_LAYOUT` is still read and not passed on, so a
 deployment that still names one (eu1 does) starts unchanged.
 

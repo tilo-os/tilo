@@ -19,7 +19,7 @@ sources = [
     "crates/sdk/ui-core/src/window_share.rs",
     "crates/sdk/ui-core/src/widget/toast.rs",
     "crates/sdk/ui-core/src/widget/find_bar.rs",
-    "crates/sdk/ui-core/src/window_channel.rs",
+    "crates/sdk/ui-core/src/window_link.rs",
     "crates/sdk/ui-core/src/search/request.rs",
     "crates/sdk/ui-core/src/action_locus.rs",
     "crates/sdk/ui-core/src/shared_selection.rs",
@@ -63,6 +63,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "ActionResource.kind" = "String"
 "ActionResource.label" = "String"
 "Actor" = "enum external"
+"Actor::app" = "tuple(AppId)"
 "Actor::automation" = "tuple(AutomationId)"
 "Actor::member" = "tuple(MemberId)"
 "AdoptedQuery" = "struct"

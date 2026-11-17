@@ -32,8 +32,8 @@ use durable_store::{Revision, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
 
 use super::{
-    FORMERLY, ObjectAt, RecordCheckout, RecordId, RecordKind, RecordOpenError, identity, meta_obj,
-    meta_ro, object_at, validate_identity,
+    DocumentCheckout, DocumentId, FORMERLY, ObjectAt, RecordOpenError, ResourceType, identity,
+    meta_obj, meta_ro, object_at, validate_identity,
 };
 
 pub(super) use ::collaboration::record::retirement::RETIRED;
@@ -96,7 +96,7 @@ pub fn stamp_retired(doc: &mut AutoCommit, why: &Retirement) -> Result<(), Trans
     if let Retirement::Moved(Some(successor)) = why {
         doc.put(&stamp, "workspace", successor.workspace.as_str())
             .map_err(automerge)?;
-        doc.put(&stamp, "record", successor.record.as_str())
+        doc.put(&stamp, "document", successor.document.as_str())
             .map_err(automerge)?;
         doc.put(&stamp, "by", successor.by.as_str())
             .map_err(automerge)?;
@@ -111,11 +111,11 @@ pub fn stamp_retired(doc: &mut AutoCommit, why: &Retirement) -> Result<(), Trans
 /// What a transfer takes out of the source workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Origin {
-    Record(RecordCheckout),
+    Record(DocumentCheckout),
     /// The document an app keeps for itself in a workspace, its record index.
     /// It has no record identity of its own there, and arrives in the
     /// destination as a record of this kind.
-    AppDocument(RecordKind),
+    AppDocument(ResourceType),
 }
 
 impl Origin {
@@ -142,7 +142,7 @@ impl Origin {
     }
 
     /// The kind the document has, or takes once it arrives as a record.
-    pub fn kind(&self) -> &RecordKind {
+    pub fn kind(&self) -> &ResourceType {
         match self {
             Self::Record(checkout) => &checkout.kind,
             Self::AppDocument(kind) => kind,
@@ -150,7 +150,7 @@ impl Origin {
     }
 }
 
-fn key(package: &str, workspace: &str, id: &RecordId) -> Result<StorageKey, TransferError> {
+fn key(package: &str, workspace: &str, id: &DocumentId) -> Result<StorageKey, TransferError> {
     if id.is_package_primary() {
         return Err(TransferError::NotTransferable(
             "a workspace's own package document never leaves its workspace",
@@ -207,7 +207,7 @@ pub fn read_by_id(
     store: &Rc<dyn DurableStore>,
     package: &str,
     workspace: &str,
-    id: &RecordId,
+    id: &DocumentId,
 ) -> Result<AutoCommit, TransferError> {
     let doc = decode(store, &key(package, workspace, id)?)?;
     let checkout = identity(&doc)
@@ -227,9 +227,9 @@ pub fn adopt_fetched(
     store: &Rc<dyn DurableStore>,
     package: &str,
     workspace: &str,
-    id: &RecordId,
+    id: &DocumentId,
     bytes: &[u8],
-) -> Result<(RecordCheckout, Option<Landing>), TransferError> {
+) -> Result<(DocumentCheckout, Option<Landing>), TransferError> {
     let label = std::path::PathBuf::from(format!("fetched {id}"));
     let (mut doc, _) = app_state::decode_canonical(bytes, false, &label)?;
     let checkout = identity(&doc)
@@ -271,16 +271,16 @@ const IMPORTABLE_META: [&str; 7] = [
 pub fn validate_import(
     bytes: &[u8],
     workspace: &str,
-    id: &RecordId,
+    id: &DocumentId,
     max_bytes: usize,
-) -> Result<(AutoCommit, RecordCheckout), TransferError> {
+) -> Result<(AutoCommit, DocumentCheckout), TransferError> {
     if bytes.len() > max_bytes {
         return Err(TransferError::NotTransferable("the document is too large"));
     }
     let minted = id.as_str().strip_prefix("uuid:").is_some_and(|text| {
         uuid::Uuid::parse_str(text).is_ok_and(|uuid| uuid.hyphenated().to_string() == text)
     });
-    if !minted || RecordId::parse(id.as_str()).as_ref() != Some(id) {
+    if !minted || DocumentId::parse(id.as_str()).as_ref() != Some(id) {
         return Err(TransferError::NotTransferable(
             "a document joins a workspace only as a newly minted record",
         ));
@@ -362,7 +362,7 @@ pub fn rehome(
     origin: &Origin,
     from_workspace: &str,
     to_workspace: &str,
-    target: &RecordId,
+    target: &DocumentId,
 ) -> Result<AutoCommit, TransferError> {
     if target.is_package_primary()
         || matches!(origin, Origin::Record(checkout) if checkout.id.is_package_primary())
@@ -371,7 +371,7 @@ pub fn rehome(
             "a workspace's own package document never leaves its workspace",
         ));
     }
-    if RecordId::parse(target.as_str()).as_ref() != Some(target)
+    if DocumentId::parse(target.as_str()).as_ref() != Some(target)
         || matches!(origin, Origin::Record(checkout) if &checkout.id == target)
     {
         return Err(RecordOpenError::IdentityMismatch.into());
@@ -414,7 +414,7 @@ pub fn rehome(
         CommitOptions::default()
             .with_message(tilo_actions::FrameworkChange::Transfer.change_message()),
     );
-    let arrived = RecordCheckout::new(target.clone(), origin.kind().clone());
+    let arrived = DocumentCheckout::new(target.clone(), origin.kind().clone());
     validate_identity(&doc, &arrived, to_workspace)?;
     Ok(doc)
 }
@@ -459,7 +459,7 @@ pub fn branch(source: &AutoCommit, to_workspace: &str) -> Result<AutoCommit, Tra
 }
 
 /// `source` minted again in `to_workspace`, when it is a record any app makes from its kind alone
-/// where it holds none ([`collab_types::workspace_record_id`]: the workspace's emoji, its agents)
+/// where it holds none ([`collab_types::workspace_document_id`]: the workspace's emoji, its agents)
 /// and its genesis made it: its whole history, but with the genesis an app of the branch makes
 /// ([`super::genesis`]) as its first change, and every change after it built on that one. An app of
 /// the branch that opens the record before the branch's copy reached it makes the same genesis, so
@@ -473,7 +473,7 @@ fn minted_again(
     let Some(checkout) = identity(source) else {
         return Ok(None);
     };
-    if checkout.id.as_str() != collab_types::workspace_record_id(checkout.kind.as_str()) {
+    if checkout.id.as_str() != collab_types::workspace_document_id(checkout.kind.as_str()) {
         return Ok(None);
     }
     let Some(home) = super::home(source).filter(|home| home != to_workspace) else {
@@ -662,7 +662,7 @@ pub fn install(
     package: &str,
     workspace: &str,
     doc: &mut AutoCommit,
-) -> Result<(RecordCheckout, Landing), TransferError> {
+) -> Result<(DocumentCheckout, Landing), TransferError> {
     let checkout = identity(doc).ok_or(RecordOpenError::IdentityMismatch)?;
     install_as(store, package, workspace, checkout, doc)
 }
@@ -673,9 +673,9 @@ pub fn install_as(
     store: &Rc<dyn DurableStore>,
     package: &str,
     workspace: &str,
-    checkout: RecordCheckout,
+    checkout: DocumentCheckout,
     doc: &mut AutoCommit,
-) -> Result<(RecordCheckout, Landing), TransferError> {
+) -> Result<(DocumentCheckout, Landing), TransferError> {
     validate_identity(doc, &checkout, workspace)?;
     let key = key(package, workspace, &checkout.id)?;
     let _writer = writer(store, &key)?;
@@ -690,7 +690,7 @@ pub fn install_as(
 }
 
 /// Put `doc` in place as the workspace's own document of `package` in `workspace`
-/// (the [package-primary](RecordId::package_primary) record), as an earlier
+/// (the [package-primary](DocumentId::package_primary) record), as an earlier
 /// version of the app left it on this device: how a workspace written before a
 /// change of the app's storage is opened in a test. Refuses to overwrite
 /// one.
@@ -729,7 +729,7 @@ pub fn catch_up(
     store: &Rc<dyn DurableStore>,
     package: &str,
     workspace: &str,
-    target: &RecordCheckout,
+    target: &DocumentCheckout,
     source: &AutoCommit,
 ) -> Result<(usize, Option<Landing>), TransferError> {
     let key = key(package, workspace, &target.id)?;
@@ -744,7 +744,7 @@ fn merge_into(
     store: &Rc<dyn DurableStore>,
     key: &StorageKey,
     mut doc: AutoCommit,
-    target: &RecordCheckout,
+    target: &DocumentCheckout,
     workspace: &str,
     source: &AutoCommit,
 ) -> Result<(usize, Option<Landing>), TransferError> {
@@ -786,7 +786,7 @@ pub fn retire(
 }
 
 /// The origin ids a transferred record came from, oldest first.
-pub fn provenance(doc: &AutoCommit) -> Vec<RecordId> {
+pub fn provenance(doc: &AutoCommit) -> Vec<DocumentId> {
     let Some(meta) = meta_ro(doc) else {
         return Vec::new();
     };
@@ -796,7 +796,7 @@ pub fn provenance(doc: &AutoCommit) -> Vec<RecordId> {
     (0..doc.length(&list))
         .filter_map(|index| match doc.get(&list, index) {
             Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                ScalarValue::Str(id) => RecordId::parse(id),
+                ScalarValue::Str(id) => DocumentId::parse(id),
                 _ => None,
             },
             _ => None,
@@ -828,7 +828,7 @@ mod tests {
     fn moved() -> Retirement {
         Retirement::Moved(Some(Successor {
             workspace: TO.into(),
-            record: "uuid:successor".into(),
+            document: "uuid:successor".into(),
             by: "person:ada".into(),
         }))
     }
@@ -878,10 +878,10 @@ mod tests {
         }
     }
 
-    fn seeded(root: &std::path::Path) -> (RecordCheckout, RecordStore) {
-        let checkout = RecordCheckout::new(
-            RecordId::derived("default", &RecordId::for_tab(0)),
-            RecordKind::new("transfer.test"),
+    fn seeded(root: &std::path::Path) -> (DocumentCheckout, RecordStore) {
+        let checkout = DocumentCheckout::new(
+            DocumentId::derived("default", &DocumentId::for_tab(0)),
+            ResourceType::new("transfer.test"),
         );
         let records = RecordOwners::new(root.to_path_buf())
             .open(PACKAGE, FROM)
@@ -909,7 +909,7 @@ mod tests {
             // The old app still holds the record: reading it needs no writer.
             let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
             let known = snapshot.clone().get_heads();
-            let target = RecordId::minted();
+            let target = DocumentId::minted();
             let mut arrived = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
             let (installed, _) = install(&store, PACKAGE, TO, &mut arrived).unwrap();
             assert_eq!(installed.id, target);
@@ -987,7 +987,7 @@ mod tests {
                 &Origin::Record(checkout.clone()),
             )
             .unwrap();
-            let target = RecordId::minted();
+            let target = DocumentId::minted();
             let arriving = |doc: &AutoCommit| doc.clone().save();
             let mut rehomed = rehome(
                 &source,
@@ -1012,10 +1012,10 @@ mod tests {
                 "scoped to the workspace it joins"
             );
             assert!(
-                validate_import(&bytes, TO, &RecordId::minted(), bytes.len()).is_err(),
+                validate_import(&bytes, TO, &DocumentId::minted(), bytes.len()).is_err(),
                 "it is only the record it claims"
             );
-            let derived = RecordId::derived("notes", &target);
+            let derived = DocumentId::derived("notes", &target);
             let under_derived = rehome(
                 &source,
                 &Origin::Record(checkout.clone()),
@@ -1033,8 +1033,8 @@ mod tests {
             let mut referring = rehomed.clone();
             assert!(crate::record::add_reference(
                 &mut referring,
-                &crate::record::RecordRef {
-                    target: RecordId::minted(),
+                &crate::record::DocumentRef {
+                    target: DocumentId::minted(),
                     relation: "cites".into(),
                 }
             ));
@@ -1077,10 +1077,10 @@ mod tests {
         // A record's workspace is imported as the document names it. A key the import does not know
         // is refused.
         {
-            let kind = RecordKind::new("transfer.test");
+            let kind = ResourceType::new("transfer.test");
             {
                 let key = crate::record::WORKSPACE;
-                let target = RecordId::minted();
+                let target = DocumentId::minted();
                 let mut doc = AutoCommit::new();
                 doc.put(ROOT, "body", "a draft").unwrap();
                 assert!(crate::record::init_scoped(
@@ -1121,7 +1121,7 @@ mod tests {
             let here_dir = tempfile::tempdir().unwrap();
             let here = store(here_dir.path());
             assert!(
-                adopt_fetched(&here, PACKAGE, FROM, &RecordId::minted(), &bytes).is_err(),
+                adopt_fetched(&here, PACKAGE, FROM, &DocumentId::minted(), &bytes).is_err(),
                 "bytes offered as another record are refused"
             );
             assert!(
@@ -1170,7 +1170,7 @@ mod tests {
             drop(writer);
             let origin = Origin::Record(checkout.clone());
             let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
-            let mut arrived = rehome(&snapshot, &origin, FROM, TO, &RecordId::minted()).unwrap();
+            let mut arrived = rehome(&snapshot, &origin, FROM, TO, &DocumentId::minted()).unwrap();
             let (installed, landing) = {
                 let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
                 tilo_test_env::wait_for("the store's thread to open the record", || {
@@ -1210,14 +1210,14 @@ mod tests {
             let origin = Origin::Record(checkout.clone());
             let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
             assert!(matches!(
-                rehome(&snapshot, &origin, FROM, FROM, &RecordId::minted()),
+                rehome(&snapshot, &origin, FROM, FROM, &DocumentId::minted()),
                 Err(TransferError::NotTransferable(_))
             ));
             assert!(
-                rehome(&snapshot, &origin, TO, FROM, &RecordId::minted()).is_err(),
+                rehome(&snapshot, &origin, TO, FROM, &DocumentId::minted()).is_err(),
                 "a record is only read from the workspace it is scoped to"
             );
-            let target = RecordId::minted();
+            let target = DocumentId::minted();
             let mut first = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
             let _ = install(&store, PACKAGE, TO, &mut first).unwrap();
             let mut again = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
@@ -1225,7 +1225,7 @@ mod tests {
                 install(&store, PACKAGE, TO, &mut again),
                 Err(TransferError::Open(RecordOpenError::AlreadyExists))
             ));
-            let foreign = Origin::Record(RecordCheckout::new(target, checkout.kind.clone()));
+            let foreign = Origin::Record(DocumentCheckout::new(target, checkout.kind.clone()));
             assert!(
                 read(&store, PACKAGE, FROM, &foreign).is_err(),
                 "a destination id means nothing in the source workspace"
@@ -1242,9 +1242,9 @@ mod tests {
             doc.put(ROOT, "body", "kept in the app document").unwrap();
             app.save(&mut doc).unwrap();
 
-            let origin = Origin::AppDocument(RecordKind::new("tilo.app-document"));
+            let origin = Origin::AppDocument(ResourceType::new("tilo.app-document"));
             let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
-            let target = RecordId::minted();
+            let target = DocumentId::minted();
             let mut arrived = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
             let (installed, _) = install(&store, PACKAGE, TO, &mut arrived).unwrap();
             assert_eq!(installed.kind.as_str(), "tilo.app-document");
@@ -1278,12 +1278,12 @@ mod tests {
         // branch as its workspace, and writes as a writer of its own: the source and the copy go on
         // apart.
         {
-            let id = RecordId::minted();
+            let id = DocumentId::minted();
             let mut source = AutoCommit::new();
             assert!(crate::record::init_scoped(
                 &mut source,
                 &id,
-                &RecordKind::new("transfer.test"),
+                &ResourceType::new("transfer.test"),
                 FROM,
                 Some(FROM),
             ));

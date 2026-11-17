@@ -31,6 +31,7 @@ sources = [
     "crates/collab/collab-types/src/role.rs",
     "crates/collab/collab-types/src/member.rs",
     "crates/collab/action-policy/src/member.rs",
+    "crates/platform/tilo-app-id/src/lib.rs",
     "crates/collab/action-policy/src/grant.rs",
     "crates/collab/collab-types/src/presence/hue.rs",
     "crates/collab/actions/src/key.rs",
@@ -74,6 +75,7 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "ActionKey.app" = "#0 String"
 "ActionKey.kind" = "#1 String"
 "Actor" = "enum external"
+"Actor::app" = "#2 tuple(AppId)"
 "Actor::automation" = "#1 tuple(AutomationId)"
 "Actor::member" = "#0 tuple(MemberId)"
 "Answer" = "enum external"
@@ -88,6 +90,7 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "AppEntry.program" = "#4 Option<String>"
 "AppEntry.removal" = "#5 AppRemoval"
 "AppEntry.size" = "#7 Option<u64>"
+"AppId" = "tuple(String) transparent"
 "AppKind" = "enum external"
 "AppKind::app_image" = "#2 unit"
 "AppKind::flatpak" = "#1 unit"
@@ -875,8 +878,8 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "ShellSelection.head" = "#1 String"
 "ShellWindow" = "struct deny_unknown_fields"
 "ShellWindow.app" = "#0 String"
+"ShellWindow.document" = "#1 [u8; 8]"
 "ShellWindow.focused" = "#3 bool"
-"ShellWindow.record" = "#1 [u8; 8]"
 "ShellWindow.rect" = "#2 [u16; 4]"
 "Signature" = "tuple([u8; 64]) transparent"
 "SignedOp" = "struct deny_unknown_fields"

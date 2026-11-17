@@ -334,6 +334,7 @@ fn signed_write_at(
         cluster_id: WORKSPACE.into(),
         record_id: RECORD.into(),
         envelope: Box::new(envelope),
+        own: None,
     }
 }
 
@@ -481,6 +482,7 @@ tilo_test_env::scenario! {
             cluster_id,
             record_id,
             mut envelope,
+            own,
         } = wrote_other
         else {
             panic!("a document write")
@@ -510,6 +512,7 @@ tilo_test_env::scenario! {
             cluster_id,
             record_id,
             envelope,
+            own,
         };
         let refused = receive(&mut peer, &guest, lying).unwrap_err();
         assert!(refused.contains("do not name exactly"), "{refused}");
@@ -625,6 +628,7 @@ tilo_test_env::scenario! {
                 cluster_id,
                 record_id,
                 mut envelope,
+                own,
             } = message
             else {
                 panic!("a document write")
@@ -637,6 +641,7 @@ tilo_test_env::scenario! {
                 cluster_id,
                 record_id,
                 envelope,
+                own,
             }
         };
         let edited = guest_write(
@@ -682,6 +687,7 @@ tilo_test_env::scenario! {
                 cluster_id: WORKSPACE.into(),
                 record_id: RECORD.into(),
                 envelope: Box::new(envelope),
+                own: None,
             },
         )
         .expect("an editor names the newer surface");
@@ -903,5 +909,6 @@ fn upgraded_write(
         cluster_id: WORKSPACE.into(),
         record_id: RECORD.into(),
         envelope: Box::new(envelope),
+        own: None,
     }
 }

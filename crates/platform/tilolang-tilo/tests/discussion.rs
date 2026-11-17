@@ -8,7 +8,7 @@ use automerge::AutoCommit;
 use tilolang_runtime::rich::{Reference, RichValue};
 use tilolang_runtime::store::{LinkHow, Store as _};
 use tilolang_runtime::value::ResourceRef;
-use tilolang_runtime::{ActionRef, InvokeOutcome, Principal, UiNode, Value, ViewInstance};
+use tilolang_runtime::{ActionRef, Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 
 use crate::fixtures::{Replica, field_id, target};
 
@@ -39,7 +39,7 @@ fn action(r: &Replica, app: &str, name: &str) -> String {
 /// made from a resource.
 fn call(
     r: &Replica,
-    person: &str,
+    person: &(impl crate::fixtures::AsActor + ?Sized),
     app: &str,
     action_name: &str,
     from: Option<&ResourceRef>,
@@ -49,7 +49,7 @@ fn call(
     match r
         .host
         .runtime()
-        .invoke_action(&Principal::new(person), aref)
+        .invoke_action(&person.actor(), aref)
         .unwrap()
     {
         InvokeOutcome::Done(v) => v,
@@ -59,7 +59,12 @@ fn call(
 
 /// What `person` says about `about`: the discussion app's own comment action, made from what it
 /// is about, as the thread's field runs it.
-fn comment(r: &Replica, person: &str, about: &ResourceRef, said: &str) -> ResourceRef {
+fn comment(
+    r: &Replica,
+    person: &(impl crate::fixtures::AsActor + ?Sized),
+    about: &ResourceRef,
+    said: &str,
+) -> ResourceRef {
     let all = Value::resource(&r.host.root_of(DISCUSSION_APP).unwrap());
     target(&call(
         r,
@@ -272,7 +277,9 @@ fn a_comment_is_made_from_the_task_it_is_about_and_changes_it() {
     let mark = mark_of(&mut view, &task.id_string()).expect("Bo's comment marks Ada's row");
     assert_eq!(
         mark.props.get("by"),
-        Some(&Value::Principal(Principal::new("bo")))
+        Some(&Value::Actor(Actor::from(
+            tilolang_tilo::runtime::ids::MemberId::person("bo")
+        )))
     );
     assert_eq!(mark.props.get("kind"), Some(&Value::text("changed")));
     let counted = window_mark(&mut view).expect("the window counts what she has not seen");
@@ -308,7 +315,12 @@ fn a_thread_draws_what_was_said_and_is_read_with_what_it_is_about() {
 
     // Read (as opening it in a window of its own marks it), neither the row, nor the place, nor
     // the thread says anything: reading a task reads what was said about it.
-    assert!(ada.host.runtime().mark_seen("ada", &task).unwrap());
+    assert!(
+        ada.host
+            .runtime()
+            .mark_seen(&tilolang_tilo::personal::actor("ada"), &task)
+            .unwrap()
+    );
     ada.commit();
     let mut view = tasks_window(&ada);
     assert!(
@@ -324,7 +336,11 @@ fn a_thread_draws_what_was_said_and_is_read_with_what_it_is_about() {
         "nothing stands since she read the task"
     );
     assert!(
-        ada.host.runtime().unseen("ada", &said).unwrap().is_empty(),
+        ada.host
+            .runtime()
+            .unseen(&tilolang_tilo::personal::actor("ada"), &said)
+            .unwrap()
+            .is_empty(),
         "the comment is read with the task it is about"
     );
 
@@ -372,7 +388,7 @@ fn an_agent_comments_through_the_same_action() {
     // a person's is.
     let said = comment(
         &ada,
-        "agent:scout",
+        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("scout")),
         &task,
         "The van place is held until Friday noon.",
     );
@@ -386,7 +402,12 @@ fn an_agent_comments_through_the_same_action() {
         "The van place is held until Friday noon."
     );
     let made = ada.host.store().version_end(&said, false).unwrap().unwrap();
-    assert_eq!(made.who, "agent:scout");
+    assert_eq!(
+        made.who,
+        Some(tilolang_tilo::runtime::Actor::from(
+            tilolang_tilo::runtime::ids::MemberId::agent("scout")
+        ))
+    );
     assert_eq!(made.from.map(|r| r.id_string()), Some(task.id_string()));
 
     // Ada's row is marked for it, and the thread draws the agent's comment as anyone's.
@@ -397,7 +418,9 @@ fn an_agent_comments_through_the_same_action() {
         of_kind(page.tree(), "ui.Avatar")
             .iter()
             .any(|avatar| avatar.props.get("who")
-                == Some(&Value::Principal(Principal::new("agent:scout")))),
+                == Some(&Value::Actor(Actor::from(
+                    tilolang_tilo::runtime::ids::MemberId::agent("scout")
+                )))),
         "the thread shows who said it"
     );
 }
@@ -440,7 +463,9 @@ tilo_test_env::scenario! {
         let (ada, task) = a_task_discussed_by_a_scenario();
         let made = comments_about(&ada, &task);
         assert_eq!(
-            made.iter().map(|v| v.who.as_str()).collect::<Vec<_>>(),
+            made.iter()
+                .map(|v| v.who.as_ref().map_or("", |who| who.id()))
+                .collect::<Vec<_>>(),
             ["scenario:Ada", "scenario:Bo", "scenario:Ada"],
             "each comment is the person the scenario names"
         );
@@ -481,7 +506,7 @@ tilo_test_env::scenario! {
         let who: Vec<String> = of_kind(page.tree(), "ui.Avatar")
             .into_iter()
             .filter_map(|node| match node.props.get("who") {
-                Some(Value::Principal(who)) => Some(who.0.clone()),
+                Some(Value::Actor(who)) => Some(who.id().to_owned()),
                 _ => None,
             })
             .collect();
@@ -522,7 +547,7 @@ tilo_test_env::scenario! {
             .host
             .runtime()
             .open_view(
-                &Principal::new("ada"),
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 &thread,
                 vec![Value::resource(&task)],
             )
@@ -664,7 +689,10 @@ fn a_task_discussed_by_a_scenario() -> (Replica, ResourceRef) {
     let task = target(&match ada
         .host
         .runtime()
-        .invoke_action(&Principal::new("ada"), (scenario.action.as_str(), vec![]))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (scenario.action.as_str(), vec![]),
+        )
         .unwrap()
     {
         InvokeOutcome::Done(v) => v,
@@ -705,7 +733,7 @@ fn only_its_author_edits_or_deletes_a_comment() {
 
     // Ada may not change what Bo said, and Bo may: what he says is his, as any resource is.
     let refused = ada.host.runtime().invoke_action(
-        &Principal::new("ada"),
+        &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         ActionRef::new(
             action(&ada, DISCUSSION_APP, "edit"),
             vec![
@@ -735,7 +763,7 @@ fn only_its_author_edits_or_deletes_a_comment() {
     ada.sync_with(&mut bo);
     let versions = ada.host.store().versions(&said).unwrap();
     assert_eq!(versions.len(), 2, "the edit is a version of the comment");
-    assert_eq!(versions[1].who, "bo");
+    assert_eq!(versions[1].who, Some(tilolang_tilo::personal::actor("bo")));
 
     // The row of what it is about is marked for the edit too: what changed is the task's
     // discussion, and the place counts it as the change it is.
@@ -743,7 +771,9 @@ fn only_its_author_edits_or_deletes_a_comment() {
     let mark = mark_of(&mut view, &task.id_string()).expect("the edit marks the task's row");
     assert_eq!(
         mark.props.get("by"),
-        Some(&Value::Principal(Principal::new("bo")))
+        Some(&Value::Actor(Actor::from(
+            tilolang_tilo::runtime::ids::MemberId::person("bo")
+        )))
     );
 
     // Its author removes it, and it leaves the thread with the task.
@@ -793,7 +823,7 @@ fn drawer(view: &ViewInstance, prop: &str) -> Vec<String> {
         Some(Value::List(items)) => items
             .iter()
             .map(|item| match item {
-                Value::Principal(who) => who.0.clone(),
+                Value::Actor(who) => who.id().to_owned(),
                 other => panic!("{prop} holds {other:?}"),
             })
             .collect(),

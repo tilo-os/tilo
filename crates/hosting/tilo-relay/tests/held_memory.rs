@@ -29,6 +29,7 @@ fn app_document_checkpoint(size: usize) -> Vec<u8> {
         cluster_id: "cluster".into(),
         record_id: "note-1".into(),
         envelope: Box::new(op),
+        own: None,
     })
     .unwrap();
     tilo_relay::CoeditPayload::Checkpoint {

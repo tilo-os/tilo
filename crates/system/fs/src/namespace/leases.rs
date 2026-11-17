@@ -19,7 +19,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-use fs_protocol::FileRecordId;
+use fs_protocol::FileDocumentId;
 use serde::{Deserialize, Serialize};
 
 use super::Namespace;
@@ -132,7 +132,7 @@ fn put_value<T: Serialize>(ns: &mut Namespace, key: &str, value: &T) -> bool {
 impl Namespace {
     /// The write lease of `record`, if one was ever taken. Concurrent
     /// values resolve to the highest epoch, then the greatest holder.
-    pub fn write_lease(&self, record: FileRecordId) -> Option<WriteLease> {
+    pub fn write_lease(&self, record: FileDocumentId) -> Option<WriteLease> {
         let key = format!("{LEASE_PREFIX}{}", record.0);
         all_values::<WriteLease>(self, &key)
             .into_iter()
@@ -141,7 +141,7 @@ impl Namespace {
 
     /// Records a lease change for `record`, and the tenancy when the epoch
     /// is new. The caller broadcasts the next incremental save.
-    pub fn put_write_lease(&mut self, record: FileRecordId, lease: &WriteLease) -> bool {
+    pub fn put_write_lease(&mut self, record: FileDocumentId, lease: &WriteLease) -> bool {
         let new_tenancy = self.lease_holder(record, lease.epoch) != Some(lease.holder);
         if new_tenancy {
             let tenancy = format!("{TENANCY_PREFIX}{}/{}", record.0, lease.epoch);
@@ -154,7 +154,7 @@ impl Namespace {
     }
 
     /// Who held `record`'s lease in `epoch`, resolved like the lease.
-    pub fn lease_holder(&self, record: FileRecordId, epoch: u64) -> Option<[u8; 32]> {
+    pub fn lease_holder(&self, record: FileDocumentId, epoch: u64) -> Option<[u8; 32]> {
         let key = format!("{TENANCY_PREFIX}{}/{epoch}", record.0);
         let recorded = all_values::<(bool, [u8; 32])>(self, &key)
             .into_iter()
@@ -172,7 +172,7 @@ impl Namespace {
     /// the tenancy it was written in. Put in the same change as the content.
     pub fn put_version_fence(
         &mut self,
-        record: FileRecordId,
+        record: FileDocumentId,
         content: Option<[u8; 32]>,
         byte_len: u64,
         fence: VersionFence,
@@ -193,7 +193,7 @@ impl Namespace {
     /// in, or `None` when it was written without a lease.
     pub fn version_fence(
         &self,
-        record: FileRecordId,
+        record: FileDocumentId,
         content: Option<[u8; 32]>,
         byte_len: u64,
     ) -> Option<VersionFence> {
@@ -219,7 +219,7 @@ impl Namespace {
     /// Asks the lease authority for `record`'s lease on behalf of `device`.
     pub fn put_lease_request(
         &mut self,
-        record: FileRecordId,
+        record: FileDocumentId,
         device: [u8; 32],
         request: LeaseRequest,
     ) -> bool {
@@ -227,18 +227,18 @@ impl Namespace {
         put_value(self, &key, &request)
     }
 
-    pub fn remove_lease_request(&mut self, record: FileRecordId, device: [u8; 32]) {
+    pub fn remove_lease_request(&mut self, record: FileDocumentId, device: [u8; 32]) {
         let key = format!("{REQUEST_PREFIX}{}/{}", record.0, hex::encode(device));
         let _ = self.doc.delete(&ROOT, key.as_str());
     }
 
-    pub fn lease_requests(&self) -> Vec<(FileRecordId, [u8; 32], LeaseRequest)> {
+    pub fn lease_requests(&self) -> Vec<(FileDocumentId, [u8; 32], LeaseRequest)> {
         self.doc
             .keys(&ROOT)
             .filter_map(|key| {
                 let rest = key.strip_prefix(REQUEST_PREFIX)?;
                 let (record, device) = rest.split_once('/')?;
-                let record = FileRecordId(uuid::Uuid::parse_str(record).ok()?);
+                let record = FileDocumentId(uuid::Uuid::parse_str(record).ok()?);
                 let device: [u8; 32] = hex::decode(device).ok()?.try_into().ok()?;
                 let request = all_values::<LeaseRequest>(self, &key)
                     .into_iter()
@@ -248,12 +248,12 @@ impl Namespace {
             .collect()
     }
 
-    pub fn write_leases(&self) -> Vec<(FileRecordId, WriteLease)> {
+    pub fn write_leases(&self) -> Vec<(FileDocumentId, WriteLease)> {
         self.doc
             .keys(&ROOT)
             .filter_map(|key| {
                 let id = key.strip_prefix(LEASE_PREFIX)?;
-                let record = FileRecordId(uuid::Uuid::parse_str(id).ok()?);
+                let record = FileDocumentId(uuid::Uuid::parse_str(id).ok()?);
                 Some((record, self.write_lease(record)?))
             })
             .collect()
@@ -299,7 +299,7 @@ mod tests {
             }
             {
                 let mut a = Namespace::new("a").unwrap();
-                let record = FileRecordId::new();
+                let record = FileDocumentId::new();
                 let first = WriteLease::take(None, [5; 32], 0, TTL).unwrap();
                 assert!(a.put_write_lease(record, &first));
                 let mut b = Namespace::from_bytes("b", &a.save()).unwrap();
@@ -342,7 +342,7 @@ mod tests {
             }
             {
                 let mut a = Namespace::new("a").unwrap();
-                let record = FileRecordId::new();
+                let record = FileDocumentId::new();
                 let mut b = Namespace::from_bytes("b", &a.save()).unwrap();
                 let optimistic = WriteLease::take(None, [9; 32], 0, TTL).unwrap();
                 let granted = WriteLease {
@@ -362,7 +362,7 @@ mod tests {
             }
             {
                 let mut ns = Namespace::new("a").unwrap();
-                let record = FileRecordId::new();
+                let record = FileDocumentId::new();
                 let fence = VersionFence {
                     holder: [3; 32],
                     epoch: 4,
@@ -377,7 +377,7 @@ mod tests {
         {
             {
                 let mut a = Namespace::new("a").unwrap();
-                let record = FileRecordId::new();
+                let record = FileDocumentId::new();
                 assert!(a.lease_authority().is_none());
                 assert!(a.put_lease_authority([4; 32]));
                 assert!(a.put_lease_request(record, [2; 32], LeaseRequest { nonce: 7 }));
@@ -392,7 +392,7 @@ mod tests {
             }
             {
                 let mut a = Namespace::new("a").unwrap();
-                let record = FileRecordId::new();
+                let record = FileDocumentId::new();
                 assert!(a.write_lease(record).is_none());
                 let first = WriteLease {
                     holder: [1; 32],

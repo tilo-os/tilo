@@ -166,7 +166,7 @@ pair --operator-socket "$work/state/lounge/operator.sock" || fail "the operator 
 pair --person-storage-gb 10 || fail "the per-person storage did not reach the host"
 pair --iroh-listen 0.0.0.0:7704 || fail "the host's endpoint address did not reach the host"
 grep -Fqx -- --fetch-proxy "$work/args" && fail "fetch proxy 0 still asked for the proxy"
-# Every workspace's arrangement is its shared desktop record: the host has no
+# Every workspace's layout is its shared desktop record: the host has no
 # layout flag, so a deployment that still names one (eu1 does) starts without
 # it rather than handing the host an argument it refuses.
 grep -Fqx -- --layout "$work/args" && fail "the entrypoint still passes a layout the host has no flag for"

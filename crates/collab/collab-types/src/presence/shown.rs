@@ -1,22 +1,22 @@
 //! One member of a workspace, as a surface reads them: the board's merged word,
 //! flattened into what a roster lists, a pointer draws and a caret needs. A page
-//! and a native desktop read the same record, so both show the same people the
+//! and a native desktop read the same document, so both show the same people the
 //! same way.
 
 use serde::{Deserialize, Serialize};
 
 use super::{ShellChat, ShellReaction, ShellSelection};
 
-/// The window a member works in: its app, and the short digest of the record
+/// The window a member works in: its app, and the short digest of the document
 /// it shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShownFocus {
     /// The app, as its stable id.
     pub app: String,
-    /// The record, as its 16-hex short digest: what a reader matches against
+    /// The document, as its 16-hex short digest: what a reader matches against
     /// what it holds itself.
-    pub record: String,
+    pub document: String,
 }
 
 /// A member's latest wave at someone here.
@@ -52,15 +52,15 @@ pub struct ShownLayout {
     pub windows: Vec<ShownWindow>,
 }
 
-/// One window of a [`ShownLayout`]: the app and record digest it shows, where
+/// One window of a [`ShownLayout`]: the app and document digest it shows, where
 /// it stands and whether the person works in it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShownWindow {
     /// The app, as its stable id.
     pub app: String,
-    /// The record, as its 16-hex short digest.
-    pub record: String,
+    /// The document, as its 16-hex short digest.
+    pub document: String,
     /// Its edges across the screen, in 1/10000 of [`ShownLayout::size`].
     pub rect: [u16; 4],
     /// Whether the person works in it.
@@ -111,7 +111,7 @@ pub struct Shown {
     pub profile_ms: u64,
     /// What their device calls itself, from its certificate.
     pub device: String,
-    /// The window they work in and the record it shows.
+    /// The window they work in and the document it shows.
     pub focus: Option<ShownFocus>,
     /// Where within the workspace they are, as their shell says.
     pub place: Option<String>,

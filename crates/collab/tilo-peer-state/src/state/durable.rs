@@ -472,6 +472,7 @@ impl StatePeer {
                 exact_selected: exact_admissions.is_some(),
                 exact_admissions: exact_admissions.unwrap_or_default(),
                 native_cut_publisher: None,
+                own: BTreeMap::new(),
             },
             surfaces: process_default().0,
             app_surfaces: process_default().1,
@@ -490,14 +491,8 @@ impl StatePeer {
         peer.core.receipts = durable.receipts.into();
         peer.core.workspace_doc = durable
             .workspace_bytes
-            .map(|bytes| {
-                // Isolated load leaves the document in a worker so the first
-                // inbound change does not pay a full rebuild.
-                tilo_automerge_isolate::load(&bytes)
-                    .map(CachedDocument::from)
-                    .map_err(err)
-                    .and_then(|doc| doc.stored_as(&bytes))
-            })
+            .as_deref()
+            .map(restored_workspace)
             .transpose()?;
         for document in durable.documents {
             check_governed_snapshot(
@@ -631,4 +626,13 @@ fn encode_document(route: &Route, entry: &Document) -> Result<backend::EncodedDo
         ],
         sealed,
     })
+}
+
+/// The workspace document a peer kept, loaded in isolation so it stays in a
+/// worker and the first inbound change does not pay a full rebuild.
+fn restored_workspace(bytes: &[u8]) -> Result<CachedDocument, String> {
+    tilo_automerge_isolate::load(bytes)
+        .map(CachedDocument::from)
+        .map_err(err)
+        .and_then(|doc| doc.stored_as(bytes))
 }

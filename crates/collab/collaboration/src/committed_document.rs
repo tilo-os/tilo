@@ -47,7 +47,7 @@ struct Progress {
 enum Gate {
     Joining,
     Legacy,
-    /// The route of a chain's head (`RecordId::chain_head`), which names whichever
+    /// The route of a chain's head (`DocumentId::chain_head`), which names whichever
     /// part of the chain is the newest and holds nothing of its own: it was asked
     /// for, and no document is ever read or staged here. The part arrives on its
     /// own route.
@@ -1509,7 +1509,7 @@ async fn capture_using(
         assembly.revision,
     ))
 }
-/// Ask the workspace, through the broker, for a chain's head (`RecordId::chain_head`): a name for
+/// Ask the workspace, through the broker, for a chain's head (`DocumentId::chain_head`): a name for
 /// whichever part of the chain is the newest, which holds nothing of its own and so is neither read
 /// nor followed here. The host sends that part on the part's own route, and the app holds it from
 /// there. Answered with nothing, the chain has no part at all, which the app is told

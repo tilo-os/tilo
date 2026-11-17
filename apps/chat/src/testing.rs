@@ -95,7 +95,7 @@ pub(crate) fn stored_messages(records: &ui::record::RecordStore) -> crate::messa
 pub(crate) fn messages_in(records: &ui::record::RecordStore, channel: &str) -> Vec<Message> {
     let chat = records
         .read(
-            &ui::record::RecordId::package_primary(),
+            &ui::record::DocumentId::package_primary(),
             crate::projection::read,
         )
         .unwrap_or_default();

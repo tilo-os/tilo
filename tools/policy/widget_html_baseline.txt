@@ -97,7 +97,6 @@ widget-without-html 1 crates/sdk/ui-core/src/history_mode/host/surface.rs
 widget-without-html 1 crates/sdk/ui-core/src/host_chrome/header_bar.rs
 widget-without-html 1 crates/sdk/ui-core/src/testing/widgets.rs
 widget-without-html 2 crates/sdk/ui-core/src/ui_graph.rs
-widget-without-html 1 crates/sdk/ui-core/src/widget/acknowledgement.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/activity_timeline.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/app_widget.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/arrange/arranged.rs
@@ -129,7 +128,7 @@ widget-without-html 2 crates/sdk/ui-core/src/widget/data_table.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/date_picker.rs
 widget-without-html 2 crates/sdk/ui-core/src/widget/decorator.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/disclosure_band.rs
-widget-without-html 1 crates/sdk/ui-core/src/widget/display_arrangement.rs
+widget-without-html 1 crates/sdk/ui-core/src/widget/display_placement.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/divider.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/document_view.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/document_viewport.rs

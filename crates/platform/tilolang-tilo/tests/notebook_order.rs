@@ -2,7 +2,7 @@
 //! note made stands at the end of them.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{Principal, UiNode, Value, ViewInstance};
+use tilolang_runtime::{Actor, UiNode, Value, ViewInstance};
 
 use crate::fixtures::Replica;
 
@@ -68,7 +68,10 @@ fn the_notebook_lists_its_notes_in_the_order_the_store_keeps_them() {
     replica
         .host
         .runtime()
-        .invoke_action(&Principal::new("ada"), (scenario.action.as_str(), vec![]))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (scenario.action.as_str(), vec![]),
+        )
         .unwrap();
     replica.commit();
 

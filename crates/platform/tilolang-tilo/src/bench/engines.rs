@@ -21,7 +21,7 @@ use serde_json::{Value as Json, json};
 use tilolang::{Compiled, IdsLock, SeededEntropy};
 use tilolang_runtime::engine::{Engine, Host, HostFail, Wasm};
 use tilolang_runtime::{
-    AmStore, EngineConfig, EngineKind, EngineLimits, InvokeOutcome, ModuleHash, Principal, Runtime,
+    Actor, AmStore, EngineConfig, EngineKind, EngineLimits, InvokeOutcome, ModuleHash, Runtime,
     SimpleAuthority, Translation, Value,
 };
 
@@ -323,7 +323,7 @@ fn compute(config: &BenchConfig) -> Result<[Record; 2], String> {
     rt.load_wasm(&package.wasm).map_err(|e| e.to_string())?;
     settle([&package.wasm])?;
     let lab = rt.create("Lab").map_err(|e| e.to_string())?;
-    let who = Principal::new("bench");
+    let who = Actor::Member(crate::runtime::ids::MemberId::person("bench"));
     let timed = |id: &str, args: Vec<Value>| -> Result<(Vec<f64>, Json), String> {
         let mut samples = Vec::new();
         let mut result = Json::Null;

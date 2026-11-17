@@ -18,7 +18,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::TestApp;
 use ui::portal::PortalOutcome;
-use ui::record::RecordId;
+use ui::record::DocumentId;
 use ui::tilo_resource::Effect as _;
 
 fn file(name: &str, bytes: &[u8]) -> (tempfile::TempDir, String) {
@@ -47,7 +47,7 @@ fn a_launched_file_is_its_own_buffer_typed_into_undone_and_saved_back() {
     let mut app = launched(&path);
     assert_eq!(
         app.record(),
-        &RecordId::derived("hex", &RecordId::identify_file(&path))
+        &DocumentId::derived("hex", &DocumentId::identify_file(&path))
     );
     let state = app.state();
     assert_eq!(state.name(), Some("Bytes Grün with spaces.bin"));

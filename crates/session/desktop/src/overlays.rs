@@ -326,7 +326,8 @@ pub enum Anchor {
     /// At the caret `at` : `gap` clear of the line it sits on, below that line while the room
     /// there holds the surface and above it otherwise.
     Beside { at: Rect, gap: f64 },
-    /// Over the thing it acts on. The surface's own view places itself.
+    /// Over the thing it acts on: the surface covers the display holding the point, and its own
+    /// view stands its card there.
     At(Point),
     /// The whole display.
     Fill,
@@ -505,8 +506,8 @@ pub struct Standing {
     pub from: Point,
 }
 
-/// Where a surface stands on `display` , from its anchor and the room its size leaves; `None` for a
-/// surface its own view places, or one whose size and anchor do not settle a rect.
+/// Where a surface stands on `display` , from its anchor and the room its size leaves; `None` for one
+/// whose size and anchor do not settle a rect.
 pub(crate) fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Standing> {
     // The bar hangs above a surface anchored to the top edge.
     let top = display.y0 + f64::from(TOPBAR_HEIGHT_PX).ceil();
@@ -546,7 +547,8 @@ pub(crate) fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Stan
                 center.y + height / 2.0,
             )
         }
-        Anchor::Fill => display,
+        // Over the thing it acts on, the surface covers the display and its view stands the card.
+        Anchor::Fill | Anchor::At(_) => display,
         // Beside the rect it was opened on, clear of the line the person edits: the surface takes
         // the room below that line while that holds as much as it may be, and while it is the
         // roomier side; above the line only when it is the roomier side and the room below cannot
@@ -572,15 +574,14 @@ pub(crate) fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Stan
                 Rect::new(x0, above - room_above.min(wanted), x0 + width, above)
             }
         }
-        // Over the thing it acts on: the view decides its own card.
-        Anchor::At(_) => return None,
     };
     let from = match anchor {
         Anchor::TopTrailing(_) => Point::new(rect.x1, display.y0),
         Anchor::TopLeading(_) => Point::new(rect.x0, display.y0),
         Anchor::Beside { at, .. } if rests_at_bottom => Point::new(at.x0, at.y0),
         Anchor::Beside { at, .. } => Point::new(at.x0, at.y1),
-        Anchor::Center | Anchor::Fill | Anchor::At(_) => rect.center(),
+        Anchor::At(point) => point,
+        Anchor::Center | Anchor::Fill => rect.center(),
     };
     Some(Standing {
         room: rect,
@@ -1224,14 +1225,17 @@ mod tests {
                 !overlays.is_open(Slot::QuickSettings),
                 "the panel goes down for the menu the person just opened"
             );
-            // And it stands where its own view draws it: nothing the session can judge, so nothing it
-            // closes.
-            assert_eq!(overlays.place(Slot::WindowMenu), None);
+            // It covers the display it was opened on, and its own view stands the card at the
+            // point: a press on that display is its view's to judge.
+            assert_eq!(
+                overlays.place(Slot::WindowMenu).map(|standing| standing.room),
+                Some(DISPLAY)
+            );
             assert_eq!(overlays.escape(), Some(Slot::WindowMenu));
             assert_eq!(
                 overlays.press_outside(4.0, DISPLAY.y1 - 4.0),
                 None,
-                "its view closes it, the session has no rect to judge"
+                "its view closes it on its own display"
             );
         }
 
@@ -1506,6 +1510,19 @@ mod tests {
             assert!(
                 place.x0 >= right.x0,
                 "the display holding the caret it was opened from"
+            );
+
+            // A window's menu opened on the right display covers that display, from the point the
+            // person pressed, though the person worked on the left one.
+            let pressed = Point::new(1800.0, 60.0);
+            overlays.open(Slot::WindowMenu, Some(Anchor::At(pressed)));
+            let standing = overlays.place(Slot::WindowMenu).expect("placed");
+            assert_eq!(standing.room, right, "the display holding the press");
+            assert_eq!(standing.from, pressed);
+            assert_eq!(
+                overlays.press_outside(100.0, 100.0),
+                Some(Slot::WindowMenu),
+                "a press on the other display closes it"
             );
         }
 

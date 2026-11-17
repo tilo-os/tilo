@@ -39,7 +39,7 @@ tilo_test_env::scenario! {
         let claude = LiveMember {
             focus: Some(Focus {
                 app: "so.tilo.notes".into(),
-                record: "0123456789abcdef".into(),
+                document: "0123456789abcdef".into(),
             }),
             activity: Some("Editing notes/Welcome".into()),
             user: Some("aa".into()),
@@ -1012,7 +1012,7 @@ tilo_test_env::scenario! {
         let working = |publisher: &str, app: &str| LiveMember {
             focus: Some(Focus {
                 app: app.into(),
-                record: "welcome".into(),
+                document: "welcome".into(),
             }),
             activity: None,
             ..member(publisher, "person", publisher)
@@ -1083,7 +1083,7 @@ tilo_test_env::scenario! {
             Some(vec![LiveMember {
                 focus: Some(Focus {
                     app: "so.tilo.notes".into(),
-                    record: digest.into(),
+                    document: digest.into(),
                 }),
                 activity: None,
                 ..member("ann", "person", "Ann")

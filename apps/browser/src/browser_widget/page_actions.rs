@@ -1323,9 +1323,9 @@ fn an_agent_typing_into_a_password_field_signs_a_visitors_page_in() {
     }
 }
 
-/// An agent the action API admitted, by its principal.
+/// An agent the action API admitted, by its id.
 fn agent(principal: &str) -> ActionInvoker {
-    ActionInvoker::admitted(&ui::tilo_actions::Acting::of_key(principal))
+    ActionInvoker::admitted(&ui::tilo_actions::Acting::agent(principal))
 }
 
 /// The engine is told who asks: the principal the action API admitted the
@@ -1333,7 +1333,7 @@ fn agent(principal: &str) -> ActionInvoker {
 #[test]
 fn the_admitted_invoker_is_who_asks_the_engine() {
     let (engine, mut widget, doc, root) = page_on("https://shop.test/");
-    let ada = agent("agent:ada");
+    let ada = agent("ada");
     let read = start_as(&mut widget, Some(&ada), "read-page", &serde_json::json!({})).unwrap();
     succeeded(settled(&mut widget, &doc, &root, read));
     // The person at the window is admitted by no api: the tab's one
@@ -1353,7 +1353,7 @@ fn the_admitted_invoker_is_who_asks_the_engine() {
     succeeded(settled(&mut widget, &doc, &root, click));
     // A principal longer than the engine takes is shortened the same way
     // every time, so one actor keeps one name.
-    let long = agent(&format!("agent:{}", "x".repeat(120)));
+    let long = agent(&"x".repeat(120));
     for _ in 0..2 {
         let read = start_as(
             &mut widget,
@@ -1400,7 +1400,7 @@ fn the_admitted_invoker_is_who_asks_the_engine() {
 #[test]
 fn a_second_actors_action_waits_its_turn_and_answers_its_own_invocation() {
     let (engine, mut widget, doc, root) = page_on("https://shop.test/");
-    let (ada, ben, cy) = (agent("agent:ada"), agent("agent:ben"), agent("agent:cy"));
+    let (ada, ben, cy) = (agent("ada"), agent("ben"), agent("cy"));
     engine.push_page_reply(Ok(answer("Filled textbox \"Email\"")));
     engine.push_page_reply(Ok(answer("Clicked button \"Send\"")));
     engine.push_page_reply(Ok(answer("Chose Belgium")));
@@ -1469,7 +1469,7 @@ fn a_second_actors_action_waits_its_turn_and_answers_its_own_invocation() {
 #[test]
 fn a_waiting_action_whose_caller_gives_up_never_reaches_the_engine() {
     let (engine, mut widget, doc, root) = page_on("https://shop.test/");
-    let (ada, ben) = (agent("agent:ada"), agent("agent:ben"));
+    let (ada, ben) = (agent("ada"), agent("ben"));
     engine.push_page_reply(Ok(answer("Filled textbox \"Email\"")));
     let fill = start_as(
         &mut widget,
@@ -1525,7 +1525,7 @@ fn a_waiting_action_whose_caller_gives_up_never_reaches_the_engine() {
 #[test]
 fn stopping_the_running_action_names_its_request_and_the_next_takes_its_turn() {
     let (engine, mut widget, doc, root) = page_on("https://shop.test/");
-    let (ada, ben) = (agent("agent:ada"), agent("agent:ben"));
+    let (ada, ben) = (agent("ada"), agent("ben"));
     let fill = start_as(
         &mut widget,
         Some(&ada),
@@ -1570,7 +1570,7 @@ fn stopping_the_running_action_names_its_request_and_the_next_takes_its_turn() {
 #[test]
 fn a_tab_with_its_turns_taken_turns_the_next_action_away_saying_who_holds_it() {
     let (engine, mut widget, _doc, _root) = page_on("https://shop.test/");
-    let (ada, ben) = (agent("agent:ada"), agent("agent:ben"));
+    let (ada, ben) = (agent("ada"), agent("ben"));
     start_as(
         &mut widget,
         Some(&ada),
@@ -1602,7 +1602,7 @@ fn a_tab_with_its_turns_taken_turns_the_next_action_away_saying_who_holds_it() {
 #[test]
 fn an_action_that_waited_too_long_is_answered_as_never_run() {
     let (engine, mut widget, doc, root) = page_on("https://shop.test/");
-    let (ada, ben, cy) = (agent("agent:ada"), agent("agent:ben"), agent("agent:cy"));
+    let (ada, ben, cy) = (agent("ada"), agent("ben"), agent("cy"));
     let fill = start_as(
         &mut widget,
         Some(&ada),
@@ -1786,7 +1786,11 @@ fn the_record_and_the_fields_are_read_typed_and_answer_in_the_declared_shape() {
 #[test]
 fn reading_the_record_takes_no_turn() {
     let (engine, mut widget, doc, root) = page_on("https://shop.test/");
-    let (ada, ben, rev) = (agent("agent:ada"), agent("agent:ben"), agent("person:rev"));
+    let (ada, ben, rev) = (
+        agent("ada"),
+        agent("ben"),
+        ActionInvoker::admitted(&ui::tilo_actions::Acting::person("rev")),
+    );
     let fill = start_as(
         &mut widget,
         Some(&ada),
@@ -1813,7 +1817,7 @@ fn reading_the_record_takes_no_turn() {
         page_asks(&engine),
         vec![
             (Some("agent:ada".to_owned()), "fill"),
-            (Some("person:rev".to_owned()), "ledger"),
+            (Some("rev".to_owned()), "ledger"),
         ],
         "the record is asked for while the fill still runs, ahead of what waits"
     );
@@ -1874,7 +1878,7 @@ fn reading_the_record_takes_no_turn() {
 #[test]
 fn what_the_others_did_reaches_the_callers_output() {
     let (engine, mut widget, doc, root) = page_on("https://shop.test/form");
-    let ada = agent("agent:ada");
+    let ada = agent("ada");
     let theirs = serde_json::json!([
         {"seq": 4, "actor": "agent:ben", "action": "fill", "ok": true,
             "target": {"role": "textbox", "name": "Email"}, "text": "ben@example.org"},
@@ -2494,7 +2498,7 @@ fn a_forms_answers_are_bounded_before_they_reach_the_page() {
 #[test]
 fn answering_a_form_takes_its_turn_and_completes_on_the_page_it_sent_to() {
     let (engine, mut widget, doc, root) = page_on("https://visa.test/apply");
-    let (ada, ben) = (agent("agent:ada"), agent("agent:ben"));
+    let (ada, ben) = (agent("ada"), agent("ben"));
     engine.push_page_reply(Ok(answer("Clicked checkbox \"Accept terms\"")));
     let sent = serde_json::json!({
         "form": "form1", "signature": "5f1c2a9be0",

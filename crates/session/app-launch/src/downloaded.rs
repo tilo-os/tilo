@@ -955,7 +955,7 @@ fn workspace_record(record: [u8; 16]) -> Option<PathBuf> {
         };
         if exact.schema_version != fs_protocol::projection::RECORD_INDEX_V2_VERSION
             || !fs_protocol::projection::valid_record_index_revision(&exact.revision)
-            || exact.record.record_id.0 != id
+            || exact.record.document_id.0 != id
             || exact.record.is_dir
         {
             continue;

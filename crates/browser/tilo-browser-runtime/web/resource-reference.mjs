@@ -54,7 +54,7 @@ export async function openResourceReference({reference, provider, action, action
   if (!current()) throw Error('Shared resource connection changed');
   let opened;
   try {
-    // The collaboration wire uses empty for RecordId::package_primary().
+    // The collaboration wire uses empty for DocumentId::package_primary().
     // Mount the canonical id explicitly; omitting it could create a document.
     opened = await mount({app: resolved.app, record: record || '@tilo:package-primary'});
     signal?.throwIfAborted();

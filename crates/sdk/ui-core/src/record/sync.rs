@@ -11,7 +11,7 @@ use automerge::ChangeHash;
 use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
 
-use super::{RecordCheckout, RecordId, RecordStore};
+use super::{DocumentCheckout, DocumentId, RecordStore};
 use crate::automerge::AutoCommit;
 use crate::state::DocumentFrontier;
 
@@ -68,7 +68,7 @@ impl RecordSync {
     pub fn take_outbound(
         &mut self,
         store: &RecordStore,
-        id: &RecordId,
+        id: &DocumentId,
     ) -> Result<Option<Outbound>, String> {
         if !self.snapshotted {
             let (bytes, heads) = store
@@ -96,7 +96,7 @@ impl RecordSync {
     pub fn take_own(
         &mut self,
         store: &RecordStore,
-        id: &RecordId,
+        id: &DocumentId,
     ) -> Result<Option<Outbound>, String> {
         if !self.snapshotted {
             let (bytes, heads) = store
@@ -125,7 +125,7 @@ impl RecordSync {
     pub fn merge(
         &mut self,
         store: &RecordStore,
-        checkout: &RecordCheckout,
+        checkout: &DocumentCheckout,
         mutation: DocumentMutation,
     ) -> Result<bool, String> {
         let (changed, observed) = store.merge_replica(checkout, mutation)?;
@@ -145,7 +145,7 @@ impl RecordSync {
     pub fn merge_delivered(
         &mut self,
         store: &RecordStore,
-        checkout: &RecordCheckout,
+        checkout: &DocumentCheckout,
         mutation: DocumentMutation,
         heads: Vec<ChangeHash>,
     ) -> Result<bool, String> {
@@ -165,7 +165,7 @@ impl RecordSync {
     ///
     /// # Errors
     /// The record is not open here or its owner is busy.
-    pub fn set_aside(&mut self, store: &RecordStore, id: &RecordId) -> Result<(), String> {
+    pub fn set_aside(&mut self, store: &RecordStore, id: &DocumentId) -> Result<(), String> {
         let Some(own) = self.take_own(store, id)? else {
             return Ok(());
         };
@@ -212,7 +212,7 @@ impl RecordSync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record::{RecordKind, RecordOwners};
+    use crate::record::{RecordOwners, ResourceType};
     use automerge::transaction::Transactable as _;
     use durable_store::MemoryStore;
     use std::rc::Rc;
@@ -222,10 +222,10 @@ mod tests {
     }
 
     /// An open record holding `text`.
-    fn opened(text: &str) -> (RecordStore, RecordCheckout) {
+    fn opened(text: &str) -> (RecordStore, DocumentCheckout) {
         let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
         let store = owners.open("so.tilo.test", "workspace-a").unwrap();
-        let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         store
             .reserve_record(&want)
             .unwrap()
@@ -238,7 +238,7 @@ mod tests {
     }
 
     /// Another device's change to the record, built on what it already holds.
-    fn peer_change(store: &RecordStore, want: &RecordCheckout, text: &str) -> DocumentMutation {
+    fn peer_change(store: &RecordStore, want: &DocumentCheckout, text: &str) -> DocumentMutation {
         let (heads, mut peer) = store
             .with(&want.id, |doc| {
                 let heads = doc.get_heads();

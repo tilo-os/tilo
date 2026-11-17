@@ -117,6 +117,7 @@ impl StatePeer {
             cluster_id: self.core.workspace.clone(),
             record_id: record.into(),
             envelope: Box::new(op),
+            own: self.core.own_write(app, record, author.as_bytes()),
         };
         let coverage = if let DocumentMutation::Snapshot(bytes) = &mutation {
             // A record's genesis is not a checkpoint: it is started empty, so

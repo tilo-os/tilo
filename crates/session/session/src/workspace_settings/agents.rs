@@ -167,7 +167,7 @@ impl Agents {
         let agents: Vec<sheet::Agent> = state
             .active()
             .map(|agent| {
-                let mine = same_person(&agent.keeper, me);
+                let mine = same_person(&agent.keeper, me.id());
                 sheet::Agent {
                     key: agent.id.0.clone(),
                     name: agent.name.clone(),
@@ -298,8 +298,8 @@ impl Agents {
         let kept = state.get(&Id::from_raw(agent.to_owned()))?;
         let name = kept.name.clone();
         let status = keeper_line(names, workspace, record, &kept.keeper);
-        let tag =
-            same_person(&kept.keeper, record.me()).then(|| t("workspace-settings-agent-yours"));
+        let tag = same_person(&kept.keeper, record.me().id())
+            .then(|| t("workspace-settings-agent-yours"));
         // What the turn admits it to, before the answers the person set for its apps: the cap's
         // grants, narrowed by the bound its record keeps.
         let admission = tilo_action_policy::roles::agent_grants(
@@ -313,8 +313,8 @@ impl Agents {
         // What an agent plans with is its keeper's to choose, alone, and the record holds the
         // choice.
         let offered = agent_access::agent_models(config, agent);
-        let keeps = same_person(&kept.keeper, record.me());
-        let keeper = domain::member_row_name(names, workspace, record.me(), &kept.keeper);
+        let keeps = same_person(&kept.keeper, record.me().id());
+        let keeper = domain::member_row_name(names, workspace, record.me().id(), &kept.keeper);
         let limit = limit_of(kept, keeps, &keeper);
         let note = if keeps {
             t("workspace-settings-agent-model-keeper-you")
@@ -793,14 +793,14 @@ fn keeper_line(
     record: &WorkspaceRecord<Record>,
     keeper: &str,
 ) -> String {
-    if same_person(keeper, record.me()) {
+    if same_person(keeper, record.me().id()) {
         return t("workspace-settings-agent-keeper-you");
     }
     t_args(
         "workspace-settings-agent-keeper",
         &[(
             "name",
-            domain::member_row_name(names, workspace, record.me(), keeper).into(),
+            domain::member_row_name(names, workspace, record.me().id(), keeper).into(),
         )],
     )
 }

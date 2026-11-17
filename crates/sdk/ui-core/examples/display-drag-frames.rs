@@ -1,4 +1,4 @@
-//! A recorded drag on the Displays arrangement canvas, frame by frame: a
+//! A recorded drag on the Displays placement canvas, frame by frame: a
 //! laptop panel and an external monitor, the monitor pressed and moved by 240
 //! pointer samples paced as a 120 Hz display presents them, each answered by
 //! a frame. Prints every frame's cost against the 120 Hz budget and whether
@@ -8,15 +8,15 @@
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::state::State;
 use tilo_ui::theme::Theme;
-use tilo_ui::widget::display_arrangement::{
-    ArrangedDisplay, ArrangementGesture, DisplayArrangement, placement::Placement,
+use tilo_ui::widget::display_placement::{
+    DisplayPlacement, PlacedDisplay, PlacementGesture, placement::Placement,
 };
 
 /// One frame at 120 Hz.
 const BUDGET_US: u64 = 8_333;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let display = |connector: &str, label: &str, number, placement, primary| ArrangedDisplay {
+    let display = |connector: &str, label: &str, number, placement, primary| PlacedDisplay {
         connector: connector.into(),
         movement_group: None,
         shared: None,
@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         primary,
         movable: true,
     };
-    let canvas = DisplayArrangement::new(
+    let canvas = DisplayPlacement::new(
         vec![
             display(
                 "eDP-1",
@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ),
         ],
         Vec::new(),
-        tilo_ui::LocalState::new(ArrangementGesture::default()),
+        tilo_ui::LocalState::new(PlacementGesture::default()),
     )
     .with_selection(tilo_ui::LocalState::new("eDP-1".to_owned()));
     let mut host =
@@ -52,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     host.profile_frame();
     let rect = host
         .targets()
-        .get("display.arrangement")
+        .get("display.placement")
         .copied()
         .ok_or("the canvas is mounted")?;
     // The monitor's middle, then a loop under and around the panel.

@@ -150,6 +150,14 @@ mod directory;
 mod display_mode;
 #[cfg(target_arch = "wasm32")]
 mod dom_code;
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser page opens windows; the host runs its tests"
+    )
+)]
+mod window_states;
 #[cfg(target_arch = "wasm32")]
 pub use dom_code::{DOM_CODE, DomCode, builtin_dom};
 #[cfg(target_arch = "wasm32")]

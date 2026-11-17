@@ -4,7 +4,7 @@ struct NativeFacadeHostSteps {
     provider: &'static str,
     resource: &'static str,
     action: &'static str,
-    started: Arc<Mutex<Vec<(String, String)>>>,
+    started: Arc<Mutex<Vec<(String, tilo_actions::MemberId)>>>,
 }
 
 impl crate::services::HostStepServices for NativeFacadeHostSteps {
@@ -33,7 +33,7 @@ impl crate::services::HostStepServices for NativeFacadeHostSteps {
         self.started
             .lock()
             .unwrap()
-            .push((request.workspace.into(), request.actor.id().into()));
+            .push((request.workspace.into(), request.actor.member().clone()));
         Ok(tilo_actions::remote::Pending::ready(Ok(
             tilo_actions::ActionOutput::default(),
         )))
@@ -126,7 +126,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_custody() 
                 vec![
                     (
                         env.route.cluster_id.clone(),
-                        original.admitted.principal_id.clone()
+                        tilo_actions::MemberId::person(original.admitted.principal_id.clone())
                     );
                     2
                 ],
@@ -173,9 +173,9 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
             ));
             assert!(
                 !is_local_host_caller(&projected, Some(&origin(original.clone(), false))),
-                "keyless Certified is not itself evidence of native seat custody"
+                "keyless Certified is not itself evidence of native device custody"
             );
-            // Isolate the matcher after the protected-seat verification bit:
+            // Isolate the matcher after the protected-device verification bit:
             // it must still reject mismatched or restricted projections.
             let mut checked = original;
             checked.native_projection_verified = true;
@@ -340,7 +340,7 @@ async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_ot
             assert_eq!(
                 governance.0.lock().unwrap().len(),
                 2,
-                "a refused native seat never falls back"
+                "a refused native device never falls back"
             );
             rig.stop().await;
         })

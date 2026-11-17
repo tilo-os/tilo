@@ -13,7 +13,7 @@ use js_sys::{Function, Reflect};
 use ui::application::{ComponentRunnerInputs, HostContext};
 use ui::headless::FrameHarness;
 use ui::permissions::{MemberId, PermissionContext, SharedPermissions};
-use ui::record::{RecordCheckout, RecordStore};
+use ui::record::{DocumentCheckout, RecordStore};
 use wasm_bindgen::{JsCast, prelude::*};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
@@ -468,7 +468,7 @@ pub(crate) struct Mount {
     /// Every package record owner the mount opened, flushed together.
     stores: Rc<RefCell<Vec<RecordStore>>>,
     /// The single application's record; `None` for the desktop.
-    checkout: Option<RecordCheckout>,
+    checkout: Option<DocumentCheckout>,
     /// The workspace's files, as the page's search reads them.
     files_of_the_workspace: Option<Rc<crate::page_files::WorkspaceFiles>>,
     /// The single application's package id; `None` for the desktop.
@@ -737,10 +737,22 @@ impl Desktop {
         }
     }
 
-    /// Project the workspace's one name onto the shell: its governance records it, and every
-    /// device and every list of the workspace reads it there; the shell keeps no name of its own.
-    /// A name the governance took since the last projection, which this page did not ask for, is
-    /// someone else's rename, and the person hears it. Whether the shell changed.
+    /// Notices for what other people did to the workspace's desktop since the
+    /// last frame: the workspace renamed by someone else.
+    fn post_workspace_notices(&self) {
+        let renames = std::mem::take(&mut *self.shared.renames.borrow_mut());
+        for rename in renames {
+            if let Some(notice) = rename.notice_for(&self.author, |user| self.person_name(user)) {
+                self.post(notice);
+            }
+        }
+    }
+
+    /// Take the workspace's one name onto the shell: its governance records it, and every device
+    /// and every list of the workspace reads it there. A page that landed in the workspace before
+    /// anything named it — served no name, or in one made on another device — keeps the name it
+    /// was given here, so its bar, its overview and search call the workspace what it is called.
+    /// Whether the shell changed.
     fn follow_workspace_name(&self, peer: Option<u32>) -> bool {
         let Some(peer) = peer else {
             return false;
@@ -751,16 +763,6 @@ impl Desktop {
         let Some(name) = crate::replication::governance_name(peer, workspace) else {
             return false;
         };
-        let before = self.shared.projected_name.replace(Some(name.clone()));
-        let asked = self.shared.asked_name.borrow().clone();
-        if asked.as_deref() == Some(name.as_str()) {
-            self.shared.asked_name.replace(None);
-        } else if before.is_some_and(|before| before != name) {
-            self.notify(&tilo_desktop_surface::i18n::t_args(
-                "workspace-notice-renamed",
-                &[("workspace", name.clone().into())],
-            ));
-        }
         let already = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
@@ -828,6 +830,14 @@ impl Desktop {
         }
     }
 
+    /// The name presence shows for the person with user root `user`: here
+    /// now, else as last seen, else a guest's, never their key.
+    fn person_name(&self, user: &str) -> String {
+        let seen = self.here.borrow().person(user);
+        seen.or_else(|| self.people.borrow().get(user).cloned())
+            .map_or_else(tilo_desktop::here::guest_label, |(name, _)| name)
+    }
+
     /// Tell the surface who holds each window this page's person may not
     /// close or move, and which agent run opened each window an agent
     /// opened, on a desktop shared through a workspace. Whether that changed
@@ -892,6 +902,12 @@ impl Mount {
         // over a slow link takes tens of seconds to arrive.
         value["appsLoading"] = desktop
             .map(|d| d.shared.loading_apps())
+            .unwrap_or_default()
+            .into();
+        // Where each window stands (`arriving`, `landed`, `drawn`, `could-not-open` with why), by
+        // its tab in hex: what a caller that opened a window waits on.
+        value["windows"] = desktop
+            .map(|d| d.shared.window_states(&d.handle))
             .unwrap_or_default()
             .into();
     }
@@ -1363,7 +1379,7 @@ struct Presentation {
     stores: Rc<RefCell<Vec<RecordStore>>>,
     /// The workspace's files, as the page's search reads them.
     files: Option<Rc<crate::page_files::WorkspaceFiles>>,
-    checkout: Option<RecordCheckout>,
+    checkout: Option<DocumentCheckout>,
     images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     image_owners: crate::page_content::ImageOwners,
     desktop: Option<Desktop>,
@@ -2685,6 +2701,7 @@ impl Mount {
             desktop
                 .handle
                 .set_viewport_width(f64::from(viewport.logical_size().0));
+            desktop.post_workspace_notices();
             desktop.announce_agents_finished();
             desktop.offer_uploads(false);
             desktop.follow_notice_choices();

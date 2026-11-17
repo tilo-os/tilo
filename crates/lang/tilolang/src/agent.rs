@@ -17,7 +17,7 @@ pub const APP: &str = "tilo.agent";
 
 pub const NS: &str = "agent";
 
-/// The person the session acts for: a `Principal`, a value rather than a word.
+/// The person the session acts for: an `Actor`, a value rather than a word.
 pub const ME: &str = "me";
 
 /// The kinds of block `grep(not: .kind)` leaves out: the text parsers' kinds, the same words `grep`'s
@@ -57,7 +57,7 @@ pub const FUNCTIONS: &[Function] = &[
             ("in", "List<host.Resource>"),
             ("not", "List<Text>"),
             ("changed", "Text"),
-            ("mentions", "Principal"),
+            ("mentions", "Actor"),
         ],
         result: "List<host.Match>",
     },

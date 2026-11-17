@@ -369,7 +369,7 @@ pub mod undo;
 pub mod uri;
 pub mod view;
 pub mod virtual_viewport;
-pub mod window_channel;
+pub mod window_link;
 pub mod window_name;
 pub mod window_pictures;
 pub mod window_share;
@@ -449,7 +449,7 @@ pub use reader_hud::{
     HudAction, HudControls, HudPlacement, HudSide, HudSwatch, MarkerDrag, SelectionHud,
 };
 pub use record::{
-    RecordCheckout, RecordId, RecordKind, RecordRef, RecordRefusal, RecordSet, RecordStore,
+    DocumentCheckout, DocumentId, DocumentRef, RecordRefusal, RecordSet, RecordStore, ResourceType,
 };
 pub use remote_actions::{
     CancellationCall, CatalogueCall, Followed, InvocationCall, RemoteActions, RemoteActionsGuard,

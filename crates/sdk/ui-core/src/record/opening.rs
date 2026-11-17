@@ -17,13 +17,13 @@ use std::sync::{Arc, Mutex, mpsc};
 use automerge::AutoCommit;
 use tilo_lock::MutexRecover as _;
 
-use super::{Parked, RecordCheckout, RecordId, RecordOpenError, RecordSet, RecordStore};
+use super::{DocumentCheckout, DocumentId, Parked, RecordOpenError, RecordSet, RecordStore};
 
 type Decoded = Result<app_state::DecodedBytes, app_state::StoreError>;
 
 /// A record whose bytes are being decoded on a thread of their own.
 pub(super) struct Opening {
-    checkout: RecordCheckout,
+    checkout: DocumentCheckout,
     owner: Rc<app_state::DocOwner>,
     decoded: mpsc::Receiver<Decoded>,
     /// The windows to wake when the decoding is done.
@@ -31,7 +31,7 @@ pub(super) struct Opening {
 }
 
 impl RecordSet {
-    fn begin_opening(&mut self, want: &RecordCheckout) -> Result<bool, RecordOpenError> {
+    fn begin_opening(&mut self, want: &DocumentCheckout) -> Result<bool, RecordOpenError> {
         // Only the workspace's own document of a store this set owns: a portable cache is already
         // in memory, and a native workspace's record comes from its broker read.
         if !want.id.is_package_primary()
@@ -83,7 +83,7 @@ impl RecordSet {
     /// document. `None` when it is not opening.
     pub(super) fn opening_route(
         &self,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
     ) -> Option<Result<crate::collaboration::RouteSpec, RecordOpenError>> {
         let opening = self.opening.get(&want.id)?;
         Some(if opening.checkout.kind == want.kind {
@@ -97,7 +97,7 @@ impl RecordSet {
     /// it is open from then on, as [`Self::try_open_record`] opens it. Whether it is.
     pub(super) fn take_in_opening(
         &mut self,
-        id: &RecordId,
+        id: &DocumentId,
         wait: bool,
     ) -> Result<bool, RecordOpenError> {
         let Some(opening) = self.opening.get(id) else {
@@ -146,7 +146,7 @@ impl RecordStore {
     ///
     /// # Errors
     /// The record's owner or bytes cannot be had.
-    pub fn begin_opening(&self, want: &RecordCheckout) -> Result<bool, RecordOpenError> {
+    pub fn begin_opening(&self, want: &DocumentCheckout) -> Result<bool, RecordOpenError> {
         self.0
             .try_borrow_mut()
             .map_err(|_| RecordOpenError::Busy)?
@@ -162,7 +162,7 @@ impl RecordStore {
 
     /// Whether the record `id` is being opened off the frame and is not taken in yet.
     #[must_use]
-    pub fn is_opening(&self, id: &RecordId) -> bool {
+    pub fn is_opening(&self, id: &DocumentId) -> bool {
         self.0
             .try_borrow()
             .is_ok_and(|set| set.opening.contains_key(id))
@@ -170,7 +170,7 @@ impl RecordStore {
 
     /// The record `want` as it opens off the frame.
     #[must_use]
-    pub fn opening(&self, want: &RecordCheckout) -> RecordOpening {
+    pub fn opening(&self, want: &DocumentCheckout) -> RecordOpening {
         RecordOpening {
             records: self.clone(),
             checkout: want.clone(),
@@ -183,7 +183,7 @@ impl RecordStore {
 #[derive(Clone)]
 pub struct RecordOpening {
     records: RecordStore,
-    checkout: RecordCheckout,
+    checkout: DocumentCheckout,
 }
 
 impl std::fmt::Debug for RecordOpening {
@@ -197,7 +197,7 @@ impl std::fmt::Debug for RecordOpening {
 impl RecordOpening {
     /// The record this is the opening of.
     #[must_use]
-    pub fn checkout(&self) -> &RecordCheckout {
+    pub fn checkout(&self) -> &DocumentCheckout {
         &self.checkout
     }
 
@@ -251,13 +251,15 @@ mod tests {
     use automerge::{AutoCommit, ROOT, ReadDoc as _};
     use durable_store::{Durability, DurableStore};
 
-    use super::super::{RecordCheckout, RecordKind, RecordOpenError, RecordOwners, RecordStore};
+    use super::super::{
+        DocumentCheckout, RecordOpenError, RecordOwners, RecordStore, ResourceType,
+    };
 
     const PACKAGE: &str = "so.tilo.opening-test";
     const WORKSPACE: &str = "3f2b1c00-0000-4000-8000-0000000000e1";
 
-    fn primary() -> RecordCheckout {
-        RecordCheckout::package_primary(RecordKind::new("opening.test"))
+    fn primary() -> DocumentCheckout {
+        DocumentCheckout::package_primary(ResourceType::new("opening.test"))
     }
 
     /// The workspace's own document of a profile at `root`, holding `body` as an earlier session

@@ -157,7 +157,7 @@ impl Served {
         let mut tree = handle.read(Clone::clone);
         let mut retained = AutoCommit::new();
         stamp(&mut retained, &tree, 1_000);
-        tree.workspaces[0].strips[0].name = "Renamed".into();
+        tree.workspaces[0].name = "Renamed".into();
         stamp(&mut retained, &tree, 2_000);
         let document = Rc::new(std::cell::RefCell::new(retained));
         let retained = RetainedHistory {
@@ -189,9 +189,9 @@ impl Served {
             .update(&AutoCommit::new(), &ui::automerge::ROOT);
     }
 
-    /// Someone renames the strip: the history moves.
+    /// Someone renames the workspace: the history moves.
     fn rename(&mut self, name: &str, at_ms: i64) {
-        self.tree.workspaces[0].strips[0].name = name.into();
+        self.tree.workspaces[0].name = name.into();
         stamp(&mut self.document.borrow_mut(), &self.tree, at_ms);
     }
 

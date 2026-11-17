@@ -17,6 +17,18 @@ impl Shared {
         self.wake.wake();
     }
 
+    /// Say `notice` over the windows for a while ([`super::DesktopHandle::notice`]): a notice with
+    /// a button stays long enough to reach it.
+    pub(super) fn say(&self, notice: ui::window_toolbar::ToolbarNotice) {
+        let lifetime = if notice.actions.is_empty() {
+            ui::widget::toast::NOTICE_LIFETIME
+        } else {
+            ui::widget::toast::ACTION_NOTICE_LIFETIME
+        };
+        self.notice.borrow_mut().show_for(notice, lifetime);
+        self.wake.wake();
+    }
+
     /// Close the window `tab` as the person does, saying what closed with the Undo that reopens
     /// it (the reopen Shift+Super+T makes).
     pub(super) fn close(
@@ -24,19 +36,21 @@ impl Shared {
         tab: tilo_desktop_model::TabId,
     ) -> Option<tilo_desktop_model::RemovedTab> {
         let removed = self.tree.close_tab(tab)?;
-        let reopen = Rc::clone(&self.reopen);
-        self.acknowledger.say_with_action(
-            crate::i18n::t_args(
-                "shell-window-closed",
-                &[(
-                    "window",
-                    super::tile_content::window_name(&removed.tab).into(),
-                )],
-            ),
-            crate::i18n::t("shell-window-closed-undo"),
-            move || reopen(),
+        let said = crate::i18n::t_args(
+            "shell-window-closed",
+            &[(
+                "window",
+                super::tile_content::window_name(&removed.tab).into(),
+            )],
         );
-        self.wake.wake();
+        self.say(
+            ui::window_toolbar::ToolbarNotice::new(said, ui::widget::toast::ToastKind::Info)
+                .action(ui::window_toolbar::ToolbarAction::new(
+                    super::REOPEN_CLOSED,
+                    "undo-2",
+                    crate::i18n::t("shell-window-closed-undo"),
+                )),
+        );
         Some(removed)
     }
 
@@ -64,6 +78,7 @@ impl Shared {
             window_offers: Vec::new(),
             workspace_shares: None,
             workspace_share_asks: Vec::new(),
+            new_strip_moves: Vec::new(),
             asking: std::collections::BTreeSet::new(),
             opens: true,
             revision: 1,
@@ -94,6 +109,7 @@ impl Shared {
             search_refusal: None,
             search_asks: Vec::new(),
             shown_search: super::search::ShownSearch::default(),
+            drawn: std::collections::BTreeSet::new(),
             typed_field: Err(super::search::TypedRefusal::NoField),
             typed_ask: None,
             personal_ask: None,
@@ -107,8 +123,7 @@ impl Shared {
             unresponsive: std::collections::BTreeSet::new(),
             unresponsive_revision: 0,
             liveness: Vec::new(),
-            acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
-            reopen: Rc::new(|| {}),
+            notice: Rc::default(),
             notifications: None,
             #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
             peers: Rc::new(RefCell::new(super::peer_view::PeerSurfaces::default())),

@@ -116,7 +116,7 @@ What breaks:
 ### Opening and arranging windows: the desktop's id-addressed commands as actions
 
 The desktop model already names everything by id (`DesktopCommand`: `OpenTab`,
-`OpenApp`, `MoveGroup`, `CreateStrip`, `RenameStrip`, `SetArrangement`,
+`OpenApp`, `MoveGroup`, `CreateStrip`, `RenameStrip`, `SetLayout`,
 `PlaceGroup`). Publish these to the local broker as the `so.tilo.desktop`
 resource's actions, with the same rules as every other action: Undoable, in
 History, and attributed to the agent on behalf of its person. They don't get a

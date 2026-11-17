@@ -38,7 +38,7 @@ pub const NETWORK: &str = tilo_connectivity_service::NETWORK;
 const TOUCHPAD: &str = crate::controls::INPUT_RESOURCE;
 /// The keyboard's backlight, the system service's.
 pub const KEYBOARD_BACKLIGHT: &str = tilo_system_service::KEYBOARD_BACKLIGHT;
-/// The displays: the session's own, their arrangements and their brightness.
+/// The displays: the session's own, their modes and their brightness.
 const DISPLAYS: &str = crate::displays::RESOURCE;
 /// The machine's power policy, the power service's: what the power key does.
 pub const SLEEP: &str = tilo_session_power::SLEEP;

@@ -142,6 +142,8 @@ const membership = tab => tab.evaluate(`(() => {
 // shows as here, and the names in every semantic node a screen reader reads.
 const snapshot = async tab => {
   await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  // The tree is built in a task of its own after the frame it describes, so
+  // the status that carries it is a later one than the request's.
   await sleep(300);
   return JSON.parse(await tab.evaluate(`(() => {
     // One field the page cannot answer yet is said as it is, never as no
@@ -214,17 +216,16 @@ const dump = async (tab, name) => {
 // showed instead. A page that never shows something is the failure, not a
 // timeout to stretch.
 //
-// The page does the waiting, not the driver: one round trip that resolves when
-// the condition holds, instead of a round trip every 250 ms. Each of those
-// costs the page's main thread — the same thread that is drawing its frames —
-// a turn between frames, so a wait of forty polls was adding forty turns of
-// work to the very page it waited for.
+// The page does the waiting, not the driver: it reads the condition again on
+// each change it shows (`tab.waitFor`), instead of a round trip every 250 ms.
+// Each of those costs the page's main thread — the same thread that is drawing
+// its frames — a turn between frames, so a wait of forty polls was adding
+// forty turns of work to the very page it waited for.
 const until = async (tab, expression, what, timeout = stepLimit(3), more = null) => {
   // The frames the shell had presented as the wait began, kept in the page,
   // so a wait that runs out says whether the shell drew at all meanwhile.
-  const value = await tab.evaluate(`(globalThis.__tiloWaitFrames = globalThis.tiloMount?.state()?.frames ?? 0,
-    globalThis.__tiloWait?.(() => (${expression}), ${timeout}) ?? false)`)
-    .catch(() => false);
+  await tab.evaluate('globalThis.__tiloWaitFrames = globalThis.tiloMount?.state()?.frames ?? 0').catch(() => {});
+  const value = await tab.waitFor(expression, {timeout}).catch(() => false);
   if (value) return value;
   // Where the page stopped, in the failure line itself: the step it was in
   // says more than the wait that ran out.
@@ -247,23 +248,6 @@ const until = async (tab, expression, what, timeout = stepLimit(3), more = null)
   await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
   await failed(`${what} never appeared${timeout >= 1000 ? ` in ${timeout / 1000} s` : ''}: ${shown}${extra ? `; ${extra}` : ''}; the machine: ${waits.machine().text}`, tab);
 };
-// The page's own wait, in every page this file opens: `ask` until it answers
-// something true, or `ms` has passed, resolved as it answers.
-const waitSource = `(() => {
-  if (globalThis.__tiloWait) return;
-  globalThis.__tiloWait = (ask, ms) => new Promise(resolve => {
-    const deadline = performance.now() + ms;
-    const turn = () => {
-      let value = false;
-      try { value = ask(); } catch (error) { value = false; }
-      if (value) return resolve(value);
-      if (performance.now() > deadline) return resolve(false);
-      setTimeout(turn, 50);
-    };
-    turn();
-  });
-})();`;
-
 // Keys as the desktop's search reads them (its own scripts drive it this
 // way): the chord, the query, Enter.
 //
@@ -288,12 +272,15 @@ const type = async (tab, text) => {
     event(tab, {type: 'keyDown', key: ch, text: ch}),
     event(tab, {type: 'keyUp', key: ch}),
   ]));
+  // The shell reads the query on its next frame; the wait that follows is on
+  // its own answer to it.
   await sleep(600);
 };
 // The names the command palette shows, in order, as the desktop publishes
 // them: its query field, its result rows and its actions.
 const paletteRows = async tab => {
   await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()');
+  // As `snapshot`: the tree arrives in a status of its own after the frame.
   await sleep(500);
   return JSON.parse(await tab.evaluate(`(() => {
     let rows = null;
@@ -321,9 +308,7 @@ const settle = (tab, by = 2, owed = () => true) => waits.settle({
   evaluate: tab.evaluate.bind(tab),
   by,
   owed,
-  sleep,
   timeoutMs: stepLimit(3),
-  pollMs: 100,
   onTimeout: ({from, by}) => until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
     `the shell stepping ${by} more frame(s) from frame ${from} in ${stepLimit(3) / 1000} s`, 1),
 });
@@ -335,10 +320,8 @@ const settle = (tab, by = 2, owed = () => true) => waits.settle({
 const drawn = (tab, by = 2) => waits.settle({
   evaluate: tab.evaluate.bind(tab),
   by,
-  sleep,
   idleMs: stepLimit(1),
   timeoutMs: stepLimit(3),
-  pollMs: 100,
 });
 // Seconds from `from` to now, and the frames the shell has presented: what the
 // timing lines below print.
@@ -398,10 +381,9 @@ const search = async (tab, command, query, row, opens = null) => {
   // What the chord did, said before the long wait: a key the page took and the
   // shell did not answer is the shell's, not the key's, and a failure that
   // waited a minute to say "closed" never said which it was.
-  const opened = await tab.evaluate(
-    `globalThis.__tiloWait?.(() => { const s = globalThis.tiloMount?.state?.() ?? null;
-      return !!s?.searchOpen && ['workspace', 'everywhere'].includes(s.searchCard?.scope); }, 3000) ?? false`,
-  ).catch(() => false);
+  const opened = await tab.waitFor(`(() => { const s = globalThis.tiloMount?.state?.() ?? null;
+    return !!s?.searchOpen && ['workspace', 'everywhere'].includes(s.searchCard?.scope); })()`, {timeout: 3000})
+    .catch(() => false);
   if (!opened) {
     const card = await tab.evaluate('JSON.stringify(globalThis.tiloMount?.state()?.searchCard ?? null)').catch(() => 'null');
     console.error(`the search chord opened nothing after ${Date.now() - chorded} ms (scope=${await openScope()}, card=${card})`);
@@ -427,27 +409,19 @@ const search = async (tab, command, query, row, opens = null) => {
     const card = s?.searchCard ?? null;
     return card && s.searchSearching === false && card.query === ${asked} ? JSON.stringify(card) : '';
   })()`;
-  let card = null;
-  let last = null;
-  const deadline = Date.now() + stepLimit(3);
-  for (;;) {
-    const read = await until(tab, answered, `the shell answering "${query}"`, stepLimit(3));
-    card = JSON.parse(read);
-    if (card.rows[0]?.title === row) break;
-    // The same settled answer twice is the shell's answer, not a frame of one
-    // still coming: a palette that offers something else first is the failure.
-    if (read === last || Date.now() > deadline) {
-      const rows = await paletteRows(tab);
-      await dump(tab, `timeout-rows-for-${query}`);
-      const offered = card.rows?.map(entry => `${entry.title} [${entry.kind}]`) ?? rows;
-      // The groups an empty card lists say which sources the shell has at all:
-      // the page's own list apps and windows, the session's list settings, people
-      // and files. Which of them stands tells a search over no apps from one
-      // whose app list is empty.
-      const empty = await emptyCard(tab, command);
-      failed(`the palette offers no ${row} first for "${query}" in the ${card.scope ?? '?'} search: ${JSON.stringify(offered)}; with nothing typed it offers ${JSON.stringify(empty)}`);
-    }
-    last = read;
+  const card = JSON.parse(await until(tab, answered, `the shell answering "${query}"`, stepLimit(3)));
+  if (card.rows[0]?.title !== row) {
+    // The settled card is the shell's answer, not a frame of one still coming:
+    // a palette that offers something else first is the failure.
+    const rows = await paletteRows(tab);
+    await dump(tab, `timeout-rows-for-${query}`);
+    const offered = card.rows?.map(entry => `${entry.title} [${entry.kind}]`) ?? rows;
+    // The groups an empty card lists say which sources the shell has at all:
+    // the page's own list apps and windows, the session's list settings, people
+    // and files. Which of them stands tells a search over no apps from one
+    // whose app list is empty.
+    const empty = await emptyCard(tab, command);
+    failed(`the palette offers no ${row} first for "${query}" in the ${card.scope ?? '?'} search: ${JSON.stringify(offered)}; with nothing typed it offers ${JSON.stringify(empty)}`);
   }
   const chosen = card.rows;
   // Enter is what opens the app: the watch is in the page before the press, so
@@ -479,7 +453,7 @@ const emptyCard = async (tab, command) => {
   if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen').catch(() => false)) {
     await key(tab, 'k', command);
   }
-  await tab.evaluate('globalThis.__tiloWait?.(() => globalThis.tiloMount?.state()?.searchSearching === false, 20000)').catch(() => false);
+  await tab.waitFor('globalThis.tiloMount?.state()?.searchSearching === false', {timeout: 20_000}).catch(() => false);
   const card = JSON.parse(await tab.evaluate('JSON.stringify(globalThis.tiloMount?.state()?.searchCard ?? null)').catch(() => 'null'));
   return card?.rows?.map(entry => `${entry.title} [${entry.kind}]`) ?? null;
 };
@@ -583,13 +557,16 @@ const click = async (tab, x, y) => {
     ...['mousePressed', 'mouseReleased'].map(type =>
       tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', clickCount: 1})),
   ]);
+  // The press is the page's to take on its next frame; what it opened is read
+  // after this, and the waits themselves end on the page's changes.
   await sleep(600);
 };
 // The centre of the first semantic node named `name`, in page pixels.
 // The `nth` control drawn under `name` (a negative index counts from the
 // last): a shell's floating card and the app's own panel can offer the same
 // control, and a person's press is the one they can reach.
-const find = (tab, name, nth = 0) => tab.evaluate(`(() => {
+// [`find`] as the page-side expression a wait reads: the node's JSON, or ''.
+const found = (name, nth = 0) => `(() => {
   const found = [];
   const node = n => { found.push({name: n.name ?? '', bounds: n.bounds ?? n.rect ?? null}); (n.children || []).forEach(node); };
   const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
@@ -598,7 +575,28 @@ const find = (tab, name, nth = 0) => tab.evaluate(`(() => {
   const matches = found.filter(n => n.name === ${JSON.stringify(name)} && n.bounds);
   const nth = ${nth};
   return JSON.stringify(matches[nth < 0 ? matches.length + nth : nth] ?? null);
-})()`);
+})()`;
+const find = (tab, name, nth = 0) => tab.evaluate(found(name, nth));
+// The first node named `name` the desktop publishes, once it does, or null.
+// The tree is asked for once (the runtime then publishes every change to it)
+// and the wait ends on the page's own changes, so it costs the page no turns.
+const published = async (tab, name, what, timeout = stepLimit(3), nth = 0) => {
+  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  // `found` answers "null" (a string, so true) when the node is not there.
+  const node = await tab.waitFor(found(name, nth), {timeout}).catch(() => null);
+  if (!node || node === 'null') {
+    await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+    await failed(`${what} never appeared: ${name}`, tab);
+  }
+  return JSON.parse(node);
+};
+// Where a node is, once the page publishes it, or null: the caller says what
+// its absence means.
+const maybePublished = async (tab, name, timeout = stepLimit(3)) => {
+  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  const node = await tab.waitFor(found(name), {timeout}).catch(() => null);
+  return node && node !== 'null' ? JSON.parse(node) : null;
+};
 // The page point at the centre of a node's `bounds`, in canvas coordinates.
 const centreOfNode = async (tab, node) => {
   const [x0, y0, x1, y1] = Array.isArray(node.bounds)
@@ -611,23 +609,13 @@ const centreOfNode = async (tab, node) => {
 // Where Notes' New note button is drawn: in Notes' window, wherever on the
 // strip the search brought it.
 const notesPoint = async tab => {
-  for (let tries = 0; tries < 20; tries++) {
-    await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-    await sleep(200);
-    const node = JSON.parse(await find(tab, 'New note'));
-    if (node) return centreOfNode(tab, node);
-  }
-  return null;
+  const node = await maybePublished(tab, 'New note');
+  return node ? centreOfNode(tab, node) : null;
 };
 // Where Sheets' cell B2 is drawn, once the desktop publishes it.
 const sheetCell = async tab => {
-  for (let tries = 0; tries < 20; tries++) {
-    await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-    await sleep(200);
-    const node = JSON.parse(await find(tab, 'B2'));
-    if (node) return centreOfNode(tab, node);
-  }
-  return null;
+  const node = await maybePublished(tab, 'B2');
+  return node ? centreOfNode(tab, node) : null;
 };
 // The names of the nodes drawn at page point (x, y), innermost first.
 const namesAt = async (tab, x, y) => {
@@ -671,24 +659,15 @@ const press = async (tab, name, nth = 0) => {
   await click(tab, x, y);
   return true;
 };
-// Press the control `name` once the desktop publishes it: the tree is read
-// again until the control is there, then pressed where it is drawn.
+// Press the control `name` once the desktop publishes it, where it is drawn.
 const pressWhen = async (tab, name, what, timeout = stepLimit(3), nth = 0) => {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-    if (await press(tab, name, nth)) return;
-    if (Date.now() > deadline) {
-      await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-      failed(`${what} never appeared: ${name}`);
-    }
-    await sleep(300);
-  }
+  if (!await published(tab, name, what, timeout, nth)) return;
+  if (!await press(tab, name, nth)) failed(`${what} went before it could be pressed: ${name}`);
 };
 // Who stands under the navigation row named `name`: a list publishes its rows
 // flat, each with the level it stands at, so a row's people are the rows that
 // follow it one level deeper, up to the next row at its own.
-const rowsUnder = (tab, name) => tab.evaluate(`(() => {
+const rowsUnder = (name) => `(() => {
   let found = null;
   const collect = node => {
     if (found && found.length) return;
@@ -707,10 +686,13 @@ const rowsUnder = (tab, name) => tab.evaluate(`(() => {
   const root = globalThis.tiloMount?.state()?.semantics?.root;
   if (root) walk(root);
   return JSON.stringify(found);
-})()`);
+})()`;
 // The call as the page reads it: its phase, whether its microphone runs and
 // what left and arrived over the plane.
-const callOn = async tab => JSON.parse(await tab.evaluate('JSON.stringify(globalThis.tiloMount?.call?.() ?? null)'));
+// The call as the page holds it, as page code the waits above read, and as
+// the JSON this driver reads.
+const CALL = '(globalThis.tiloMount?.call?.() ?? null)';
+const callOn = async tab => JSON.parse(await tab.evaluate(`JSON.stringify(${CALL})`));
 
 // A person's browser, its window the size the desktop draws for before it
 // draws: resizing a presented surface suspends and re-presents it, and keys
@@ -729,7 +711,6 @@ const anotherBrowser = async () => {
   const tab = await launched.tab();
   await tab.send('Emulation.setDeviceMetricsOverride', shellMetrics).catch(() => {});
   await returning(tab);
-  await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: waitSource});
   await recordLoading(launched, tab);
   return tab;
 };
@@ -767,6 +748,8 @@ const mounted = async (tab, name) => {
     status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null,
   })`));
   if (arrival.arrival !== 'done') await failed(`${name} did not arrive: ${JSON.stringify(arrival)}`, tab);
+  // A person looking at their shell before they work in it, as the listeners
+  // below are laid over a page that has settled.
   await sleep(2000);
   // What reached the page's outermost key listener, before the desktop's, and
   // what the desktop's own surface was handed.
@@ -825,41 +808,42 @@ const pageText = tab => tab.evaluate(`(document.body.innerText || '').replace(/\
 const followLink = async (name, link) => {
   const tab = await anotherBrowser();
   await tab.navigate(link);
-  const deadline = Date.now() + stepLimit(3);
-  for (;;) {
-    const card = await pageText(tab);
-    if (card.includes('invited you to')) {
-      writeFileSync(`${out}/${name}-card.txt`, card);
-      const buttons = JSON.parse(await tab.evaluate(
-        `JSON.stringify([...document.querySelectorAll('button')].map(button => button.textContent.trim()))`));
-      return {tab, card, buttons};
-    }
-    if (Date.now() > deadline) {
-      writeFileSync(`${out}/${name}-card.txt`, card);
-      await failed(`${name}'s link showed no invitation: ${card.slice(0, 400)}`, tab);
-    }
-    await sleep(250);
-  }
+  const shown = await tab.waitFor(`(document.body.innerText || '').includes('invited you to')`, {timeout: stepLimit(3)})
+    .catch(() => false);
+  const card = await pageText(tab);
+  writeFileSync(`${out}/${name}-card.txt`, card);
+  if (!shown) await failed(`${name}'s link showed no invitation: ${card.slice(0, 400)}`, tab);
+  const buttons = JSON.parse(await tab.evaluate(
+    `JSON.stringify([...document.querySelectorAll('button')].map(button => button.textContent.trim()))`));
+  return {tab, card, buttons};
 };
 // The first semantic node named `name`, once the page shows it.
-const waitFor = async (tab, name, what, timeout = stepLimit(3)) => {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    const node = JSON.parse(await find(tab, name));
-    if (node) return node;
-    if (Date.now() > deadline) await failed(`${what} never appeared`, tab);
-    await sleep(250);
-  }
+const waitFor = (tab, name, what, timeout = stepLimit(3)) => published(tab, name, what, timeout);
+// The first name the desktop publishes that `test` (page code over a name)
+// accepts, once it does, or null: the tree is asked for once and every change
+// to it wakes the wait.
+const publishedName = async (tab, test, timeout = stepLimit(3)) => {
+  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  const name = await tab.waitFor(`(() => {
+    const out = [];
+    const node = n => { out.push(n.name ?? ''); (n.children || []).forEach(node); };
+    const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+    const root = globalThis.tiloMount?.state()?.semantics?.root;
+    if (root) walk(root);
+    return out.find(${test}) ?? '';
+  })()`, {timeout}).catch(() => '');
+  return name || null;
 };
 // Every value the desktop's semantic tree carries, as the sheet's link is one.
-const nodeValues = tab => tab.evaluate(`JSON.stringify((() => {
+const NODE_VALUES = `(() => {
   const out = [];
   const node = n => { if (n.value) out.push(n.value); (n.children || []).forEach(node); };
   const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
   const root = globalThis.tiloMount?.state()?.semantics?.root;
   if (root) walk(root);
-  return out;
-})())`).then(JSON.parse);
+  return JSON.stringify(out);
+})()`;
+const nodeValues = tab => tab.evaluate(NODE_VALUES).then(JSON.parse);
 
 // A person's call is heard through a microphone and played through a
 // speaker: this machine has no person at it, so the browser carries both —
@@ -991,22 +975,16 @@ try {
   // host's address, its relay and the plane all read from the page that used
   // them.
   const joinedPlane = async (person, who) => {
-    const deadline = Date.now() + stepLimit(3);
     // The plane of the workspace this person joined, by its own id: any
     // other workspace's plane is not theirs.
     const named = `plane ${person.membership.workspace}: `;
-    for (;;) {
-      const channels = await person.tab.evaluate('globalThis.tiloChannels?.() ?? ""');
-      const joined = channels
-        .split('\n')
-        .find(entry => entry.startsWith(named) && /^epoch \d+, reads \d+ device\(s\)/.test(entry.slice(named.length)));
-      if (joined) return joined;
-      if (Date.now() > deadline) {
-        await dump(person.tab, `timeout-plane-${who}`);
-        failed(`${who} joined no live plane: ${channels}`, person.tab);
-      }
-      await sleep(500);
-    }
+    const joined = await person.tab.waitFor(`(globalThis.tiloChannels?.() ?? '').split('\\n')
+      .find(entry => entry.startsWith(${JSON.stringify(named)}) && /^epoch \\d+, reads \\d+ device\\(s\\)/.test(entry.slice(${named.length}))) ?? ''`,
+    {timeout: stepLimit(3)}).catch(() => '');
+    if (joined) return joined;
+    const channels = await person.tab.evaluate('globalThis.tiloChannels?.() ?? ""');
+    await dump(person.tab, `timeout-plane-${who}`);
+    failed(`${who} joined no live plane: ${channels}`, person.tab);
   };
   report.planes = {a: await joinedPlane(a, 'A'), b: await joinedPlane(b, 'B')};
   console.log('ok: both pages joined the live plane');
@@ -1021,21 +999,20 @@ try {
   // cases of a run): the other person is among the rows by their own key, and
   // the person themself never is.
   const theOther = async (person, other, who) => {
-    const deadline = Date.now() + stepLimit(3);
-    for (;;) {
-      const rows = await herePeople(person.tab);
-      const listed = Array.isArray(rows) ? rows : [];
-      if (listed.some(row => row.user === person.membership.userPublicKey)) {
-        failed(`${who} shows themself here: ${JSON.stringify(rows)}`, person.tab);
-      }
-      const row = listed.find(entry => entry.user === other.membership.userPublicKey);
-      if (row) return row;
-      if (Date.now() > deadline) {
-        await dump(person.tab, `timeout-people-${who}`);
-        failed(`${who} does not show the other person here: ${JSON.stringify(rows)}`, person.tab);
-      }
-      await sleep(500);
-    }
+    // The wait answers 'self' the moment the shell lists the person themself,
+    // as it must never do, and the other person's row once it does.
+    const answer = await person.tab.waitFor(`(() => {
+      const listed = globalThis.tiloMount?.people?.() ?? [];
+      const rows = Array.isArray(listed) ? listed : [];
+      if (rows.some(row => row.user === ${JSON.stringify(person.membership.userPublicKey)})) return 'self';
+      const row = rows.find(entry => entry.user === ${JSON.stringify(other.membership.userPublicKey)});
+      return row ? JSON.stringify(row) : '';
+    })()`, {timeout: stepLimit(3)}).catch(() => '');
+    const rows = await herePeople(person.tab);
+    if (answer === 'self') failed(`${who} shows themself here: ${JSON.stringify(rows)}`, person.tab);
+    if (answer) return JSON.parse(answer);
+    await dump(person.tab, `timeout-people-${who}`);
+    failed(`${who} does not show the other person here: ${JSON.stringify(rows)}`, person.tab);
   };
   report.presence = {b: await theOther(b, a, 'B'), a: await theOther(a, b, 'A')};
   if (report.presence.a.id === report.presence.b.id) {
@@ -1059,109 +1036,92 @@ try {
     // a person reaches them.
     await search(a.tab, a.command, 'chat', 'Chat');
     await search(b.tab, b.command, 'chat', 'Chat');
-    await until(b.tab, `(() => { globalThis.tiloMount?.requestSemantics?.();
-      return JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('Message composer'); })()`,
+    await b.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+    await until(b.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('Message composer')`,
       "B's chat composer", stepLimit(4));
 
     // A starts the call the way a person does — the shell's search, Chat's own
     // action — and Chat joins the workspace's voice channel muted, as every
     // Tilo call starts, with the call's card as the window's own reading of it.
-    const cardReads = tab => tab.evaluate(`(() => {
-      globalThis.tiloMount?.requestSemantics?.();
+    // The card's nodes as the page-side expression a wait reads: every value
+    // that counts a call's run time.
+    const CARDS = `(() => {
       const found = [];
       const node = n => { found.push(n); (n.children || []).forEach(node); };
       const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
       const root = globalThis.tiloMount?.state()?.semantics?.root;
       if (root) walk(root);
       return JSON.stringify(found.filter(n => n.value && /^\\d+:\\d{2}$/.test(n.value)) ?? []);
-    })()`);
+    })()`;
+    const cardReads = async tab => {
+      await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+      return tab.evaluate(CARDS);
+    };
     // The call's card as this page reads it: the person it names and the run
     // time it counts, once the card is there and counting.
     const untilCard = async (person, who, what, timeout = stepLimit(4)) => {
-      const deadline = Date.now() + timeout;
-      let cards = [];
-      for (;;) {
-        cards = JSON.parse(await cardReads(person.tab));
-        const card = cards.find(node => node.name === who);
-        if (card) return card;
-        if (Date.now() > deadline) {
-          await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-          // Who this page shows as here, by device and by person: a card that
-          // cannot name someone says whether their person was known at all.
-          const here = await herePeople(person.tab).catch(() => null);
-          failed(`${what} does not read ${JSON.stringify(who)} with a run time: ${JSON.stringify(cards)}; here: ${JSON.stringify(here)}`);
-        }
-        await sleep(300);
-      }
+      await person.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+      const answer = await person.tab.waitFor(`(() => {
+        const card = JSON.parse(${CARDS}).find(node => node.name === ${JSON.stringify(who)});
+        return card ? JSON.stringify(card) : '';
+      })()`, {timeout}).catch(() => '');
+      if (answer) return JSON.parse(answer);
+      const cards = JSON.parse(await cardReads(person.tab));
+      await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+      // Who this page shows as here, by device and by person: a card that
+      // cannot name someone says whether their person was known at all.
+      const here = await herePeople(person.tab).catch(() => null);
+      failed(`${what} does not read ${JSON.stringify(who)} with a run time: ${JSON.stringify(cards)}; here: ${JSON.stringify(here)}`);
     };
     const noCard = async (person, what, timeout = stepLimit(3)) => {
-      const deadline = Date.now() + timeout;
-      for (;;) {
-        const cards = JSON.parse(await cardReads(person.tab));
-        if (!cards.length) return;
-        if (Date.now() > deadline) {
-          await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-          failed(`${what}: the call's card still reads ${JSON.stringify(cards)}`);
-        }
-        await sleep(300);
-      }
+      await person.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+      const gone = await person.tab.waitFor(`JSON.parse(${CARDS}).length === 0`, {timeout}).catch(() => false);
+      if (gone) return;
+      const cards = JSON.parse(await cardReads(person.tab));
+      await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+      failed(`${what}: the call's card still reads ${JSON.stringify(cards)}`);
     };
     const untilLive = async (person, what, timeout = stepLimit(4)) => {
-      const deadline = Date.now() + timeout;
-      let call = null;
-      for (;;) {
-        call = await callOn(person.tab);
-        if (call?.phase === 'live') return call;
-        if (Date.now() > deadline) {
-          await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-          failed(`${what}: the call never went live (${JSON.stringify(call)})`);
-        }
-        await sleep(300);
-      }
+      const live = await person.tab.waitFor(`${CALL}?.phase === 'live'`, {timeout}).catch(() => false);
+      if (live) return callOn(person.tab);
+      const call = await callOn(person.tab);
+      await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+      failed(`${what}: the call never went live (${JSON.stringify(call)})`);
     };
     // Both microphones running: the page's audio session captures the
     // browser's synthetic device, which is what puts frames on the plane.
     const untilCapture = async (person, what, timeout = stepLimit(3)) => {
-      const deadline = Date.now() + timeout;
-      let call = null;
-      for (;;) {
-        call = await callOn(person.tab);
-        if (call?.phase === 'live' && call.captureActive) return call;
-        if (Date.now() > deadline) {
-          await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-          failed(`${what}: the microphone never started (${JSON.stringify(call)})`);
-        }
-        await sleep(300);
-      }
+      const running = await person.tab.waitFor(`(() => { const call = ${CALL} ?? {};
+        return call.phase === 'live' && call.captureActive === true; })()`, {timeout}).catch(() => false);
+      if (running) return callOn(person.tab);
+      const call = await callOn(person.tab);
+      await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+      failed(`${what}: the microphone never started (${JSON.stringify(call)})`);
     };
     // The call this page takes part in, once it is over.
     const untilNotLive = async (person, what, timeout = stepLimit(3)) => {
-      const deadline = Date.now() + timeout;
-      let call = null;
-      for (;;) {
-        call = await callOn(person.tab);
-        if (call?.phase !== 'live') return call;
-        if (Date.now() > deadline) failed(`${what}: the call is still live (${JSON.stringify(call)})`);
-        await sleep(300);
-      }
+      const over = await person.tab.waitFor(`${CALL}?.phase !== 'live'`, {timeout}).catch(() => false);
+      if (over) return callOn(person.tab);
+      failed(`${what}: the call is still live (${JSON.stringify(await callOn(person.tab))})`);
     };
     // What `sender`'s microphone published and `listener` heard of it: one
     // count per page, the frames the plane carried between them.
     const flows = async (sender, listener, what, timeout = stepLimit(4)) => {
+      // What each page's own count says, read in the page as it changes: one
+      // deadline for both, as the wait it replaces had.
       const deadline = Date.now() + timeout;
-      let observed = null;
-      for (;;) {
-        const sent = await callOn(sender.tab);
-        const heard = await callOn(listener.tab);
-        observed = {sent: sent?.counters ?? null, heard: heard?.counters ?? null};
-        if ((sent?.counters?.frames ?? 0) > 20 && (heard?.counters?.heard ?? 0) > 20) return observed;
-        if (Date.now() > deadline) {
-          await dump(sender.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-          await dump(listener.tab, `timeout-hearing-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-          failed(`${what}: no audio crossed (${JSON.stringify(observed)})`);
-        }
-        await sleep(500);
-      }
+      const counter = (tab, field) => tab.waitFor(`(${CALL}?.counters?.${field} ?? 0) > 20`,
+        {timeout: Math.max(1, deadline - Date.now())}).catch(() => false);
+      const sent = await counter(sender.tab, 'frames');
+      const heard = await counter(listener.tab, 'heard');
+      const observed = {
+        sent: (await callOn(sender.tab))?.counters ?? null,
+        heard: (await callOn(listener.tab))?.counters ?? null,
+      };
+      if (sent && heard) return observed;
+      await dump(sender.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+      await dump(listener.tab, `timeout-hearing-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+      failed(`${what}: no audio crossed (${JSON.stringify(observed)})`);
     };
 
     await search(a.tab, a.command, 'start a call', 'Start a call');
@@ -1172,36 +1132,26 @@ try {
     // B is rung: the workspace's voice channel, in B's own channel list, now
     // names A in it.
     const untilChannelPeople = async (person, channel, who, what, timeout = stepLimit(4)) => {
-      const deadline = Date.now() + timeout;
-      let people = null;
-      for (;;) {
-        await person.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-        people = JSON.parse(await rowsUnder(person.tab, channel));
-        if (people && people.includes(who)) return people;
-        if (Date.now() > deadline) {
-          await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-          failed(`${what}: ${channel} lists ${JSON.stringify(people)}`);
-        }
-        await sleep(300);
-      }
+      await person.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+      const listed = await person.tab.waitFor(`(JSON.parse(${rowsUnder(channel)}) ?? []).includes(${JSON.stringify(who)})`, {timeout})
+        .catch(() => false);
+      const people = JSON.parse(await person.tab.evaluate(rowsUnder(channel)));
+      if (listed) return people;
+      await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+      failed(`${what}: ${channel} lists ${JSON.stringify(people)}`);
     };
     const ring = await untilChannelPeople(b, 'voice', nameA, "the call's channel in B");
     console.log(`ok: B is rung: voice lists ${ring.join(', ')}`);
     mark('B rung and the call listed');
     // Nobody is left in the channel: what each shell sees once the call ended.
     const untilChannelEmpty = async (person, channel, what, timeout = stepLimit(3)) => {
-      const deadline = Date.now() + timeout;
-      let people = null;
-      for (;;) {
-        await person.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-        people = JSON.parse(await rowsUnder(person.tab, channel));
-        if (!people || !people.length) return;
-        if (Date.now() > deadline) {
-          await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-          failed(`${what}: ${channel} still lists ${JSON.stringify(people)}`);
-        }
-        await sleep(300);
-      }
+      await person.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+      const empty = await person.tab.waitFor(`(JSON.parse(${rowsUnder(channel)}) ?? []).length === 0`, {timeout})
+        .catch(() => false);
+      if (empty) return;
+      const people = JSON.parse(await person.tab.evaluate(rowsUnder(channel)));
+      await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+      failed(`${what}: ${channel} still lists ${JSON.stringify(people)}`);
     };
 
     // B opens the same call the same way: joining a call that is on is
@@ -1373,11 +1323,9 @@ try {
   const stripRow = async (what, bar) => {
     await rightClick(a.tab, bar.x, bar.y);
     // The menu is the frame after the click's, and a busy shell draws a few a
-    // second: its rows are read until they are there.
-    let row = null;
-    for (const deadline = Date.now() + stepLimit(1); !row && Date.now() < deadline;) {
-      row = await choose(a.tab, /^(Fill the strip|Give the strip back)$/);
-    }
+    // second: its rows are waited for where the shell publishes them.
+    const offered = await publishedName(a.tab, `name => /^(Fill the strip|Give the strip back)$/.test(name)`, stepLimit(1));
+    const row = offered ? await choose(a.tab, /^(Fill the strip|Give the strip back)$/) : null;
     if (!row) {
       failed(`${what}: a secondary click in the window bar opens no window menu: at ${JSON.stringify(bar)} over ${JSON.stringify(await namesAt(a.tab, bar.x, bar.y))}; shown: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
     }
@@ -1490,11 +1438,11 @@ try {
       // frame reaches the page when the GPU has room for it, which on a busy
       // software rasteriser is seconds later: the open is measured on that
       // frame, so it is waited for, and one that never comes is said below.
-      await a.tab.evaluate(`globalThis.__tiloWait?.(() => {
+      await a.tab.waitFor(`(() => {
         const watch = globalThis.__tiloOpen;
         watch?.read?.();
         return !watch || watch.shownAt !== null;
-      }, ${stepLimit(4)}) ?? false`).catch(() => false);
+      })()`, {timeout: stepLimit(4)}).catch(() => false);
       const marks = await openMarks(a.tab);
       // An open the page's own clock never saw begun or never saw end is not a
       // fast one: it is no reading, and the gate says so instead of counting a
@@ -1625,12 +1573,9 @@ try {
     // before it and is no text menu.
     const shownBefore = new Set(await namesOf(a.tab));
     await rightClick(a.tab, centre.corner.x + (cx0 + cx1) / 2, centre.corner.y + (cy0 + cy1) / 2);
-    let textRow = null;
-    for (const deadline = Date.now() + stepLimit(1); !textRow && Date.now() < deadline;) {
-      textRow = (await namesOf(a.tab))
-        .find(name => /^(Paste|Paste and match style|Copy|Cut|Select all)\b/.test(name) && !shownBefore.has(name)) ?? null;
-      if (!textRow) await sleep(250);
-    }
+    const rows = /^(Paste|Paste and match style|Copy|Cut|Select all)\b/.source;
+    const textRow = await publishedName(a.tab,
+      `name => new RegExp(${JSON.stringify(rows)}).test(name) && !${JSON.stringify([...shownBefore])}.includes(name)`, stepLimit(1));
     if (!textRow) failed('a right-click in a text field offers no text menu');
     report.contextMenu = textRow;
     console.log(`ok: a right-click in a text field offers the text menu (${textRow})`);
@@ -1713,29 +1658,22 @@ try {
     // and the line each one brings, so a press that landed elsewhere and a
     // line that never followed its press read apart.
     const rolePicked = `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('add comments, but cannot edit it')`;
-    let pickedIn = false;
-    for (const deadline = Date.now() + stepLimit(2); !pickedIn && Date.now() < deadline;) {
-      pickedIn = Boolean(await a.tab.evaluate(rolePicked).catch(() => false));
-      if (!pickedIn) await sleep(250);
-    }
+    const pickedIn = await a.tab.waitFor(rolePicked, {timeout: stepLimit(2)}).catch(() => false);
     if (!pickedIn) {
       report.sheet = await dump(a.tab, '8-a-invite-sheet-after-pressing-commenter').catch(() => null);
       await failed(`"add comments, but cannot edit it" never showed under the role choice: ${JSON.stringify(report.sheet?.names ?? null)}`,
         a.tab);
     }
     if (!await press(a.tab, 'Create link')) await failed('the invite sheet offers no Create link', a.tab);
-    const made = await (async () => {
-      const deadline = Date.now() + stepLimit(3);
-      for (;;) {
-        const link = (await nodeValues(a.tab)).find(value => sealedLink.test(value));
-        if (link) return link;
-        if (Date.now() > deadline) {
-          const handed = (await nodeValues(a.tab)).filter(value => /^https?:/.test(value));
-          await failed(`the sheet handed over no short link: ${JSON.stringify(handed)}`, a.tab);
-        }
-        await sleep(250);
-      }
-    })();
+    await a.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+    const made = await a.tab.waitFor(`(() => {
+      const out = JSON.parse(${NODE_VALUES});
+      return out.find(value => new RegExp(${JSON.stringify(sealedLink.source)}).test(value)) ?? '';
+    })()`, {timeout: stepLimit(3)}).catch(() => '');
+    if (!made) {
+      const handed = (await nodeValues(a.tab)).filter(value => /^https?:/.test(value));
+      await failed(`the sheet handed over no short link: ${JSON.stringify(handed)}`, a.tab);
+    }
     report.link = made;
     if (new URL(made).origin !== new URL(site).origin) await failed(`the link is not at this site: ${made}`, a.tab);
     const long = (await nodeValues(a.tab)).find(value => typeof value === 'string' && value.includes('invite='));
@@ -1796,18 +1734,18 @@ try {
       return !!button;
     })()`);
     if (!pressed) await failed('the invitation card went away before Join', c.tab);
-    const arrivalDeadline = Date.now() + stepLimit(6);
-    let offered = null;
-    for (;;) {
-      offered ??= (await snapshot(a.tab)).names.find(name => /^Let .+ in$/.test(name)) ?? null;
-      const arrival = await c.tab.evaluate(`document.documentElement.dataset.arrival ?? null`).catch(() => null);
-      if (arrival === 'done') break;
-      if (arrival === 'stopped') await failed('the invitation did not take: the page stopped', c.tab);
-      if (Date.now() > arrivalDeadline) await failed('the invitation arriving', c.tab);
+    // C's page arriving, watched beside A's: a person the workspace would let in
+    // only with someone's word shows A a "Let … in" row, and that is the
+    // failure. Both pages are waits the tests of which end them.
+    const arrival = await Promise.race([
+      c.tab.waitFor(`document.documentElement.dataset.arrival ?? ''`, {timeout: stepLimit(6)}).catch(() => ''),
+      publishedName(a.tab, `name => /^Let .+ in$/.test(name)`, stepLimit(6)).then(name => name ? `let-in:${name}` : ''),
+    ]);
+    if (arrival.startsWith('let-in:')) {
+      await failed(`the page asked its person to let the invitation's person in (${arrival.slice(7)}); an invitation is its inviter's approval`, a.tab);
     }
-    if (offered) {
-      await failed(`the page asked its person to let the invitation's person in (${offered}); an invitation is its inviter's approval`, a.tab);
-    }
+    if (arrival === 'stopped') await failed('the invitation did not take: the page stopped', c.tab);
+    if (arrival !== 'done') await failed('the invitation arriving', c.tab);
     await mounted(c.tab, 'C');
     const keptC = JSON.parse(await membership(c.tab));
     report.invited = keptC;
@@ -1823,21 +1761,17 @@ try {
 
     // The shell each person is in is the shell the new person is on too: A's
     // People list names them beside B.
-    const rowsAfter = await (async () => {
-      const deadline = Date.now() + stepLimit(3);
-      for (;;) {
-        const rows = await herePeople(a.tab);
-        const listed = Array.isArray(rows) ? rows : [];
-        if (listed.some(row => row.user === keptC.userPublicKey) && listed.some(row => row.id === report.presence.a.id)) {
-          return listed;
-        }
-        if (Date.now() > deadline) {
-          await dump(a.tab, 'timeout-people-invited');
-          await failed(`A's shell does not show the invitation's person beside B: ${JSON.stringify(rows)}`, a.tab);
-        }
-        await sleep(500);
-      }
-    })();
+    const shown = await a.tab.waitFor(`(() => {
+      const listed = globalThis.tiloMount?.people?.() ?? [];
+      const rows = Array.isArray(listed) ? listed : [];
+      return rows.some(row => row.user === ${JSON.stringify(keptC.userPublicKey)})
+        && rows.some(row => row.id === ${JSON.stringify(report.presence.a.id)});
+    })()`, {timeout: stepLimit(3)}).catch(() => false);
+    const rowsAfter = await herePeople(a.tab);
+    if (!shown) {
+      await dump(a.tab, 'timeout-people-invited');
+      await failed(`A's shell does not show the invitation's person beside B: ${JSON.stringify(rowsAfter)}`, a.tab);
+    }
     report.hereAfter = rowsAfter.map(row => ({id: row.id, user: row.user ?? null, label: row.label}));
     const invitedRow = rowsAfter.find(row => row.user === keptC.userPublicKey);
     if (invitedRow.id === report.presence.a.id) await failed('A sees B and the invitation\'s person as one row', a.tab);

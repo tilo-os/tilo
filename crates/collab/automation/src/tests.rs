@@ -10,7 +10,7 @@ use tilo_actions::ActionKey;
 use tilo_actions::action::{ExecutionLocus, OperationKind};
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::contract::{ActionContract, ConfirmationPolicy, ResultSpec, RiskLevel};
-use tilo_actions::outcome::{ActionOutput, InvocationId, InvocationUpdate};
+use tilo_actions::outcome::{ActionOutput, InvocationId as ActionInvocationId, InvocationUpdate};
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
@@ -22,11 +22,11 @@ use tilo_actions::remote::{
 use crate::{
     AGENT_APP_ID, AGENT_FREEFORM_ACTION, AGENT_SUMMARISE_ACTION, AGENT_TASK_ACTION,
     AGENT_TRANSFORM_KIND, ActionCatalog, AskRequest, Binding, CatchUp, CheckErrorKind, Condition,
-    ConfirmationRequest, NoShortcuts, Recovered, RunHooks, RunId, RunMode, RunOutcome, RunReport,
-    RunRequest, RunTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID,
-    Schedule, Selector, Shortcut, Step, StepFailure, StepKind, StepOutcome, StepPath, StepPolicy,
-    StepRecord, StepStatus, StopWatch, TimeOfDay, TriggerSpec, Weekday, check, run,
-    shortcut_resource_id,
+    ConfirmationRequest, InvocationHooks, InvocationId, InvocationMode, InvocationOutcome,
+    InvocationReport, InvocationRequest, InvocationTrigger, NoShortcuts, Recovered,
+    SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Selector, Shortcut,
+    Step, StepEntry, StepFailure, StepKind, StepOutcome, StepPath, StepPolicy, StepStatus,
+    StopWatch, TimeOfDay, TriggerSpec, Weekday, check, run, shortcut_resource_id,
 };
 
 pub(crate) const NOTES: &str = "so.tilo.notes";
@@ -362,7 +362,7 @@ impl ActionHost for FakeHost {
         Some(std::sync::Arc::new(NoteReads))
     }
 
-    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+    fn observe(&self, caller: &Caller, id: &ActionInvocationId) -> Option<InvocationState> {
         let state = self.state.lock().unwrap();
         state
             .ledger
@@ -373,7 +373,7 @@ impl ActionHost for FakeHost {
     fn cancel(
         &self,
         _caller: &Caller,
-        _id: &InvocationId,
+        _id: &ActionInvocationId,
     ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
         tilo_actions::remote::Pending::ready(Err(ActionHostError::NotCancellable {
             reason: "finished".into(),
@@ -390,7 +390,7 @@ pub(crate) struct Hooks {
     settles: AtomicUsize,
 }
 
-impl RunHooks for Hooks {
+impl InvocationHooks for Hooks {
     fn confirm(&self, request: ConfirmationRequest) -> Pending<Option<Confirmation>> {
         self.confirmations.lock().unwrap().push(request);
         Pending::ready(self.confirmation.clone())
@@ -400,7 +400,7 @@ impl RunHooks for Hooks {
         Pending::ready(self.answer.clone())
     }
 
-    fn settle(&self, _invocation: InvocationId) -> Pending<()> {
+    fn settle(&self, _invocation: ActionInvocationId) -> Pending<()> {
         self.settles.fetch_add(1, Ordering::Relaxed);
         Pending::ready(())
     }
@@ -484,20 +484,20 @@ pub(crate) fn run_with(
     host: &FakeHost,
     hooks: &Hooks,
     shortcut: &Shortcut,
-    run_id: RunId,
-    mode: RunMode,
-) -> RunReport {
+    run_id: InvocationId,
+    mode: InvocationMode,
+) -> InvocationReport {
     run_chained(host, hooks, shortcut, run_id, mode, Vec::new())
 }
 
 /// [`run_with`] for a run of `shortcut` no person is watching.
-fn unattended(host: &FakeHost, shortcut: &Shortcut) -> RunReport {
+fn unattended(host: &FakeHost, shortcut: &Shortcut) -> InvocationReport {
     run_with(
         host,
         &Hooks::default(),
         shortcut,
-        RunId::new(),
-        RunMode::Unattended,
+        InvocationId::new(),
+        InvocationMode::Unattended,
     )
 }
 
@@ -507,19 +507,19 @@ fn run_chained(
     host: &FakeHost,
     hooks: &Hooks,
     shortcut: &Shortcut,
-    run_id: RunId,
-    mode: RunMode,
+    run_id: InvocationId,
+    mode: InvocationMode,
     chain: Vec<String>,
-) -> RunReport {
+) -> InvocationReport {
     block_on(run(
         host,
         hooks,
-        RunRequest {
+        InvocationRequest {
             shortcut,
-            run: run_id,
+            invocation: run_id,
             caller: caller(),
             mode,
-            trigger: RunTrigger::Manual,
+            trigger: InvocationTrigger::Manual,
             inputs: serde_json::Map::new(),
             caused_by: None,
             parent: None,
@@ -559,7 +559,7 @@ tilo_test_env::scenario! {
             ],
         );
         let report = unattended(&host, &tidy);
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         let [made] = report.steps.as_slice() else {
             panic!("one step: {report:?}");
         };
@@ -639,7 +639,7 @@ tilo_test_env::scenario! {
             ],
         );
         let report = unattended(&host, &tidy);
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert!(
             report.is_degraded(),
             "the default was a fallback: {report:?}"
@@ -667,16 +667,16 @@ tilo_test_env::scenario! {
     {
         // Nothing fell short, so the run answers with the value itself: the
         // degradation note is only there when there is something to say.
-        let report = RunReport {
-            run: RunId::new(),
+        let report = InvocationReport {
+            invocation: InvocationId::new(),
             shortcut: "tidy".into(),
             version: None,
             trigger: "manual".into(),
-            mode: RunMode::Unattended,
+            mode: InvocationMode::Unattended,
             steps: Vec::new(),
             output: Some(json!("draft:1")),
             degraded: Vec::new(),
-            outcome: RunOutcome::Completed,
+            outcome: InvocationOutcome::Completed,
         };
         assert_eq!(report.reported_value(), Some(json!("draft:1")));
     }
@@ -709,7 +709,7 @@ tilo_test_env::scenario! {
             ],
         );
         let report = unattended(&host, &tidy);
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert_eq!(
             report
                 .steps
@@ -758,16 +758,16 @@ tilo_test_env::scenario! {
                 ),
             ],
         );
-        let run_id = RunId::new();
-        let first = run_with(&host, &Hooks::default(), &tidy, run_id, RunMode::Unattended);
-        assert_eq!(first.outcome, RunOutcome::Completed, "{first:?}");
+        let run_id = InvocationId::new();
+        let first = run_with(&host, &Hooks::default(), &tidy, run_id, InvocationMode::Unattended);
+        assert_eq!(first.outcome, InvocationOutcome::Completed, "{first:?}");
         let ids = first.invocations();
         assert_eq!(ids.len(), 3);
         let unique: std::collections::HashSet<_> = ids.iter().collect();
         assert_eq!(unique.len(), 3, "every loop iteration has its own id");
 
-        let retry = run_with(&host, &Hooks::default(), &tidy, run_id, RunMode::Unattended);
-        assert_eq!(retry.outcome, RunOutcome::Completed, "{retry:?}");
+        let retry = run_with(&host, &Hooks::default(), &tidy, run_id, InvocationMode::Unattended);
+        assert_eq!(retry.outcome, InvocationOutcome::Completed, "{retry:?}");
         assert_eq!(retry.invocations(), ids);
         assert_eq!(
             host.started().len(),
@@ -781,10 +781,10 @@ tilo_test_env::scenario! {
     }
 }
 
-pub(crate) fn failure(report: &RunReport) -> Option<(&StepPath, &StepFailure)> {
+pub(crate) fn failure(report: &InvocationReport) -> Option<(&StepPath, &StepFailure)> {
     match &report.outcome {
-        RunOutcome::Completed | RunOutcome::Cancelled { .. } => None,
-        RunOutcome::Failed { path, failure } => Some((path, failure)),
+        InvocationOutcome::Completed | InvocationOutcome::Cancelled { .. } => None,
+        InvocationOutcome::Failed { path, failure } => Some((path, failure)),
     }
 }
 
@@ -888,9 +888,9 @@ tilo_test_env::scenario! {
         tidy.output = Some(Binding::step("create", ""));
         assert_eq!(check(&tidy, &host.catalog(), &NoShortcuts), Ok(()));
 
-        let run_id = RunId::new();
-        let report = run_with(&host, &Hooks::default(), &tidy, run_id, RunMode::Unattended);
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        let run_id = InvocationId::new();
+        let report = run_with(&host, &Hooks::default(), &tidy, run_id, InvocationMode::Unattended);
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert_eq!(report.output, Some(json!(NOTE)));
 
         let started = host.started();
@@ -969,12 +969,12 @@ tilo_test_env::scenario! {
         let report = block_on(run(
             &host,
             &Hooks::default(),
-            RunRequest {
+            InvocationRequest {
                 shortcut: &make,
-                run: RunId::new(),
+                invocation: InvocationId::new(),
                 caller: caller(),
-                mode: RunMode::Unattended,
-                trigger: RunTrigger::Manual,
+                mode: InvocationMode::Unattended,
+                trigger: InvocationTrigger::Manual,
                 inputs,
                 caused_by: None,
                 parent: None,
@@ -983,7 +983,7 @@ tilo_test_env::scenario! {
                 from: None,
             },
         ));
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         let titles: Vec<_> = host
             .started()
             .iter()
@@ -1043,7 +1043,7 @@ tilo_test_env::scenario! {
         send.grant.push(app_rule(MAIL));
         assert_eq!(check(&send, &host.catalog(), &NoShortcuts), Ok(()));
         let report = unattended(&host, &send);
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         let started = host.started();
         assert_eq!(
             started[1].argument,
@@ -1079,12 +1079,12 @@ tilo_test_env::scenario! {
             block_on(run(
                 &host,
                 &Hooks::default(),
-                RunRequest {
+                InvocationRequest {
                     shortcut: &make,
-                    run: RunId::new(),
+                    invocation: InvocationId::new(),
                     caller: caller(),
-                    mode: RunMode::Unattended,
-                    trigger: RunTrigger::Manual,
+                    mode: InvocationMode::Unattended,
+                    trigger: InvocationTrigger::Manual,
                     inputs,
                     caused_by: None,
                     parent: None,
@@ -1096,7 +1096,7 @@ tilo_test_env::scenario! {
         };
         let shown = json!({"name": "Ada", "persona": {"service": "discord", "account": "42"}});
         let report = go(shown);
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         let sent = host.started()[0].appearance.clone().expect("an appearance");
         assert_eq!(sent.name, "Ada");
         assert_eq!(sent.persona.map(|p| p.account).as_deref(), Some("42"));
@@ -1161,7 +1161,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(check(&tidy, &host.catalog(), &NoShortcuts), Ok(()));
         let report = unattended(&host, &tidy);
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
 
         let started = host.started();
         let actions: Vec<_> = started
@@ -1321,12 +1321,12 @@ tilo_test_env::scenario! {
         let report = block_on(run(
             &host,
             &Hooks::default(),
-            RunRequest {
+            InvocationRequest {
                 shortcut: &tidy,
-                run: RunId::new(),
+                invocation: InvocationId::new(),
                 caller: caller(),
-                mode: RunMode::Unattended,
-                trigger: RunTrigger::Manual,
+                mode: InvocationMode::Unattended,
+                trigger: InvocationTrigger::Manual,
                 inputs: serde_json::Map::new(),
                 caused_by: None,
                 parent: Some(parent.clone()),
@@ -1335,7 +1335,7 @@ tilo_test_env::scenario! {
                 from: None,
             },
         ));
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         let started = host.started();
         assert!(!started.is_empty());
         for request in started {
@@ -1364,12 +1364,12 @@ tilo_test_env::scenario! {
         let first = block_on(run(
             &host,
             &Hooks::default(),
-            RunRequest {
+            InvocationRequest {
                 shortcut: &archive,
-                run: RunId::new(),
+                invocation: InvocationId::new(),
                 caller: caller(),
-                mode: RunMode::Unattended,
-                trigger: RunTrigger::Manual,
+                mode: InvocationMode::Unattended,
+                trigger: InvocationTrigger::Manual,
                 inputs: serde_json::Map::new(),
                 caused_by: None,
                 parent: None,
@@ -1397,12 +1397,12 @@ tilo_test_env::scenario! {
         let report = block_on(run(
             &host,
             &Hooks::default(),
-            RunRequest {
+            InvocationRequest {
                 shortcut: &tidy,
-                run: RunId::new(),
+                invocation: InvocationId::new(),
                 caller: caller(),
-                mode: RunMode::Unattended,
-                trigger: RunTrigger::Manual,
+                mode: InvocationMode::Unattended,
+                trigger: InvocationTrigger::Manual,
                 inputs: serde_json::Map::new(),
                 caused_by: Some(cause.clone()),
                 parent: None,
@@ -1411,7 +1411,7 @@ tilo_test_env::scenario! {
                 from: None,
             },
         ));
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         let started = host.started();
         assert!(!started.is_empty());
         for request in started {
@@ -1501,7 +1501,7 @@ tilo_test_env::scenario! {
         assert!(crate::grant::unused_rules(&reads).is_empty());
         check(&reads, &host.catalog(), &NoShortcuts).unwrap();
         let report = unattended(&host, &reads);
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         let read = report
             .steps
             .iter()
@@ -1579,8 +1579,8 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &leak,
-            RunId::new(),
-            RunMode::Interactive,
+            InvocationId::new(),
+            InvocationMode::Interactive,
         );
         assert!(
             matches!(failure(&report), Some((path, StepFailure::OutsideGrant { app_id, .. })) if path.as_str() == "0" && app_id == MAIL),
@@ -1690,8 +1690,8 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &direct,
-            RunId::new(),
-            RunMode::Interactive,
+            InvocationId::new(),
+            InvocationMode::Interactive,
             vec!["a".into()],
         );
         assert!(
@@ -1719,8 +1719,8 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &a,
-            RunId::new(),
-            RunMode::Unattended,
+            InvocationId::new(),
+            InvocationMode::Unattended,
             vec!["b".into(), "a".into()],
         );
         assert!(
@@ -1733,11 +1733,11 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &a,
-            RunId::new(),
-            RunMode::Unattended,
+            InvocationId::new(),
+            InvocationMode::Unattended,
             vec!["a".into()],
         );
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert_eq!(host.started().len(), 1, "the call to b went out");
 
         let mut any = calling("a", "b");
@@ -1837,7 +1837,7 @@ tilo_test_env::scenario! {
 
 /// Why the run's read did not read: a read is a step of the run's own, which
 /// a later step reading it fails with.
-fn read_failure(report: &RunReport) -> Option<&StepFailure> {
+fn read_failure(report: &InvocationReport) -> Option<&StepFailure> {
     report.steps.iter().find_map(|step| match &step.status {
         StepStatus::Failed { failure, .. } => Some(failure),
         StepStatus::Succeeded { .. } => None,
@@ -1877,8 +1877,8 @@ tilo_test_env::scenario! {
             &host,
             &declining,
             &purge,
-            RunId::new(),
-            RunMode::Interactive,
+            InvocationId::new(),
+            InvocationMode::Interactive,
         );
         assert!(
             matches!(failure(&report), Some((_, StepFailure::Declined))),
@@ -1895,10 +1895,10 @@ tilo_test_env::scenario! {
             &host,
             &confirming,
             &purge,
-            RunId::new(),
-            RunMode::Interactive,
+            InvocationId::new(),
+            InvocationMode::Interactive,
         );
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         let started = host.started();
         assert_eq!(started.len(), 1);
         assert_eq!(started[0].confirmation, Some(Confirmation::Confirmed));
@@ -1933,8 +1933,8 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &consented("notes.note:other"),
-            RunId::new(),
-            RunMode::Unattended,
+            InvocationId::new(),
+            InvocationMode::Unattended,
         );
         assert!(
             matches!(
@@ -1950,10 +1950,10 @@ tilo_test_env::scenario! {
             &host,
             &hooks,
             &consented(NOTE),
-            RunId::new(),
-            RunMode::Unattended,
+            InvocationId::new(),
+            InvocationMode::Unattended,
         );
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert!(
             hooks.confirmations.lock().unwrap().is_empty(),
             "nobody is asked in an unattended run"
@@ -2011,8 +2011,8 @@ tilo_test_env::scenario! {
             &host,
             &declining,
             &attach,
-            RunId::new(),
-            RunMode::Interactive,
+            InvocationId::new(),
+            InvocationMode::Interactive,
         );
         assert_eq!(declining.confirmations.lock().unwrap().len(), 1);
         assert!(host.started().is_empty());
@@ -2044,16 +2044,16 @@ tilo_test_env::scenario! {
             &host,
             &answering,
             &asking,
-            RunId::new(),
-            RunMode::Interactive,
+            InvocationId::new(),
+            InvocationMode::Interactive,
         );
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
 
         let wrong = Hooks {
             answer: Some(json!(7)),
             ..Hooks::default()
         };
-        let report = run_with(&host, &wrong, &asking, RunId::new(), RunMode::Interactive);
+        let report = run_with(&host, &wrong, &asking, InvocationId::new(), InvocationMode::Interactive);
         assert!(
             matches!(failure(&report), Some((_, StepFailure::Arguments { .. }))),
             "{report:?}"
@@ -2083,7 +2083,7 @@ tilo_test_env::scenario! {
         assert_eq!(check(&digest, &host.catalog(), &NoShortcuts), Ok(()));
 
         let report = unattended(&host, &digest);
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert_eq!(report.output, Some(json!("summary of long text")));
         let started = host.started();
         assert_eq!(
@@ -2116,7 +2116,7 @@ tilo_test_env::scenario! {
         assert_eq!(check(&digest, &host.catalog(), &NoShortcuts), Ok(()));
 
         let report = unattended(&host, &digest);
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert_eq!(report.output, Some(json!(3)));
     }
 
@@ -2143,7 +2143,7 @@ tilo_test_env::scenario! {
         assert_eq!(check(&tidy, &host.catalog(), &NoShortcuts), Ok(()));
 
         let report = unattended(&host, &tidy);
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert_eq!(report.output, Some(json!(true)));
         let started = host.started();
         assert_eq!(
@@ -2172,7 +2172,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 report.outcome,
-                RunOutcome::Failed {
+                InvocationOutcome::Failed {
                     failure: StepFailure::Contract { .. },
                     ..
                 }
@@ -2216,12 +2216,12 @@ tilo_test_env::scenario! {
         let report = block_on(run(
             &host,
             &Hooks::default(),
-            RunRequest {
+            InvocationRequest {
                 shortcut: &leak,
-                run: RunId::new(),
+                invocation: InvocationId::new(),
                 caller: caller(),
-                mode: RunMode::Unattended,
-                trigger: RunTrigger::Manual,
+                mode: InvocationMode::Unattended,
+                trigger: InvocationTrigger::Manual,
                 inputs,
                 caused_by: None,
                 parent: None,
@@ -2284,8 +2284,8 @@ tilo_test_env::scenario! {
                     ..Hooks::default()
                 },
                 &leak,
-                RunId::new(),
-                RunMode::Interactive,
+                InvocationId::new(),
+                InvocationMode::Interactive,
             );
             assert!(
                 matches!(failure(&report), Some((_, StepFailure::Binding { reason })) if reason.contains("secret")),
@@ -2432,7 +2432,7 @@ struct RunningHost {
 
 #[derive(Default)]
 struct RunningJob {
-    invocation: Option<InvocationId>,
+    invocation: Option<ActionInvocationId>,
     finished: bool,
     observes: usize,
     /// For a host that cannot push: how many more observations still find
@@ -2492,7 +2492,7 @@ impl ActionHost for RunningHost {
         .receipt()))
     }
 
-    fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+    fn observe(&self, _caller: &Caller, id: &ActionInvocationId) -> Option<InvocationState> {
         let finished = {
             let mut job = self.job.lock().unwrap();
             job.observes = job.observes.saturating_add(1);
@@ -2518,7 +2518,7 @@ impl ActionHost for RunningHost {
         Some(InvocationState::new(*id, update))
     }
 
-    fn next_change(&self, _caller: &Caller, _id: &InvocationId) -> Option<Pending<()>> {
+    fn next_change(&self, _caller: &Caller, _id: &ActionInvocationId) -> Option<Pending<()>> {
         if !self.pushes {
             return None;
         }
@@ -2530,7 +2530,7 @@ impl ActionHost for RunningHost {
     fn cancel(
         &self,
         _caller: &Caller,
-        _id: &InvocationId,
+        _id: &ActionInvocationId,
     ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
         tilo_actions::remote::Pending::ready(Err(ActionHostError::NotCancellable {
             reason: "not in these tests".into(),
@@ -2551,20 +2551,20 @@ fn archive_shortcut() -> Shortcut {
     )
 }
 
-fn archive_run<'a, K: RunHooks>(
+fn archive_run<'a, K: InvocationHooks>(
     host: &'a RunningHost,
     hooks: &'a K,
     shortcut: &'a Shortcut,
-) -> impl Future<Output = RunReport> + 'a {
+) -> impl Future<Output = InvocationReport> + 'a {
     run(
         host,
         hooks,
-        RunRequest {
+        InvocationRequest {
             shortcut,
-            run: RunId::new(),
+            invocation: InvocationId::new(),
             caller: caller(),
-            mode: RunMode::Unattended,
-            trigger: RunTrigger::Manual,
+            mode: InvocationMode::Unattended,
+            trigger: InvocationTrigger::Manual,
             inputs: serde_json::Map::new(),
             caused_by: None,
             parent: None,
@@ -2604,7 +2604,7 @@ tilo_test_env::scenario! {
         let Poll::Ready(report) = running.as_mut().poll(&mut cx) else {
             panic!("the change finishes the step");
         };
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert_eq!(host.observes(), 2, "one observation per change");
         assert_eq!(
             hooks.settles.load(Ordering::Relaxed),
@@ -2619,7 +2619,7 @@ tilo_test_env::scenario! {
         let hooks = Hooks::default();
         let archive = archive_shortcut();
         let report = block_on(archive_run(&host, &hooks, &archive));
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         // The look for an earlier invocation, two observations still running,
         // then the one that finds it finished: each after a poll interval.
         assert_eq!(host.observes(), 4);
@@ -2646,7 +2646,7 @@ tilo_test_env::scenario! {
         let report = block_on(archive_run(&host, &hooks, &tidy));
         assert_eq!(
             report.outcome,
-            RunOutcome::Cancelled {
+            InvocationOutcome::Cancelled {
                 at: StepPath::root().child(0)
             },
             "{report:?}"
@@ -2654,7 +2654,7 @@ tilo_test_env::scenario! {
         assert_eq!(host.observes(), 0, "no step was started");
         assert!(matches!(
             report.steps.as_slice(),
-            [StepRecord {
+            [StepEntry {
                 status: StepStatus::Failed {
                     failure: StepFailure::Stopped { .. },
                     ..
@@ -2692,7 +2692,7 @@ tilo_test_env::scenario! {
         };
         assert_eq!(
             report.outcome,
-            RunOutcome::Cancelled {
+            InvocationOutcome::Cancelled {
                 at: StepPath::root().child(1)
             },
             "{report:?}"
@@ -2759,7 +2759,7 @@ impl StoppableHooks {
     }
 }
 
-impl RunHooks for StoppableHooks {
+impl InvocationHooks for StoppableHooks {
     fn confirm(&self, request: ConfirmationRequest) -> Pending<Option<Confirmation>> {
         self.inner.confirm(request)
     }
@@ -2768,7 +2768,7 @@ impl RunHooks for StoppableHooks {
         self.inner.ask(request)
     }
 
-    fn settle(&self, invocation: InvocationId) -> Pending<()> {
+    fn settle(&self, invocation: ActionInvocationId) -> Pending<()> {
         self.inner.settle(invocation)
     }
 

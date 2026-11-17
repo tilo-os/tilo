@@ -9,7 +9,7 @@ use std::rc::Rc;
 use automerge::AutoCommit;
 use collaboration::record::save::{open_stored_adopting, record_document, workspace_document};
 use durable_store::{DurableStore, MemoryStore};
-use tilolang_runtime::{InvokeOutcome, Principal, Value};
+use tilolang_runtime::{Actor, InvokeOutcome, Value};
 
 use crate::fixtures::Replica;
 
@@ -34,7 +34,12 @@ const BEFORE: (&str, &str) = (
 
 const RELEASE: &str = "ui.Card(item: tasks.tasks, title: meta(tasks.tasks).title, count: tasks.tasks.items.count(t -> not t.done)) {\n    list(tasks.tasks.items.filter(t -> not t.done)) { t ->\n        row(t)\n    }\n}";
 
-fn invoke(r: &Replica, who: &str, action: &str, args: Vec<Value>) -> Value {
+fn invoke(
+    r: &Replica,
+    who: &(impl crate::fixtures::AsActor + ?Sized),
+    action: &str,
+    args: Vec<Value>,
+) -> Value {
     let meta = r.host.package(VIEWS).unwrap().meta;
     let id = meta
         .actions
@@ -46,7 +51,7 @@ fn invoke(r: &Replica, who: &str, action: &str, args: Vec<Value>) -> Value {
     match r
         .host
         .runtime()
-        .invoke_action(&Principal::new(who), (id.as_str(), args))
+        .invoke_action(&who.actor(), (id.as_str(), args))
         .unwrap()
     {
         InvokeOutcome::Done(v) => v,
@@ -94,7 +99,7 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
     before.commit();
     let answer = invoke(
         &before,
-        "agent-task:release",
+        &Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("task:release")),
         "answer",
         vec![
             Value::resource(&answers),
@@ -115,7 +120,7 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
 
     // Ada's own record of Views has no copy here yet: it starts as the workspace's record.
     let own = tilolang_tilo::member_record_of(VIEWS, ADA).unwrap();
-    let key = collab_types::record::RecordId::parse(&own)
+    let key = collab_types::document::DocumentId::parse(&own)
         .unwrap()
         .storage_key();
     let (doc, _writer) = open_stored_adopting(
@@ -150,7 +155,9 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
     );
     assert_eq!(
         rt.read(&kept, "author").unwrap(),
-        Value::Principal(Principal::new("agent-task:release"))
+        Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
+            "task:release"
+        )))
     );
     // Drawn as the view it was: a body of a view that takes nothing.
     let meta = after.host.package(VIEWS).unwrap().meta;
@@ -162,7 +169,11 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
         .id
         .clone();
     let view = rt
-        .open_view(&Principal::new("ada"), &page, vec![Value::resource(&kept)])
+        .open_view(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            &page,
+            vec![Value::resource(&kept)],
+        )
         .unwrap();
     let embed = of_kind(view.tree(), "embed");
     assert_eq!(

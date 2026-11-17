@@ -94,6 +94,7 @@ fn local_edit(
         cluster_id: peer.workspace_id().into(),
         record_id: "tab:1".into(),
         envelope: Box::new(envelope),
+        own: None,
     }
 }
 fn checkpoint(

@@ -179,6 +179,28 @@ struct AdmittedCommit {
     committing: Option<std::time::Instant>,
 }
 
+/// Why `delta` is not `peer`'s to commit ([`commit_refusal`]), or, a write of a member's own
+/// record, not theirs: a host this workspace is attached to carries its members' own records as
+/// they wrote them, and anyone else writes only their own.
+async fn own_commit_refusal(
+    ws: &SharedWorkspace,
+    peer: &AuthenticatedPeer,
+    author: [u8; 32],
+    delta: &Envelope,
+) -> Option<Refusal> {
+    if let Some(refusal) = commit_refusal(ws, author, delta).await {
+        return Some(refusal);
+    }
+    let Envelope::Delta { delta: bytes, .. } = delta else {
+        return None;
+    };
+    if author != peer.device_public_key {
+        return None;
+    }
+    let store = ws.lock().await.store.clone();
+    crate::surfaces::own_refusal(&store, &peer.user_public_key, bytes)
+}
+
 /// Check, claim and queue `env`, a `Commit`, without waiting for it to be
 /// durable.
 async fn admit_commit(
@@ -261,7 +283,7 @@ async fn admit_commit(
         delta,
         signature: [0; 64],
     };
-    if let Some(refusal) = commit_refusal(&ws, author_device_public_key, &delta).await {
+    if let Some(refusal) = own_commit_refusal(&ws, peer, author_device_public_key, &delta).await {
         return refused(refusal);
     }
     let authored = delta.clone();

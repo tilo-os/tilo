@@ -37,11 +37,12 @@ fn package() -> (&'static str, &'static str) {
 /// The client with its root made, over a workspace of its own.
 fn workspace() -> tilolang_tilo::host::Host {
     let doc = tilo_resource::Doc::new();
-    let host =
-        tilolang_tilo::host::Host::new(&doc, tilolang_tilo::runtime::Principal::new("Ada"), || {
-            None
-        })
-        .unwrap();
+    let host = tilolang_tilo::host::Host::new(
+        &doc,
+        tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("Ada")),
+        || None,
+    )
+    .unwrap();
     host.load_builtin(package().0, package().1).unwrap();
     host.root_of(TUBE).unwrap();
     host

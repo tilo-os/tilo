@@ -14,7 +14,7 @@ use std::rc::Rc;
 use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, ret_i32, trap};
 use crate::engine::Wasm;
-use crate::ids::Principal;
+use crate::ids::{Actor, MemberId};
 use crate::rich::{Reference, RichValue};
 use crate::value::{RefValue, ResourceRef, Value};
 
@@ -61,7 +61,9 @@ impl Core {
                         r.references()
                             .into_iter()
                             .filter_map(|r| match r {
-                                Reference::Person(id) => Some(Value::Principal(Principal::new(id))),
+                                Reference::Person(id) => {
+                                    Some(Value::Actor(Actor::Member(MemberId::person(id))))
+                                }
                                 Reference::Resource(_) => None,
                             })
                             .collect(),
@@ -196,13 +198,18 @@ impl Core {
         match part {
             Value::Text(text) => out.push_text(&text),
             Value::Rich(rich) => out.push_rich(&rich),
-            Value::Principal(p) => {
+            Value::Actor(p) => {
                 let name = self
                     .names
                     .borrow()
                     .as_ref()
-                    .map_or_else(|| p.0.clone(), |host| host.name(&p));
-                out.push_reference(&format!("@{name}"), &Reference::Person(p.0));
+                    .map_or_else(|| p.id().to_owned(), |host| host.name(&p));
+                // A mention links a person; anyone else is named in the text.
+                match p.member_id().and_then(MemberId::person_id) {
+                    Some(person) => out
+                        .push_reference(&format!("@{name}"), &Reference::Person(person.to_owned())),
+                    None => out.push_text(&format!("@{name}")),
+                }
             }
             Value::Ref(r) => {
                 let (title, reference) = self.reference_of(&r)?;

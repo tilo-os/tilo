@@ -101,9 +101,9 @@ fn answered_by(engine: &TestEngine) -> Vec<(u32, bool, AnsweredBy)> {
         .collect()
 }
 
-/// An agent the action API admitted, by its principal.
+/// An agent the action API admitted, by its id.
 fn agent(principal: &str) -> ui::tilo_actions::ActionInvoker {
-    ui::tilo_actions::ActionInvoker::admitted(&ui::tilo_actions::Acting::of_key(principal))
+    ui::tilo_actions::ActionInvoker::admitted(&ui::tilo_actions::Acting::agent(principal))
 }
 
 /// The payload of the page's action `id` with `args`, as a caller sends it.
@@ -823,7 +823,7 @@ fn a_release_and_another_actors_action_are_both_answered() {
 fn the_persons_allow_of_an_agents_held_action_is_answered_as_the_persons() {
     let (engine, mut widget, doc, root) =
         page_in(BrowsingMode::Visitor, "https://visa.example/apply");
-    let intake = agent("agent:intake");
+    let intake = agent("intake");
     let asked = payload_with(
         &widget,
         "submit-page",
@@ -879,7 +879,7 @@ fn whoever_answers_a_published_hold_is_named_with_the_answer() {
     widget
         .admit_for(
             ui::tilo_actions::InvocationId::new(),
-            Some(&agent("agent:rev")),
+            Some(&agent("rev")),
             effect_operation(&keep),
         )
         .expect("the agent's answer is accepted");
@@ -922,7 +922,7 @@ fn whoever_answers_a_held_download_is_named_with_the_answer() {
     widget
         .admit_for(
             ui::tilo_actions::InvocationId::new(),
-            Some(&agent("agent:rev")),
+            Some(&agent("rev")),
             effect_operation(&keep),
         )
         .expect("the agent's answer is accepted");

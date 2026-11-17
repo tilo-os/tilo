@@ -2,8 +2,8 @@
 //! be unlocked after a reboot.
 //! An answer is a fact the answering device signs and publishes in its own part of
 //! the person's device fabric ([`crate::platform::fabric::unlock`]); every one of their
-//! devices carries it. What the person reads is `member:<person>:device.unlock`,
-//! one document whose changes are those answers, so the activity history lists them
+//! devices carries it. What the person reads is their own record of kind `device.unlock`
+//! ([`collab_types::OwnRecord`]), one document whose changes are those answers, so the activity history lists them
 //! beside everything else that happened.
 //! The record is a projection of the fabric: each device writes the answers it
 //! hears under the answering device's actor, at the time it decided.
@@ -22,7 +22,7 @@ use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{ActorId, AutoCommit, ChangeHash, ObjType, OnPartialLoad, ROOT, ReadDoc as _};
 use tilo_actions::{ActionApp, ActionContext, ActionFacet, ActionItem, ActionKey, Did, Scalar};
 use tilo_desktop_surface::activity::DetachedRecordHistory;
-use ui::record::{RecordCheckout, RecordId, RecordKind};
+use ui::record::{DocumentCheckout, DocumentId, ResourceType};
 
 use crate::i18n::t;
 use crate::network::slot_name;
@@ -73,7 +73,7 @@ pub(crate) struct UnlockHistory {
     path: Option<PathBuf>,
     /// The person's own record the answers belong to. `None` on a session with no certified person:
     /// it is on no fabric, so nothing answers.
-    record: Option<RecordCheckout>,
+    record: Option<DocumentCheckout>,
     /// The person's fabric, while this session takes part in one.
     link: RefCell<Option<SharedLink>>,
     /// The answers already in the document, by the key each is kept under.
@@ -85,8 +85,8 @@ impl UnlockHistory {
     /// nothing on a device that answered nothing yet. `person` is who sits here: the record is
     /// theirs, on every one of their devices.
     pub(crate) fn new(state: Option<&Path>, person: &str) -> Self {
-        let record = RecordId::of_member(person, KIND)
-            .map(|id| RecordCheckout::new(id, RecordKind::new(KIND)));
+        let record = DocumentId::of_member(person, KIND)
+            .map(|id| DocumentCheckout::new(id, ResourceType::new(KIND)));
         let (doc, path) = match state {
             Some(state) => open(&path(state)),
             None => (AutoCommit::new(), None),

@@ -217,7 +217,7 @@ pub trait Backend {
 
 impl dyn Backend {
     /// [`Backend::configure`] after the checks every backend shares, then the windows laid out on
-    /// the new arrangement.
+    /// the new placement.
     pub(crate) fn configure_checked(
         &mut self,
         state: &mut State,

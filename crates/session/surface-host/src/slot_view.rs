@@ -418,7 +418,7 @@ impl SlotView {
                 },
                 waker,
             }),
-            Rc::new(Person(person.to_owned())),
+            Rc::new(Person),
             Box::new(app_end),
         );
         // A package whose whole view is another app's state has no root of its own to open.

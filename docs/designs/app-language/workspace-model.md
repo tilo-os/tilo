@@ -9,7 +9,7 @@ its names.
 - **The workspace is the unit of sharing.** You, your team and your agents work in one. What
   it shares is meaning: resources, actions, tasks, permissions, history and presence.
   Something private goes in a workspace only you are in.
-- **The arrangement is the workspace's.** What is open where (strips, window groups,
+- **The layout is the workspace's.** What is open where (strips, window groups,
   windows, canvas places) is one workspace record: every person, agent and device in the
   workspace has the same windows. Each shell lays that out for its device, and no shell has
   to have windows at all.
@@ -28,11 +28,11 @@ its names.
 |---|---|---|---|
 | **Resource** | typed state: a note, a notebook, a conversation | with the workspace's permissions | until deleted, with history |
 | **View** | a function from a resource to UI; a type has several (editor, card, row) | it's code | |
-| **Shell** | a view of the workspace's arrangement and resources: strips, canvas, dock, top bar, list, conversation | the person's choice, per device class | |
-| **Arrangement** | what is open where (strips, window groups, windows, canvas places) | with the workspace: everyone has the same windows | until closed |
+| **Shell** | a view of the workspace's layout and resources: strips, canvas, dock, top bar, list, conversation | the person's choice, per device class | |
+| **Layout** | what is open where (strips, window groups, windows, canvas places) | with the workspace: everyone has the same windows | until closed |
 | **View state** | what one person keeps in a window: how it shows its resource (which view, sidebar place, sort, filter, active tab) and where they are in it (a draft, what is open); scroll, cursor, selection and focus the platform keeps without a declaration | personal, visible as presence | per person and window, on all their devices |
 
-In code the arrangement is the workspace's layout record (`tilo_desktop_model`'s workspace; a
+In code the layout is the workspace's desktop record (`tilo_desktop_model`'s workspace; a
 strip is `layout::Strip`, a window a `layout::Tab` in a `layout::WindowGroup`).
 
 ## 3. Apps
@@ -61,7 +61,7 @@ window or a place.
   sidebar and the chosen note beside them; which note is chosen is each person's view state,
   so Ada can read one note while Bo writes another, each seeing the other's face at their note.
   A view that wants a second window (a custom layout, a preview beside an editor) opens one in
-  the shared arrangement. On a phone, one pane shows at a time and back returns to the list.
+  the shared layout. On a phone, one pane shows at a time and back returns to the list.
 - **A window with nothing at all to list says so once.** While the app's list holds nothing (a
   first run, an empty library) and nothing is chosen, the window shows the app's own state for
   what is missing, spanning the place its columns would stand: never two states side by side
@@ -75,7 +75,7 @@ window or a place.
   beside the list it came from. Which views a window switches between is the app's
   declaration (`views list, board for Project`); a view it does not name is a helper its own
   views place, never a window.
-- **Closing** removes the window from the workspace's arrangement; it never touches the
+- **Closing** removes the window from the workspace's layout; it never touches the
   resource. Windows nobody has looked at for a while shrink into a compact entry at the end of
   their strip.
 
@@ -89,7 +89,7 @@ window or a place.
 - **Embedded views** (a card in a chat message, an agent's answer) aren't windows; each viewer
   has their own lens on them. Opening something from them goes to its window.
 
-## 6. Arrangement
+## 6. Layout
 
 - Each shell stores its own structure, not pixels: strips of windows, canvas places, a dock's
   items, a conversation's order. Each screen lays it out with the views' size preferences
@@ -104,7 +104,7 @@ window or a place.
 
 - A resource's actions are available in its views, in the command surface for what has focus,
   and to agents.
-- Arranging (open, close, move) is an action on the workspace's arrangement, attributed and
+- Arranging (open, close, move) is an action on the workspace's layout, attributed and
   undoable like any other; agents arrange as collaborators do, visibly. Following and moving
   your own lens are yours alone.
 - Every change shows where it happened: marked in the views showing the resource, as presence,
@@ -130,15 +130,15 @@ default view note_editor for Note
   platform without being declared.
 - An app whose data is each person's own (mail) says so in its header:
   `app so.tilo.lang.mail "Mail" (records: .own)`. Each member then keeps the app's resources in
-  their own record of the workspace (`member:<person>:<kind>`, `tilo_action_policy::member_record`),
+  their own record of the workspace (of the package kind `tl.<app>`, `collab_types::OwnRecord`),
   which only their devices hold the key to and every action API decides as theirs alone, the
   workspace's owner included. Another member opening the app in the same workspace starts from
   their own, empty record.
 - `open(r)` is an action usable from views and from actions.
 
-## 9. The arrangement is a resource
+## 9. The layout is a resource
 
-The workspace's arrangement is typed state of the workspace, synced to every member's devices
+The workspace's layout is typed state of the workspace, synced to every member's devices
 with history and undo. Each shell is a view of it and of the resources, tasks and presence.
 People and agents arrange it, attributed and undoable like any change.
 
@@ -149,7 +149,7 @@ canvas, a phone, a watch, a browser. Every shell shows the same resources and ac
 things look and are arranged follows the device. Pixels are not shared between shells; meaning
 is: resources, actions, permissions, undo and history.
 
-**A customizable shell.** A shell is a tilolang view of the workspace's arrangement, composed
+**A customizable shell.** A shell is a tilolang view of the workspace's layout, composed
 from parts: docks, top bars, strips, a canvas, a launcher list, a conversation. A few default
 compositions ship; anyone can write another, as with any view. Rust keeps the mechanics as
 described components (window drag and resize, strip scrolling, canvas pan and zoom, gestures
@@ -164,7 +164,7 @@ a web session uses it instead of drawing a desktop inside it:
 - One open resource is, by default, one tab with its own URL, opened through its default view.
   Links are real links; back and forward follow the trail of what was opened.
 - A strip or a canvas is a workspace resource too, so it has a URL. Opening one gives that tab
-  a scrolling window manager or a 2D canvas. Arrangement appears only where someone opens one,
+  a scrolling window manager or a 2D canvas. Layout appears only where someone opens one,
   never as a frame around everything.
 - Views render as real DOM components (text fields, lists, links), so the browser supplies
   input, IME, accessibility, find, translation and autofill. Shared design tokens keep it

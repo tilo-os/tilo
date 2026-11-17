@@ -63,6 +63,16 @@ pub fn scope(package_id: &str, kind: &str) -> Scope {
     }
 }
 
+/// The kinds `package_id`'s manifest declares each member keeps as their own
+/// (`[resources] own`).
+pub fn own_kinds(package_id: &str) -> impl Iterator<Item = &'static str> {
+    let app = canonical(package_id).into_owned();
+    generated::OWN_KINDS
+        .iter()
+        .filter(move |(own_app, _)| *own_app == app)
+        .map(|(_, kind)| *kind)
+}
+
 /// Whether a window of `package_id` opens a record each member keeps as their own: it is the
 /// person's who opened it, and never stands on a workspace's shared desktop.
 #[must_use]

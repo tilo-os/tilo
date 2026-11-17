@@ -816,12 +816,12 @@ impl CollabTransport for BrokerTransport {
         }))
     }
 
-    fn joined_record_kind(&self, channel: &str) -> Option<collab_types::record::RecordKind> {
+    fn joined_record_kind(&self, channel: &str) -> Option<collab_types::document::ResourceType> {
         self.state
             .route_record_kinds
             .lock_recover()
             .get(channel)
-            .map(collab_types::record::RecordKind::new)
+            .map(collab_types::document::ResourceType::new)
     }
 
     fn route_join_failure(&self, channel: &str) -> Option<String> {
@@ -2554,7 +2554,7 @@ impl CollaborationManager {
 
     pub fn switch_native_record(
         &mut self,
-        checkout: &collab_types::record::RecordCheckout,
+        checkout: &collab_types::document::DocumentCheckout,
     ) -> Result<(), String> {
         let primary = self
             .primary_route
@@ -2592,7 +2592,7 @@ impl CollaborationManager {
     /// why the connection ended before it answered.
     #[cfg(feature = "native")]
     pub fn for_native_launch(
-        kind: &collab_types::record::RecordKind,
+        kind: &collab_types::document::ResourceType,
         connection: crate::NativeConnection,
     ) -> Result<Self, crate::NativeLaunchError> {
         Self::join_native(kind, connection)?
@@ -2617,7 +2617,7 @@ impl CollaborationManager {
     /// unavailable or this device's identity cannot be loaded.
     #[cfg(feature = "native")]
     pub fn join_native(
-        kind: &collab_types::record::RecordKind,
+        kind: &collab_types::document::ResourceType,
         connection: crate::NativeConnection,
     ) -> Result<Self, crate::NativeLaunchError> {
         let configured = crate::host::environment()
@@ -2627,7 +2627,7 @@ impl CollaborationManager {
             media::audio_output::require_governed();
         }
         // A window the shell opened in this running process has a
-        // connection of its own (`ui::window_channel`); the one the launcher
+        // connection of its own (`ui::window_link`); the one the launcher
         // handed the process is its first window's.
         let source = match connection {
             crate::NativeConnection::Window(None) => return Ok(Self::disabled()),
@@ -2682,7 +2682,7 @@ impl CollaborationManager {
     /// host's, not the app's. `identity` must outlive the manager.
     #[cfg(all(feature = "native", unix))]
     pub fn join_instance(
-        kind: &collab_types::record::RecordKind,
+        kind: &collab_types::document::ResourceType,
         connection: runtime_portal::windows::Descriptor,
         identity: std::os::fd::BorrowedFd<'_>,
         route: RouteSpec,

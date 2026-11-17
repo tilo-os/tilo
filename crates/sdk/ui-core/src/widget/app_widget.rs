@@ -1696,11 +1696,11 @@ mod component_adapter {
     }
 
     impl crate::record::capability::RecordScoped for BoundAppWidget {
-        fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+        fn record_intent(&self) -> Option<crate::record::DocumentCheckout> {
             self.in_root(|root| crate::record::capability::record_intent(root))
                 .flatten()
         }
-        fn set_record_scope(&mut self, record: &crate::record::RecordId) {
+        fn set_record_scope(&mut self, record: &crate::record::DocumentId) {
             self.in_root_mut(|root| crate::record::capability::set_record_scope(root, record));
         }
     }

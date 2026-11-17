@@ -946,7 +946,7 @@ impl VideoEditorApp {
             }
         }
         // Side by side: two sibling buttons, each a miniature frame with the
-        // picture in its half, so the row reads as the arrangement rather
+        // picture in its half, so the row reads as the layout rather
         // than as two unexplained words.
         if let Some((_, _, first)) = l.sides.first() {
             caption_above(

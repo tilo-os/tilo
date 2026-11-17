@@ -237,7 +237,7 @@ mod tests {
                     workspace: "3f2b1c00-0000-4000-8000-00000000000b".into(),
                     proposal_id: [id; 32],
                     app: "so.tilo.notes".into(),
-                    record: "uuid:0f2b1c00-0000-4000-8000-000000000001".into(),
+                    document_id: "uuid:0f2b1c00-0000-4000-8000-000000000001".into(),
                     title: "Groceries".into(),
                     document: b"doc".to_vec(),
                     issued_unix: 1,

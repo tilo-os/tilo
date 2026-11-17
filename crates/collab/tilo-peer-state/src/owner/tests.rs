@@ -171,6 +171,7 @@ fn edit_from_view(
             app: APP.into(),
             record: String::new(),
             envelope,
+            own: None,
         },
     })
 }
@@ -555,6 +556,7 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
             app: APP.into(),
             record: String::new(),
             envelope: Box::new(envelope),
+            own: None,
         },
     }
 }
@@ -957,6 +959,7 @@ fn commit_sealed_as(
                     app: APP.into(),
                     record: String::new(),
                     envelope: envelope.clone(),
+                    own: None,
                 },
             },
             joined.now,

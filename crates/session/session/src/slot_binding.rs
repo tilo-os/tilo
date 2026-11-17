@@ -84,6 +84,15 @@ impl Session {
         // surface draws nothing, takes no input and keeps no room, and the opening that shows it
         // costs nothing.
         let namespace = surfaces::namespace(VIEW);
+        // It covers the display the menu was opened on, and the reading's anchor is on that display.
+        if up
+            && let Some(standing) = self
+                .shared
+                .overlays
+                .place(tilo_desktop::overlays::Slot::WindowMenu)
+        {
+            self.stand_layer(&namespace, &standing);
+        }
         if self.compositor.layer_shown(&namespace) != Some(up) {
             if !up {
                 // The keys go back to where the person was typing as the menu goes.

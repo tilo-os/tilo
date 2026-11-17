@@ -102,7 +102,7 @@ pub const PRIMS: &[Prim] = &[
     // button with its own label and `on:`.
     prim_as("button", "Button", &["label"], &["on", "enabled"]),
     prim_of("divider", &[], &[]),
-    // A block's source rendered inline. `source` is `Text`, `author` a `Principal`, `invocation`
+    // A block's source rendered inline. `source` is `Text`, `author` an `Actor`, `invocation`
     // the `host.Invocation` recorded for an action block.
     prim_of("embed", &["source"], &["author", "invocation"]),
     // What waits to be proposed of a resource (`suggest`), each as the card a person accepts or
@@ -193,8 +193,8 @@ pub const CHOICES: &[Choice] = &[
         variants: &["portrait", "landscape", "ultrawide"],
     },
     Choice {
-        kind: "principal_kind",
-        name: "PrincipalKind",
+        kind: "actor_kind",
+        name: "ActorKind",
         variants: &["person", "agent"],
     },
     Choice {

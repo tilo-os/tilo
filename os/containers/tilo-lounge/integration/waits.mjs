@@ -9,6 +9,7 @@
 
 import {availableParallelism} from 'node:os';
 import {readFileSync, readdirSync} from 'node:fs';
+import {nextChange} from '../../../../tools/web/chrome.mjs';
 
 /** The memory the gate's browsers hold, read from /proc while they run: each
  * renderer and the GPU process (which holds a software GPU's buffers), with
@@ -92,8 +93,10 @@ export const stripAtRest = pan => Boolean(pan) && pan.moving === false;
  * timeout instead spends it on every step.
  *
  * `evaluate` reads an expression in the page (`tab.evaluate` in the gate,
- * a stub in a test); `sleep` and `now` are the clock and pause, injectable
- * so a test can prove the wait ends on state without any frame advancing.
+ * a stub in a test); `pause(ms)` waits for the page's next change, at most
+ * `ms` (the page's own `tiloChanges`), and `now` is the clock, both
+ * injectable so a test can prove the wait ends on state without any frame
+ * advancing. Nothing here waits on a clock: each read follows a change.
  * `onTimeout` runs when the frames did not come and the shell still owes them.
  */
 export async function settle({
@@ -101,10 +104,9 @@ export async function settle({
   by = 2,
   owed = () => true,
   idleMs = 0,
-  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  pause = ms => evaluate(nextChange(ms)),
   now = () => Date.now(),
   timeoutMs = stepLimit(3),
-  pollMs = 100,
   onTimeout = null,
 }) {
   const from = await evaluate('globalThis.tiloMount?.state()?.frames ?? 0');
@@ -125,7 +127,10 @@ export async function settle({
       if (onTimeout) return onTimeout({from, by});
       return 'timeout';
     }
-    await sleep(pollMs);
+    // Until the page changes, or what this wait ends on next (its idle
+    // spell, its deadline) is due.
+    const due = idleMs ? Math.min(deadline, lastChange + idleMs) : deadline;
+    await pause(Math.max(1, due - now() + 1));
   }
 }
 
@@ -144,15 +149,17 @@ export const settleSearch = (tab, {evaluate = tab.evaluate.bind(tab), ...rest} =
  * page that is going away: a reloaded tab read straight after its reload is
  * titled "", not after its workspace. So the document is marked before the
  * reload, and this ends once a document *without* the mark answers, its shell
- * says it is presented (`state().phase`), and it answers that way twice in a
- * row: which is when the page holds its workspace and titles itself after it.
- * The second read is what tells a page that stayed from one a navigation is
- * about to replace — every document gets a fresh `globalThis`, so the token
- * planted here is the document's identity, and two reads that disagree are two
- * documents.
+ * says it is presented (`state().phase`), and no newer document began while it
+ * was read (`tab.documents()`, the browser's own count of the documents the tab
+ * started): which is when the page holds its workspace and titles itself after
+ * it, not a page a navigation is about to replace.
  *
- * `tab` answers `evaluate` and `reload`; `sleep` and `now` are injectable so a
- * test proves the wait ends on the new document's own state.
+ * Between reads it waits for the page's next change (`pause`), or for the next
+ * document when the one it waited in went away; never on a clock.
+ *
+ * `tab` answers `evaluate`, `reload`, `documents` and `nextDocument`; `pause`
+ * and `now` are injectable so a test proves the wait ends on the new
+ * document's own state.
  *
  * Resolves 'presented' when the new shell says it is up, 'stalled' when the
  * new document loaded but its shell never said so (a failure screen, say), and
@@ -164,31 +171,26 @@ export async function reloaded(
   {
     evaluate = tab.evaluate.bind(tab),
     timeoutMs = stepLimit(8),
-    pollMs = 100,
-    sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+    pause = ms => evaluate(nextChange(ms)).catch(() => tab.nextDocument?.(ms)),
+    documents = () => tab.documents?.() ?? 0,
     now = () => Date.now(),
   } = {},
 ) {
   const mark = `__gateDocument${Math.random().toString(36).slice(2)}`;
-  const token = '__gateDocumentSeen';
   await evaluate(`globalThis[${JSON.stringify(mark)}] = true`).catch(() => {});
   await tab.reload();
   const deadline = now() + timeoutMs;
-  let presentedIn = null;
   for (;;) {
-    const read = Math.random().toString(36).slice(2);
+    const before = documents();
     const at = await evaluate(`JSON.stringify({
       old: globalThis[${JSON.stringify(mark)}] === true,
       ready: document.readyState === 'complete',
       phase: globalThis.tiloMount?.state?.()?.phase ?? null,
-      seen: (globalThis[${JSON.stringify(token)}] ??= ${JSON.stringify(read)}),
-    })`).then(text => JSON.parse(text ?? '{}'), () => ({old: true, ready: false, phase: null, seen: null}));
-    const presented = !at.old && at.phase === 'presented';
-    // The same document, its shell up, on two reads in a row.
-    if (presented && at.seen === presentedIn) return 'presented';
-    presentedIn = presented ? at.seen : null;
+    })`).then(text => JSON.parse(text ?? '{}'), () => ({old: true, ready: false, phase: null}));
+    // A new document, its shell up, and still the tab's newest.
+    if (!at.old && at.phase === 'presented' && documents() === before) return 'presented';
     if (now() > deadline) return at.old || !at.ready ? 'timeout' : 'stalled';
-    await sleep(pollMs);
+    await pause(Math.max(1, deadline - now() + 1));
   }
 }
 

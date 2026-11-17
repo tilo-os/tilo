@@ -188,10 +188,10 @@ impl ResourceApp for SketchApp {
     }
 
     /// One sketch per traced image.
-    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
         input
             .argument()
-            .map(|path| RecordId::derived("sketch", &RecordId::for_file(path)))
+            .map(|path| DocumentId::derived("sketch", &DocumentId::for_file(path)))
     }
 
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Sketch>> {
@@ -215,7 +215,7 @@ tilo_test_env::scenario! {
         app.harness().relayout();
         assert_eq!(
             app.record(),
-            &RecordId::derived("sketch", &RecordId::for_file("/pictures/harbour.png"))
+            &DocumentId::derived("sketch", &DocumentId::for_file("/pictures/harbour.png"))
         );
         assert_eq!(app.state().source, "/pictures/harbour.png");
         let frame = app.harness().inspection_json().unwrap();
@@ -226,7 +226,7 @@ tilo_test_env::scenario! {
 
         // A launch naming nothing opens the workspace's one record.
         let mut plain = TestApp::<SketchApp>::new().unwrap();
-        assert_eq!(plain.record(), &RecordId::package_primary());
+        assert_eq!(plain.record(), &DocumentId::package_primary());
         assert_eq!(plain.state().source, "");
         let frame = plain.harness().inspection_json().unwrap();
         assert!(
@@ -278,11 +278,11 @@ tilo_test_env::scenario! {
     phase a_window_opens_another_record_in_its_own_place;
     {
         let mut app = TestApp::<SketchApp>::new().unwrap();
-        assert_eq!(app.record(), &RecordId::package_primary());
+        assert_eq!(app.record(), &DocumentId::package_primary());
         app.invoke(Sketch::NOTE.with("on the default")).unwrap();
 
         app.open_here(&["/pictures/harbour.png"]).unwrap();
-        let harbour = RecordId::derived("sketch", &RecordId::for_file("/pictures/harbour.png"));
+        let harbour = DocumentId::derived("sketch", &DocumentId::for_file("/pictures/harbour.png"));
         assert_eq!(
             app.record(),
             &harbour,
@@ -320,7 +320,7 @@ tilo_test_env::scenario! {
         // A bare launch opens the workspace's one record, which every window
         // of the app opens, with what was noted on it.
         let bare = harbour_again.relaunch(&[]).unwrap();
-        assert_eq!(bare.record(), &RecordId::package_primary());
+        assert_eq!(bare.record(), &DocumentId::package_primary());
         let notes: Vec<String> = bare
             .state()
             .notes
@@ -411,7 +411,7 @@ tilo_test_env::scenario! {
         app.harness().relayout();
         assert_eq!(
             app.record(),
-            &RecordId::derived("sketch", &RecordId::for_file(path))
+            &DocumentId::derived("sketch", &DocumentId::for_file(path))
         );
         let notes: Vec<String> = app
             .state()
@@ -655,8 +655,8 @@ impl ResourceApp for GenesisApp {
         Box::new(cx.text(|sketch| sketch.source.clone()))
     }
 
-    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
-        input.argument().map(RecordId::for_file)
+    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
+        input.argument().map(DocumentId::for_file)
     }
 
     fn genesis(input: &LaunchInput<'_>) -> Vec<Invoke<Sketch>> {

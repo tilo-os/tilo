@@ -65,8 +65,8 @@ fn identity_directories() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Who sits at this device, as the one id the session acts as, and the ids they went by before.
-pub(crate) struct Seat {
+/// Who this device runs as, as the one id the session acts as, and the ids they went by before.
+pub(crate) struct Own {
     /// The person, by the id the workspaces' governance names them by: their root key in hex, which
     /// this device's certificate carries — never the device's own key. A computer that has no
     /// identity yet goes by the login account at it, whom its session is theirs as until the person
@@ -81,9 +81,9 @@ pub(crate) struct Seat {
     pub(crate) salt: Option<u16>,
 }
 
-/// Who sits here, read from this device's own identity as the session starts,
+/// Who runs here, read from this device's own identity as the session starts,
 /// which setup settles before the session opens.
-pub(crate) fn seat(options: &crate::Options) -> Seat {
+pub(crate) fn own(options: &crate::Options) -> Own {
     let identity = crate::sync::device_identity();
     let person = match &identity {
         Some(identity) => hex::encode(identity.device_cert.user_public_key),
@@ -97,18 +97,18 @@ pub(crate) fn seat(options: &crate::Options) -> Seat {
     let salt = identity.map(|identity| {
         tilo_desktop_model::ids::device_salt_of_key(&identity.device_cert.device_public_key)
     });
-    Seat {
+    Own {
         person,
         earlier,
         salt,
     }
 }
 
-/// The person a session started with `options` sits as: what [`seat`] reads, for what is made for
+/// The person a session started with `options` runs as: what [`own`] reads, for what is made for
 /// them before the session starts.
 #[must_use]
-pub fn seated_person(options: &crate::Options) -> String {
-    seat(options).person
+pub fn own_person(options: &crate::Options) -> String {
+    own(options).person
 }
 
 /// Read who sits here at startup, and keep it current from then on. A value that cannot be watched

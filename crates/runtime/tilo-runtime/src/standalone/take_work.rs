@@ -7,7 +7,7 @@
 //! instead, as a member device of the relay's own person: it holds the
 //! workspace and its files as any member does, and answers the relay's runs
 //! on its device plane ([`ACTIONS_ALPN`]) with a
-//! [`EnvironmentRuns`](ush::environment_runs::EnvironmentRuns) dispatcher over
+//! [`EnvironmentCommands`](ush::environment_commands::EnvironmentCommands) dispatcher over
 //! the workspace's shells ([`ush::workspace_shell::WorkspaceShells`]):
 //!
 //! - ush's own commands run in process on the workspace's files: the folder
@@ -221,7 +221,7 @@ fn shell_runs(
     replicas: Option<super::files::ReplicaSlot>,
     browsers: Option<PathBuf>,
 ) -> Option<Arc<dyn ActionHost + Send + Sync>> {
-    use ush::environment_runs::EnvironmentRuns;
+    use ush::environment_commands::EnvironmentCommands;
     use ush::workspace_shell::WorkspaceShells;
     let member = profile.to_path_buf();
     let holder = Arc::downgrade(joined);
@@ -244,7 +244,10 @@ fn shell_runs(
         .with_browsers_on(
             browsers.or_else(|| std::env::var_os(ush::hosted_vm::SOCKET_ENV).map(PathBuf::from)),
         );
-    Some(Arc::new(EnvironmentRuns::new(shells, joined.operator())))
+    Some(Arc::new(EnvironmentCommands::new(
+        shells,
+        joined.operator(),
+    )))
 }
 
 #[cfg(not(target_os = "linux"))]

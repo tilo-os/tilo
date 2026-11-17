@@ -6,14 +6,14 @@ use automerge::{ObjId, ObjType, ROOT, ReadDoc as _};
 use tilo_automerge::read::ReadTyped as _;
 use tilo_resource::{Delta, Doc, ModelError, NoAction, Resource, SharedRecord, Touch};
 
-use crate::files::{FileNameV1, FileNodeKind, FileRecordId};
+use crate::files::{FileDocumentId, FileNameV1, FileNodeKind};
 
 pub const TREE_KIND: &str = "files.tree";
 
 /// The record a workspace's tree travels as, under the Files app: every device
 /// derives it from the kind alone.
 #[must_use]
-pub fn record_id() -> String {
+pub fn document_id() -> String {
     collab_types::person_record_id(TREE_KIND)
 }
 
@@ -67,8 +67,8 @@ pub const ROOT_ID: &str = "ROOT";
 /// The parent a deleted node is moved under, so that a concurrent child of it
 /// is trashed with it rather than left dangling.
 pub const TRASH_ID: &str = "TRASH";
-pub const ROOT_RECORD_ID_KEY: &str = "root_record_id";
-pub const RECORD_ID_KEY: &str = "record_id";
+pub const ROOT_DOCUMENT_ID_KEY: &str = "root_document_id";
+pub const DOCUMENT_ID_KEY: &str = "document_id";
 pub const PARENT_KEY: &str = "parent";
 pub const PREV_PARENT_KEY: &str = "prev_parent";
 pub const NAME_KEY: &str = "name";
@@ -93,7 +93,7 @@ pub const CONTENT_REVISION_KEY: &str = "content_revision_v1";
 pub struct Tree {
     /// The stable identity of the workspace root: the same on every device
     /// that holds this tree.
-    pub root_record_id: Option<FileRecordId>,
+    pub root_document_id: Option<FileDocumentId>,
     pub nodes: BTreeMap<String, TreeEntry>,
 }
 
@@ -160,7 +160,7 @@ pub struct TreeEntry {
     /// Who last changed it, as the device that wrote the node named them: a
     /// tree nobody has written yet names nobody.
     pub author: Option<String>,
-    pub record_id: Option<FileRecordId>,
+    pub document_id: Option<FileDocumentId>,
 }
 
 /// A workspace's files, published as a record.
@@ -183,7 +183,7 @@ impl Resource for FilesTree {
             return Ok(Tree::default());
         };
         let mut tree = Tree {
-            root_record_id: record_of(doc, &ROOT, ROOT_RECORD_ID_KEY),
+            root_document_id: record_of(doc, &ROOT, ROOT_DOCUMENT_ID_KEY),
             nodes: BTreeMap::new(),
         };
         for id in doc.keys(&nodes) {
@@ -208,8 +208,8 @@ impl Resource for FilesTree {
             *state = Self::read(doc)?;
             return Ok(());
         }
-        if delta.key(&ROOT, ROOT_RECORD_ID_KEY) == Touch::Written {
-            state.root_record_id = record_of(doc, &ROOT, ROOT_RECORD_ID_KEY);
+        if delta.key(&ROOT, ROOT_DOCUMENT_ID_KEY) == Touch::Written {
+            state.root_document_id = record_of(doc, &ROOT, ROOT_DOCUMENT_ID_KEY);
         }
         let touched = delta.under(&nodes);
         if touched.is_all() {
@@ -285,10 +285,10 @@ fn name_of(doc: &Doc, node: &ObjId, key: &str) -> Option<FileNameV1> {
         .or_else(|| doc.str_at(node, key).map(FileNameV1::from))
 }
 
-fn record_of(doc: &Doc, obj: &ObjId, key: &str) -> Option<FileRecordId> {
+fn record_of(doc: &Doc, obj: &ObjId, key: &str) -> Option<FileDocumentId> {
     doc.str_at(obj, key)
         .and_then(|value| uuid::Uuid::parse_str(&value).ok())
-        .map(FileRecordId)
+        .map(FileDocumentId)
 }
 
 fn entry_of(doc: &Doc, node: &ObjId) -> TreeEntry {
@@ -306,7 +306,7 @@ fn entry_of(doc: &Doc, node: &ObjId) -> TreeEntry {
         size: doc.uint_at(node, SIZE_KEY).unwrap_or_default(),
         mtime: doc.uint_at(node, MTIME_KEY).unwrap_or_default(),
         author: doc.str_at(node, AUTHOR_KEY).filter(|name| !name.is_empty()),
-        record_id: record_of(doc, node, RECORD_ID_KEY),
+        document_id: record_of(doc, node, DOCUMENT_ID_KEY),
     }
 }
 
@@ -314,10 +314,10 @@ fn entry_of(doc: &Doc, node: &ObjId) -> TreeEntry {
 /// that writes or rebuilds the same record makes the same node object.
 pub const RECORD_NODE_ID_PREFIX: &str = "record:";
 
-/// The node key every device derives for the record `record_id`.
+/// The node key every device derives for the record `document_id`.
 #[must_use]
-pub fn record_node_id(record_id: FileRecordId) -> String {
-    format!("{RECORD_NODE_ID_PREFIX}{}", record_id.0)
+pub fn record_node_id(document_id: FileDocumentId) -> String {
+    format!("{RECORD_NODE_ID_PREFIX}{}", document_id.0)
 }
 
 /// What a device puts into a tree where the files are not on a disk of its
@@ -477,8 +477,8 @@ pub fn place(
     }
     let name = free_name(tree, parent, name);
     let nodes = tree_nodes(doc)?;
-    let record_id = FileRecordId::new();
-    let id = record_node_id(record_id);
+    let document_id = FileDocumentId::new();
+    let id = record_node_id(document_id);
     let node = doc.put_object(&nodes, &id, ObjType::Map)?;
     doc.put(&node, PARENT_KEY, parent)?;
     doc.put(&node, PREV_PARENT_KEY, parent)?;
@@ -503,7 +503,7 @@ pub fn place(
     doc.put(&node, SIZE_KEY, size)?;
     doc.put(&node, MTIME_KEY, mtime)?;
     doc.put(&node, AUTHOR_KEY, author)?;
-    doc.put(&node, RECORD_ID_KEY, record_id.0.to_string())?;
+    doc.put(&node, DOCUMENT_ID_KEY, document_id.0.to_string())?;
     tree.nodes.insert(
         id.clone(),
         TreeEntry {
@@ -514,7 +514,7 @@ pub fn place(
             codec: None,
             size,
             mtime,
-            record_id: Some(record_id),
+            document_id: Some(document_id),
             author: Some(author.to_owned()),
         },
     );
@@ -535,7 +535,7 @@ mod live_tests {
             size: 3,
             mtime: 0,
             author: None,
-            record_id: None,
+            document_id: None,
         }
     }
 
@@ -646,7 +646,7 @@ mod placing_tests {
         assert_eq!(node.kind, FileNodeKind::File);
         assert_eq!(node.hash.as_deref(), Some(hash.as_str()));
         assert_eq!(node.size, 12);
-        assert_eq!(plan.id, record_node_id(node.record_id.unwrap()));
+        assert_eq!(plan.id, record_node_id(node.document_id.unwrap()));
         assert_eq!(tree.node(&docs.id).unwrap().kind, FileNodeKind::Directory);
         assert_eq!(folder_named(&tree, ROOT_ID, "docs"), Some(docs.id.clone()));
         assert_eq!(folder_named(&tree, ROOT_ID, "plan.md"), None);

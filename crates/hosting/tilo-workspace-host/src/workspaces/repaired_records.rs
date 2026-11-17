@@ -561,7 +561,7 @@ impl Workspaces {
             workspace,
             &governor,
             &key,
-            &tilo_agent_participant::AppCatalogue::native(),
+            &tilo_agent_session::AppCatalogue::native(),
             app,
             record,
             &bytes,

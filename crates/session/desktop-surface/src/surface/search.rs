@@ -1504,7 +1504,10 @@ impl DesktopSurface {
                     match active {
                         Some(ids) if shared.holders.contains_key(&ids.tab) => {
                             let refusal = holder_refusal(&shared.holders, ids.tab);
-                            shared.acknowledger.say(refusal);
+                            shared.say(ui::window_toolbar::ToolbarNotice::new(
+                                refusal,
+                                ui::widget::toast::ToastKind::Info,
+                            ));
                             None
                         }
                         active => active.map(Admitted::Close),
@@ -1523,9 +1526,10 @@ impl DesktopSurface {
             }
             Target::Copy { text } => {
                 ui::text_selection::clipboard_copy(&text);
-                shared
-                    .acknowledger
-                    .say(crate::i18n::t("desktop-search-copied"));
+                shared.say(ui::window_toolbar::ToolbarNotice::new(
+                    crate::i18n::t("desktop-search-copied"),
+                    ui::widget::toast::ToastKind::Success,
+                ));
                 None
             }
             // Where the host opens addresses. In a web browser that is a new tab, which the browser
@@ -1538,7 +1542,10 @@ impl DesktopSurface {
                 if let Err(error) =
                     ui::widget::try_open_external_url(fallback.as_deref().unwrap_or(&uri))
                 {
-                    shared.acknowledger.say(error.to_string());
+                    shared.say(ui::window_toolbar::ToolbarNotice::new(
+                        error.to_string(),
+                        ui::widget::toast::ToastKind::Error,
+                    ));
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 match fallback {

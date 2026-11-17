@@ -151,8 +151,8 @@ imports! {
     ResourceRef = "resource_ref" ([H] -> [H]);
 
     Invoker = "invoker" ([] -> [H]);
-    PrincipalEq = "principal_eq" ([H, H] -> [I32]);
-    PrincipalName = "principal_name" ([H] -> [H]);
+    ActorEq = "actor_eq" ([H, H] -> [I32]);
+    ActorName = "actor_name" ([H] -> [H]);
     Now = "now" ([] -> [H]);
     WebGet = "web_get" ([H, H, H] -> [H]);
     WebPost = "web_post" ([H, H, H] -> [H]);
@@ -169,12 +169,12 @@ imports! {
     StageReading = "stage_reading" ([H, H] -> []);
     TimeShift = "time_shift" ([H, I64, I32] -> [H]);
     WallClock = "wall_clock" ([H] -> [H]);
-    PrincipalNamed = "principal_named" ([H] -> [H]);
+    PersonNamed = "person_named" ([H] -> [H]);
     AgentNamed = "agent_named" ([H] -> [H]);
     InvocationPush = "invocation_push" ([H, H, H] -> []);
     InvocationPop = "invocation_pop" ([] -> []);
-    PrincipalKind = "principal_kind" ([H] -> [I64]);
-    PrincipalRole = "principal_role" ([H] -> [H]);
+    ActorKind = "actor_kind" ([H] -> [I64]);
+    ActorRole = "actor_role" ([H] -> [H]);
 
     EnumNew = "enum_new" ([H, H] -> [H]);
     EnumSetI = "enum_set_i" ([H, H, I64] -> []);

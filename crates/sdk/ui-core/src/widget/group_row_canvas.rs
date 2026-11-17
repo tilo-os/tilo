@@ -45,14 +45,6 @@ impl CanvasView {
         self.origin + (p - corner) / self.zoom.max(f64::EPSILON)
     }
 
-    /// The size a window drawn `on_screen` has on the canvas: what its client is configured
-    /// to, so zooming scales its pixels rather than resizing it.
-    #[must_use]
-    pub fn canvas_size_of(&self, on_screen: Rect) -> (f64, f64) {
-        let zoom = self.zoom.max(f64::EPSILON);
-        (on_screen.width() / zoom, on_screen.height() / zoom)
-    }
-
     /// Zoom by `factor` about screen point `about`, for a row whose
     /// top-left corner is at `corner`: the canvas point under `about` stays
     /// under it. The zoom stays within [`CANVAS_ZOOM_MIN`] and

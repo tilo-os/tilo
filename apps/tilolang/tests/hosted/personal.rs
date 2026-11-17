@@ -58,12 +58,12 @@ fn the_place_a_person_picks_and_what_they_saw_are_theirs_again_after_a_restart()
     assert_ne!(picked(&mut first), ["Inbox"], "the window opens elsewhere");
     pick(&mut first, "Inbox");
     // They review a run: every change it made is seen.
-    assert!(
-        first
-            .instance_host()
-            .runtime()
-            .mark_run_seen("ada", "run-1")
-    );
+    assert!(first.instance_host().runtime().mark_run_seen(
+        &tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person(
+            "ada"
+        )),
+        "run-1"
+    ));
     first.settle();
     assert!(
         first
@@ -90,10 +90,12 @@ fn the_place_a_person_picks_and_what_they_saw_are_theirs_again_after_a_restart()
     );
     assert!(reviewed(&again, "run-1"));
     assert!(
-        !again
-            .instance_host()
-            .runtime()
-            .mark_run_seen("ada", "run-1"),
+        !again.instance_host().runtime().mark_run_seen(
+            &tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person(
+                "ada"
+            )),
+            "run-1"
+        ),
         "the run they reviewed is still seen"
     );
 }

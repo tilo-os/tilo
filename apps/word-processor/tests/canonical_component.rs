@@ -1,7 +1,7 @@
 fn harness() -> (
     ui::headless::FrameHarness,
     ui::record::RecordStore,
-    ui::record::RecordCheckout,
+    ui::record::DocumentCheckout,
 ) {
     use std::rc::Rc;
     use ui::application::{

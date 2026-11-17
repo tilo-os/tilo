@@ -60,25 +60,39 @@ const checkPage = async step => {
   const found = failures();
   if (found.length) await finish(1, `the page failed while ${step}: ${found.slice(0, 5).join(' | ')}`);
 };
+// Wait until `expression` holds in the page, or say what the entry showed
+// instead. The page does the waiting: it reads the expression again on each
+// change it shows, and a step fails the moment the page reports a failure.
 const until = async (expression, what, timeout = stepLimit(4)) => {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    await checkPage(what);
-    const value = await tab.evaluate(expression).catch(() => false);
-    if (value) return value;
-    if (Date.now() > deadline) {
-      const shown = await tab.evaluate(`JSON.stringify({
-        arrival: document.documentElement.dataset.arrival ?? null,
-        refusal: document.documentElement.dataset.refusal ?? null,
-        waitList: document.documentElement.dataset.waitList ?? null,
-        entry: document.documentElement.dataset.entry ?? null,
-        firstScreen: ${firstScreenShown},
-        status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null,
-      })`).catch(() => 'unreadable');
-      await finish(1, `${what} never happened: ${shown}`);
-    }
-    await sleep(250);
-  }
+  let stop = () => {};
+  const broke = new Promise(resolve => {
+    if (failures().length) return resolve(true);
+    const listening = browser.on(({sessionId, method, params}) => {
+      if (sessionId !== tab.sessionId) return;
+      const reported = method === 'Runtime.exceptionThrown'
+        || (method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(params.type));
+      if (!reported) return;
+      // The tab's own listener logs this same event, in this same turn.
+      if (failures().length) { listening(); resolve(true); }
+    });
+    stop = listening;
+  });
+  const answered = await Promise.race([
+    tab.waitFor(expression, {timeout}).then(value => ({value}), () => ({})),
+    broke.then(() => ({broke: true})),
+  ]);
+  stop();
+  await checkPage(what);
+  if (answered.value) return answered.value;
+  const shown = await tab.evaluate(`JSON.stringify({
+    arrival: document.documentElement.dataset.arrival ?? null,
+    refusal: document.documentElement.dataset.refusal ?? null,
+    waitList: document.documentElement.dataset.waitList ?? null,
+    entry: document.documentElement.dataset.entry ?? null,
+    firstScreen: ${firstScreenShown},
+    status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null,
+  })`).catch(() => 'unreadable');
+  await finish(1, `${what} never happened: ${shown}`);
 };
 
 // 0. What a stranger saw before the wait list came back: the setup screen,
@@ -88,11 +102,7 @@ if (before) {
   const was = await browser.tab({firstRun: true});
   await was.send('Emulation.setDeviceMetricsOverride', shellMetrics);
   await was.navigate(before);
-  for (let tries = 0; tries < 240; tries += 1) {
-    const shown = await was.evaluate(firstScreenShown).catch(() => false);
-    if (shown) break;
-    await sleep(250);
-  }
+  await was.waitFor(firstScreenShown, {timeout: stepLimit(12)}).catch(() => false);
   const png = await was.screenshot().catch(() => null);
   if (png) writeFileSync(join(out, '0-before-today.png'), png);
   report.before = await was.evaluate(`({
@@ -168,11 +178,7 @@ await phone.send('Page.addScriptToEvaluateOnNewDocument', {
 });
 await phone.send('Emulation.setDeviceMetricsOverride', {width: 390, height: 844, deviceScaleFactor: 2, mobile: true});
 await phone.navigate(site);
-for (let tries = 0; tries < 480; tries += 1) {
-  const ready = await phone.evaluate(`document.documentElement.dataset.waitList === 'form'`).catch(() => false);
-  if (ready) break;
-  await sleep(250);
-}
+await phone.waitFor(`document.documentElement.dataset.waitList === 'form'`, {timeout: stepLimit(24)}).catch(() => false);
 report.phone = await phone.evaluate(`({
   waitList: document.documentElement.dataset.waitList ?? null,
   heading: document.getElementById('arrival-refusal-heading')?.textContent?.trim() ?? null,

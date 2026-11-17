@@ -1,5 +1,5 @@
 //! Display layouts remembered per set of attached monitors: the office dock restores the office
-//! arrangement whichever DP port it enumerates first, and a different monitor on a familiar port
+//! placement whichever DP port it enumerates first, and a different monitor on a familiar port
 //! never inherits a stranger's position or mode.
 //!
 //! Each attached sink contributes a token (its EDID make, model and serial, or its connector label

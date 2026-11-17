@@ -22,6 +22,8 @@ optional = ["clipboard", "app-files", "files.open", "files.paths", "files.save"]
 
 [resources]
 kinds = ["canvas.artwork", "canvas.recent-artworks"]
+# Each member keeps one of each as their own; nobody else in the workspace receives it.
+own = ["canvas.recent-artworks"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

@@ -113,7 +113,7 @@ mod tests {
     use ui::application_view::InstanceViewStore;
     use ui::automerge::transaction::Transactable as _;
     use ui::automerge::{AutoCommit, ROOT, ReadDoc as _};
-    use ui::record::RecordKind;
+    use ui::record::ResourceType;
 
     const APP: &str = "so.tilo.chat";
     const PERSON: &str = "4f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
@@ -123,8 +123,8 @@ mod tests {
         Rc::new(durable_store::MemoryStore::new())
     }
 
-    fn drafts() -> RecordKind {
-        RecordKind::new("tilo.chat.drafts")
+    fn drafts() -> ResourceType {
+        ResourceType::new("tilo.chat.drafts")
     }
 
     fn genesis(doc: &mut AutoCommit) -> Result<(), String> {
@@ -169,7 +169,7 @@ mod tests {
             app_id: APP.into(),
             title: "Chat".into(),
             icon: ui::IconDescriptor::Glyph("C"),
-            record_kind: RecordKind::new("chat"),
+            record_kind: ResourceType::new("chat"),
             required: vec![],
             optional: vec![],
             opens: &[],

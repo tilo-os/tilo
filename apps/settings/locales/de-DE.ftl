@@ -59,7 +59,7 @@ display-scale = Skalierung
 display-mirroring = Spiegeln
 display-colour-profile = Farbprofil
 display-colour-profile-empty = Systemvorgabe
-display-arrangement-count = { $count ->
+display-placement-count = { $count ->
     [one] Ein Bildschirm
    *[other] { $count } Bildschirme
 }
@@ -299,13 +299,13 @@ speakers-discard = Verwerfen
 speakers-apply = Übernehmen
 speakers-revert = Zurücksetzen
 speakers-try-again = Erneut versuchen
-speakers-arrangement = Anordnung
-speakers-arrangement-stereo = Stereopaar
-speakers-arrangement-surround = Surround
-speakers-arrangement-room = Im Raum verteilt
-speakers-arrangement-stereo-description = Zwei Lautsprecher spielen links und rechts
-speakers-arrangement-surround-description = Drei bis sechs Lautsprecher an festen Positionen
-speakers-arrangement-room-description = Lautsprecher beliebig um dich herum
+speakers-placement = Anordnung
+speakers-placement-stereo = Stereopaar
+speakers-placement-surround = Surround
+speakers-placement-room = Im Raum verteilt
+speakers-placement-stereo-description = Zwei Lautsprecher spielen links und rechts
+speakers-placement-surround-description = Drei bis sechs Lautsprecher an festen Positionen
+speakers-placement-room-description = Lautsprecher beliebig um dich herum
 speakers-choose-title = Lautsprecher auswählen
 speakers-no-outputs = Keine Lautsprecher verfügbar. Schalte Medien unter „Abgleich zwischen Geräten“ auf jedem Gerät ein, das du nutzen möchtest.
 speakers-output-this-device = Dieses Gerät

@@ -286,7 +286,7 @@ async fn the_host_lets_go_of_content_no_record_of_the_workspace_names() {
 }
 
 /// A Viewer writes nothing of the workspace's, but their own record of an app
-/// (`member:<root>:<kind>`, their settings) is theirs whatever their role: the
+/// (of a kind its manifest declares each member's own, their settings) is theirs whatever their role: the
 /// relay keeps their change of it and their other device takes it in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_viewer_writes_their_own_record() {
@@ -297,8 +297,8 @@ async fn a_viewer_writes_their_own_record() {
     .await;
 }
 
-/// A person's mail is theirs: a Viewer keeps their own mailbox record
-/// (`member:<root>:mail.mailbox`), which their other device takes in, on a
+/// A person's mail is theirs: a Viewer keeps their own mailbox record,
+/// which their other device takes in, on a
 /// fresh workspace no editor ever opened Mail in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_viewer_keeps_their_own_mailbox() {
@@ -339,7 +339,9 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
         peer.select_exact_admissions().unwrap();
         peer
     };
-    let own = tilo_action_policy::member_record_id(&hex::encode(carol.user_pk), kind);
+    let own = collab_types::OwnRecord::new(kind, carol.user_pk)
+        .unwrap()
+        .record_id();
     // The workspace's owner is live while Carol writes: a member like any other
     // for her own record, which never reaches the owner's device.
     let owner_session = session(&relay, &laptop, workspace).await;
@@ -429,9 +431,248 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
         "nor is it in the owner's catch-up"
     );
     owner_session.close().await;
+    // Her phone is away while she writes her own record again: it takes the
+    // write in when it comes back.
+    phone_session.close().await;
+    let heads = doc.get_heads();
+    doc.put(ROOT, "theme", "light").unwrap();
+    doc.commit_edit("fixture", "theme");
+    let away = viewer_peer
+        .publication_mut()
+        .publish_incremental(
+            own_app,
+            &own,
+            doc.save_after(&heads),
+            &viewer.sk,
+            SystemTime::now(),
+        )
+        .unwrap();
+    publish(&viewer_session, &away);
+    let phone_session = session(&relay, &phone, workspace).await;
+    receive_until(
+        "her phone, back, takes in the write made while it was away",
+        &phone_session,
+        &mut phone_peer,
+        &mut Vec::new(),
+        |peer, _| theme(peer, own_app, &own).as_deref() == Some("light"),
+    )
+    .await;
+
+    // The workspace's owner writes into Carol's own record anyway, as a
+    // modified page could: built from a replica that holds it, the write names
+    // Carol as the record's person and is signed by the owner's device. The
+    // host neither keeps nor forwards it; her phone would refuse it loudly
+    // (`receive_until` unwraps every delta it applies), and only her own
+    // later write reaches it.
+    let owner_session = session(&relay, &laptop, workspace).await;
+    let heads = doc.get_heads();
+    doc.put(ROOT, "theme", "the owner's").unwrap();
+    doc.commit_edit("fixture", "theme");
+    let mut forged = viewer_peer
+        .clone()
+        .publication_mut()
+        .publish_incremental(
+            own_app,
+            &own,
+            doc.save_after(&heads),
+            &viewer.sk,
+            SystemTime::now(),
+        )
+        .unwrap();
+    let NeighbourMsg::AppDocument {
+        peer,
+        envelope,
+        own: named,
+        ..
+    } = &mut forged
+    else {
+        panic!("a write of a record is an app document");
+    };
+    assert_eq!(
+        named.as_ref().map(|own| own.owner),
+        Some(carol.user_pk),
+        "the write names the record's person"
+    );
+    *peer = tilo_peer_state::peer_handle(&laptop.device_pubkey());
+    envelope.author = collab_types::Ed25519PublicKey::from_bytes(laptop.device_pubkey());
+    envelope.seq = 1;
+    collab_types::sign_op(envelope, &laptop.sk).unwrap();
+    publish(&owner_session, &forged);
+    // Past the time the host takes a write in, so a forwarded forgery would
+    // arrive before Carol's write below.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    owner_session.close().await;
+    let mut doc = AutoCommit::load(&viewer_peer.document(own_app, &own).unwrap()).unwrap();
+    let heads = doc.get_heads();
+    doc.put(ROOT, "theme", "blue").unwrap();
+    doc.commit_edit("fixture", "theme");
+    let blue = viewer_peer
+        .publication_mut()
+        .publish_incremental(
+            own_app,
+            &own,
+            doc.save_after(&heads),
+            &viewer.sk,
+            SystemTime::now(),
+        )
+        .unwrap();
+    publish(&viewer_session, &blue);
+    receive_until(
+        "her phone takes in her write and nothing of the owner's",
+        &phone_session,
+        &mut phone_peer,
+        &mut Vec::new(),
+        |peer, _| theme(peer, own_app, &own).as_deref() == Some("blue"),
+    )
+    .await;
+
+    // Nothing of the owner's own record was written yet: opening it named as
+    // hers, Carol's device is told it is not hers, and the owner's device that
+    // it holds none.
+    let alices = tilo_relay_protocol::OwnedChannel {
+        app_id: own_app.to_owned(),
+        record: collab_types::OwnRecord::new(kind, alice.user_pk).unwrap(),
+    };
+    assert_eq!(
+        answer_to_opening_own(&viewer_session, &alices).await,
+        tilo_relay_protocol::RecordAnswer::NotYours,
+        "another member's own record is not hers, written or not"
+    );
+    let owner_session = session(&relay, &laptop, workspace).await;
+    assert_eq!(
+        answer_to_opening_own(&owner_session, &alices).await,
+        tilo_relay_protocol::RecordAnswer::Sent { frames: 0 },
+        "the owner's own record, of which nothing is written yet"
+    );
+    owner_session.close().await;
+
+    // A write of her own record the host does not retain (sent as it is, not
+    // as a retained change) waits for her phone while it is away, and for no
+    // other member's device.
     phone_session.close().await;
     viewer_session.close().await;
+    let heads = doc.get_heads();
+    doc.put(ROOT, "theme", "queued").unwrap();
+    doc.commit_edit("fixture", "theme");
+    let unretained = viewer_peer
+        .publication_mut()
+        .publish_incremental(
+            own_app,
+            &own,
+            doc.save_after(&heads),
+            &viewer.sk,
+            SystemTime::now(),
+        )
+        .unwrap();
+    assert!(
+        matches!(&unretained, NeighbourMsg::AppDocument { own: Some(said), .. } if said.owner == carol.user_pk),
+        "her write names her own record on the wire"
+    );
+    let raw = RelayClient::connect_to_pinned_host(
+        device_endpoint(&viewer).await,
+        relay.node_addr(),
+        viewer.cert.clone(),
+        viewer.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    raw.send(Envelope::Subscribe {
+        workspace_id: workspace,
+    })
+    .unwrap();
+    tilo_test_env::within("the viewer's connection is subscribed", async {
+        while !matches!(raw.recv().await, Some(Envelope::Ready { .. })) {}
+    })
+    .await;
+    let sent = postcard::to_stdvec(&unretained).unwrap();
+    raw.send(Envelope::Delta {
+        workspace_id: workspace,
+        author_device_public_key: viewer.device_pubkey(),
+        authored_at_ns: 1,
+        delta: sent.clone(),
+        signature: [0; 64],
+    })
+    .unwrap();
+    let pending = |device: &TestDevice| {
+        let dir = scratch
+            .path()
+            .join("workspaces")
+            .join(workspace.to_string())
+            .join("pending")
+            .join(hex::encode(device.device_pubkey()));
+        std::fs::read_dir(dir).map_or(0, |entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".delta"))
+                .count()
+        })
+    };
+    tilo_test_env::within("the write is queued for her phone", async {
+        while pending(&phone) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+    assert_eq!(pending(&laptop), 0, "nor for the owner's device");
+    let back = RelayClient::connect_to_pinned_host(
+        device_endpoint(&phone).await,
+        relay.node_addr(),
+        phone.cert.clone(),
+        phone.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    back.send(Envelope::Subscribe {
+        workspace_id: workspace,
+    })
+    .unwrap();
+    tilo_test_env::within(
+        "her phone, back, is sent the write kept for it alone",
+        async {
+            loop {
+                match back.recv().await.expect("the connection stays open") {
+                    Envelope::Delta { delta, .. } if delta == sent => return,
+                    _ => {}
+                }
+            }
+        },
+    )
+    .await;
     relay.shutdown().await;
+}
+
+/// [`answer_to_opening`] for a member's own record named with its kind and
+/// person, which the host answers even before anything of it was written.
+async fn answer_to_opening_own(
+    session: &RelayCoeditSession,
+    own: &tilo_relay_protocol::OwnedChannel,
+) -> tilo_relay_protocol::RecordAnswer {
+    let channel = neighbour_wire::app_document_channel(&own.app_id, &own.record.record_id());
+    session.open_own_record(own.clone()).unwrap();
+    tilo_test_env::within("the host answers the opened record", async {
+        loop {
+            if let Inbound::RecordOpened {
+                channel: opened,
+                answer,
+            } = session.recv().await.expect("the session stays open")
+                && opened == channel
+            {
+                return answer;
+            }
+        }
+    })
+    .await
+}
+
+fn theme(peer: &StatePeer, app: &str, record: &str) -> Option<String> {
+    AutoCommit::load(&peer.document(app, record)?)
+        .ok()?
+        .get(ROOT, "theme")
+        .ok()
+        .flatten()
+        .and_then(|(value, _)| value.into_string().ok())
 }
 
 /// What the host answers `session` when it opens `app`'s record `record`. Every

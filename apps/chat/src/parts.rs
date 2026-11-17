@@ -33,7 +33,7 @@
 
 use std::collections::BTreeMap;
 
-use ui::record::RecordId;
+use ui::record::DocumentId;
 use ui::tilo_resource::{self, Collection, Model};
 
 use crate::record::Message;
@@ -47,19 +47,19 @@ pub const PART_TEXT_BYTES: usize = 1024 * 1024;
 
 /// The chain the chat's message parts belong to.
 #[must_use]
-pub fn chain() -> RecordId {
-    RecordId::derived("messages", &RecordId::workspace_default())
+pub fn chain() -> DocumentId {
+    DocumentId::derived("messages", &DocumentId::workspace_default())
 }
 
 /// Part `index` of the chat's messages.
 #[must_use]
-pub fn part(index: u64) -> RecordId {
+pub fn part(index: u64) -> DocumentId {
     chain().part(index)
 }
 
 /// The number of `record` when it is a part of the chat's messages.
 #[must_use]
-pub fn part_index(record: &RecordId) -> Option<u64> {
+pub fn part_index(record: &DocumentId) -> Option<u64> {
     record
         .chain_part()
         .filter(|(base, _)| *base == chain())
@@ -151,7 +151,7 @@ mod tests {
             assert_eq!(part_index(&first), Some(0));
             assert_eq!(part_index(&part(41)), Some(41));
             assert_eq!(part_index(&chain()), None);
-            assert_eq!(part_index(&RecordId::workspace_default().part(3)), None);
+            assert_eq!(part_index(&DocumentId::workspace_default().part(3)), None);
             assert_eq!(
                 neighbour_wire::record_sync(first.as_str()),
                 neighbour_wire::RecordSync::Part {

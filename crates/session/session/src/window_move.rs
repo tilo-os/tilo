@@ -20,7 +20,7 @@ use tilo_action_broker::collab_broker::SessionFollowDispatcher;
 use tilo_app_launch::Launch;
 use tilo_compositor::Compositor;
 use tilo_desktop_model::{Layout, TabId, TileContent, Workspace, WorkspaceId};
-use ui::record::RecordId;
+use ui::record::DocumentId;
 use ui::record::transfer::{Origin, Retirement, TransferError};
 
 use crate::Shared;
@@ -74,7 +74,7 @@ struct Asked {
 /// The record a window shows, on its way to the workspace the person carried it to.
 struct Travelling {
     /// Its id where the window showed it.
-    id: RecordId,
+    id: DocumentId,
     /// The profile it is kept in where the window showed it, and the one it is carried to.
     source: Profile,
     destination: Profile,
@@ -354,9 +354,9 @@ impl Moves {
 
     /// The record the window at `tab` shows, when it is a record of its own that may leave the
     /// workspace: one the workspace keeps for the app goes with the workspace.
-    fn travelling(shared: &Shared, tab: TabId) -> Option<RecordId> {
+    fn travelling(shared: &Shared, tab: TabId) -> Option<DocumentId> {
         let (id, _) = shared.notes.window_record(tab)?;
-        RecordId::parse(&id).filter(|id| !id.is_package_primary())
+        DocumentId::parse(&id).filter(|id| !id.is_package_primary())
     }
 
     /// [`Self::travelling`], naming the profiles it is kept in: where the window shows it, and the
@@ -736,7 +736,7 @@ impl Moves {
                 token,
                 successor: Successor {
                     workspace: crossing.to_id.clone(),
-                    record: target,
+                    document: target,
                     by: shared.person.clone(),
                 },
             },
@@ -826,7 +826,7 @@ impl Moves {
         let origin = arrived.origin.clone();
         let successor = Successor {
             workspace: crossing.to_id.clone(),
-            record: arrived.target.id.as_str().to_owned(),
+            document: arrived.target.id.as_str().to_owned(),
             by: shared.person.clone(),
         };
         if let Err(error) = window_transfer::off_loop_detached(move || {
@@ -1122,7 +1122,7 @@ mod tests {
     use tilo_desktop_policy::Window;
     use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
     use ui::record::transfer::retirement;
-    use ui::record::{RecordCheckout, RecordKind, RecordOwners};
+    use ui::record::{DocumentCheckout, RecordOwners, ResourceType};
 
     use crate::apps::Apps;
     use crate::{AppActions, Options, Session};
@@ -1289,9 +1289,9 @@ mod tests {
         }
 
         /// The record the window shows: one the app wrote in the workspace it is in.
-        fn showing(&self, body: &str) -> RecordCheckout {
+        fn showing(&self, body: &str) -> DocumentCheckout {
             let root = Self::profile(&self.from);
-            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new(NOTE));
+            let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new(NOTE));
             let mut owners = RecordOwners::new(root);
             let records = owners
                 .open(PROBE, &self.from)
@@ -1332,7 +1332,7 @@ mod tests {
 
         /// Wait for the app the move starts where the window went, and what it was handed: the
         /// workspace, and the record it opens.
-        fn arrived(&mut self) -> (String, RecordId) {
+        fn arrived(&mut self) -> (String, DocumentId) {
             wait(
                 &mut self.session,
                 "the app runs where the window went",
@@ -1344,7 +1344,7 @@ mod tests {
                 "the app runs under the grants of the workspace the window went to"
             );
             let opened = handed(&self.arguments, "--open-uri");
-            let id = RecordId::from_uri(&opened)
+            let id = DocumentId::from_uri(&opened)
                 .expect("the launch opens the record the window carried");
             (opened, id)
         }
@@ -1369,12 +1369,12 @@ mod tests {
         }
 
         /// What the record `id` holds in `workspace` on this device.
-        fn stored(workspace: &str, id: &RecordId) -> Option<automerge::AutoCommit> {
+        fn stored(workspace: &str, id: &DocumentId) -> Option<automerge::AutoCommit> {
             stored_at(&Self::profile(workspace), workspace, id)
         }
 
         /// The app of the tab writes once more where the window was.
-        fn edit(&self, id: &RecordId, body: &str) {
+        fn edit(&self, id: &DocumentId, body: &str) {
             edit_at(&Self::profile(&self.from), &self.from, id, body);
         }
     }
@@ -1388,7 +1388,7 @@ mod tests {
     }
 
     /// What the record `id` of `workspace` holds in the profile at `root` .
-    fn stored_at(root: &Path, workspace: &str, id: &RecordId) -> Option<automerge::AutoCommit> {
+    fn stored_at(root: &Path, workspace: &str, id: &DocumentId) -> Option<automerge::AutoCommit> {
         let store = app_state::FsStore::new(root.to_path_buf());
         let key = StorageKey::document(PROBE, workspace, id.storage_key());
         let stored = store.read(&key).ok().flatten()?;
@@ -1399,12 +1399,12 @@ mod tests {
 
     /// The app writes `body` into the record `id` of `workspace` : what it does while a window
     /// moves.
-    fn edit_at(root: &Path, workspace: &str, id: &RecordId, body: &str) {
+    fn edit_at(root: &Path, workspace: &str, id: &DocumentId, body: &str) {
         let mut owners = RecordOwners::new(root.to_path_buf());
         let records = owners
             .open(PROBE, workspace)
             .expect("the app's records of its workspace");
-        records.open_record(&RecordCheckout::new(id.clone(), RecordKind::new(NOTE)));
+        records.open_record(&DocumentCheckout::new(id.clone(), ResourceType::new(NOTE)));
         records
             .with(id, |doc| {
                 doc.put(automerge::ROOT, "body", body)
@@ -1606,7 +1606,7 @@ mod tests {
         shell.land();
         let successor = Successor {
             workspace: shell.to_id.clone(),
-            record: arrived.as_str().to_owned(),
+            document: arrived.as_str().to_owned(),
             by: shell.session.shared.person.clone(),
         };
         let source = Shell::profile(&shell.from);

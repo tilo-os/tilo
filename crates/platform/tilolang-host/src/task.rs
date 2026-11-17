@@ -112,8 +112,8 @@ struct Api {
     /// The native apps the task reaches, and the record each publishes.
     native: Rc<Native>,
     /// The author of the program running now, as the actions it plans for a preview see their
-    /// caller.
-    caller: RefCell<tilolang_tilo::publish::Caller>,
+    /// caller; `None` until the first program names one.
+    caller: RefCell<Option<tilolang_tilo::publish::Caller>>,
     /// The apps whose records the session changes itself; any other app's change is its own
     /// action, invoked where the app runs.
     changed_at_record: std::collections::BTreeSet<String>,
@@ -150,7 +150,7 @@ impl TaskApi for Api {
         {
             let preview = self
                 .reads
-                .plan(&call, &self.caller.borrow())
+                .plan(&call, self.caller.borrow().as_ref())
                 .unwrap_or(Json::Null);
             if let Some(fields) = call.as_object_mut() {
                 fields.insert("app".to_owned(), json!(under));
@@ -322,11 +322,7 @@ impl Task {
             reads,
             native: Rc::clone(&native),
             // Each program names its author; this is no one's until the first does.
-            caller: RefCell::new(tilolang_tilo::publish::Caller {
-                actor: String::new(),
-                agent: true,
-                on_behalf_of: request.person.clone(),
-            }),
+            caller: RefCell::new(None),
             changed_at_record: request.changed_at_record.clone(),
         });
         let session = TaskSession::new(
@@ -381,11 +377,7 @@ impl Task {
                 Rc::clone(&line) as Rc<dyn RecordSource>,
             ),
             native: Rc::new(Native::of(&[], &[])),
-            caller: RefCell::new(tilolang_tilo::publish::Caller {
-                actor: String::new(),
-                agent: true,
-                on_behalf_of: None,
-            }),
+            caller: RefCell::new(None),
             changed_at_record: self.api.changed_at_record.clone(),
         });
         self.guests.borrow_mut().push(Guest { line, api, watched });
@@ -548,9 +540,9 @@ impl Task {
         }
         let answer = match message.and_then(|message| program(&message)) {
             Ok((source, confirm, author)) => {
-                let principal = tilolang_tilo::runtime::Principal::new(author.actor.clone());
-                *api.caller.borrow_mut() = author;
-                self.session.run(&source, confirm, &principal)
+                let actor = author.actor.clone();
+                *api.caller.borrow_mut() = Some(author);
+                self.session.run(&source, confirm, &actor)
             }
             Err(why) => {
                 tracing::warn!(why, "a guest sent the task something that is not a program");
@@ -584,9 +576,9 @@ impl Task {
         }
         let answer = match message.and_then(|message| program(&message)) {
             Ok((source, confirm, author)) => {
-                let principal = tilolang_tilo::runtime::Principal::new(author.actor.clone());
-                *self.api.caller.borrow_mut() = author;
-                self.session.run(&source, confirm, &principal)
+                let actor = author.actor.clone();
+                *self.api.caller.borrow_mut() = Some(author);
+                self.session.run(&source, confirm, &actor)
             }
             Err(why) => {
                 tracing::warn!(why, "the API sent the task something that is not a program");
@@ -618,11 +610,10 @@ fn program(message: &Json) -> Result<(String, bool, tilolang_tilo::publish::Call
         .ok_or("the API sent a program without its author")?;
     let actor = author
         .get("actor")
-        .and_then(Json::as_str)
-        .filter(|actor| !actor.is_empty())
+        .and_then(|actor| serde_json::from_value(actor.clone()).ok())
         .ok_or("the API sent a program whose author names no one")?;
     let author = tilolang_tilo::publish::Caller {
-        actor: actor.to_owned(),
+        actor,
         agent: author.get("agent").and_then(Json::as_bool).unwrap_or(true),
         on_behalf_of: author
             .get("on_behalf_of")
@@ -732,11 +723,7 @@ mod tests {
                 Rc::clone(&line) as Rc<dyn RecordSource>,
             ),
             native: Rc::clone(&apps),
-            caller: RefCell::new(tilolang_tilo::publish::Caller {
-                actor: "agent:task".to_owned(),
-                agent: true,
-                on_behalf_of: None,
-            }),
+            caller: RefCell::new(None),
             changed_at_record: std::collections::BTreeSet::new(),
         });
         let session = TaskSession::new(
@@ -871,7 +858,9 @@ mod tests {
         task.session.run(
             source,
             false,
-            &tilolang_tilo::runtime::Principal::new("agent:task"),
+            &tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::agent(
+                "task",
+            )),
         )
     }
 

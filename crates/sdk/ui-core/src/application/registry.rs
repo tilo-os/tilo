@@ -207,7 +207,7 @@ pub async fn load(app_id: &str) -> Option<&'static ApplicationDefinition> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record::RecordKind;
+    use crate::record::ResourceType;
     use crate::widget::IconDescriptor;
 
     fn definition(app_id: &'static str) -> &'static ApplicationDefinition {
@@ -215,7 +215,7 @@ mod tests {
             app_id: app_id.into(),
             title: "Probe".into(),
             icon: IconDescriptor::Named("notes".into()),
-            record_kind: RecordKind::new("probe.page"),
+            record_kind: ResourceType::new("probe.page"),
             required: vec![],
             optional: vec![],
             opens: &[],

@@ -16,9 +16,9 @@ pub use layers::{Layers, LayersLayout};
 pub use page::{MEASURE_REM, Page, PageLayout, TranscriptEdges};
 pub use split::{Collapse, Navigation, Pane, Side, Split, SplitLayout};
 pub use units::{
-    Align, Arrangement, At, Axis, Direction, Distribute, Fit, Length, Orientation, Sizing, Space,
-    WidthClass, arrangement_for, class_min_width, column_min_width, columns_for,
-    page_content_width, rem_of,
+    Align, At, Axis, Direction, Distribute, Fit, Length, Orientation, PaneSplit, Sizing, Space,
+    WidthClass, class_min_width, column_min_width, columns_for, page_content_width, pane_split_for,
+    rem_of,
 };
 
 /// A vertical scroll view around `child`: the constraint on its axis is unbounded, so the child

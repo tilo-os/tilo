@@ -8,16 +8,16 @@ tilo_test_env::scenario! {
     // A chain's parts and an on-demand record are ordinary record ids, in
     // the wire form the host reads them by.
     {
-        let chat = RecordId::workspace_default();
+        let chat = DocumentId::workspace_default();
         let part = chat.part(12);
         assert_eq!(part.as_str(), format!("derived:part.12@{}", chat.as_str()));
-        assert_eq!(RecordId::parse(part.as_str()), Some(part.clone()));
+        assert_eq!(DocumentId::parse(part.as_str()), Some(part.clone()));
         assert_eq!(part.chain_part(), Some((chat.clone(), 12)));
         assert_eq!(chat.part(0).chain_part(), Some((chat.clone(), 0)));
         assert_eq!(chat.chain_part(), None);
-        let archive = RecordId::minted().on_demand();
+        let archive = DocumentId::minted().on_demand();
         assert!(archive.as_str().starts_with("derived:on-demand@uuid:"));
-        assert_eq!(RecordId::parse(archive.as_str()), Some(archive));
+        assert_eq!(DocumentId::parse(archive.as_str()), Some(archive));
     }
 
     phase a_child_record_names_its_parent_and_its_own_id;
@@ -25,13 +25,13 @@ tilo_test_env::scenario! {
     // its own id, whatever lists it; an id that cannot name a record is
     // refused.
     {
-        let chat = RecordId::workspace_default();
+        let chat = DocumentId::workspace_default();
         let channel = chat.child("c_design").unwrap();
         assert_eq!(
             channel.as_str(),
             format!("derived:child.c_design@{}", chat.as_str())
         );
-        assert_eq!(RecordId::parse(channel.as_str()), Some(channel.clone()));
+        assert_eq!(DocumentId::parse(channel.as_str()), Some(channel.clone()));
         assert_eq!(
             channel.child_of(),
             Some((chat.clone(), "c_design".to_owned()))
@@ -79,41 +79,41 @@ tilo_test_env::scenario! {
             #[cfg(not(windows))]
             let (root, expected) = ("/work", "file:/work/report.odt");
             let path = Path::new(root).join("report.odt");
-            let id = RecordId::for_file(&path);
+            let id = DocumentId::for_file(&path);
             assert_eq!(id.as_str(), expected);
             assert_eq!(id.file_path().unwrap(), path);
-            assert_eq!(RecordId::parse(expected), Some(id.clone()));
+            assert_eq!(DocumentId::parse(expected), Some(id.clone()));
             // Same file, same record, including lexical path aliases.
-            assert_eq!(id, RecordId::for_file(Path::new(root).join("./report.odt")));
+            assert_eq!(id, DocumentId::for_file(Path::new(root).join("./report.odt")));
             assert_eq!(
                 id,
-                RecordId::for_file(Path::new(root).join("drafts/../report.odt"))
+                DocumentId::for_file(Path::new(root).join("drafts/../report.odt"))
             );
         }
 
         {
-            assert_ne!(RecordId::minted(), RecordId::minted());
+            assert_ne!(DocumentId::minted(), DocumentId::minted());
         }
 
         {
-            let a = RecordId::for_file("/work/report.odt");
-            let b = RecordId::for_file("/work/other.odt");
+            let a = DocumentId::for_file("/work/report.odt");
+            let b = DocumentId::for_file("/work/other.odt");
             assert_eq!(
                 a.storage_key(),
-                RecordId::for_file("/work/report.odt").storage_key()
+                DocumentId::for_file("/work/report.odt").storage_key()
             );
             assert_ne!(a.storage_key(), b.storage_key());
             // A traversal in the identity must not survive into the key.
-            let key = RecordId::for_file("/work/../../etc/shadow").storage_key();
+            let key = DocumentId::for_file("/work/../../etc/shadow").storage_key();
             assert!(!key.contains('/'), "key {key} must name one directory");
             assert!(!key.contains(".."), "key {key} must not traverse");
 
             // Paths that agree past the readable part of the key are still
             // two documents — a sanitise-only key would collide them.
             let deep_a =
-                RecordId::for_file("/work/clients/northwind/2026/contracts/final/appendix-a.odt");
+                DocumentId::for_file("/work/clients/northwind/2026/contracts/final/appendix-a.odt");
             let deep_b =
-                RecordId::for_file("/work/clients/northwind/2026/contracts/final/appendix-b.odt");
+                DocumentId::for_file("/work/clients/northwind/2026/contracts/final/appendix-b.odt");
             assert_ne!(
                 deep_a.storage_key(),
                 deep_b.storage_key(),
@@ -123,8 +123,8 @@ tilo_test_env::scenario! {
 
         {
             let mut doc = AutoCommit::new();
-            let id = RecordId::for_file("/work/report.odt");
-            let kind = RecordKind::new("document");
+            let id = DocumentId::for_file("/work/report.odt");
+            let kind = ResourceType::new("document");
             init(&mut doc, &id, &kind, "workspace-1");
             let got = identity(&doc).expect("the document knows which record it is");
             assert_eq!(got.id, id);
@@ -134,8 +134,8 @@ tilo_test_env::scenario! {
 
         {
             let mut doc = AutoCommit::new();
-            let id = RecordId::minted();
-            let kind = RecordKind::new("book");
+            let id = DocumentId::minted();
+            let kind = ResourceType::new("book");
             init(&mut doc, &id, &kind, "workspace-1");
             init(&mut doc, &id, &kind, "workspace-2");
             assert_eq!(
@@ -146,14 +146,14 @@ tilo_test_env::scenario! {
         }
 
         {
-            let file = RecordId::for_file("/tmp/shared/report.pdf");
-            let derived = RecordId::derived("annotations", &file);
-            assert!(RecordId::parse(derived.as_str()).is_some(), "{derived}");
+            let file = DocumentId::for_file("/tmp/shared/report.pdf");
+            let derived = DocumentId::derived("annotations", &file);
+            assert!(DocumentId::parse(derived.as_str()).is_some(), "{derived}");
         }
 
         {
             let mut workspace_doc = AutoCommit::new();
-            let origin = RecordCheckout::new(RecordId::minted(), RecordKind::new("book"));
+            let origin = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("book"));
             index::reference(&mut workspace_doc, &origin.id, &origin.kind);
             let copy = index::duplicate(&mut workspace_doc, &origin);
             assert_ne!(copy.id, origin.id, "copying mints a new identity");
@@ -171,11 +171,11 @@ tilo_test_env::scenario! {
     // single genesis change, under the record's own actor at time zero,
     // and converge on one record.
     {
-        let kind = RecordKind::new("test.genesis-note");
+        let kind = ResourceType::new("test.genesis-note");
         // The app's surface is named in the record's identity.
         crate::app_surface::register_package("so.tilo.test-genesis", b"surface");
         crate::app_surface::register_kind(kind.as_str(), "so.tilo.test-genesis");
-        let checkout = RecordCheckout::new(RecordId::for_tab(3), kind);
+        let checkout = DocumentCheckout::new(DocumentId::for_tab(3), kind);
         let create = |actor: &[u8]| {
             let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(actor));
             genesis(&mut doc, &checkout, "workspace", |doc| {
@@ -228,9 +228,9 @@ tilo_test_env::scenario! {
                 .map_err(|e| e.to_string())?;
             Ok(())
         };
-        let checkout = RecordCheckout::new(
-            RecordId::derived("default-notebook", &RecordId::for_tab(7)),
-            RecordKind::new("notebook"),
+        let checkout = DocumentCheckout::new(
+            DocumentId::derived("default-notebook", &DocumentId::for_tab(7)),
+            ResourceType::new("notebook"),
         );
         let temp = tempfile::tempdir().unwrap();
         let created: Vec<Vec<u8>> = ["ada", "bea"]
@@ -276,8 +276,8 @@ tilo_test_env::scenario! {
 #[test]
 fn a_part_stored_after_the_window_opened_is_held_and_opens() {
     let workspace = uuid::Uuid::new_v4().to_string();
-    let chain = RecordId::derived("messages", &RecordId::workspace_default());
-    let part = RecordCheckout::new(chain.part(0), RecordKind::new("test.chain-part"));
+    let chain = DocumentId::derived("messages", &DocumentId::workspace_default());
+    let part = DocumentCheckout::new(chain.part(0), ResourceType::new("test.chain-part"));
     let key = StorageKey::document(
         "so.tilo.test-chain",
         &workspace,
@@ -316,9 +316,9 @@ tilo_test_env::scenario! {
     // its app writes — and reading it leaves its attributed history alone.
     {
         for kind in ["tilo.rich-text", "document"] {
-            let stamped = RecordKind::new(kind);
+            let stamped = ResourceType::new(kind);
             assert!(stamped.names(kind));
-            let id = RecordId::for_tab(7);
+            let id = DocumentId::for_tab(7);
             let mut doc = AutoCommit::new();
             init(&mut doc, &id, &stamped, "workspace");
             let meta = meta_obj(&mut doc).unwrap();
@@ -327,7 +327,7 @@ tilo_test_env::scenario! {
             let heads = doc.get_heads();
             assert_eq!(
                 identity(&doc),
-                Some(RecordCheckout::new(id.clone(), stamped.clone()))
+                Some(DocumentCheckout::new(id.clone(), stamped.clone()))
             );
             assert!(init_scoped(&mut doc, &id, &stamped, "workspace", None));
             doc.commit();
@@ -341,7 +341,7 @@ tilo_test_env::scenario! {
     // and reads back with that workspace after a save.
     {
         let workspace = uuid::Uuid::new_v4().to_string();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("test.workspace-key"));
+        let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("test.workspace-key"));
         let mut doc = AutoCommit::new();
         assert!(init_scoped(
             &mut doc,
@@ -382,7 +382,7 @@ tilo_test_env::scenario! {
             let temp = tempfile::tempdir().unwrap();
             let mut owners = RecordOwners::new(temp.path().join("state"));
             let store = owners.open("so.tilo.test", "status-workspace").unwrap();
-            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
             let mut reservation = store.reserve_record(&checkout).unwrap();
             reservation
                 .initialize(|doc| {
@@ -440,7 +440,7 @@ tilo_test_env::scenario! {
             let backend = Rc::new(MemoryStore::queued());
             let mut owners = RecordOwners::with_store(backend.clone());
             let store = owners.open("so.tilo.test", "workspace-a").unwrap();
-            let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
             store
                 .reserve_record(&want)
                 .unwrap()
@@ -494,7 +494,7 @@ tilo_test_env::scenario! {
 
         {
             let store = RecordStore::in_memory();
-            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
             assert!(store.open_record(&checkout));
             store
                 .with_action_state(&checkout.id, |_, _, _| {
@@ -515,7 +515,7 @@ tilo_test_env::scenario! {
             let root = tmp.path().join("state");
             let mut owners = RecordOwners::new(root);
             let store = owners.open("so.tilo.test", "workspace-a").unwrap();
-            let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
             let mut token = store.reserve_record(&want).unwrap();
             let generation = token.generation;
             let owner = store.0.borrow().pending[&want.id].store.clone().unwrap();
@@ -564,7 +564,7 @@ tilo_test_env::scenario! {
             drop(token);
             assert!(store.is_ready(&want.id));
             // Construct a stale-generation witness privately: no public handle can do this.
-            let other = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let other = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
             let token = store.reserve_record(&other).unwrap();
             let stale_generation = token.generation;
             drop(token);
@@ -591,7 +591,7 @@ tilo_test_env::scenario! {
             let mut owners = RecordOwners::new(tmp.path().join("state"));
             let store = owners.open("so.tilo.test", "workspace-a").unwrap();
             let second = owners.open("so.tilo.test", "workspace-a").unwrap();
-            let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
             store
                 .reserve_record(&want)
                 .unwrap()
@@ -628,21 +628,21 @@ tilo_test_env::scenario! {
     {
         {
             let mut markup = AutoCommit::new();
-            let book = RecordId::for_file("/work/book.pdf");
+            let book = DocumentId::for_file("/work/book.pdf");
             init(
                 &mut markup,
-                &RecordId::minted(),
-                &RecordKind::new("annotation-set"),
+                &DocumentId::minted(),
+                &ResourceType::new("annotation-set"),
                 "workspace-1",
             );
             assert!(add_reference(
                 &mut markup,
-                &RecordRef::new(book.clone(), "marks-up")
+                &DocumentRef::new(book.clone(), "marks-up")
             ));
             // Asserting the same reference twice is not two references.
             assert!(!add_reference(
                 &mut markup,
-                &RecordRef::new(book.clone(), "marks-up")
+                &DocumentRef::new(book.clone(), "marks-up")
             ));
             let refs = references(&markup);
             assert_eq!(refs.len(), 1);
@@ -652,9 +652,9 @@ tilo_test_env::scenario! {
 
         {
             let mut workspace_doc = AutoCommit::new();
-            let a = RecordId::for_file("/work/a.odt");
-            let b = RecordId::for_file("/work/b.odt");
-            let kind = RecordKind::new("document");
+            let a = DocumentId::for_file("/work/a.odt");
+            let b = DocumentId::for_file("/work/b.odt");
+            let kind = ResourceType::new("document");
             assert!(index::reference(&mut workspace_doc, &a, &kind));
             assert!(
                 !index::reference(&mut workspace_doc, &a, &kind),
@@ -674,7 +674,7 @@ tilo_test_env::scenario! {
 
         {
             let mut remote_workspace = AutoCommit::new();
-            let remote = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
+            let remote = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("annotation-set"));
             assert!(index::reference(
                 &mut remote_workspace,
                 &remote.id,
@@ -716,7 +716,7 @@ tilo_test_env::scenario! {
             let _ = workspace_doc.put(&idx, "../../escape", "annotation-set");
             let _ = workspace_doc.put_object(&idx, "uuid:not-a-uuid", ObjType::Map);
             for _ in 0..(MAX_DISCOVERED_RECORDS + 8) {
-                let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+                let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
                 assert!(index::reference(
                     &mut workspace_doc,
                     &checkout.id,
@@ -727,7 +727,7 @@ tilo_test_env::scenario! {
             let mut set = RecordSet::in_memory().with_home("workspace-a");
             let found = set.discover_workspace(&workspace_doc);
             assert_eq!(found.len(), MAX_DISCOVERED_RECORDS);
-            assert!(found.iter().all(RecordCheckout::is_valid));
+            assert!(found.iter().all(DocumentCheckout::is_valid));
             assert!(set.open_records().is_empty());
         }
 
@@ -737,7 +737,7 @@ tilo_test_env::scenario! {
             let package = "so.tilo.workspace-discovery";
             let a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
             let b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-            let entry = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let entry = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
 
             let open_workspace = |workspace: &str| {
                 ::collaboration::record::save::open_stored(
@@ -768,14 +768,14 @@ tilo_test_env::scenario! {
             let mut workspace_doc = AutoCommit::new();
             let mut set = RecordSet::in_memory();
             let mut state = State::new();
-            let file = RecordId::for_file("/work/book.pdf");
-            index::reference(&mut workspace_doc, &file, &RecordKind::new("file"));
+            let file = DocumentId::for_file("/work/book.pdf");
+            index::reference(&mut workspace_doc, &file, &ResourceType::new("file"));
 
-            let markup = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
+            let markup = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("annotation-set"));
             set.checkout(&mut state, Some(&mut workspace_doc), &markup);
-            add_reference(&mut state.doc, &RecordRef::new(file.clone(), "marks-up"));
+            add_reference(&mut state.doc, &DocumentRef::new(file.clone(), "marks-up"));
             // Park it so `peek` can see it — the live document is not parked.
-            let other = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
+            let other = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("annotation-set"));
             set.checkout(&mut state, Some(&mut workspace_doc), &other);
 
             let found = index::referencing(&workspace_doc, &set, &file, "marks-up");
@@ -791,14 +791,14 @@ tilo_test_env::scenario! {
             // sets must not accidentally turn a matching id into shared state.
             let mut workspace_a = AutoCommit::new();
             let mut workspace_b = AutoCommit::new();
-            let id = RecordId::minted();
-            let kind = RecordKind::new("book");
+            let id = DocumentId::minted();
+            let kind = ResourceType::new("book");
             index::reference(&mut workspace_a, &id, &kind);
             index::reference(&mut workspace_b, &id, &kind);
 
             let mut set_a = RecordSet::in_memory().with_home("workspace-a");
             let mut state_a = State::new();
-            let want = RecordCheckout::new(id.clone(), kind.clone());
+            let want = DocumentCheckout::new(id.clone(), kind.clone());
             assert!(set_a.checkout(&mut state_a, Some(&mut workspace_a), &want));
             put_text(&mut state_a.doc, "title", "A only");
 
@@ -820,7 +820,7 @@ tilo_test_env::scenario! {
             let documents = native(tmp.path());
             let a = "22222222-2222-4222-8222-222222222222";
             let b = "33333333-3333-4333-8333-333333333333";
-            let record = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let record = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
 
             for (workspace, body) in [(a, "private to a"), (b, "private to b")] {
                 let mut set =
@@ -842,8 +842,8 @@ tilo_test_env::scenario! {
         }
 
         {
-            let id = RecordId::minted();
-            let kind = RecordKind::new("note");
+            let id = DocumentId::minted();
+            let kind = ResourceType::new("note");
             let mut remote = AutoCommit::new();
             assert!(init_scoped(
                 &mut remote,
@@ -866,13 +866,13 @@ tilo_test_env::scenario! {
             let documents = native(tmp.path());
             let workspace_id = "11111111-1111-4111-8111-111111111111";
 
-            let a = RecordCheckout::new(
-                RecordId::for_file("/work/a.odt"),
-                RecordKind::new("document"),
+            let a = DocumentCheckout::new(
+                DocumentId::for_file("/work/a.odt"),
+                ResourceType::new("document"),
             );
-            let b = RecordCheckout::new(
-                RecordId::for_file("/work/b.odt"),
-                RecordKind::new("document"),
+            let b = DocumentCheckout::new(
+                DocumentId::for_file("/work/b.odt"),
+                ResourceType::new("document"),
             );
 
             {
@@ -934,9 +934,9 @@ tilo_test_env::scenario! {
             let mut workspace_doc = AutoCommit::new();
             let mut set = RecordSet::in_memory();
             let mut state = State::new();
-            let kind = RecordKind::new("annotation-set");
-            let a = RecordCheckout::new(RecordId::for_file("/work/a.pdf"), kind.clone());
-            let b = RecordCheckout::new(RecordId::for_file("/work/b.pdf"), kind);
+            let kind = ResourceType::new("annotation-set");
+            let a = DocumentCheckout::new(DocumentId::for_file("/work/a.pdf"), kind.clone());
+            let b = DocumentCheckout::new(DocumentId::for_file("/work/b.pdf"), kind);
 
             set.checkout(&mut state, Some(&mut workspace_doc), &a);
             put_text(&mut state.doc, "note", "a's note");
@@ -958,7 +958,7 @@ tilo_test_env::scenario! {
         {
             let mut set = RecordSet::in_memory();
             let mut state = State::new();
-            let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+            let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("document"));
             assert!(set.checkout(&mut state, None, &want));
             put_text(&mut state.doc, "body", "typed");
             assert!(!set.checkout(&mut state, None, &want), "already live");
@@ -971,7 +971,7 @@ tilo_test_env::scenario! {
     // it, rather than a log line the caller never sees.
     {
         let documents = Rc::new(RefusingStore::new());
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+        let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("document"));
         let store = RecordStore::new(RecordSet::open_in(
             Rc::clone(&documents) as Rc<dyn DurableStore>,
             "dev.tilo.refusing-store",
@@ -1015,7 +1015,7 @@ tilo_test_env::scenario! {
         {
             let tmp = tempfile::tempdir().unwrap();
             let documents = native(tmp.path());
-            let checkout = RecordCheckout::new(RecordId::for_tab(401), RecordKind::new("tab"));
+            let checkout = DocumentCheckout::new(DocumentId::for_tab(401), ResourceType::new("tab"));
             let package = "dev.tilo.history-existing-legacy";
             let workspace = "11111111-1111-4111-8111-111111111111";
             let original_heads = {
@@ -1049,7 +1049,7 @@ tilo_test_env::scenario! {
                     assert_eq!(text(doc, "body").as_deref(), Some("preserved record"));
                 })
                 .unwrap();
-            let missing = RecordCheckout::new(RecordId::for_tab(402), RecordKind::new("tab"));
+            let missing = DocumentCheckout::new(DocumentId::for_tab(402), ResourceType::new("tab"));
             assert!(matches!(
                 store.open_existing_record_checked(&missing),
                 Err(RecordOpenError::MissingRecord)
@@ -1069,8 +1069,8 @@ tilo_test_env::scenario! {
                     let mut doc = AutoCommit::new();
                     init_scoped(
                         &mut doc,
-                        &RecordId::for_tab(999),
-                        &RecordKind::new("tab"),
+                        &DocumentId::for_tab(999),
+                        &ResourceType::new("tab"),
                         workspace,
                         Some(workspace),
                     );
@@ -1080,8 +1080,8 @@ tilo_test_env::scenario! {
                     let mut doc = AutoCommit::new();
                     init_scoped(
                         &mut doc,
-                        &RecordId::for_tab(413),
-                        &RecordKind::new("tab"),
+                        &DocumentId::for_tab(413),
+                        &ResourceType::new("tab"),
                         workspace,
                         Some(workspace),
                     );
@@ -1096,9 +1096,9 @@ tilo_test_env::scenario! {
             .into_iter()
             .enumerate()
             {
-                let checkout = RecordCheckout::new(
-                    RecordId::for_tab(410 + index as u64),
-                    RecordKind::new("tab"),
+                let checkout = DocumentCheckout::new(
+                    DocumentId::for_tab(410 + index as u64),
+                    ResourceType::new("tab"),
                 );
                 let key = checkout.id.storage_key();
                 let path = {
@@ -1128,7 +1128,7 @@ tilo_test_env::scenario! {
     phase absent_private_checkpoint_store_is_empty_but_never_accepts_evidence;
     {
         let store = RecordStore::in_memory();
-        let checkout = RecordCheckout::new(RecordId::for_tab(403), RecordKind::new("tab"));
+        let checkout = DocumentCheckout::new(DocumentId::for_tab(403), ResourceType::new("tab"));
         store.create_record(&checkout).unwrap();
         assert!(store.private_actions(&checkout.id).unwrap().is_empty());
         let evidence = app_state::PrivateAction {
@@ -1152,7 +1152,7 @@ tilo_test_env::scenario! {
     {
         {
             let store = RecordStore::in_memory();
-            let checkout = RecordCheckout::new(RecordId::for_tab(404), RecordKind::new("tab"));
+            let checkout = DocumentCheckout::new(DocumentId::for_tab(404), ResourceType::new("tab"));
             store.create_record(&checkout).unwrap();
             let before = store
                 .with(&checkout.id, |doc| {
@@ -1173,7 +1173,7 @@ tilo_test_env::scenario! {
         {
             let tmp = tempfile::tempdir().unwrap();
             let root = tmp.path().join("state");
-            let checkout = RecordCheckout::new(RecordId::for_tab(420), RecordKind::new("tab"));
+            let checkout = DocumentCheckout::new(DocumentId::for_tab(420), ResourceType::new("tab"));
             let heads = {
                 let mut owners = RecordOwners::new(root.clone());
                 let store = owners.open("dev.tilo.test", "history-workspace").unwrap();
@@ -1206,8 +1206,8 @@ tilo_test_env::scenario! {
 
         {
             let store = RecordStore::in_memory();
-            let existing = RecordCheckout::new(RecordId::for_tab(421), RecordKind::new("tab"));
-            let new = RecordCheckout::new(RecordId::for_tab(422), RecordKind::new("tab"));
+            let existing = DocumentCheckout::new(DocumentId::for_tab(421), ResourceType::new("tab"));
+            let new = DocumentCheckout::new(DocumentId::for_tab(422), ResourceType::new("tab"));
             store.create_record(&existing).unwrap();
             let result = store
                 .with(&existing.id, |_| store.create_record(&new))
@@ -1220,8 +1220,8 @@ tilo_test_env::scenario! {
             let tmp = tempfile::tempdir().unwrap();
             let mut owners = RecordOwners::new(tmp.path().join("state"));
             let store = owners.open("dev.tilo.test", "read-loan").unwrap();
-            let existing = RecordCheckout::new(RecordId::for_tab(423), RecordKind::new("tab"));
-            let new = RecordCheckout::new(RecordId::for_tab(424), RecordKind::new("tab"));
+            let existing = DocumentCheckout::new(DocumentId::for_tab(423), ResourceType::new("tab"));
+            let new = DocumentCheckout::new(DocumentId::for_tab(424), ResourceType::new("tab"));
             store.create_record(&existing).unwrap();
             let result = store
                 .read(&existing.id, |_| store.create_record(&new))
@@ -1242,7 +1242,7 @@ tilo_test_env::scenario! {
         let store = owners
             .open("so.tilo.primary-test", "primary-workspace")
             .unwrap();
-        let primary = RecordCheckout::package_primary(RecordKind::new("primary"));
+        let primary = DocumentCheckout::package_primary(ResourceType::new("primary"));
         store
             .reserve_record(&primary)
             .unwrap()
@@ -1257,7 +1257,7 @@ tilo_test_env::scenario! {
             Some(true)
         );
         // A document claiming a minted identity is not the package primary.
-        let minted = RecordCheckout::new(RecordId::minted(), RecordKind::new("primary"));
+        let minted = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("primary"));
         let mut foreign = AutoCommit::new();
         assert!(init_scoped(
             &mut foreign,
@@ -1277,7 +1277,7 @@ tilo_test_env::scenario! {
     {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
-        let primary = RecordCheckout::package_primary(RecordKind::new("primary"));
+        let primary = DocumentCheckout::package_primary(ResourceType::new("primary"));
 
         let mut first_owners = RecordOwners::new(root.clone());
         let first = first_owners
@@ -1334,11 +1334,11 @@ tilo_test_env::scenario! {
     {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
-        let shared = RecordCheckout::new(
-            RecordId::parse(&collab_types::workspace_record_id("tilo.workspace.emoji")).unwrap(),
-            RecordKind::new("tilo.workspace.emoji"),
+        let shared = DocumentCheckout::new(
+            DocumentId::parse(&collab_types::workspace_document_id("tilo.workspace.emoji")).unwrap(),
+            ResourceType::new("tilo.workspace.emoji"),
         );
-        let ordinary = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let ordinary = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
 
         let mut first_owners = RecordOwners::new(root.clone());
         let first = first_owners
@@ -1385,7 +1385,7 @@ tilo_test_env::scenario! {
         let store = owners
             .open("dev.tilo.primary-test", "primary-workspace")
             .unwrap();
-        let primary = RecordCheckout::package_primary(RecordKind::new("primary"));
+        let primary = DocumentCheckout::package_primary(ResourceType::new("primary"));
         store
             .reserve_record(&primary)
             .unwrap()
@@ -1396,13 +1396,13 @@ tilo_test_env::scenario! {
         let memory = RecordStore::in_memory();
         memory.create_record(&primary).unwrap();
 
-        let malformed = RecordCheckout::package_primary(RecordKind::new("1invalid"));
+        let malformed = DocumentCheckout::package_primary(ResourceType::new("1invalid"));
         assert!(matches!(
             store.reserve_record(&malformed),
             Err(RecordOpenError::IdentityMismatch)
         ));
-        let malformed = RecordCheckout::package_primary(RecordKind::new("primary")).referencing(
-            RecordCheckout::new(RecordId::for_tab(1), RecordKind::new("target")),
+        let malformed = DocumentCheckout::package_primary(ResourceType::new("primary")).referencing(
+            DocumentCheckout::new(DocumentId::for_tab(1), ResourceType::new("target")),
             "bad relation",
         );
         assert!(matches!(
@@ -1417,7 +1417,7 @@ tilo_test_env::scenario! {
 
     phase committed_initial_checkout_preserves_original_history_before_local_initialization;
     {
-        let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+        let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("document"));
         let mut actual = AutoCommit::new();
         assert!(init_scoped(
             &mut actual,
@@ -1451,7 +1451,7 @@ tilo_test_env::scenario! {
 
     phase committed_initial_checkout_does_not_finish_or_discard_local_work;
     {
-        let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+        let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("document"));
         let mut actual = AutoCommit::new();
         assert!(init_scoped(
             &mut actual,
@@ -1556,10 +1556,10 @@ fn a_record_the_index_names_is_listed_with_its_name_though_no_window_started_it(
     let tmp = tempfile::tempdir().expect("a store");
     let documents = native(tmp.path());
     let (package, workspace) = ("so.tilo.pdf-viewer", "22222222-2222-4222-8222-222222222222");
-    let kind = RecordKind::new("markup");
-    let started = RecordCheckout::new(RecordId::window_default(7), kind.clone());
-    let published = RecordCheckout::new(
-        RecordId::derived("annotations", &RecordId::minted()),
+    let kind = ResourceType::new("markup");
+    let started = DocumentCheckout::new(DocumentId::window_default(7), kind.clone());
+    let published = DocumentCheckout::new(
+        DocumentId::derived("annotations", &DocumentId::minted()),
         kind.clone(),
     );
     // A window of this device started one of them…

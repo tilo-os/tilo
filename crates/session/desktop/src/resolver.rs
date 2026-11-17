@@ -5,7 +5,7 @@ use ui::application::{
     RestoreInput,
 };
 use ui::launch::LaunchError;
-use ui::record::RecordCheckout;
+use ui::record::DocumentCheckout;
 use ui::widget::{AppWidget, TileHost};
 
 pub struct TileRequest<'a> {
@@ -68,7 +68,7 @@ pub trait ComponentContextSource {
         &self,
         definition: &'static ApplicationDefinition,
         request: &TileRequest<'_>,
-    ) -> Result<RecordCheckout, LaunchError> {
+    ) -> Result<DocumentCheckout, LaunchError> {
         Ok(crate::records::component_record(
             definition.app_id(),
             request.tab.id,

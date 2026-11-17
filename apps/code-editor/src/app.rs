@@ -170,7 +170,7 @@ pub struct CodeApp {
     /// spawns a shell. It embeds `terminal::TerminalWidget`, which belongs in a shared terminal-widget
     /// crate rather than in another app.
     terminal: Option<ui::widget::Embedded<terminal::TerminalView>>,
-    terminal_runs: terminal::runs::RunQueue,
+    terminal_commands: terminal::commands::CommandQueue,
     terminal_focused: bool,
 
     lsp: Option<crate::lsp::LspClient>,
@@ -447,7 +447,7 @@ impl CodeApp {
             seeded: false,
             text_seed: None,
             terminal: None,
-            terminal_runs: terminal::runs::RunQueue::default(),
+            terminal_commands: terminal::commands::CommandQueue::default(),
             terminal_focused: false,
             lsp: None,
             lsp_language: None,
@@ -751,8 +751,8 @@ impl CodeApp {
         self.project_files(files);
     }
 
-    pub fn terminal_runs(&self) -> terminal::runs::RunQueue {
-        self.terminal_runs.clone()
+    pub fn terminal_commands(&self) -> terminal::commands::CommandQueue {
+        self.terminal_commands.clone()
     }
 
     pub(crate) fn opener(
@@ -1497,7 +1497,7 @@ impl CodeApp {
                         dispatch.child(crate::resource::TERMINAL_RESOURCE_ID, actions::terminal),
                     );
                 }
-                w.run_through(self.terminal_runs.clone());
+                w.run_through(self.terminal_commands.clone());
                 if let Some(session) = self
                     .live_state
                     .as_ref()

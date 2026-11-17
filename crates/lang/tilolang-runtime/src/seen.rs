@@ -19,6 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::ids::Actor;
 use crate::store::Version;
 use crate::view_state::StateKey;
 
@@ -53,40 +54,40 @@ pub enum SeenWrite {
     /// `person` has seen `resource` (as [`crate::value::ResourceRef::id_string`] writes it) up
     /// to `mark`; `None` takes a mark back (an undone catch-up).
     Resource {
-        person: String,
+        person: Actor,
         resource: String,
         mark: Option<SeenMark>,
     },
     /// `person` reviewed the run `run` (its group): every version it made is seen.
-    Run { person: String, run: String },
+    Run { person: Actor, run: String },
 }
 
 /// The slot holding `person`'s seen mark of `resource`.
 #[must_use]
-pub fn seen_key(person: &str, resource: &str) -> StateKey {
-    StateKey::runtime(SEEN_WINDOW, Some(person.to_owned()), resource)
+pub fn seen_key(person: &Actor, resource: &str) -> StateKey {
+    StateKey::runtime(SEEN_WINDOW, Some(person.clone()), resource)
 }
 
 /// What a catch-up took away, so that it can be given back: the marks `person` had of the
 /// resources they marked seen in one move (`Runtime::mark_all_seen`), as they had them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeenUndo {
-    pub person: String,
+    pub person: Actor,
     /// Each resource, and the mark it had before (`None` where it had none).
     pub before: Vec<(String, Option<SeenMark>)>,
 }
 
 /// The slot holding the runs `person` reviewed: the state no resource id names.
 #[must_use]
-pub fn runs_key(person: &str) -> StateKey {
+pub fn runs_key(person: &Actor) -> StateKey {
     seen_key(person, "$runs")
 }
 
 /// Whether `version` is one the host marks for `person`: made by someone else, a person or an
 /// agent. A change of their own is never marked: they made it and so have seen it.
 #[must_use]
-pub fn is_marked(version: &Version, person: &str) -> bool {
-    version.who != person
+pub fn is_marked(version: &Version, person: &Actor) -> bool {
+    version.who.as_ref() != Some(person)
 }
 
 /// Which of `versions` (oldest first) `person` has not seen, oldest first: those after their
@@ -95,12 +96,15 @@ pub fn is_marked(version: &Version, person: &str) -> bool {
 #[must_use]
 pub fn unseen(
     versions: &[Version],
-    person: &str,
+    person: &Actor,
     mark: Option<&SeenMark>,
     runs: &[String],
 ) -> Vec<Version> {
     let mut from = mark.map_or(0, |mark| after_mark(versions, mark));
-    if let Some(own) = versions.iter().rposition(|v| v.who == person) {
+    if let Some(own) = versions
+        .iter()
+        .rposition(|v| v.who.as_ref() == Some(person))
+    {
         from = from.max(own.saturating_add(1));
     }
     unseen_after(versions.get(from..).unwrap_or_default(), person, runs)
@@ -110,10 +114,10 @@ pub fn unseen(
 /// seen, oldest first: what [`unseen`] reads, for a page of a record's history read from the
 /// mark on rather than the whole of it.
 #[must_use]
-pub fn unseen_after(versions: &[Version], person: &str, runs: &[String]) -> Vec<Version> {
+pub fn unseen_after(versions: &[Version], person: &Actor, runs: &[String]) -> Vec<Version> {
     let from = versions
         .iter()
-        .rposition(|v| v.who == person)
+        .rposition(|v| v.who.as_ref() == Some(person))
         .map_or(0, |own| own.saturating_add(1));
     versions
         .get(from..)
@@ -149,11 +153,16 @@ pub fn after_mark(versions: &[Version], mark: &SeenMark) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::MemberId;
     use crate::store::{Run, VersionKind};
+
+    fn person(id: &str) -> Actor {
+        MemberId::person(id).into()
+    }
 
     fn version(who: &str, at: &str, change: &str, run: bool) -> Version {
         Version {
-            who: who.to_owned(),
+            who: Some(person(who)),
             at: at.to_owned(),
             action: "a".to_owned(),
             run: run.then(|| Run {
@@ -188,34 +197,34 @@ mod tests {
             let changes = |list: Vec<Version>| list.into_iter().map(|v| v.change).collect::<Vec<_>>();
             // Nothing seen: everyone else's, the agent's and Ben's alike.
             assert_eq!(
-                changes(unseen(&versions, "ada", None, &[])),
+                changes(unseen(&versions, &person("ada"), None, &[])),
                 ["c2", "c3", "c4"]
             );
             // Seen up to c2.
             let mark = SeenMark::of(&versions[1]);
             assert_eq!(
-                changes(unseen(&versions, "ada", Some(&mark), &[])),
+                changes(unseen(&versions, &person("ada"), Some(&mark), &[])),
                 ["c3", "c4"]
             );
             // Ben edited after c2: what he saw is seen for him, what came after is not.
-            assert_eq!(changes(unseen(&versions, "ben", None, &[])), ["c4"]);
+            assert_eq!(changes(unseen(&versions, &person("ben"), None, &[])), ["c4"]);
             // A mark whose change the log no longer names stands by its time.
             let gone = SeenMark {
                 change: "compacted".to_owned(),
                 at: "2026-10-30T09:03:00Z".to_owned(),
             };
-            assert!(unseen(&versions, "ada", Some(&gone), &[]).is_empty());
+            assert!(unseen(&versions, &person("ada"), Some(&gone), &[]).is_empty());
             // A reviewed run's versions are seen, whatever the marks: what Ben changed after it
             // stands, as it was no step of the run's.
             assert_eq!(
-                changes(unseen(&versions, "ada", None, &["t1@1".to_owned()])),
+                changes(unseen(&versions, &person("ada"), None, &["t1@1".to_owned()])),
                 ["c3"]
             );
             // The page of the log a catch-up reads: what follows the mark, and nothing of what the
             // record held before it.
             assert_eq!(after_mark(&versions, &mark), 2);
             assert_eq!(
-                changes(unseen_after(&versions[2..], "ada", &[])),
+                changes(unseen_after(&versions[2..], &person("ada"), &[])),
                 ["c3", "c4"]
             );
             // Two versions of one second (a change's place in the log decides): the mark names one
@@ -238,13 +247,13 @@ mod tests {
                 version("agent:a", "2026-10-30T09:03:00Z", "c4", true),
             ];
             let changes = |list: Vec<Version>| list.into_iter().map(|v| v.change).collect::<Vec<_>>();
-            assert_eq!(changes(unseen(&versions, "ada", None, &[])), ["c3", "c4"]);
+            assert_eq!(changes(unseen(&versions, &person("ada"), None, &[])), ["c3", "c4"]);
             // Still not one's own: Ben's own newest change bounds what he has seen, so the
             // agent's later change is all he has not.
-            assert_eq!(changes(unseen(&versions, "ben", None, &[])), ["c4"]);
-            assert!(is_marked(&versions[1], "ada"));
-            assert!(is_marked(&versions[2], "ada"));
-            assert!(!is_marked(&versions[0], "ada"));
+            assert_eq!(changes(unseen(&versions, &person("ben"), None, &[])), ["c4"]);
+            assert!(is_marked(&versions[1], &person("ada")));
+            assert!(is_marked(&versions[2], &person("ada")));
+            assert!(!is_marked(&versions[0], &person("ada")));
         }
 
         phase a_record_made_from_another_counts_as_a_change_to_it;
@@ -255,11 +264,11 @@ mod tests {
             // Ben said it about the task: Ada has not seen the task change, nor what he said.
             let changes = |list: Vec<Version>| list.into_iter().map(|v| v.change).collect::<Vec<_>>();
             assert_eq!(
-                changes(unseen(&[comment.clone()], "ada", None, &[])),
+                changes(unseen(&[comment.clone()], &person("ada"), None, &[])),
                 ["c3"]
             );
             // Not something Ben has to read back: it was his own change.
-            assert!(unseen(&[comment], "ben", None, &[]).is_empty());
+            assert!(unseen(&[comment], &person("ben"), None, &[]).is_empty());
         }
     }
 }

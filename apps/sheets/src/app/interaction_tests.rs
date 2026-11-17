@@ -360,8 +360,8 @@ fn a_comment_is_marked_on_its_cell_opens_from_it_and_names_its_author() {
     let author = "4f1c9a7be0d23c58a6e1f0b9d7c4a2e85b3f6d1a9c0e7b2d4f8a1c3e5b7d9f0a";
     let stranger = "9e8d7c6b5a49382716051f2e3d4c5b6a79881726354f4e3d2c1b0a9f8e7d6c5b";
     app.attach_people(ui::framework::People::named(
-        Some("me"),
-        &[(author, "Amira Haddad")],
+        Some(&ui::tilo_resource::MemberId::person("me")),
+        &[(ui::tilo_resource::MemberId::person(author), "Amira Haddad")],
     ));
     let member =
         |id: &str| crate::workbook::Author::Member(ui::tilo_resource::MemberId::person(id));

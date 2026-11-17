@@ -63,7 +63,7 @@ fail() {
 }
 
 # `TILO_WORKSPACES_LAYOUT` is read but no longer passed on: every workspace's
-# arrangement is its shared desktop record, so the host has no layout flag, and
+# layout is its shared desktop record, so the host has no layout flag, and
 # a deployment that still names one (eu1 does) starts unchanged.
 known='TILO_WORKSPACES_PERSISTENT TILO_WORKSPACES_NAME TILO_WORKSPACES_DESCRIPTION TILO_WORKSPACES_ADMISSION
 TILO_WORKSPACES_WAIT_LIST_MAX TILO_WORKSPACES_CONTACT TILO_WORKSPACES_LOCAL

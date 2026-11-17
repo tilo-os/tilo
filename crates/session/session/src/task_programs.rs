@@ -139,10 +139,7 @@ impl HostStepServices for TaskPrograms {
             .text("this")
             .filter(|this| !this.trim().is_empty())
             .map(str::to_owned);
-        let agent = actor
-            .id()
-            .strip_prefix("agent:")
-            .unwrap_or_else(|| actor.id());
+        let agent = actor.member().id();
         let group = request
             .group
             .cloned()

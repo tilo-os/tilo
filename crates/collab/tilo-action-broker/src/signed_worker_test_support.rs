@@ -566,7 +566,7 @@ pub async fn cancel(
     }
 }
 
-/// The native seat of the host `0` serves: it vouches for that host's own
+/// The native device of the host `0` serves: it vouches for that host's own
 /// person in its workspace, while its certificate lasts.
 pub struct NativePerson(pub Arc<CurrentHost>);
 impl crate::services::LocalPersonServices for NativePerson {
@@ -587,7 +587,7 @@ impl crate::services::LocalPersonServices for NativePerson {
     }
 }
 
-/// The host's own person, invoking through its native seat.
+/// The host's own person, invoking through its native device.
 pub fn native_person(workspace: &CrdtRoute, cert: &DeviceCert) -> tilo_actions::remote::Caller {
     tilo_actions::remote::Caller::local_person(person_id_for_root(cert.user_public_key))
         .in_workspace(workspace.cluster_id.clone())

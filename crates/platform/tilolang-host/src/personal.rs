@@ -2,7 +2,7 @@
 //! they set in the app's views and what they have seen ([`tilolang_tilo::personal`]).
 //!
 //! It is the record every app of the workspace opens beside its own
-//! (`collab_types::WORKSPACE_RECORDS`), kept by the language's host app: the instance joins its
+//! (`collab_types::WORKSPACE_DOCUMENTS`), kept by the language's host app: the instance joins its
 //! route on the instance's own connection, keeps a copy of it on disk beside the app's record,
 //! writes the person's changes into it and sends them on its route, and takes in what the
 //! person's other windows and devices wrote. So the place a person picked is still theirs after a
@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use app_state::DocWriter;
 use automerge::ChangeHash;
-use collab_types::record::RecordId;
+use collab_types::document::DocumentId;
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
 use collaboration::record::save::{open_stored, record_document};
 use collaboration::{
@@ -48,13 +48,13 @@ impl PersonalRecord {
         documents: &Rc<dyn durable_store::DurableStore>,
         manager: &mut CollaborationManager,
     ) -> Self {
-        let id = collab_types::workspace_record_id(personal::KIND);
+        let id = collab_types::workspace_document_id(personal::KIND);
         let route = RouteSpec::record(personal::OWNER, workspace, id.clone());
         manager.join_route(
             route.clone(),
-            collab_types::record::RecordKind::new(personal::KIND),
+            collab_types::document::ResourceType::new(personal::KIND),
         );
-        let stored = RecordId::parse(&id)
+        let stored = DocumentId::parse(&id)
             .ok_or_else(|| format!("`{id}` is no record id"))
             .and_then(|id| {
                 record_document(

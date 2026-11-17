@@ -11,7 +11,7 @@ use std::rc::Rc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
-use crate::ids::{AppId, DocId, FieldId, ItemId, RunId, TypeId};
+use crate::ids::{Actor, AppId, DocId, FieldId, ItemId, RunId, TypeId};
 use crate::meta::FieldKind;
 use crate::registry::TypeInfo;
 use crate::run::Journal;
@@ -340,16 +340,18 @@ pub enum FieldValue {
 pub struct ChangeNote {
     pub action: String,
     pub args: Json,
-    pub invoker: String,
+    /// Who made it; `None` for a change an app's package made that names no one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invoker: Option<Actor>,
     /// The authorship chain, outermost first.
     pub chain: Vec<String>,
     pub module: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approved_by: Option<String>,
+    pub approved_by: Option<Actor>,
     /// Who proposed the action, when the person invoking it accepted a suggestion: what makes
     /// the change theirs while it says who proposed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suggested_by: Option<String>,
+    pub suggested_by: Option<Actor>,
     /// When it was made: the invocation's time, recorded like an argument (convergence.md,
     /// "Actions"); a scenario's `invoke(..., at: time)` sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -408,7 +410,7 @@ pub const EDIT_FLAG_ACTION: &str = "edit-flag";
 /// which run, and what it did to the resource.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Version {
-    pub who: String,
+    pub who: Option<Actor>,
     /// ISO-8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`.
     pub at: String,
     /// The action's id (`$create` for a resource the host made).
@@ -446,7 +448,7 @@ pub struct Version {
     pub from: Option<ResourceRef>,
     /// Who proposed the action, for a change made by accepting a suggestion, so history says
     /// who proposed it; `None` for a change made on its own.
-    pub suggested_by: Option<String>,
+    pub suggested_by: Option<Actor>,
     /// How many items the change was made over ([`ChangeNote::count`]): more than one for one
     /// action applied to many items at once.
     pub count: u32,
@@ -1200,7 +1202,7 @@ pub struct ChangeSummary {
     /// change's invoker. `None` for a change read from the record, whose author is not told
     /// per document. A reader showing a live query tells the person's own changes from
     /// others' by it ([`crate::live::Live::absorb`]).
-    pub by: Option<String>,
+    pub by: Option<Actor>,
 }
 
 impl ChangeSummary {

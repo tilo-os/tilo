@@ -16,7 +16,7 @@ use tilo_actions::{
 };
 
 use super::controls::Actions;
-use tilo_resource::{Edit, Effect, Invoke, Resource};
+use tilo_resource::{Edit, Effect, Invoke, MemberId, Resource};
 use ui_core::LocalState;
 use ui_core::automerge::ChangeHash;
 use ui_core::permissions::{ActionKind, LivePermissions, PermissionScope, TreePath, policy};
@@ -239,7 +239,7 @@ pub(crate) struct DispatchState {
     /// The readable name published by the resource host, shared with surfaces.
     resource_label: LocalState<String>,
     /// Who edits through this dispatcher; `None` in a view of a past version.
-    me: Option<Rc<str>>,
+    me: Option<MemberId>,
     /// A dispatcher lent to an admitted effect keeps its original custody.
     /// Clones cannot turn later work into the host participant's invocation.
     /// Share the immutable scope rather than embedding its owner/lease in every
@@ -401,7 +401,7 @@ impl DispatchCore {
         resource_id: &str,
         (kind, label): (&'static str, &'static str),
         read_only: bool,
-        me: Option<&str>,
+        me: Option<&MemberId>,
     ) -> Self {
         Self(std::mem::ManuallyDrop::new(DispatchState {
             app_id,
@@ -410,7 +410,7 @@ impl DispatchCore {
             kind,
             label,
             resource_label: LocalState::new(label.to_owned()),
-            me: me.map(Rc::from),
+            me: me.cloned(),
             custody: None,
             queue: Rc::default(),
             asking: Rc::default(),
@@ -605,10 +605,15 @@ impl DispatchCore {
     /// shared to edit) lets it be changed here too; else the app's.
     fn node(&self) -> TreePath {
         let app = TreePath::root().app(self.app_id);
-        // A member's own record is theirs whatever their role: its changes
-        // are decided on that record, which the policy leaves to its person.
-        if policy::member_record(&self.record).is_some() {
-            let kind = self.applied_as.map_or(self.kind, |(kind, _)| kind);
+        // A record of a kind the app's manifest declares each member's own is
+        // its person's whatever their role: its changes are decided on that
+        // record, which the policy leaves to its person.
+        let kind = self.applied_as.map_or(self.kind, |(kind, _)| kind);
+        if !self.record.is_empty()
+            && collab_types::own_kinds(self.app_id)
+                .iter()
+                .any(|own| own == kind)
+        {
             return app.kind(kind).resource(&*self.record);
         }
         if self.applied_as.is_none() {
@@ -853,11 +858,9 @@ impl DispatchCore {
         // agent at its own caret, a collaborator a scenario stages), else
         // this window's person.
         let mut named = self.context();
-        if let Some(invoker) = ui_core::invocation_scope::current_invoker().or_else(|| {
-            self.me
-                .as_ref()
-                .map(|me| ActionInvoker::person(me.as_ref()))
-        }) {
+        if let Some(invoker) = ui_core::invocation_scope::current_invoker()
+            .or_else(|| self.me.clone().map(ActionInvoker::member))
+        {
             named = named.with_invoker(invoker);
         }
         let mut context = context.enriched_by(&named);
@@ -906,8 +909,8 @@ impl DispatchCore {
 /// What a root reads and drives of its dispatcher, without its type.
 impl DispatchCore {
     /// Who edits through this dispatcher; `None` in a view of a past version.
-    pub(crate) fn me(&self) -> Option<&str> {
-        self.me.as_deref()
+    pub(crate) fn me(&self) -> Option<&MemberId> {
+        self.me.as_ref()
     }
 
     /// Whether it is a view of a past version.
@@ -1018,7 +1021,7 @@ impl<R: Resource> Dispatcher<R> {
         app_id: &'static str,
         resource_id: &str,
         read_only: bool,
-        me: Option<&str>,
+        me: Option<&MemberId>,
     ) -> Self {
         Self {
             core: DispatchCore::new(app_id, resource_id, (R::KIND, R::LABEL), read_only, me),
@@ -1048,7 +1051,7 @@ impl<R: Resource> Dispatcher<R> {
     /// ([`TestApp`](super::testing::HeadlessApp)).
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn detached(app_id: &'static str, me: &str) -> Self {
+    pub fn detached(app_id: &'static str, me: &MemberId) -> Self {
         Self::new(app_id, R::KIND, false, Some(me))
     }
 
@@ -1076,8 +1079,8 @@ impl<R: Resource> Dispatcher<R> {
     /// for, the same id an action they invoke reads as its author
     /// ([`ActionCx::author`](tilo_resource::ActionCx::author)). `None` in a
     /// view of a past version, which nobody edits.
-    pub fn me(&self) -> Option<&str> {
-        self.core.me.as_deref()
+    pub fn me(&self) -> Option<&MemberId> {
+        self.core.me.as_ref()
     }
 
     /// A dispatcher for a past version in History: nothing it is given is
@@ -1722,7 +1725,7 @@ impl<R: Resource> Dispatcher<R> {
         }
         let mut context = self.core.context();
         if let Some(me) = &self.core.me {
-            context = context.with_invoker(ActionInvoker::person(me.as_ref()));
+            context = context.with_invoker(ActionInvoker::member(me.clone()));
         }
         group_now(&mut self.core.host.borrow_mut(), edits, &group, context)?;
         // A group is a step of its own: nothing continues it.

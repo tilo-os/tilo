@@ -10,7 +10,8 @@ as the author too, never as a guest.
 
     python3 scripts/headless-examples/hosted-names-proof.py --out DIR [--build]
 
-Each step's AT-SPI names and both shells are written to DIR on the way.
+Each step's AT-SPI names and both shells are written to DIR on the way; a step that fails
+leaves both shells as they stood (host-failed.png, peer-failed.png).
 """
 
 from __future__ import annotations

@@ -1248,6 +1248,12 @@ impl ActionInvoker {
         }
     }
 
+    /// A member acting for themselves.
+    #[must_use]
+    pub fn member(member: tilo_action_policy::MemberId) -> Self {
+        Self::admitted(&Acting::member(member))
+    }
+
     /// A person the host authenticated, acting for themselves.
     #[must_use]
     pub fn person(id: impl Into<String>) -> Self {

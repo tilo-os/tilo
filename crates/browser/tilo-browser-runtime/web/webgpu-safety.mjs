@@ -85,7 +85,7 @@ const LATE = Symbol('late');
  * `{reason, steps}`, the steps saying how to turn WebGPU on here. The desktop
  * renders with Vello's WebGPU compute pipeline and has no CPU or WebGL
  * fallback, so this asks for an adapter as the renderer will, before the page
- * takes a seat, or takes the one the page asked for first
+ * takes an admission, or takes the one the page asked for first
  * (`__tiloAdapter`). An answer later than `answerMs` counts as available.
  * Never throws.
  */

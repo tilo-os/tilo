@@ -658,7 +658,8 @@ impl RuntimeActionHost {
             let (session_host, caller, agent) =
                 host.agent_session(&workspace, &actor, &policy_time, tilo_mcp::agent_id)?;
             let label = tilo_mcp::agent_label(&agent);
-            Ok(tilo_mcp::McpServer::admitted(session_host, caller)?.with_agent_run(agent, label))
+            Ok(tilo_mcp::McpServer::admitted(session_host, caller)?
+                .with_agent_session(agent, label))
         })
     }
 

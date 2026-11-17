@@ -864,7 +864,7 @@ impl Checker<'_> {
         Ex::new(Ek::Seq(stmts, Box::new(Ex::local(tmp, ty.clone()))), ty)
     }
 
-    /// `person("Mia")` in a scenario: a principal whose id is `scenario:Mia`; nothing else makes
+    /// `person("Mia")` in a scenario: an actor whose id is `scenario:Mia`; nothing else makes
     /// one from text. `RichText("Ask ", ada, " about ", task)`: text with a run naming each person
     /// or resource it refers to, and each time read in the reader's own zone and language.
     fn builtin_rich_text(&mut self, args: &[ast::Arg], span: Span) -> Ex {
@@ -888,7 +888,7 @@ impl Checker<'_> {
             }
             let fits = matches!(
                 v.ty,
-                Ty::Text | Ty::RichText | Ty::Principal | Ty::Record(_) | Ty::Error
+                Ty::Text | Ty::RichText | Ty::Actor | Ty::Record(_) | Ty::Error
             );
             if !fits {
                 let t = self.show(&v.ty);
@@ -972,7 +972,7 @@ impl Checker<'_> {
 
     fn builtin_person(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.written != Written::Scenario {
-            self.err("E094", span, "`person(name)` makes a sample person for a scenario; elsewhere a principal comes only from `invoker` or a stored field");
+            self.err("E094", span, "`person(name)` makes a sample person for a scenario; elsewhere an actor comes only from `invoker` or a stored field");
             for a in args {
                 let _ = self.expr(&a.value, None);
             }
@@ -987,13 +987,13 @@ impl Checker<'_> {
             return Ex::error();
         };
         let name = self.expr_as(value, &Ty::Text);
-        Ex::host(Imp::PrincipalNamed, vec![name], Ty::Principal)
+        Ex::host(Imp::PersonNamed, vec![name], Ty::Actor)
     }
 
     /// `agent(name)`: software in the workspace a scenario stages, offered beside its people.
     fn builtin_agent(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.written != Written::Scenario {
-            self.err("E094", span, "`agent(name)` makes sample software for a scenario; elsewhere a principal comes only from `invoker` or a stored field");
+            self.err("E094", span, "`agent(name)` makes sample software for a scenario; elsewhere an actor comes only from `invoker` or a stored field");
             for a in args {
                 let _ = self.expr(&a.value, None);
             }
@@ -1008,7 +1008,7 @@ impl Checker<'_> {
             return Ex::error();
         };
         let name = self.expr_as(value, &Ty::Text);
-        Ex::host(Imp::AgentNamed, vec![name], Ty::Principal)
+        Ex::host(Imp::AgentNamed, vec![name], Ty::Actor)
     }
 
     fn builtin_outside(&mut self, args: &[ast::Arg], span: Span) -> Ex {
@@ -1461,7 +1461,7 @@ impl Checker<'_> {
                 continue;
             };
             match named.name.as_str() {
-                "to" => to = Some(self.expr_as(&arg.value, &Ty::Principal)),
+                "to" => to = Some(self.expr_as(&arg.value, &Ty::Actor)),
                 "title" | "body" => {
                     // What the notification shows is words a person reads: its literal is a
                     // message of the action, as the text of a component is one of the view.
@@ -2729,14 +2729,12 @@ impl Checker<'_> {
             }
             // A length of time as the seconds it is, which is how a record keeps one.
             (Ty::Duration, "seconds") if args.is_empty() => r.typed(Ty::Int),
-            (Ty::Principal, "name") if args.is_empty() => {
-                Ex::host(Imp::PrincipalName, vec![r], Ty::Text)
+            (Ty::Actor, "name") if args.is_empty() => Ex::host(Imp::ActorName, vec![r], Ty::Text),
+            (Ty::Actor, "kind") if args.is_empty() => {
+                Ex::host(Imp::ActorKind, vec![r], Ty::Choice("actor_kind"))
             }
-            (Ty::Principal, "kind") if args.is_empty() => {
-                Ex::host(Imp::PrincipalKind, vec![r], Ty::Choice("principal_kind"))
-            }
-            (Ty::Principal, "role") if args.is_empty() => {
-                Ex::host(Imp::PrincipalRole, vec![r], Ty::Option(Box::new(Ty::Text)))
+            (Ty::Actor, "role") if args.is_empty() => {
+                Ex::host(Imp::ActorRole, vec![r], Ty::Option(Box::new(Ty::Text)))
             }
             (Ty::Record(_), "id") if args.is_empty() => Ex::host(Imp::RefId, vec![r], Ty::Text),
             // `as.many()`: an action that applies each of `as` to its own item, all at once: one
@@ -2870,7 +2868,7 @@ impl Checker<'_> {
             (other, _) => {
                 let t = self.show(other);
                 let known = match other {
-                    Ty::Principal => "name, kind, role".to_owned(),
+                    Ty::Actor => "name, kind, role".to_owned(),
                     Ty::Action => "then, made_from".to_owned(),
                     other => super::methods::described(other),
                 };

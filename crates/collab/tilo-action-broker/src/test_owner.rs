@@ -59,9 +59,9 @@ pub struct SessionOwner {
 
 /// The Writer record as a record store reserves it, carrying its identity.
 fn writer_seed(workspace: &str) -> Result<Vec<u8>, String> {
-    use ui::record::{RecordCheckout, RecordId, RecordOwners};
+    use ui::record::{DocumentCheckout, DocumentId, RecordOwners};
     let definition = word_processor::definition();
-    let checkout = RecordCheckout::new(RecordId::for_tab(1), definition.record_kind.clone());
+    let checkout = DocumentCheckout::new(DocumentId::for_tab(1), definition.record_kind.clone());
     let mut owners = RecordOwners::portable(ui::portable_storage::PortableStorage::new(
         "test-owner-initialize",
         workspace,
@@ -293,6 +293,7 @@ impl SessionOwner {
                 app,
                 record,
                 envelope,
+                ..
             } => {
                 let outcome =
                     candidate.admit_local_app_document(app, record, *envelope.clone(), now)?;
@@ -330,7 +331,7 @@ impl SessionOwner {
                     Some(_) => return Err("effect receipt is immutable".into()),
                     None => tilo_desktop_model::projection::project_effect_receipts(
                         &mut doc,
-                        &receipt.actor,
+                        &hex::encode(self.key.verifying_key().to_bytes()),
                         std::slice::from_ref(&receipt),
                     )
                     .map_err(|e| e.to_string())?,

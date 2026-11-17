@@ -295,7 +295,7 @@ impl Agents {
             record: None,
         });
         if opened.record.is_none() {
-            let id = collab_types::workspace_record_id(KIND);
+            let id = collab_types::workspace_document_id(KIND);
             match opened.records.holds_record(OWNER, &id, KIND) {
                 Ok(false) => return Held::None,
                 Ok(true) => {}

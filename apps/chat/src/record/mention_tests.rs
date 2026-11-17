@@ -2,7 +2,7 @@
 //! synced, and found in the record by the framework (`ui::mentions`), with no chat window open.
 
 use ui::automerge::AutoCommit;
-use ui::record::RecordId;
+use ui::record::DocumentId;
 use ui::widget::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
 
@@ -38,7 +38,7 @@ fn a_mention_in_a_message_is_found_in_the_record_the_workspace_sent() {
     // Bo's device receives the workspace's records; no chat window is open.
     bo.sync_with(&mut ada);
     let part = AutoCommit::load(&bo.part.save()).unwrap();
-    let route = RecordId::package_primary().part(0).as_str().to_owned();
+    let route = DocumentId::package_primary().part(0).as_str().to_owned();
 
     let found = ui::mentions::in_record(&part);
     assert_eq!(found.len(), 1, "{found:#?}");

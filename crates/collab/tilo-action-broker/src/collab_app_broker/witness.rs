@@ -205,12 +205,12 @@ impl AppBrokerState {
     /// admission. Republishing this provider invalidates the pending answer.
     pub(crate) fn witness_binding(
         &self,
-        actor: &str,
+        actor: &tilo_action_policy::MemberId,
         workspace: &str,
         request: &InvokeRequest,
     ) -> super::WitnessBinding {
         super::WitnessBinding {
-            actor: actor.into(),
+            actor: actor.clone(),
             provider: request.target.provider.clone(),
             workspace: workspace.into(),
             revision: request.revision.clone(),
@@ -227,13 +227,13 @@ impl AppBrokerState {
     #[cfg(test)]
     pub(super) fn offered_witness_binding(
         &self,
-        actor: &str,
+        actor: &tilo_action_policy::MemberId,
         offered: &(super::PublishedSurface, super::PublishedAction),
         argument: Option<&str>,
         invocation: tilo_actions::InvocationId,
     ) -> super::WitnessBinding {
         super::WitnessBinding {
-            actor: actor.into(),
+            actor: actor.clone(),
             provider: offered.0.peer_id.to_string(),
             workspace: offered.0.route.cluster_id.clone(),
             revision: None,
@@ -285,8 +285,11 @@ impl AppBrokerState {
         // A foreign device is not the person's: they are asked on one of
         // their own devices, which draws the question and answers it.
         if Self::asks_on_own_device(caller) {
-            let binding =
-                self.witness_binding(&person, caller.workspace().unwrap_or_default(), request);
+            let binding = self.witness_binding(
+                &tilo_action_policy::MemberId::person(person),
+                caller.workspace().unwrap_or_default(),
+                request,
+            );
             // The other device shows no draft, so nothing on it is changed.
             return self
                 .own_device_witness(caller, &binding, request)
@@ -421,7 +424,7 @@ impl AppBrokerState {
             return Ok(None);
         };
         let actor = self.caller_actor(caller, workspace);
-        let binding = self.witness_binding(actor.id(), workspace, request);
+        let binding = self.witness_binding(actor.member(), workspace, request);
         let provider = request.target.provider.as_str();
         let address = &request.target.address;
         // The action as the catalogue offers it, or, for an application

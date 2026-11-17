@@ -287,6 +287,7 @@ async fn deliver(
                 author,
                 replayed: false,
                 envelope: frame.envelope,
+                own: None,
             },
             |_| person.clone(),
         );

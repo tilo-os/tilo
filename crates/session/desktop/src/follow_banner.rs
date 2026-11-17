@@ -278,7 +278,7 @@ impl FollowBanner {
 }
 
 /// Where the bar and its Stop go: in the top bar's own middle lane, with their face, `label` and,
-/// while following, Stop. The lane is the clock's seat, so the card never reaches a control of the
+/// while following, Stop. The lane is the clock's, so the card never reaches a control of the
 /// bar's: where the lane is too narrow for the words, the banner folds into their face with Stop
 /// beside it, and the words it cannot show are the ones a reader is told instead.
 ///
@@ -378,7 +378,7 @@ pub(crate) fn rects(
     }
 }
 
-/// The banner's card as [`rects`] placed it: the words it shows, their face's seat and Stop's.
+/// The banner's card as [`rects`] placed it: the words it shows, their face's span and Stop's.
 #[derive(Clone, Debug)]
 pub(crate) struct Card {
     /// The label as painted, elided to the room; empty where the banner folds.

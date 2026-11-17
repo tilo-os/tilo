@@ -30,7 +30,7 @@ impl TileSource for Arriving {
 
 /// A shell showing one window of Notes over `f`'s notebook, the record having
 /// arrived after the shell was already running.
-fn shell(f: &NotebookFixture, width: u32) -> (FrameHarness, ui::record::RecordCheckout) {
+fn shell(f: &NotebookFixture, width: u32) -> (FrameHarness, ui::record::DocumentCheckout) {
     let checkout = component_support::notebook(f);
     let mut minter = IdMinter::new(7);
     let tab = Tab {
@@ -73,7 +73,7 @@ fn shell(f: &NotebookFixture, width: u32) -> (FrameHarness, ui::record::RecordCh
     (harness, checkout)
 }
 
-fn page_count(f: &NotebookFixture, checkout: &ui::record::RecordCheckout) -> usize {
+fn page_count(f: &NotebookFixture, checkout: &ui::record::DocumentCheckout) -> usize {
     f.records
         .read(&checkout.id, |doc| notes::read::list_pages(doc).len())
         .unwrap()

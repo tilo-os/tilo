@@ -153,11 +153,11 @@ impl Emoji {
             .iter()
             .map(|(name, added)| sheet::Emoji {
                 name: name.clone(),
-                added_by: added_by(names, workspace, me, &added.added_by.key()),
+                added_by: added_by(names, workspace, me, &added.added_by),
                 picture: pictures
                     .image(name)
                     .map(|image| sheet::Picture { image, revision }),
-                remove: Self::would_remove(&record, &added.added_by.key(), me).map(|_| {
+                remove: Self::would_remove(&record, &added.added_by, me).map(|_| {
                     t_args(
                         "workspace-settings-emoji-remove",
                         &[("name", name.as_str().into())],
@@ -277,8 +277,8 @@ impl Emoji {
     /// as a moderator, when the grants let them.
     fn would_remove(
         record: &WorkspaceRecord<Record>,
-        added_by: &str,
-        me: &str,
+        added_by: &tilo_app::tilo_resource::MemberId,
+        me: &tilo_app::tilo_resource::MemberId,
     ) -> Option<emoji_pane::Removal> {
         if added_by == me && record.may(REMOVE_OWN) {
             return Some(emoji_pane::Removal::Own);
@@ -362,7 +362,7 @@ impl Emoji {
         let Some(added_by) = record.get().get(name).map(|emoji| emoji.added_by.clone()) else {
             return;
         };
-        let removal = match Self::would_remove(&record, &added_by.key(), record.me()) {
+        let removal = match Self::would_remove(&record, &added_by, record.me()) {
             Some(emoji_pane::Removal::Own) => {
                 Record::REMOVE_EMOJI.with(actions::RemoveEmoji { name: name.into() })
             }
@@ -545,7 +545,12 @@ impl Emoji {
 }
 
 /// Who added an emoji, as the person reads it.
-fn added_by(names: &PeopleNames, workspace: &Workspace, me: &str, id: &str) -> String {
+fn added_by(
+    names: &PeopleNames,
+    workspace: &Workspace,
+    me: &tilo_app::tilo_resource::MemberId,
+    id: &tilo_app::tilo_resource::MemberId,
+) -> String {
     if id == me {
         return t("workspace-settings-emoji-added-by-you");
     }
@@ -553,7 +558,7 @@ fn added_by(names: &PeopleNames, workspace: &Workspace, me: &str, id: &str) -> S
         "workspace-settings-emoji-added-by",
         &[(
             "name",
-            domain::member_row_name(names, workspace, me, id).into(),
+            domain::member_row_name(names, workspace, me.id(), &id.key()).into(),
         )],
     )
 }

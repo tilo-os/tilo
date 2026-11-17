@@ -24,7 +24,7 @@ use tilolang_runtime::meta::{Meta, Ty, parse_ty};
 use tilolang_runtime::store::NewRecord;
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{
-    InvokeOutcome, ModuleHash, PackageId, Principal, Reading, Runtime, RuntimeError, StoreError,
+    Actor, InvokeOutcome, ModuleHash, PackageId, Reading, Runtime, RuntimeError, StoreError,
     ViewInstance,
 };
 
@@ -169,7 +169,7 @@ pub(crate) struct HostInner {
     runtime: Runtime,
     store: TiloStore,
     authority: TiloAuthority,
-    viewer: Principal,
+    viewer: Actor,
     packages: RefCell<Vec<Rc<Package>>>,
     /// Suggestions an agent's code raised on the API, waiting for the window to ask a person.
     pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
@@ -296,7 +296,7 @@ pub(crate) fn value_of(
 
 /// The value of the type `ty` an argument given as `json` stands for, as the API publishes the
 /// parameter ([`crate::surface::published_param`]): a record by the catalogue's reference to it
-/// (or its resource id), a plain enum by the name of its case, a principal as the workspace
+/// (or its resource id), a plain enum by the name of its case, an actor as the workspace
 /// subject it is, lists and options as plain JSON. A value encoded as the runtime stores it
 /// ([`from_json`]) is taken as it is.
 fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Value, String> {
@@ -363,16 +363,16 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
                 fields: std::collections::BTreeMap::new(),
             }))
         }
-        (Ty::Principal, Json::Object(subject)) if subject.len() == 1 => {
-            let principal = match (subject.get("person"), subject.get("agent")) {
-                (Some(Json::String(person)), None) => person.clone(),
-                (None, Some(Json::String(agent))) => format!("agent:{agent}"),
-                _ => from_json(json).and_then(|value| match value {
-                    Value::Principal(principal) => Ok(principal.0),
-                    _ => Err("a principal is a person or an agent".to_owned()),
-                })?,
-            };
-            Ok(Value::Principal(Principal::new(principal)))
+        (Ty::Actor, Json::Object(subject)) if subject.len() == 1 => {
+            // A member as arguments name them (`{"person": id}`), else an actor as values
+            // carry one.
+            match serde_json::from_value::<tilolang_runtime::ids::MemberId>(json.clone()) {
+                Ok(member) => Ok(Value::Actor(Actor::Member(member))),
+                Err(_) => from_json(json).and_then(|value| match value {
+                    Value::Actor(actor) => Ok(Value::Actor(actor)),
+                    _ => Err("an actor is a person or an agent".to_owned()),
+                }),
+            }
         }
         // Rich text given as text: its lines as paragraphs.
         (Ty::RichText, Json::String(text)) => Ok(Value::Rich(
@@ -475,7 +475,7 @@ fn published_roots(meta: &Meta) -> Meta {
 /// published parameter declares ([`crate::surface::published_param`]), which the broker binds
 /// before it delivers, and which [`value_of`] reads back as the same value. A record by the
 /// catalogue's reference to it, of its own type, so a union or a type of another app says which
-/// it is; a plain enum by its case's name; a principal as the workspace subject it is; an option
+/// it is; a plain enum by its case's name; an actor as the workspace subject it is; an option
 /// as its value, or null; lists and tuples item by item; rich text as its text, or encoded
 /// whole when it holds more than text. `owner` finds the package of an app the type names.
 pub fn argument_json(
@@ -566,7 +566,7 @@ pub fn argument_json(
             to_json(other).unwrap_or(Json::Null)
         )),
         // A person and rich text as every caller gives them.
-        (_, Value::Principal(_) | Value::Rich(_)) => tilolang_runtime::value::to_argument(value),
+        (_, Value::Actor(_) | Value::Rich(_)) => tilolang_runtime::value::to_argument(value),
         _ => to_json(value),
     }
 }
@@ -753,10 +753,9 @@ impl HostInner {
         }
         // The runtime sees the invoker the API admitted: an agent's task delegate for itself,
         // the person at the window otherwise.
-        let invoker = request.caller.map_or_else(
-            || self.viewer.clone(),
-            |caller| Principal::new(caller.actor.clone()),
-        );
+        let invoker = request
+            .caller
+            .map_or_else(|| self.viewer.clone(), |caller| caller.actor.clone());
         if let Some(caller) = request.caller.filter(|caller| caller.agent) {
             self.admit_agent(caller);
         }
@@ -808,7 +807,7 @@ impl HostInner {
             action_id: request.action_id.to_owned(),
             args: Json::Object(recorded),
             authorship: Authorship {
-                invoker: invoker.0,
+                invoker: Some(invoker),
                 chain: Vec::new(),
                 module: package.id.0.clone(),
                 at: None,
@@ -917,7 +916,7 @@ impl Host {
     /// The runtime cannot be set up, which is a bug.
     pub fn new(
         record: &tilo_resource::Doc,
-        viewer: Principal,
+        viewer: Actor,
         standing: impl Fn() -> Option<Standing> + 'static,
     ) -> Result<Self, HostError> {
         Self::on_device(record, viewer, None, standing)
@@ -930,7 +929,7 @@ impl Host {
     /// The runtime cannot be set up, which is a bug.
     pub fn on_device(
         record: &tilo_resource::Doc,
-        viewer: Principal,
+        viewer: Actor,
         device: Option<&str>,
         standing: impl Fn() -> Option<Standing> + 'static,
     ) -> Result<Self, HostError> {
@@ -953,7 +952,7 @@ impl Host {
     /// The runtime cannot be set up, which is a bug.
     pub fn open(
         opening: Opening<'_>,
-        viewer: Principal,
+        viewer: Actor,
         standing: impl Fn() -> Option<Standing> + 'static,
     ) -> Result<Self, HostError> {
         let store = match (opening.record, opening.index_dir) {
@@ -1210,7 +1209,7 @@ impl Host {
     /// commits ([`crate::store::TiloStore::commit_action`]) and the action does not run a second
     /// time. It writes as `author`, whose change it is. Every other plan is a trial and is taken
     /// back.
-    pub fn carrying_out<R>(&self, author: &[u8], encode: impl FnOnce() -> R) -> R {
+    pub fn carrying_out<R>(&self, author: &crate::runtime::Actor, encode: impl FnOnce() -> R) -> R {
         self.inner.carried.set(true);
         let out = self.inner.store.writing_as(author, encode);
         self.inner.carried.set(false);
@@ -1229,7 +1228,7 @@ impl Host {
     }
 
     #[must_use]
-    pub fn viewer(&self) -> &Principal {
+    pub fn viewer(&self) -> &Actor {
         &self.inner.viewer
     }
 
@@ -1502,7 +1501,7 @@ impl Host {
     /// Run each loaded package's migrations (`migration action`): once on each resource of the
     /// migration's subject type that the migration has not run on, whether an earlier version
     /// of the package wrote the resource or this one, as an action of the package version
-    /// ([`crate::authority::migration_principal`]), which records in the same change that it
+    /// (the app acting by itself), which records in the same change that it
     /// ran. A field the new build keeps as `RichText` where the old one kept `Text` has its
     /// text carried into rich text first, the same words ([`crate::store`]'s
     /// `upgrade_plain_text`). Only the workspace's origin calls it (`Instance::set_origin`). Returns
@@ -1510,15 +1509,11 @@ impl Host {
     /// was, to be tried again the next time.
     pub fn migrate(&self) -> usize {
         // The words of a field that became rich text, before any migration reads it, each
-        // record's change committed under the package version's migration principal.
+        // record's change committed under the package version's migration actor.
         for package in self.packages() {
-            let by =
-                crate::authority::migration_principal(&package.meta.app, &package.meta.module_hash);
-            self.inner.store.upgrade_plain_text(
-                &package.meta.app,
-                &package.meta.module_hash,
-                &by.0,
-            );
+            self.inner
+                .store
+                .upgrade_plain_text(&package.meta.app, &package.meta.module_hash);
         }
         let mut ran: usize = 0;
         for package in self.packages() {
@@ -1544,11 +1539,8 @@ impl Host {
                         .store
                         .set_migrating(Some((migration.id.clone(), doc.clone())));
                     // The package updating its own records, not the person at the window: the
-                    // change is the package version's, under the platform's migration principal.
-                    let by = crate::authority::migration_principal(
-                        &package.meta.app,
-                        &package.meta.module_hash,
-                    );
+                    // change is the package version's, under the platform's migration actor.
+                    let by = Actor::App(AppId::from(package.meta.app.as_str()));
                     let outcome = self
                         .inner
                         .runtime
@@ -1572,7 +1564,7 @@ impl Host {
 
     /// Run what the packages declare comes due at `now` (seconds since the epoch): each
     /// trigger, for each record of its type, as the app's own invocation
-    /// ([`crate::authority::trigger_principal`]), whose change records in the same edit what
+    /// ([`crate::authority::trigger_actor`]), whose change records in the same edit what
     /// the trigger last did for the record. Only the workspace's origin calls it
     /// (`Instance::sync`), so a trigger runs once across the workspace's devices; a run the
     /// devices missed while all were off runs once when one comes up. Returns how many ran.

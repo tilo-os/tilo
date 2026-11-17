@@ -9,8 +9,9 @@ use crate::tests::{
     run_with, shortcut,
 };
 use crate::{
-    Binding, Condition, NoShortcuts, RunId, RunMode, RunOutcome, RunReport, RunRequest, RunTrigger,
-    Selector, Shortcut, Step, StepKind, StepPath, StepStatus, check, run,
+    Binding, Condition, InvocationId, InvocationMode, InvocationOutcome, InvocationReport,
+    InvocationRequest, InvocationTrigger, NoShortcuts, Selector, Shortcut, Step, StepKind,
+    StepPath, StepStatus, check, run,
 };
 use tilo_actions::remote::InvokeArgument;
 
@@ -21,18 +22,18 @@ use tilo_actions::remote::InvokeArgument;
 fn continue_from(
     host: &FakeHost,
     shortcut: &Shortcut,
-    origin: &RunReport,
+    origin: &InvocationReport,
     from: &str,
-) -> RunReport {
+) -> InvocationReport {
     block_on(run(
         host,
         &Hooks::default(),
-        RunRequest {
+        InvocationRequest {
             shortcut,
-            run: RunId::new(),
+            invocation: InvocationId::new(),
             caller: caller(),
-            mode: RunMode::Unattended,
-            trigger: RunTrigger::Manual,
+            mode: InvocationMode::Unattended,
+            trigger: InvocationTrigger::Manual,
             inputs: serde_json::Map::new(),
             caused_by: None,
             parent: None,
@@ -76,10 +77,10 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &sendable,
-            RunId::new(),
-            RunMode::Unattended,
+            InvocationId::new(),
+            InvocationMode::Unattended,
         );
-        assert_eq!(first.outcome, RunOutcome::Completed, "{first:?}");
+        assert_eq!(first.outcome, InvocationOutcome::Completed, "{first:?}");
         assert_eq!(
             host.started().len(),
             3,
@@ -96,7 +97,7 @@ tilo_test_env::scenario! {
             &[("body", Binding::Literal(json!("two notes")))],
         );
         let second = continue_from(&host, &fixed, &first, "2");
-        assert_eq!(second.outcome, RunOutcome::Completed, "{second:?}");
+        assert_eq!(second.outcome, InvocationOutcome::Completed, "{second:?}");
         let started = host.started();
         assert_eq!(
             started
@@ -120,7 +121,7 @@ tilo_test_env::scenario! {
         // The steps before the one it goes on from are taken from what the first
         // run produced: the same steps, under the same invocations, with the
         // output that ran. A run of its own would have given them fresh ones.
-        assert_ne!(second.run, first.run, "a continued run is a run of its own");
+        assert_ne!(second.invocation, first.invocation, "a continued run is a run of its own");
         assert_eq!(second.steps.len(), 3, "{second:?}");
         for (earlier, later) in first.steps.iter().zip(&second.steps).take(2) {
             assert_eq!(later.path, earlier.path);
@@ -164,10 +165,10 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &tidy,
-            RunId::new(),
-            RunMode::Unattended,
+            InvocationId::new(),
+            InvocationMode::Unattended,
         );
-        assert_eq!(first.outcome, RunOutcome::Completed, "{first:?}");
+        assert_eq!(first.outcome, InvocationOutcome::Completed, "{first:?}");
         // The second step now reads the list differently; the list itself must
         // not run again, so the value it reads is the one the first run saw.
         let mut fixed = tidy;
@@ -179,7 +180,7 @@ tilo_test_env::scenario! {
             &[("title", Binding::step("list", "/titles/0"))],
         );
         let second = continue_from(&host, &fixed, &first, "1");
-        assert_eq!(second.outcome, RunOutcome::Completed, "{second:?}");
+        assert_eq!(second.outcome, InvocationOutcome::Completed, "{second:?}");
         let started = host.started();
         assert_eq!(
             started
@@ -242,10 +243,10 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &tidy,
-            RunId::new(),
-            RunMode::Unattended,
+            InvocationId::new(),
+            InvocationMode::Unattended,
         );
-        assert_eq!(first.outcome, RunOutcome::Completed, "{first:?}");
+        assert_eq!(first.outcome, InvocationOutcome::Completed, "{first:?}");
         // The list, then both loop iterations, then the branch's step.
         assert_eq!(
             host.started()
@@ -258,7 +259,7 @@ tilo_test_env::scenario! {
         // The branch's step already ran: continuing from the branch takes it as
         // taken. The list and the loop are not run again either.
         let second = continue_from(&host, &tidy, &first, "2");
-        assert_eq!(second.outcome, RunOutcome::Completed, "{second:?}");
+        assert_eq!(second.outcome, InvocationOutcome::Completed, "{second:?}");
         let started = host.started();
         assert_eq!(
             started
@@ -278,7 +279,7 @@ tilo_test_env::scenario! {
         // — the list, both iterations, the branch itself — and the step it goes
         // on from runs again, as the step it named always does.
         let third = continue_from(&host, &tidy, &first, "2.then.0");
-        assert_eq!(third.outcome, RunOutcome::Completed, "{third:?}");
+        assert_eq!(third.outcome, InvocationOutcome::Completed, "{third:?}");
         assert_eq!(
             host.started()
                 .iter()
@@ -303,8 +304,8 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &tidy,
-            RunId::new(),
-            RunMode::Unattended,
+            InvocationId::new(),
+            InvocationMode::Unattended,
         );
         assert!(
             matches!(failure(&first), Some((path, _)) if path.as_str() == "1"),
@@ -330,7 +331,7 @@ tilo_test_env::scenario! {
             &[("title", Binding::Literal(json!("fixed")))],
         );
         let second = continue_from(&host, &fixed, &first, "1");
-        assert_eq!(second.outcome, RunOutcome::Completed, "{second:?}");
+        assert_eq!(second.outcome, InvocationOutcome::Completed, "{second:?}");
         assert_eq!(
             host.started()
                 .iter()

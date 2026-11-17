@@ -6,7 +6,7 @@
 use super::{BrokerActor, CrdtRoute, PublishedAction, PublishedSurface};
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{Caller, ExecutionLease};
-use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
+use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate, MemberId};
 use tilo_lock::MutexRecover as _;
 use tokio::sync::broadcast;
 
@@ -35,7 +35,7 @@ pub struct ExecutionActivity {
     /// Host-minted run subordinate to `actor`, never a device identity.
     pub execution: uuid::Uuid,
     pub invocation: InvocationId,
-    pub actor: String,
+    pub actor: MemberId,
     pub peer_id: u64,
     pub route: CrdtRoute,
     pub address: ActionAddress,
@@ -54,19 +54,17 @@ impl ExecutionActivity {
 #[derive(Clone)]
 pub(super) struct ExecutionScope {
     lifetime: ExecutionLease,
-    actor: String,
-    /// The run is an agent's its person's device handed it to.
-    agent: bool,
+    actor: MemberId,
     execution: uuid::Uuid,
     invocation: InvocationId,
 }
 impl ExecutionScope {
     pub(super) fn for_call(caller: &Caller, invocation: InvocationId) -> Option<Self> {
         // A person's run, or an agent's their own device handed it to.
-        let (actor, agent) = if let Some(person) = caller.acting().person_id() {
-            (person.to_owned(), false)
+        let actor = if let Some(person) = caller.acting().person_id() {
+            MemberId::person(person)
         } else if caller.acting().is_agent() && caller.acting_for_person().is_some() {
-            (BrokerActor::for_caller(caller).id().to_owned(), true)
+            BrokerActor::for_caller(caller).member().clone()
         } else {
             return None;
         };
@@ -74,7 +72,6 @@ impl ExecutionScope {
         Some(Self {
             lifetime,
             actor,
-            agent,
             execution: caller.execution_id()?,
             invocation,
         })
@@ -95,7 +92,7 @@ impl ExecutionScope {
         if !self.lifetime.is_live() {
             return Err("execution session ended".into());
         }
-        if actor.is_agent != self.agent || actor.id != self.actor {
+        if *actor.member() != self.actor {
             return Err("execution actor mismatch".into());
         }
         Ok(tilo_actions::ParticipantId::for_execution(self.execution))
@@ -108,7 +105,7 @@ impl ExecutionScope {
 #[derive(Clone)]
 pub(super) struct ActivityTarget {
     scope: Option<ExecutionScope>,
-    actor: String,
+    actor: MemberId,
     peer_id: u64,
     route: CrdtRoute,
     address: ActionAddress,
@@ -464,7 +461,7 @@ impl ActivityTarget {
         // A fixed queue length also needs a bound on each retained value.
         // Unsupported metadata yields no presence, never a guessed target.
         if [
-            &actor.id,
+            actor.member().id(),
             &surface.route.app_id,
             &surface.route.cluster_id,
             &surface.route.record_id,
@@ -478,7 +475,7 @@ impl ActivityTarget {
         }
         Some(Self {
             scope,
-            actor: actor.id.clone(),
+            actor: actor.member().clone(),
             peer_id: surface.peer_id,
             route: surface.route.clone(),
             address: ActionAddress::new(action.resource.clone(), action.action.clone()),

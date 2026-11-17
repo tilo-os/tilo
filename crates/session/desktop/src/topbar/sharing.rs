@@ -148,15 +148,7 @@ impl TopBarChrome {
     pub(super) fn roster_visible(&self) -> bool {
         !self.face_initials.is_empty()
             || self.face_overflow > 0
-            || self.watching() > 0
             || self.sharing_summary().viewers > 0
-    }
-
-    /// People following the workspace without taking part, from the host.
-    pub(super) fn watching(&self) -> u32 {
-        self.chrome
-            .as_ref()
-            .map_or(0, |chrome| chrome.snapshot().watching)
     }
 
     /// How the shared windows stand with the devices that asked to see them, from the compositor

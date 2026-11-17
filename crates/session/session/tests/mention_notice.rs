@@ -26,7 +26,7 @@ use tilo_session::platform::Store;
 use tilo_session::platform::notice::OPEN_ACTION;
 use tilo_session::{AppActions, Options, Records, SearchOptions};
 use ui::mentions::MARK;
-use ui::record::{RecordId, RecordKind};
+use ui::record::{DocumentId, ResourceType};
 
 use crate::common::{PERSON, headless};
 
@@ -47,8 +47,8 @@ fn notebook(workspace: &str, person: &str) -> AutoCommit {
     let mut doc = AutoCommit::new();
     ui::record::init(
         &mut doc,
-        &RecordId::parse(RECORD).expect("a record id"),
-        &RecordKind::new(KIND),
+        &DocumentId::parse(RECORD).expect("a record id"),
+        &ResourceType::new(KIND),
         workspace,
     );
     let pages = doc.put_object(ROOT, "pages", ObjType::Map).unwrap();
@@ -83,7 +83,9 @@ fn key_of(app: &str, workspace: &str) -> StorageKey {
     StorageKey::document(
         app,
         workspace,
-        RecordId::parse(RECORD).expect("a record id").storage_key(),
+        DocumentId::parse(RECORD)
+            .expect("a record id")
+            .storage_key(),
     )
 }
 
@@ -212,7 +214,7 @@ fn a_mention_in_a_record_is_told_and_choosing_it_opens_the_record() {
     };
     // Who sits here, as the session's own seat reads it: this device's identity names them, and a
     // mention of anyone else is not theirs.
-    let person = tilo_session::identity::seated_person(&options);
+    let person = tilo_session::identity::own_person(&options);
     let mut session = headless(options);
     session.step(Duration::from_millis(1)).expect("a frame");
     let workspace = session

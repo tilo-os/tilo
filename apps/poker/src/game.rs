@@ -507,7 +507,11 @@ impl Table {
 
     /// The position of the author in the hand, when it is their turn.
     fn acting(&self, cx: &ActionCx) -> Result<usize, &'static str> {
-        let me = &cx.author().ok_or("only a player can act")?.key();
+        let me = &cx
+            .author()
+            .and_then(MemberId::person_id)
+            .ok_or("only a player can act")?
+            .to_owned();
         if !self.hand.street.in_play() {
             return Err("no hand is being played");
         }
@@ -587,7 +591,11 @@ impl Table {
         cx: &mut ActionCx,
         #[param("The seat to take, from 1 to 6; the next free one when it is taken")] seat: u32,
     ) -> Result<(), &'static str> {
-        let me = cx.author().ok_or("only a participant can sit down")?.key();
+        let me = cx
+            .author()
+            .and_then(MemberId::person_id)
+            .ok_or("only a participant can sit down")?
+            .to_owned();
         if self.players.contains_key(&me) {
             return Err("you already have a seat");
         }
@@ -614,7 +622,11 @@ impl Table {
     /// Leave the table.
     #[action]
     pub fn leave(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
-        let me = cx.author().ok_or("only a player can leave")?.key();
+        let me = cx
+            .author()
+            .and_then(MemberId::person_id)
+            .ok_or("only a player can leave")?
+            .to_owned();
         if !self.players.contains_key(&me) {
             return Err("you are not at the table");
         }
@@ -637,7 +649,11 @@ impl Table {
     /// Deal the next hand: shuffle, move the button and post the blinds.
     #[action]
     pub fn deal(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
-        let me = cx.author().ok_or("only a player can deal")?.key();
+        let me = cx
+            .author()
+            .and_then(MemberId::person_id)
+            .ok_or("only a player can deal")?
+            .to_owned();
         let now = cx.now_ms();
         if self.hand.street.in_play() {
             return Err("a hand is being played");
@@ -761,8 +777,9 @@ impl Table {
         let at = self.acting(cx)?;
         let me = cx
             .author()
-            .map(tilo_resource::MemberId::key)
-            .unwrap_or_default();
+            .and_then(MemberId::person_id)
+            .unwrap_or_default()
+            .to_owned();
         let (least, most) = self
             .hand
             .raise_range(&me)
@@ -794,7 +811,11 @@ impl Table {
     /// Show your cards to the table after the hand.
     #[action]
     pub fn show(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
-        let me = &cx.author().ok_or("only a player can show cards")?.key();
+        let me = &cx
+            .author()
+            .and_then(MemberId::person_id)
+            .ok_or("only a player can show cards")?
+            .to_owned();
         if self.hand.street.in_play() {
             return Err("show your cards once the hand is over");
         }
@@ -811,7 +832,11 @@ impl Table {
     /// Fold the hand of a player who has taken longer than 30 seconds.
     #[action]
     pub fn skip(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
-        let me = &cx.author().ok_or("only a player can do that")?.key();
+        let me = &cx
+            .author()
+            .and_then(MemberId::person_id)
+            .ok_or("only a player can do that")?
+            .to_owned();
         if !self.players.contains_key(me) {
             return Err("sit down first");
         }
@@ -835,7 +860,11 @@ impl Table {
     /// Buy back in once you have no chips.
     #[action(label = "poker-action-rebuy")]
     pub fn rebuy(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
-        let me = cx.author().ok_or("only a player can rebuy")?.key();
+        let me = cx
+            .author()
+            .and_then(MemberId::person_id)
+            .ok_or("only a player can rebuy")?
+            .to_owned();
         if self.hand.is_live(&me) {
             return Err("wait for the hand to end");
         }

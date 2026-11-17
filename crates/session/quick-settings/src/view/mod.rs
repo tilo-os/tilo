@@ -1,6 +1,6 @@
 //! The panel's views: the controls page, with the section a control opens
 //! unrolled under it, one accessory's page, the clipboard opened to paste and
-//! the arrangement editor. The notifications have no page here: their row opens
+//! the controls editor. The notifications have no page here: their row opens
 //! the shell's centre, the one list they are read in. Built from the toolkit's widgets;
 //! every control is bound to one of the panel's actions or effects.
 
@@ -44,7 +44,7 @@ pub(crate) struct Parts {
     /// What shows the panel, told what it lists.
     host: Rc<dyn PanelHost>,
     accessory: LocalState<Accessory>,
-    arrangement: LocalState<Arrangement>,
+    config: LocalState<Controls>,
     /// What was typed to search the clipboard's copies.
     query: LocalState<String>,
     /// What plays: the transport's song and playhead, and the choices
@@ -62,18 +62,18 @@ pub(crate) struct Accessory {
     targets: Option<Vec<crate::HandoffTarget>>,
 }
 
-/// The arrangement the editor shows: the controls on the page, in order,
+/// The controls the editor shows: the ones on the page, in order,
 /// and those this machine could add.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Arrangement {
+pub(crate) struct Controls {
     active: Vec<settings_store::hardware::QuickSettingsControl>,
     available: Vec<settings_store::hardware::QuickSettingsControl>,
 }
 
-impl Arrangement {
+impl Controls {
     fn of(state: &QuickSettingsState) -> Self {
         use settings_store::hardware::QuickSettingsControl;
-        let arranged = &state.arrangement.controls;
+        let arranged = &state.config.controls;
         let active = arranged
             .iter()
             .copied()
@@ -113,7 +113,7 @@ impl Parts {
                 devices: state.bluetooth.accessories.clone(),
                 targets: state.handoff_targets.clone(),
             }),
-            arrangement: readings.project(Arrangement::of),
+            config: readings.project(Controls::of),
             query: LocalState::new(String::new()),
             now_playing: now_playing::Parts::new(readings),
             refusal: readings.project(|state| state.refusal.clone()),

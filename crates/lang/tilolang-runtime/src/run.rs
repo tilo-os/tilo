@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ActionId, ModuleHash, Principal, RunId};
+use crate::ids::{ActionId, Actor, ModuleHash, RunId};
 use crate::value::Value;
 
 /// An action applied to arguments, waiting for a person's decision.
@@ -18,7 +18,7 @@ pub struct Suggestion {
     pub run: RunId,
     pub action: ActionId,
     pub args: Vec<Value>,
-    pub invoker: Principal,
+    pub invoker: Actor,
     /// The authorship chain that led to the invocation, outermost first.
     pub chain: Vec<ModuleHash>,
 }
@@ -91,7 +91,7 @@ pub struct Step {
     /// Who runs the call, when a scenario named them with `invoke(..., by:)`: the callee runs as
     /// that person rather than as the run's own invoker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub who: Option<Principal>,
+    pub who: Option<Actor>,
     /// The moment the call acts at, when the same `invoke` named one: the callee reads `now` as
     /// that moment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -189,7 +189,7 @@ impl WebResponse {
 }
 
 /// Everything needed to replay a run.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Journal {
     /// The action the run runs, or `None` for a run that is only a suggestion waiting for an
     /// answer before the action starts.
@@ -198,7 +198,7 @@ pub struct Journal {
     #[serde(rename = "flow", default, skip_serializing_if = "Option::is_none")]
     pub action: Option<ActionId>,
     pub args: Vec<Value>,
-    pub invoker: Principal,
+    pub invoker: Actor,
     pub chain: Vec<ModuleHash>,
     /// The resource the run was invoked from, when it was made from one: what the resources its
     /// actions create were made from, kept across a suspension.
@@ -211,7 +211,7 @@ pub struct Journal {
     /// Who proposed the run, when the person running it accepted a suggestion: recorded in the
     /// changes its actions make, so history says who suggested it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suggested_by: Option<String>,
+    pub suggested_by: Option<Actor>,
     pub entries: Vec<JournalEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<Pending>,
@@ -219,7 +219,7 @@ pub struct Journal {
     /// Who approved what the run does, when a person did: recorded in the changes its actions
     /// make.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approved_by: Option<Principal>,
+    pub approved_by: Option<Actor>,
     /// How many outside effects the run has queued: the next one's key counts from it, so a run
     /// that goes on after a wait queues none under a key it used.
     #[serde(default)]

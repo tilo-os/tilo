@@ -340,7 +340,9 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
             lease.check().unwrap();
             assert!(observe(&agent.handle, invocation).await.unwrap().is_some());
             assert!(
-                rig.state.invocation_statuses("agent:scribe").is_empty(),
+                rig.state
+                    .invocation_statuses(&tilo_actions::MemberId::agent("scribe"))
+                    .is_empty(),
                 "an actor name alone discloses no authenticated invocation"
             );
             // Its session is its person's: revoking their standing ends the

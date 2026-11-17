@@ -34,6 +34,8 @@ optional = ["clipboard", "files.open", "files.paths", "app-files", "settings", "
 
 [resources]
 kinds = ["ebook.library", "tilo.rich-text", "settings.books-catalogues", "ebook.files"]
+# Each member keeps one of each as their own; nobody else in the workspace receives it.
+own = ["ebook.files"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

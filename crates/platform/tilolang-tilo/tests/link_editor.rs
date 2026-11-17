@@ -5,7 +5,7 @@ use automerge::AutoCommit;
 use serde_json::json;
 use tilolang_runtime::rich::{Reference, RichValue};
 use tilolang_runtime::store::{LinkHow, Store as _};
-use tilolang_runtime::{NameHost, Principal, ResourceRef, Value, ViewInstance};
+use tilolang_runtime::{Actor, NameHost, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::publish::PlanRequest;
 use tilolang_tilo::record::DynValue;
 
@@ -137,8 +137,8 @@ fn offered(editor: &tilo_ui_host::UiNode) -> Vec<(String, String)> {
 struct Names;
 
 impl NameHost for Names {
-    fn name(&self, who: &Principal) -> String {
-        who.shown()
+    fn name(&self, who: &Actor) -> String {
+        who.id().to_owned()
     }
 }
 

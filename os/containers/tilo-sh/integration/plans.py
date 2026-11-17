@@ -12,7 +12,10 @@ billing would, so the refusal and what follows it are the product's and not
 the check's. Written in place, never renamed over: the file is mounted into
 the host's container, and a replacement would leave it reading the old one.
 
-    plans.py ACCOUNT FILE     put `ACCOUNT` on file with a card, and say so
+    plans.py ACCOUNT FILE      put `ACCOUNT` on file with a card, and say so
+    plans.py --remove ACCOUNT FILE
+                               take `ACCOUNT` off the file, as a card the
+                               provider withdraws, and say so
 
 The entry written is the one an account on the stack's one plan gets: a card,
 and the limits that plan carries.
@@ -43,6 +46,16 @@ def add_account(path: str, account: str) -> None:
         json.dump(document, plans, indent=2)
 
 
+def remove_account(path: str, account: str) -> None:
+    """`account` no longer on file in the plans file at `path`: what an account
+    whose card the provider withdrew is refused by."""
+    with open(path) as plans:
+        document = json.load(plans)
+    (document.get("accounts") or {}).pop(account, None)
+    with open(path, "w") as plans:
+        json.dump(document, plans, indent=2)
+
+
 def named(path: str, account: str) -> bool:
     """Whether the file at `path` has `account` on file (a card, to the host)."""
     try:
@@ -53,7 +66,11 @@ def named(path: str, account: str) -> bool:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: plans.py ACCOUNT FILE")
-    add_account(sys.argv[2], sys.argv[1])
-    print(json.dumps({"account": sys.argv[1], "plans": sys.argv[2], "on_file": True}))
+    if len(sys.argv) == 3:
+        add_account(sys.argv[2], sys.argv[1])
+        print(json.dumps({"account": sys.argv[1], "plans": sys.argv[2], "on_file": True}))
+    elif len(sys.argv) == 4 and sys.argv[1] == "--remove":
+        remove_account(sys.argv[3], sys.argv[2])
+        print(json.dumps({"account": sys.argv[2], "plans": sys.argv[3], "on_file": False}))
+    else:
+        raise SystemExit("usage: plans.py [--remove] ACCOUNT FILE")

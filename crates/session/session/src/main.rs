@@ -730,7 +730,7 @@ fn start(
     if machine.is_owned() {
         tilo_session::files_daemon::record(
             Arc::clone(&options.launches),
-            collab_types::personal_cluster_of(&tilo_session::identity::seated_person(&options))
+            collab_types::personal_cluster_of(&tilo_session::identity::own_person(&options))
                 .map(|cluster| cluster.to_string()),
         );
     }
@@ -740,7 +740,7 @@ fn start(
         options.config.idle = tilo_compositor::IdleConfig::never();
     }
     if seed_apps {
-        match tilo_session::seeded_apps::seeded_from_env(&tilo_session::identity::seated_person(
+        match tilo_session::seeded_apps::seeded_from_env(&tilo_session::identity::own_person(
             &options,
         )) {
             Ok(apps) => options.services.extend(

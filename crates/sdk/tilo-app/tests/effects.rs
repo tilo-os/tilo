@@ -534,7 +534,7 @@ tilo_test_env::scenario! {
         // A viewer may take a read effect, but not the edit it submits.
         let refused = app
             .effect_by(
-                "agent:viewer",
+                &MemberId::agent("viewer"),
                 &MailEffect::Note {
                     text: "seen".into(),
                 },
@@ -553,7 +553,7 @@ tilo_test_env::scenario! {
         // Someone admitted to write gets the edit their effect submits, as
         // theirs.
         app.effect_by(
-            "agent:writer",
+            &MemberId::agent("writer"),
             &MailEffect::Fetch {
                 from: "a writer".into(),
             },
@@ -565,8 +565,8 @@ tilo_test_env::scenario! {
             .last()
             .and_then(|version| version.context.clone())
             .and_then(|context| context.invoker)
-            .map(|invoker| invoker.acting.by.key());
-        assert_eq!(invoker.as_deref(), Some("agent:writer"));
+            .map(|invoker| invoker.acting.by);
+        assert_eq!(invoker, Some(MemberId::agent("writer").into()));
     }
 }
 
@@ -753,9 +753,8 @@ fn delayed_receipt_completion_applies_history_as_its_original_invoker() {
             .as_ref()
             .unwrap()
             .acting
-            .by
-            .key(),
-        "agent:receipt-writer"
+            .by,
+        MemberId::agent("receipt-writer").into()
     );
     assert!(
         app.harness()
@@ -1607,7 +1606,7 @@ pub enum FileEffect {
 
 thread_local! {
     /// The identity of the file last imported.
-    static CHOSEN: RefCell<Option<RecordId>> = const { RefCell::new(None) };
+    static CHOSEN: RefCell<Option<DocumentId>> = const { RefCell::new(None) };
 }
 
 /// Imports and exports through the host's file chooser.
@@ -1674,7 +1673,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.state().fetched, "from a file");
         assert_eq!(
             CHOSEN.with(|chosen| chosen.borrow_mut().take()),
-            Some(RecordId::identify_file(&incoming)),
+            Some(DocumentId::identify_file(&incoming)),
             "the chosen file is known by its durable identity"
         );
         assert_eq!(recorder.pick_requests()[0].title(), "Import a message");

@@ -173,7 +173,7 @@ fn prepared(
     host: &ProbeHost,
     queue: &OwnerWakeQueue,
     id: u64,
-) -> (BoundAppWidget, Seen, crate::record::RecordId) {
+) -> (BoundAppWidget, Seen, crate::record::DocumentId) {
     let seen = Seen::default();
     NEXT.with_borrow_mut(|next| *next = Some(seen.clone()));
     let definition = probe::definition(factory);

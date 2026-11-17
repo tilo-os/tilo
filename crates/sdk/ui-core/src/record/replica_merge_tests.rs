@@ -22,7 +22,7 @@ tilo_test_env::scenario! {
     {
         let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
         let store = owners.open("so.tilo.test", "workspace-a").unwrap();
-        let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         store
             .reserve_record(&want)
             .unwrap()
@@ -50,7 +50,7 @@ tilo_test_env::scenario! {
     {
         let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
         let store = owners.open("so.tilo.test", "workspace-a").unwrap();
-        let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         store
             .reserve_record(&want)
             .unwrap()
@@ -102,7 +102,7 @@ tilo_test_env::scenario! {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
         let store = owners.open("so.tilo.test", "workspace-a").unwrap();
-        let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         store
             .reserve_record(&want)
             .unwrap()
@@ -186,7 +186,7 @@ tilo_test_env::scenario! {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
         let store = owners.open("so.tilo.test", "workspace-a").unwrap();
-        let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         store
             .reserve_record(&want)
             .unwrap()
@@ -237,7 +237,7 @@ tilo_test_env::scenario! {
     phase an_ahead_snapshot_keeps_exact_text_history_actor_and_bystander;
     {
         let (_owners, store, want, body, source) = large_text_record();
-        let other = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let other = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         store
             .reserve_record(&other)
             .unwrap()
@@ -347,10 +347,10 @@ tilo_test_env::scenario! {
     }
 }
 
-fn large_text_record() -> (RecordOwners, RecordStore, RecordCheckout, ObjId, String) {
+fn large_text_record() -> (RecordOwners, RecordStore, DocumentCheckout, ObjId, String) {
     let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
     let store = owners.open("so.tilo.test", "workspace-a").unwrap();
-    let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+    let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
     let source = "fn source() { /* café */ }\n".repeat(900);
     store
         .reserve_record(&want)

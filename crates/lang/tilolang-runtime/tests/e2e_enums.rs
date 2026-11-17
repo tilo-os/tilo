@@ -5,7 +5,7 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::{
-        AmStore, EditOutcome, EnumValue, Principal, ResourceRef, Runtime, SimpleAuthority, Value,
+        Actor, AmStore, EditOutcome, EnumValue, ResourceRef, Runtime, SimpleAuthority, Value,
     };
 
     const SOURCE: &str = r#"app so.tilo.shapes "Shapes"
@@ -177,8 +177,8 @@ view drawing(c: Canvas) {
         {
             let store = AmStore::new();
             let (rt, app, canvas) = setup(&store);
-            let (ada, bo) = (Principal::new("person:ada"), Principal::new("person:bo"));
-            let open = |who: &Principal| {
+            let (ada, bo) = (person("person:ada"), person("person:bo"));
+            let open = |who: &Actor| {
                 rt.open_view(who, &app.view("drawing"), vec![Value::resource(&canvas)])
                     .unwrap()
             };

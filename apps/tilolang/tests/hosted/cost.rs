@@ -1278,7 +1278,7 @@ fn kept_index(
             device: None,
             wake: None,
         },
-        tilolang_tilo::runtime::Principal::new("ada"),
+        tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
     )
     .expect("the record opens");

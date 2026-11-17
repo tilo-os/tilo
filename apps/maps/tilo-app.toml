@@ -29,6 +29,8 @@ optional = ["app-files", "files.paths", "location", "threads"]
 
 [resources]
 kinds = ["maps.workspace", "maps.offline-areas"]
+# Each member keeps one of each as their own; nobody else in the workspace receives it.
+own = ["maps.offline-areas"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

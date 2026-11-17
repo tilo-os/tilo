@@ -2,7 +2,7 @@
 //!
 //! The compositor publishes what it can drive ([`Compositor::display_snapshot`])
 //! and applies a [`DisplayConfig`](tilo_compositor::DisplayConfig) without
-//! reading any settings; Settings edits the person's arrangement, and a change
+//! reading any settings; Settings edits the person's display settings, and a change
 //! that could leave a screen dark waits for them in a
 //! [`DisplayTransaction`]. This module is where the two meet: it keeps the
 //! configuration for the monitors attached now in line with what the person
@@ -39,7 +39,7 @@ pub(crate) struct Displays {
     seen: bool,
     /// When the change waiting for the person is put back.
     deadline: Option<u64>,
-    /// What the compositor was last given, so it is not given the same arrangement on every pass.
+    /// What the compositor was last given, so it is not given the same settings on every pass.
     applied: Option<CompositorDisplayConfig>,
     /// The staged change last seen, to act on a change of its own rather than on every look.
     staged: Option<DisplayTransaction>,
@@ -58,7 +58,7 @@ impl Displays {
     /// turn it shows.
     ///
     /// # Errors
-    /// The compositor could not set a mode, scale, arrangement or HDR.
+    /// The compositor could not set a mode, scale, layout or HDR.
     pub(crate) fn follow(
         &mut self,
         compositor: &mut Compositor,
@@ -133,7 +133,7 @@ impl Displays {
         Ok(())
     }
 
-    /// The change waiting for the person's answer now: its id, and when the previous arrangement
+    /// The change waiting for the person's answer now: its id, and when the previous change
     /// comes back without one.
     pub(crate) fn awaiting_confirmation(&self) -> Option<(u64, Option<u64>)> {
         match &self.staged {
@@ -188,7 +188,7 @@ pub(crate) fn trusted_tools() -> Vec<PathBuf> {
 }
 
 /// Advance `transaction` as far as the attached monitors and the person's answer take it, one step
-/// at a time: an expired or reverted change puts the previous arrangement back before it counts as
+/// at a time: an expired or reverted change puts the previous settings back before it counts as
 /// done.
 fn settle(
     mut transaction: DisplayTransaction,
@@ -215,7 +215,7 @@ fn settle(
 }
 
 /// One step of `transaction` : apply it, wait for the person, keep it, or put the previous
-/// arrangement back.
+/// settings back.
 fn reconcile(
     mut transaction: DisplayTransaction,
     descriptors: &[OutputDescriptor],
@@ -234,7 +234,7 @@ fn reconcile(
             } else if transaction.set.key != set.key {
                 transaction.state = DisplayTransactionState::Rejected;
                 transaction.message =
-                    Some("The attached displays changed before the arrangement was applied".into());
+                    Some("The attached displays changed before the settings were applied".into());
             } else if let Err(error) = transaction.candidate.validate_for(descriptors) {
                 transaction.state = DisplayTransactionState::Rejected;
                 transaction.message = Some(format!("Rejected unsupported display plan: {error:?}"));
@@ -295,12 +295,12 @@ fn reconcile(
     transaction
 }
 
-/// The stored arrangement as the compositor takes it, at the night light temperature the session
+/// The stored display settings as the compositor takes them, at the night light temperature the session
 /// runs while it is on, with `turned` 's output turned the way the device is held.
 /// A monitor the person never arranged for keeps the scale and rotation it was last shown at, so a
 /// familiar laptop panel is not thrown back to 1x the first time it is docked.
 /// The turn goes over the stored one for that panel: a screen whose machine is held on its side is
-/// not readable at the angle its arrangement was arranged at, and the rotation lock is what pins it
+/// not readable at the angle it stands at, and the rotation lock is what pins it
 /// instead.
 fn sent(
     stored: &settings_store::hardware::DisplayConfig,
@@ -591,7 +591,7 @@ mod tests {
             assert_eq!(
                 config.transforms.get("eDP-1"),
                 Some(&tilo_compositor::Transform::_90),
-                "the panel turns with the machine, whatever its arrangement says"
+                "the panel turns with the machine, whatever its settings say"
             );
         }
     }

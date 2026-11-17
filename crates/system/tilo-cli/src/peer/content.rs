@@ -130,11 +130,16 @@ impl ContentSource for SessionContent {
     fn fetch(&self, hash: Hash) -> futures_util::future::BoxFuture<'static, Option<Bytes>> {
         let hex = hash.to_hex();
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        self.waiting
-            .lock_recover()
-            .entry(hex.clone())
-            .or_default()
-            .push(sender);
+        {
+            let mut waiting = self.waiting.lock_recover();
+            // A read that gave up waiting (its content never came) is waited for by nobody: its
+            // place goes, or every hash the workspace could not serve stayed here for good.
+            waiting.retain(|_, waiters| {
+                waiters.retain(|waiter| !waiter.is_closed());
+                !waiters.is_empty()
+            });
+            waiting.entry(hex.clone()).or_default().push(sender);
+        }
         let ask = self.wants.lock_recover().ask(
             &self.device,
             (),

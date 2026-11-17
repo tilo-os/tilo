@@ -125,7 +125,7 @@ struct Step {
 struct History {
     app: String,
     resource: String,
-    /// The resource is one the session itself publishes (the arrangement, the records it keeps
+    /// The resource is one the session itself publishes (the layout, the records it keeps
     /// for a package), taken back at the session's own provider.
     published: bool,
 }
@@ -900,7 +900,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     #[must_use]
     pub fn with_work_group(mut self, group: tilo_actions::WorkGroup) -> Self {
         *self
-            .run
+            .agent_session
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(group);
         self
@@ -1273,7 +1273,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let caller = self.execution_caller();
         let acting = caller.acting();
         json!({
-            "actor": acting.by.id(),
+            "actor": acting.by,
             "agent": !acting.is_person(),
             "on_behalf_of": acting.acted_for_person(),
         })
@@ -1411,7 +1411,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             };
             return self.task_change(change).await;
         }
-        // An action of a resource the session itself publishes (its shell, its arrangement) goes
+        // An action of a resource the session itself publishes (its shell, its layout) goes
         // to the session's own provider, as every other caller of the desktop reaches it.
         let provider = if call.get("published").and_then(Value::as_bool) == Some(true) {
             Addressed {

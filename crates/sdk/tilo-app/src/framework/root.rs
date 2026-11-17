@@ -307,6 +307,10 @@ fn offer_item_open(item_of: fn(&str) -> bool, resource: &mut ResourceSpec) {
                 tilo_actions::ResourceViewSpec::new("item", ITEM_VIEW_LABEL, "open")
                     .with_primary(true),
             );
+            // A view is also what a link opens: with one, the item offers
+            // `share-link` of its own, which names the item rather than the
+            // record it is in.
+            tilo_resource::share::offer(resource);
         }
     }
     for child in &mut resource.children {

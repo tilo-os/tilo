@@ -192,9 +192,9 @@ impl HistoryRegistration {
                 saver.document_path().to_string_lossy().into_owned(),
                 format!("host:{lifetime}"),
                 definition.app_id,
-                crate::RecordId::derived(
+                crate::DocumentId::derived(
                     "app-state",
-                    &crate::RecordId::for_file(saver.document_path()),
+                    &crate::DocumentId::for_file(saver.document_path()),
                 ),
             )
         } else {
@@ -202,7 +202,7 @@ impl HistoryRegistration {
                 format!("memory:{lifetime}"),
                 format!("host:{lifetime}"),
                 definition.app_id,
-                crate::RecordId::derived("app-state", &crate::RecordId::for_tab(0)),
+                crate::DocumentId::derived("app-state", &crate::DocumentId::for_tab(0)),
             )
         };
         let sources = definition

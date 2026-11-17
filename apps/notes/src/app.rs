@@ -631,7 +631,7 @@ impl NotesApp {
         let mut sidebar = PageSidebar::new();
         sidebar.sync_from_workspace(&workspace);
         let mut main = MainPanel::new();
-        main.set_local_author(Some(author.key()));
+        main.set_local_author(Some(author.clone()));
         let mut app = Self::build_widget(workspace, sidebar, main);
         // The pictures are read like any later ones, without waiting here.
         app.refresh_canonical_assets();
@@ -1046,8 +1046,7 @@ impl NotesApp {
         let notebook = self.live.as_ref()?.get();
         let note = notebook.pages.get(&crate::notebook::page_id(page))?;
         let origin = note.origin.as_ref()?;
-        let people = self.people.as_ref()?;
-        Some(people.provenance("", "", 0, Some(origin)))
+        Some(ui::framework::Provenance::moved(origin, 0))
     }
 
     fn selected_reactions(&self) -> Option<crate::main_panel::NoteReactions> {
@@ -1070,7 +1069,7 @@ impl NotesApp {
                     if reactor.name.is_none()
                         && let Some(people) = people
                     {
-                        reactor.name = Some(people.name(&reactor.by.key()));
+                        reactor.name = Some(people.name(&reactor.by));
                     }
                 }
                 group
@@ -1085,7 +1084,7 @@ impl NotesApp {
         (offered || !groups.is_empty()).then(|| crate::main_panel::NoteReactions {
             page,
             groups,
-            me: me.and_then(ui::tilo_resource::MemberId::parse),
+            me: me.cloned(),
             can_react: offered,
         })
     }
@@ -1574,7 +1573,7 @@ impl NotesApp {
     /// Set the local user's id for authorship attribution. The same id
     /// the binary derives from `QUICK_APP_ID` and uses for presence, so
     /// authored text and the peer's cursor share a color.
-    pub fn set_local_author(&mut self, author: Option<String>) {
+    pub fn set_local_author(&mut self, author: Option<ui::tilo_resource::MemberId>) {
         self.main.set_local_author(author);
     }
 
@@ -1663,7 +1662,7 @@ impl NotesApp {
         let mut sidebar = PageSidebar::new();
         sidebar.sync_from_workspace(&Workspace::default());
         let mut main = MainPanel::new();
-        main.set_local_author(Some(author.key()));
+        main.set_local_author(Some(author.clone()));
         let mut app = Self::build_widget(Workspace::default(), sidebar, main);
         app.follow_save_status(save_status);
         app

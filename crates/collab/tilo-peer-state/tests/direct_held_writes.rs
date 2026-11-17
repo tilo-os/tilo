@@ -123,6 +123,7 @@ fn sealed(key: &SigningKey) -> NeighbourMsg {
         cluster_id: WORKSPACE.into(),
         record_id: RECORD.into(),
         envelope: Box::new(op),
+        own: None,
     }
 }
 

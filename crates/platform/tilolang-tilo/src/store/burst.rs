@@ -45,7 +45,7 @@ pub(super) struct Typing {
     /// (`doc` or `doc/item`).
     resource: String,
     field: String,
-    by: String,
+    by: Option<crate::runtime::Actor>,
 }
 
 impl Typing {

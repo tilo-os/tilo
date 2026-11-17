@@ -849,6 +849,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
                 app: "so.tilo.chat".into(),
                 record: String::new(),
                 envelope,
+                own: None,
             },
         })
         .await;
@@ -909,6 +910,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
                 app: "so.tilo.chat".into(),
                 record: String::new(),
                 envelope,
+                own: None,
             },
         })
         .await
@@ -1507,6 +1509,7 @@ fn signed_write(
             app: app.into(),
             record: RECORD.into(),
             envelope: Box::new(envelope),
+            own: None,
         },
     }
 }

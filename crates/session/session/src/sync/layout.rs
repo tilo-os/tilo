@@ -3,7 +3,7 @@
 
 use tilo_desktop_surface::host::records::{app_of, wire_record};
 use tilo_relay_protocol::live::{LiveLayout, LiveRecord};
-use ui::record::RecordId;
+use ui::record::DocumentId;
 
 /// Who each window of this session is, by tab, as presence names records: the app and record each
 /// window shows, and the digest presence names the record by. What places a person in the window
@@ -64,7 +64,7 @@ pub(crate) fn live_record_as(
     let app = app
         .map(str::to_owned)
         .or_else(|| app_of(tree, tab).map(str::to_owned))?;
-    let record =
-        RecordId::parse(record).map_or_else(|| record.to_owned(), |id| wire_record(&id).to_owned());
+    let record = DocumentId::parse(record)
+        .map_or_else(|| record.to_owned(), |id| wire_record(&id).to_owned());
     Some(LiveRecord { app, record })
 }

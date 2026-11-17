@@ -21,6 +21,7 @@ use crate::error::RuntimeError;
 use crate::exec::MANY_ACTION;
 use crate::handles::ViewState;
 use crate::host_ui::{KEEP_ACTION, SET_ACTION, THEN_ACTION, VIEW_STATE};
+use crate::ids::Actor;
 use crate::value::{ActionRef, RefValue, Value};
 use crate::view::{BindTarget, NodeBuild};
 use crate::view_state::StateKey;
@@ -252,8 +253,8 @@ impl Core {
     }
 
     /// The window whose surfaces are being worked out, and the person looking.
-    fn window_here(&self) -> Result<(String, String), RuntimeError> {
-        self.with_view(|vs| Ok((vs.window.clone(), vs.viewer.0.clone())))
+    fn window_here(&self) -> Result<(String, Actor), RuntimeError> {
+        self.with_view(|vs| Ok((vs.window.clone(), vs.viewer.clone())))
             .map_err(trapped)
     }
 
@@ -630,7 +631,7 @@ impl Core {
             return Ok(None);
         }
         let (window, viewer) = self
-            .with_view(|vs| Ok((vs.window.clone(), vs.viewer.0.clone())))
+            .with_view(|vs| Ok((vs.window.clone(), vs.viewer.clone())))
             .map_err(trapped)?;
         let state = format!("{VIEW_STATE}{}", subject.target.id_string());
         let chosen = self.chosen_index(&window, &viewer, &state, &subject.target.ty, &views, shown);
@@ -650,7 +651,7 @@ impl Core {
                 SET_ACTION,
                 vec![
                     Value::text(&window),
-                    Value::text(&viewer),
+                    Value::some(Value::Actor(viewer)),
                     Value::text(&state),
                     Value::Event,
                 ],
@@ -688,7 +689,7 @@ impl Core {
     fn chosen_index(
         &self,
         window: &str,
-        viewer: &str,
+        viewer: &Actor,
         state: &str,
         ty: &str,
         views: &[(String, String)],
@@ -699,7 +700,7 @@ impl Core {
         if let Some(index) = views.iter().position(|(id, _)| id == shown) {
             return i64::try_from(index).unwrap_or_default();
         }
-        let key = StateKey::view(window, viewer, state.to_owned());
+        let key = StateKey::view(window, viewer.clone(), state.to_owned());
         let (held, generation) = {
             let states = self.view_states.borrow();
             (states.get(&key).cloned(), states.generation(&key))

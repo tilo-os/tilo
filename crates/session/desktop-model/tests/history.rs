@@ -13,7 +13,7 @@ const NOW: u64 = 1_800_000_000;
 fn receipt(n: u128) -> WorkspaceEffectReceipt {
     WorkspaceEffectReceipt {
         invocation: InvocationId(uuid::Uuid::from_u128(n)),
-        actor: "owner".into(),
+        actor: tilo_actions::MemberId::person("owner"),
         context: ActionContext::default(),
         status: EffectReceiptStatus::Succeeded,
         completed_at: 42,

@@ -5,7 +5,7 @@
 use ui::framework::Fixture;
 use ui::framework::{LaunchInput, ResourceApp, ViewCx};
 
-use ui::record::RecordId;
+use ui::record::DocumentId;
 use ui::tilo_resource::Invoke;
 use ui::widget::Element;
 
@@ -53,10 +53,10 @@ impl ResourceApp for SlidesShell {
         }
     }
 
-    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
         input
             .argument()
-            .map(|path| RecordId::derived("slides", &RecordId::identify_file(path)))
+            .map(|path| DocumentId::derived("slides", &DocumentId::identify_file(path)))
     }
 
     /// The deck a file opens as is the file's when the record is new; a deck
@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(titles(&app), ("Quarterly review".into(), deck.slides.len()));
         assert_eq!(
             app.record(),
-            &RecordId::derived("slides", &RecordId::identify_file(&path))
+            &DocumentId::derived("slides", &DocumentId::identify_file(&path))
         );
     }
 

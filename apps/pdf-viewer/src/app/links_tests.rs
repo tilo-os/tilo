@@ -147,7 +147,7 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
             1,
             AnnoKind::highlight(PtRect::new(pt.0 - 5.0, pt.1 - 5.0, 10.0, 10.0)),
             HighlightColor::Yellow,
-            "Ada",
+            crate::model::Author::named("Ada"),
         ));
         let id = app.annotations.last().unwrap().id.clone();
         click(&mut app, &mut state, at);

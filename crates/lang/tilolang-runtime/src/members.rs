@@ -1,4 +1,4 @@
-//! Who is in the workspace: `workspace.members`, `members(r)`, and what a principal is
+//! Who is in the workspace: `workspace.members`, `members(r)`, and what an actor is
 //! (`p.kind()`, `p.role()`).
 //!
 //! The members are the platform's: the host reads them from the workspace's membership (its
@@ -13,7 +13,7 @@ use tilo_actions::policy::{MemberId, Role};
 
 use crate::core::{Args, Core, HResult, trap};
 use crate::engine::Wasm;
-use crate::ids::Principal;
+use crate::ids::Actor;
 use crate::value::{ResourceRef, Value};
 use crate::view_state::StateKey;
 
@@ -41,20 +41,20 @@ impl Member {
         }
     }
 
-    /// The principal the language names them by.
+    /// The actor the language names them by.
     #[must_use]
-    pub fn who(&self) -> Principal {
-        Principal::new(self.id.key())
+    pub fn who(&self) -> Actor {
+        Actor::Member(self.id.clone())
     }
 }
 
-/// The case of the language's `PrincipalKind` `id` is, by its place: a person, else software.
-fn kind_case(id: &MemberId) -> i64 {
-    i64::from(!id.is_person())
+/// The case of the language's `ActorKind` `who` is: a person, else software.
+fn kind_case(who: &Actor) -> i64 {
+    i64::from(!who.member_id().is_some_and(MemberId::is_person))
 }
 
 /// Whether a member can read a resource, as the workspace's grants decide.
-pub type Reads = dyn Fn(&Principal, &ResourceRef) -> bool;
+pub type Reads = dyn Fn(&Actor, &ResourceRef) -> bool;
 
 /// The members the host gave last, and how it decides who reads what.
 #[derive(Default)]
@@ -92,7 +92,7 @@ impl Core {
     pub(crate) fn set_members(&self, list: Vec<Member>, reads: Option<Rc<Reads>>) {
         let value = Value::List(
             list.iter()
-                .map(|member| Value::Principal(member.who()))
+                .map(|member| Value::Actor(member.who()))
                 .collect(),
         );
         *self.members.borrow_mut() = Members { list, reads };
@@ -102,19 +102,19 @@ impl Core {
 
     /// A scenario named a person (`person("Mia")`): they are in the workspace it stages, so a
     /// view that offers the members offers them too, under the name the scenario gave.
-    pub(crate) fn named_person(&self, name: &str) -> Principal {
+    pub(crate) fn named_person(&self, name: &str) -> Actor {
         self.named_member(MemberId::person(format!("scenario:{name}")))
     }
 
     /// A scenario named software (`agent("Scout")`): it is a member of the workspace it stages,
     /// as an agent of it is, and views offer it beside the people and mark it as software.
-    pub(crate) fn named_agent(&self, name: &str) -> Principal {
+    pub(crate) fn named_agent(&self, name: &str) -> Actor {
         self.named_member(MemberId::agent(format!("scenario:{name}")))
     }
 
     /// Adds the member `id` to the workspace, unless it is one already, and names them.
-    fn named_member(&self, id: MemberId) -> Principal {
-        let who = Principal::new(id.key());
+    fn named_member(&self, id: MemberId) -> Actor {
+        let who = Actor::Member(id.clone());
         if self
             .members
             .borrow()
@@ -147,12 +147,12 @@ impl Core {
         self.members.borrow().list.clone()
     }
 
-    fn member(&self, who: &Principal) -> Option<Member> {
+    fn member(&self, who: &Actor) -> Option<Member> {
         self.members
             .borrow()
             .list
             .iter()
-            .find(|member| member.id.key() == who.0)
+            .find(|member| who.member_id() == Some(&member.id))
             .cloned()
     }
 
@@ -193,7 +193,7 @@ impl Core {
             let Some(created) = created else {
                 continue;
             };
-            let who = Value::Principal(Principal::new(created.who));
+            let who = Value::Actor(self.made_by(&created, &r.target));
             if !said.contains(&who) {
                 said.push(who);
             }
@@ -210,7 +210,7 @@ impl Core {
         match imp {
             Imp::WorkspaceMembers => {
                 let list = self.read_members();
-                self.ret_h(principals(list.iter()))
+                self.ret_h(actors(list.iter()))
             }
             Imp::Members => {
                 let target = self.ref_arg(a.h(0)?)?;
@@ -221,24 +221,18 @@ impl Core {
                         .as_ref()
                         .is_none_or(|reads| reads(&member.who(), &target.target))
                 });
-                self.ret_h(principals(readers))
+                self.ret_h(actors(readers))
             }
             Imp::Speakers => {
                 let max = usize::try_from(a.long(1)?).unwrap_or(0);
                 self.ret_h(Value::List(self.said_by(a.h(0)?, max)?))
             }
-            Imp::PrincipalKind => {
-                let who = self.principal_arg(a.h(0)?)?;
-                let _ = self.read_members();
-                // Someone no longer a member keeps what their id says they are.
-                let id = self
-                    .member(&who)
-                    .map(|member| member.id)
-                    .or_else(|| MemberId::parse(&who.0));
-                crate::core::ret_i64(id.as_ref().map_or(0, kind_case))
+            Imp::ActorKind => {
+                let who = self.actor_arg(a.h(0)?)?;
+                crate::core::ret_i64(kind_case(&who))
             }
-            Imp::PrincipalRole => {
-                let who = self.principal_arg(a.h(0)?)?;
+            Imp::ActorRole => {
+                let who = self.actor_arg(a.h(0)?)?;
                 let _ = self.read_members();
                 let role = self.member(&who).and_then(|member| member.role);
                 self.ret_h(role.map_or_else(Value::none, |role| {
@@ -250,10 +244,6 @@ impl Core {
     }
 }
 
-pub(crate) fn principals<'a>(members: impl Iterator<Item = &'a Member>) -> Value {
-    Value::List(
-        members
-            .map(|member| Value::Principal(member.who()))
-            .collect(),
-    )
+pub(crate) fn actors<'a>(members: impl Iterator<Item = &'a Member>) -> Value {
+    Value::List(members.map(|member| Value::Actor(member.who())).collect())
 }

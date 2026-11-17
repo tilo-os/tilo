@@ -22,7 +22,7 @@ use ui_core::launch::LaunchError;
 use ui_core::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
 
 pub(super) const AUTHOR: &str = "test-author";
-use ui_core::record::{RecordCheckout, RecordId, RecordStore};
+use ui_core::record::{DocumentCheckout, DocumentId, RecordStore};
 
 use super::app::{
     ResourceApp, definition, hand_launch, prepare_on, role_permissions, settle_launch,
@@ -214,7 +214,7 @@ pub struct HeadlessApp<A: ResourceApp> {
     /// Whether the app is closed: its record written and its components closed, once.
     closed: bool,
     records: RecordStore,
-    checkout: RecordCheckout,
+    checkout: DocumentCheckout,
     instance: u64,
     profile: Profile,
     role: Role,
@@ -611,7 +611,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// hosted workspace — rather than started here. What a relay publishes
     /// reaches a reader this way.
     pub fn with_named_records(
-        documents: &mut [(&str, ui_core::record::RecordId, tilo_resource::Doc)],
+        documents: &mut [(&str, ui_core::record::DocumentId, tilo_resource::Doc)],
     ) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         {
@@ -999,7 +999,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// beside its own (a part of a chain), to `other`, which holds it too,
     /// as the workspace's record sync sends a device a record it opened: `other`
     /// takes it in and draws its next frame. Whether `other` changed.
-    pub fn deliver_record_to(&mut self, other: &mut Self, id: &RecordId) -> Result<bool, String> {
+    pub fn deliver_record_to(&mut self, other: &mut Self, id: &DocumentId) -> Result<bool, String> {
         let checkout = other
             .records
             .open_records()
@@ -1026,21 +1026,21 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// What this window asks its workspace's hosts for
     /// ([`ui_core::record::RecordStore::wanted_records`]).
     #[must_use]
-    pub fn wanted_records(&self) -> Vec<RecordId> {
+    pub fn wanted_records(&self) -> Vec<DocumentId> {
         self.records.wanted_records()
     }
 
     /// The workspace's hosts sent everything they hold of `id`, a record this
     /// window asked for, or none is connected to ask
     /// ([`ui_core::record::RecordStore::note_workspace_answered`]).
-    pub fn workspace_answered(&mut self, id: RecordId, answer: ui_core::record::WorkspaceAnswer) {
+    pub fn workspace_answered(&mut self, id: DocumentId, answer: ui_core::record::WorkspaceAnswer) {
         self.records.note_workspace_answer(id, answer);
     }
 
     /// The workspace's default records of the app's windows kept on this
     /// profile, as [`SeedCx::window_records`](super::SeedCx::window_records)
     /// reads them.
-    pub fn window_records(&self) -> Vec<(RecordId, tilo_resource::Doc)> {
+    pub fn window_records(&self) -> Vec<(DocumentId, tilo_resource::Doc)> {
         self.records.window_records(&definition::<A>().record_kind)
     }
 
@@ -1063,13 +1063,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .unwrap_or_else(|| Err("the host did not take the request".into()))
     }
 
-    pub fn record(&self) -> &RecordId {
+    pub fn record(&self) -> &DocumentId {
         &self.checkout().id
     }
 
     /// The record the window shows now: the one it was opened on, or one
     /// its view opened in its place ([`RecordEnv::open_here`](super::RecordEnv::open_here)).
-    fn checkout(&self) -> &RecordCheckout {
+    fn checkout(&self) -> &DocumentCheckout {
         self.harness.component_record().unwrap_or(&self.checkout)
     }
 
@@ -1124,7 +1124,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The records this window's store has open: what the app process opened
     /// itself, which an app the session serves opens none of.
-    pub fn open_records(&self) -> Vec<RecordId> {
+    pub fn open_records(&self) -> Vec<DocumentId> {
         self.records
             .open_records()
             .into_iter()
@@ -1134,7 +1134,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The whole document of `id` as this window holds it: its own record,
     /// or one it keeps beside it (a part of a chain).
-    pub fn record_document(&self, id: &RecordId) -> Option<Vec<u8>> {
+    pub fn record_document(&self, id: &DocumentId) -> Option<Vec<u8>> {
         self.records.read(id, |doc| doc.clone().save())
     }
 
@@ -1312,11 +1312,11 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// fails it.
     pub fn effect_by<E: Effect>(
         &mut self,
-        actor: &str,
+        actor: &MemberId,
         effect: &E,
     ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
         self.effect_invoked(
-            Some(tilo_actions::ActionInvoker::person(actor)),
+            Some(tilo_actions::ActionInvoker::member(actor.clone())),
             <A::Resource as Resource>::KIND,
             effect.id(),
             &effect.arguments(),
@@ -1954,7 +1954,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// a person who is only watching. Whether the record changed.
     pub fn replica_arrives(
         &mut self,
-        record: &RecordId,
+        record: &DocumentId,
         edit: impl FnOnce(&mut tilo_resource::Doc),
     ) -> Result<bool, String> {
         let checkout = self
@@ -2130,7 +2130,7 @@ struct Opening {
     options: &'static [&'static str],
     flags: &'static [&'static str],
     private_windows: bool,
-    launch_record: fn(&LaunchInput<'_>) -> Option<RecordId>,
+    launch_record: fn(&LaunchInput<'_>) -> Option<DocumentId>,
     shot_viewport: fn(Option<&str>) -> (u32, u32),
 }
 
@@ -2163,7 +2163,7 @@ struct Launch<'a> {
 struct Opened {
     harness: FrameHarness,
     records: RecordStore,
-    checkout: RecordCheckout,
+    checkout: DocumentCheckout,
     instance: u64,
     profile: Profile,
     permissions: SharedPermissions,
@@ -2228,8 +2228,8 @@ fn open_app(
         (Profile::Window(..), None) => host.prepare_default(
             definition,
             instance,
-            RecordCheckout::new(
-                RecordId::window_default(instance),
+            DocumentCheckout::new(
+                DocumentId::window_default(instance),
                 definition.record_kind.clone(),
             ),
             None,

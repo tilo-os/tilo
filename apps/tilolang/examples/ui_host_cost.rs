@@ -28,7 +28,7 @@ use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform, Publication};
 use tilolang_tilo::publish::{Planner, Publications};
-use tilolang_tilo::runtime::{NameHost, Principal};
+use tilolang_tilo::runtime::{Actor, NameHost};
 use tilolang_tilo::tilolang::Compiled;
 use ui::widget::DrawChild;
 use ui::widget::Widget as _;
@@ -109,8 +109,8 @@ impl Platform for Packages {
 struct Alone;
 
 impl NameHost for Alone {
-    fn name(&self, who: &Principal) -> String {
-        who.0.clone()
+    fn name(&self, who: &Actor) -> String {
+        who.id().to_owned()
     }
 }
 

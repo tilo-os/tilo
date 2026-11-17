@@ -51,19 +51,19 @@ pub struct Terminal {
     ///
     /// Who that window is: the participant who set the session up there.
     #[model(readonly)]
-    pub holder: Option<Atom>,
+    pub holder: Option<ui::tilo_resource::MemberId>,
     /// Runs
     ///
     /// The commands the session ran, one item each, written when it ends.
     #[model(readonly)]
-    pub runs: Collection<Run>,
+    pub commands: Collection<Command>,
     /// Commands asked to run
     ///
     /// The command lines `run` queued for the device that runs the session;
     /// only verbs queue them, and the terminal running it settles each with
     /// the run it became.
     #[model(readonly)]
-    pub requests: Outbox<RunRequest, RunAnswer>,
+    pub requests: Outbox<CommandRequest, CommandAnswer>,
 }
 
 #[derive(
@@ -104,7 +104,7 @@ pub enum ItemKind {
 #[derive(
     Model, Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema,
 )]
-pub struct RunItem {
+pub struct CommandItem {
     /// What it is.
     pub kind: ItemKind,
     /// What the output says about it.
@@ -121,9 +121,9 @@ pub struct RunItem {
     pub code: Option<String>,
 }
 
-/// One command the session ran (docs/app-model/ush.md, "A run").
+/// One command the session ran (docs/app-model/ush.md, "Commands").
 #[derive(Model, Clone, Debug, Default, PartialEq)]
-pub struct Run {
+pub struct Command {
     /// Command
     #[model(label)]
     pub command: Atom,
@@ -132,7 +132,7 @@ pub struct Run {
     /// Where it ran: the session's encoded target.
     pub environment: Option<Atom>,
     /// Who ran it: the person at the keyboard, or whoever asked with `run`.
-    pub actor: Atom,
+    pub actor: Option<ui::tilo_resource::MemberId>,
     /// The person an agent ran it for.
     pub for_person: Option<Atom>,
     /// Started, in milliseconds since the Unix epoch.
@@ -151,16 +151,16 @@ pub struct Run {
     /// can undo it ([`crate::undoability`]).
     pub undoable: bool,
     /// What its parsers found.
-    pub items: Vec<RunItem>,
+    pub items: Vec<CommandItem>,
 }
 
 /// A command line `run` asked the session to run.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
-pub struct RunRequest {
+pub struct CommandRequest {
     /// Command
     pub command: Atom,
     /// Who asked.
-    pub requested_by: Atom,
+    pub requested_by: Option<ui::tilo_resource::MemberId>,
     /// The person they asked for.
     pub for_person: Option<Atom>,
     /// The pane of the process asked to run it: only that process does, so
@@ -172,7 +172,7 @@ pub struct RunRequest {
 
 /// How a requested run went: the run it became.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RunAnswer {
+pub struct CommandAnswer {
     pub run: Option<Id>,
     pub exit: Option<i32>,
     /// Why the run's host refused it, with the steps that would let it through.
@@ -182,7 +182,7 @@ pub struct RunAnswer {
 
 /// What a finished run recorded, as the Terminal that ran it hands it in.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, JsonSchema)]
-pub struct Finished {
+pub struct FinishedCommand {
     pub command: String,
     pub cwd: String,
     pub started_ms: i64,
@@ -196,7 +196,7 @@ pub struct Finished {
     /// Whether what it changed can be undone later, read from the command when it ended
     /// ([`crate::undoability`]).
     pub undoable: bool,
-    pub items: Vec<RunItem>,
+    pub items: Vec<CommandItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<Id>,
     /// The id the run takes: the request's, when `run` asked for it, so the answer names it.
@@ -226,16 +226,16 @@ impl Terminal {
 
     /// Whether the session belongs to a window other than one `me` opens on `device`: a window opened on
     /// it joins the session instead of starting a shell, and one `me` reopens there takes it back.
-    pub fn runs_elsewhere(&self, device: &str, me: &str) -> bool {
+    pub fn runs_elsewhere(&self, device: &str, me: &ui::tilo_resource::MemberId) -> bool {
         let is =
             |field: &Option<Atom>, value: &str| field.as_ref().is_some_and(|atom| atom.0 == value);
         (self.pane.is_some() || self.target.is_some())
-            && !(is(&self.device, device) && is(&self.holder, me))
+            && !(is(&self.device, device) && self.holder.as_ref() == Some(me))
     }
 
     fn set_up_on(&mut self, cx: &ActionCx, device: Option<String>) {
         self.device = device.filter(|device| !device.is_empty()).map(Atom);
-        self.holder = cx.author().map(|author| Atom(author.key()));
+        self.holder = cx.author().cloned();
     }
 
     /// The session stored under `obj` of another record's document: a terminal nested in an editor's
@@ -291,42 +291,48 @@ impl Terminal {
     pub fn run(
         &mut self,
         cx: &mut ActionCx,
-        requests: &mut Outbox<RunRequest, RunAnswer>,
+        requests: &mut Outbox<CommandRequest, CommandAnswer>,
         #[param("The command line, as typed at the prompt")] command: String,
     ) -> Result<(), Refusal> {
         self.queue(cx, requests, &command)
     }
 
-    #[action(keywords = "run again, repeat command", item = runs)]
+    #[action(keywords = "run again, repeat command", item = commands)]
     pub fn rerun(
         &mut self,
         cx: &mut ActionCx,
-        requests: &mut Outbox<RunRequest, RunAnswer>,
-        runs: &Id,
+        requests: &mut Outbox<CommandRequest, CommandAnswer>,
+        command: &Id,
     ) -> Result<(), Refusal> {
-        let command = self.runs.get(runs).ok_or("no such run")?.command.0.clone();
+        let command = self
+            .commands
+            .get(command)
+            .ok_or("no such command")?
+            .command
+            .0
+            .clone();
         self.queue(cx, requests, &command)
     }
 
-    /// Run one test of a run again, the way its tool runs one test.
-    #[action(item = runs)]
+    /// Run one test of a command again, the way its tool runs one test.
+    #[action(item = commands)]
     pub fn rerun_test(
         &mut self,
         cx: &mut ActionCx,
-        requests: &mut Outbox<RunRequest, RunAnswer>,
-        runs: &Id,
-        #[param("The test's name, as the run reported it")] test: String,
+        requests: &mut Outbox<CommandRequest, CommandAnswer>,
+        command: &Id,
+        #[param("The test's name, as the command reported it")] test: String,
     ) -> Result<(), Refusal> {
-        let run = self.runs.get(runs).ok_or("no such run")?;
+        let run = self.commands.get(command).ok_or("no such command")?;
         if !run
             .items
             .iter()
             .any(|item| item.code.as_deref() == Some(test.as_str()))
         {
-            return Err(Refusal::new("the run reported no such test"));
+            return Err(Refusal::new("the command reported no such test"));
         }
         let command = crate::parse::rerun_test(&run.command.0, &test)
-            .ok_or("this run's tool cannot run one test")?;
+            .ok_or("this command's tool cannot run one test")?;
         self.queue(cx, requests, &command)
     }
 
@@ -336,10 +342,10 @@ impl Terminal {
     }
 
     #[action(external)]
-    pub fn record_run(
+    pub fn record_command(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The run, as the session marked it", flatten)] run: Finished,
+        #[param("The command, as the session marked it", flatten)] run: FinishedCommand,
     ) -> Result<(), Refusal> {
         let output = run.output.unwrap_or_default();
         let asked = run
@@ -349,24 +355,17 @@ impl Terminal {
             .map(|entry| entry.value.clone());
         let (actor, for_person) = match asked {
             Some(asked) => (asked.requested_by, asked.for_person),
-            None => (
-                Atom(
-                    cx.author()
-                        .map(ui::tilo_resource::MemberId::key)
-                        .unwrap_or_default(),
-                ),
-                None,
-            ),
+            None => (cx.author().cloned(), None),
         };
         let mut items = run.items;
         items.truncate(crate::parse::MAX_ITEMS);
-        if run.run.as_str().is_empty() || self.runs.contains(&run.run) {
-            return Err(Refusal::new("a run takes an id of its own"));
+        if run.run.as_str().is_empty() || self.commands.contains(&run.run) {
+            return Err(Refusal::new("a command takes an id of its own"));
         }
         let id = run.run;
-        self.runs.push(
+        self.commands.push(
             id,
-            Run {
+            Command {
                 command: Atom(run.command),
                 cwd: Atom(run.cwd),
                 environment: self.target.clone(),
@@ -438,7 +437,7 @@ impl Terminal {
     fn queue(
         &self,
         cx: &mut ActionCx,
-        requests: &mut Outbox<RunRequest, RunAnswer>,
+        requests: &mut Outbox<CommandRequest, CommandAnswer>,
         command: &str,
     ) -> Result<(), Refusal> {
         let command = command.trim();
@@ -453,13 +452,9 @@ impl Terminal {
             .clone()
             .ok_or("the session is not running anywhere yet")?;
         let by = cx.invoked_by().filter(|by| !by.is_person());
-        let request = RunRequest {
+        let request = CommandRequest {
             command: Atom(command.to_owned()),
-            requested_by: Atom(
-                cx.author()
-                    .map(ui::tilo_resource::MemberId::key)
-                    .unwrap_or_default(),
-            ),
+            requested_by: cx.author().cloned(),
             for_person: by
                 .as_ref()
                 .and_then(|by| by.acted_for_person())
@@ -634,7 +629,7 @@ pub enum TerminalEffect {
     ///
     /// Shows one thing a run's parsers found: a link opens in the browser,
     /// a location or a diagnostic opens its file.
-    #[effect(row, item = runs)]
+    #[effect(row, item = commands)]
     OpenItem {
         #[param("The run")]
         run: String,
@@ -721,17 +716,17 @@ impl ResourceApp for TerminalShell {
         if cx.mode().is_live() {
             widget.show_in_window(hosted_window);
         }
-        let queue = crate::runs::RunQueue::default();
+        let queue = crate::commands::CommandQueue::default();
         widget.run_through(queue.clone());
         let owner = queue.clone();
         cx.outbox_awaited(
             Terminal::paths().requests,
-            move |_, request: &RunRequest| owner.runs(&request.pane.0),
+            move |_, request: &CommandRequest| owner.owns(&request.pane.0),
             move |id, request, cx: &mut EffectCx<Terminal>| {
-                queue.ask(crate::runs::Asked {
+                queue.ask(crate::commands::Asked {
                     request: id.clone(),
                     command: request.command.0,
-                    requested_by: request.requested_by.0,
+                    requested_by: request.requested_by,
                     agent: request.agent,
                     reply: cx.reply(),
                 });
@@ -740,10 +735,10 @@ impl ResourceApp for TerminalShell {
         );
         let live = cx.live().clone();
         cx.on_open_item(move |run| {
-            if live.get().runs.contains(run) {
+            if live.get().commands.contains(run) {
                 Ok(())
             } else {
-                Err(Refusal::new("the session has no such run"))
+                Err(Refusal::new("the session has no such command"))
             }
         });
         cx.surface(crate::TerminalView::new(widget))
@@ -789,16 +784,13 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         }
         self.set_run_action(Terminal::RUN.on(cx.actions().resource_id()));
         if cx.mode().is_live()
-            && let (Some(history), Some(record)) = (
+            && let (Some(history), Some(record), Some(me)) = (
                 cx.person::<crate::history::CommandHistory>(),
                 cx.record_id(),
+                cx.me(),
             )
         {
-            self.remember_in(
-                history,
-                record.uri(),
-                cx.me().unwrap_or_default().to_owned(),
-            );
+            self.remember_in(history, record.uri(), me.clone());
         }
         if cx.mode().is_live()
             && let (Some(record), Some(device)) = (
@@ -885,16 +877,13 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
         }
         self.set_run_action(Terminal::RUN.on(cx.actions().resource_id()));
         if cx.mode().is_live()
-            && let (Some(history), Some(record)) = (
+            && let (Some(history), Some(record), Some(me)) = (
                 cx.person::<crate::history::CommandHistory>(),
                 cx.record_id(),
+                cx.me(),
             )
         {
-            self.remember_in(
-                history,
-                record.uri(),
-                cx.me().unwrap_or_default().to_owned(),
-            );
+            self.remember_in(history, record.uri(), me.clone());
         }
         if cx.mode().is_live()
             && let (Some(record), Some(device)) = (

@@ -906,7 +906,7 @@ impl Performer {
     }
 
     /// Create a channel where `spec` places it, or bring an existing one's
-    /// name and topic back in line: its place is the arrangement's.
+    /// name and topic back in line: its place is the order's.
     async fn apply_channel(&self, spec: ChannelSpec) -> OpResult {
         let mut body = json!({"name": spec.name});
         if spec.kind == ChannelKind::Text {

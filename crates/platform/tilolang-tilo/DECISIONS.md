@@ -75,7 +75,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
 
 - **An agent is a task of a person.** The host takes the API's invoker (the task's delegate, for
   the person) unchanged: effects read it from the framework's endpoint (`EffectEndpoint`), published
-  verbs through `HostHandle::with_caller`. The runtime's principal is that delegate. What an effect
+  verbs through `HostHandle::with_caller`. The runtime's actor is that delegate. What an effect
   commits is queued under the effect's invocation, so the framework applies it for that invoker in
   the context it carries (group, on behalf of): history and undo group it by task.
 - **One policy.** What the runtime invokes is decided by `tilo_action_policy`, as every api

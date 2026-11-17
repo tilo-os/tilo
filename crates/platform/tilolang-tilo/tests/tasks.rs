@@ -4,7 +4,7 @@
 //! people changing one task at once.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
+use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 
 use crate::fixtures::Replica;
 
@@ -28,7 +28,10 @@ pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     match r
         .host
         .runtime()
-        .invoke_action(&Principal::new(&r.name), (id.as_str(), args))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&r.name)),
+            (id.as_str(), args),
+        )
         .unwrap()
     {
         InvokeOutcome::Done(v) => v,
@@ -323,7 +326,7 @@ tilo_test_env::scenario! {
                     Value::text("Call the bank"),
                     day("2026-10-30"),
                     day("2026-10-30T10:00:00Z"),
-                    Value::some(Value::Principal(Principal::new("bo"))),
+                    Value::some(Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("bo")))),
                 ),
                 (
                     Value::text("Water the plants"),
@@ -1278,7 +1281,7 @@ tilo_test_env::scenario! {
         ada.commit();
         ada.host
             .runtime()
-            .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+            .invoke_action(&Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), (scenario.as_str(), vec![]))
             .unwrap();
         ada.commit();
         let post = task(&ada, "Write the launch post");
@@ -1333,7 +1336,7 @@ tilo_test_env::scenario! {
         let page = match ada
             .host
             .runtime()
-            .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+            .invoke_action(&Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), (scenario.as_str(), vec![]))
             .unwrap()
         {
             InvokeOutcome::Done(page) => page,
@@ -1682,7 +1685,7 @@ fn a_peers_completion_takes_its_row_away() {
 fn assignee(r: &Replica, task: &Value) -> Option<String> {
     match read(r, task, "assignee") {
         Value::Opt(Some(held)) => match *held {
-            Value::Principal(who) => Some(who.0),
+            Value::Actor(who) => Some(who.id().to_owned()),
             other => panic!("an assignee: {other:?}"),
         },
         Value::Opt(None) => None,
@@ -1755,6 +1758,14 @@ fn a_task_whose_assignee_the_page_shows() -> (Replica, Value, ViewInstance, Stri
     (ada, task, page, key)
 }
 
+/// The text a person field hands back for the person `id`: their identity as the runtime sent it.
+#[cfg(feature = "record")]
+fn pick(id: &str) -> Value {
+    Value::text(tilolang_tilo::runtime::ids::actor_text(&Actor::from(
+        tilolang_tilo::runtime::ids::MemberId::person(id),
+    )))
+}
+
 /// The person picks `pick` for the task's assignee in the page's chip, and the page redraws.
 #[cfg(feature = "record")]
 fn pick_the_assignee(ada: &mut Replica, page: &mut ViewInstance, key: &str, pick: &Value) {
@@ -1780,14 +1791,14 @@ tilo_test_env::scenario! {
         assert_eq!(
             node.props.get("people"),
             Some(&Value::List(vec![
-                Value::Principal(Principal::new("ada")),
-                Value::Principal(Principal::new("ben")),
+                Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))),
+                Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ben"))),
             ])),
             "the list offers the workspace's members"
         );
         assert_eq!(
             node.props.get("me"),
-            Some(&Value::Principal(Principal::new("ada"))),
+            Some(&Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")))),
             "the list leads with the person the page is shown to"
         );
         assert!(
@@ -1800,14 +1811,14 @@ tilo_test_env::scenario! {
         assert_eq!(assignee(&ada, &task), None, "nobody holds it yet");
 
         // Me, then another member, then nobody, as the person picks each from the list.
-        pick_the_assignee(&mut ada, &mut page, &key, &Value::text("ada"));
+        pick_the_assignee(&mut ada, &mut page, &key, &pick("ada"));
         assert_eq!(assignee(&ada, &task), Some("ada".to_owned()));
         assert_eq!(
             page.bound_value(&key),
-            Some(Value::some(Value::Principal(Principal::new("ada")))),
+            Some(Value::some(Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))))),
             "the chip shows the person it is bound to"
         );
-        pick_the_assignee(&mut ada, &mut page, &key, &Value::text("ben"));
+        pick_the_assignee(&mut ada, &mut page, &key, &pick("ben"));
         assert_eq!(assignee(&ada, &task), Some("ben".to_owned()));
         pick_the_assignee(&mut ada, &mut page, &key, &Value::Text(String::new()));
         assert_eq!(assignee(&ada, &task), None, "No one clears it");
@@ -1825,7 +1836,7 @@ tilo_test_env::scenario! {
             shown.join(" ").contains("You unassigned it"),
             "clearing the assignee last, the step says so: {shown:?}"
         );
-        pick_the_assignee(&mut ada, &mut page, &key, &Value::text("ben"));
+        pick_the_assignee(&mut ada, &mut page, &key, &pick("ben"));
         let shown = texts(page.tree());
         assert!(
             shown.join(" ").contains("You assigned it to"),
@@ -1844,12 +1855,8 @@ tilo_test_env::scenario! {
         use collaboration::history_source::verbs::HistoryEdit;
 
         let (mut ada, task, mut page, key) = a_task_whose_assignee_the_page_shows();
-        for pick in [
-            Value::text("ada"),
-            Value::text("ben"),
-            Value::Text(String::new()),
-        ] {
-            pick_the_assignee(&mut ada, &mut page, &key, &pick);
+        for picked in [pick("ada"), pick("ben"), Value::Text(String::new())] {
+            pick_the_assignee(&mut ada, &mut page, &key, &picked);
         }
         // One undo takes back one pick: the clearing, then Ben, then Me.
         let undo = |r: &mut Replica| {
@@ -2714,7 +2721,7 @@ tilo_test_env::scenario! {
         ada.host
             .runtime()
             .invoke_action(
-                &Principal::new("ada"),
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 (indent.action.as_str(), indent.args.clone()),
             )
             .expect("indented");

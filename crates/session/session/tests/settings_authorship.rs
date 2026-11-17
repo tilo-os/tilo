@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
         // A session from before this computer had an identity changed the setting as the placeholder it
         // was started with.
         let mut earlier_session = SettingsService::new();
-        earlier_session.seated("person", &[]);
+        earlier_session.own_person("person", &[]);
         let mut services = tilo_service::Services::default();
         services.add(Box::new(earlier_session));
         services

@@ -1,6 +1,6 @@
 //! Which screen is which: each display says its number and name in a corner of itself for a moment
 //! after the person presses Identify in Settings.
-//! Settings numbers the displays on its arrangement canvas; the same numbers and names stand on the
+//! Settings numbers the displays on its placement canvas; the same numbers and names stand on the
 //! physical screens, so "2" on the canvas is the "2" the person is looking at. The card keeps out
 //! of the way of the arranging: it stands in a display's bottom-left corner, never over its centre,
 //! and it goes on its own after [`HOLD`], fading out on the standard confirmation's exit. Nothing

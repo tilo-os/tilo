@@ -95,7 +95,10 @@ BROWSER_USER = "tilo-browser"
 # the VM's, so the host must wake the VM to run it, and the directory it would
 # make is how a later run says whether it ever ran.
 REFUSED_MARKER = "refused-marker"
-REFUSED_COMMAND = f"mkdir {REFUSED_MARKER}"
+# A shell the guest does not answer itself: `mkdir` and the other file verbs are
+# the guest's own (ush's commands), so they run without a machine and without a
+# plan. This one is sent to the machine, which is what needs the card.
+REFUSED_COMMAND = f"sh -c 'uname -a > {REFUSED_MARKER}'"
 
 # What the workspace's Terminal runs: a file made in the workspace's own
 # directory, read back, the directory listed (`refused-marker` absent from it

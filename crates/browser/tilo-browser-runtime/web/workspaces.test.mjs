@@ -463,7 +463,7 @@ test('a second tab of a paired device pairs as a new device, approved on one of 
 
 test('every device key held by other tabs keeps the membership and asks the host nothing', async () => {
   // Not the host's refusal: this browser has as many tabs open as device
-  // keys. Joining again would spend a seat and the address's join window,
+  // keys. Joining again would spend an admission and the address's join window,
   // then fail the same way.
   const membership = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership});
@@ -533,7 +533,7 @@ test('an entry not reached, and one that refuses for a reason of its own, are to
   await assert.rejects(joinViaHost(other.options), error => error instanceof HostAdmissionError && error.code === 'refused');
 });
 
-test('an entry with no seat is waited out as long as it asked, then the same person joins', async () => {
+test('an entry with no capacity is waited out as long as it asked, then the same person joins', async () => {
   const busy = {code: 'full', error: 'the workspace is full', retryAfter: 30};
   const {calls, options} = harness({entry: [busy, busy, null]});
   const peer = await joinViaHost(options);
@@ -541,8 +541,8 @@ test('an entry with no seat is waited out as long as it asked, then the same per
   assert.equal(calls.posted.length, 3, 'asked again after each wait');
   assert.deepEqual(calls.posted.map(post => post.body.userPublicKey), Array(3).fill('22'.repeat(32)), 'the same person every time');
   assert.deepEqual(calls.waited.map(wait => [wait.attempt, wait.error.code, wait.retryAfter]), [[0, 'full', 30], [1, 'full', 30]]);
-  assert.equal(calls.renewed.length, 0, 'the seat was the only thing missing, not the person');
-  assert.equal(calls.joined.length, 1, 'one join, once there was a seat');
+  assert.equal(calls.renewed.length, 0, 'capacity was the only thing missing, not the person');
+  assert.equal(calls.joined.length, 1, 'one join, once there was capacity');
   assert.equal(calls.joined[0].origin, 'https://workspaces.example', 'an entry that names no origin is its workspace’s host');
 });
 

@@ -292,10 +292,6 @@ impl ChromeSource for PageChrome {
         self.here.borrow().wave_notice()
     }
 
-    fn watching(&self) -> u32 {
-        self.here.borrow().watching()
-    }
-
     fn facts(&self, facts: &mut Facts) {
         facts.number(self.here.borrow().revision());
         facts.number(self.notifications.revision());
@@ -1406,7 +1402,6 @@ impl BrowserShell {
         if workspace.to_string() != shared.workspace {
             return;
         }
-        shared.asked_name.replace(Some(name.trim().to_owned()));
         let workspace = shared.workspace.clone();
         let notifications = self.chrome.notifications.clone();
         let woken = Arc::clone(&shared.woken);

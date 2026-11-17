@@ -5,7 +5,6 @@
 use super::*;
 use tilolang_tilo::chunk::{Chunks, Stamps};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::runtime::Principal;
 use tilolang_tilo::runtime::Value;
 use tilolang_tilo::runtime::value::ResourceRef;
 
@@ -56,7 +55,14 @@ impl Peer {
     fn over(session: &Session) -> Self {
         let held = record(session);
         let doc = held.first().expect("the record is held").clone();
-        let host = Host::new(&doc, Principal::new("bo"), || None).expect("the peer's host");
+        let host = Host::new(
+            &doc,
+            tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person(
+                "bo",
+            )),
+            || None,
+        )
+        .expect("the peer's host");
         host.load_bundle(&package(package_of(NOTES)))
             .expect("the notes package");
         host.wait_index();

@@ -70,7 +70,7 @@ tilo_test_env::scenario! {
             "the Russian letter's own keysym"
         );
 
-        // Under Ctrl it is still Ctrl+C: the letter the US arrangement puts on that key names the
+        // Under Ctrl it is still Ctrl+C: the letter the US layout puts on that key names the
         // chord.
         compositor
             .input(InputEvent::Key {

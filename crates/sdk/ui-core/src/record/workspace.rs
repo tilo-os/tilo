@@ -1,5 +1,5 @@
 //! Records a workspace holds that every app of that workspace opens beside
-//! its own ([`collab_types::WORKSPACE_RECORDS`]): one per kind and
+//! its own ([`collab_types::WORKSPACE_DOCUMENTS`]): one per kind and
 //! workspace, kept by one app, read and changed from any app's window.
 //!
 //! The workspace's emoji are one: any view draws `:name:` from them, in
@@ -14,7 +14,9 @@ use std::rc::Rc;
 use automerge::AutoCommit;
 
 use super::person::StoredRecord;
-use super::{RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordOwners, RecordStore};
+use super::{
+    DocumentCheckout, DocumentId, RecordOpenError, RecordOwners, RecordStore, ResourceType,
+};
 use crate::permissions::MemberId;
 
 impl RecordOwners {
@@ -34,11 +36,11 @@ impl RecordOwners {
 }
 
 /// The id of the workspace's record of `kind`
-/// ([`collab_types::workspace_record_id`]): the same in every workspace, which
+/// ([`collab_types::workspace_document_id`]): the same in every workspace, which
 /// scopes it.
 #[must_use]
 pub fn record_id(kind: &str) -> String {
-    collab_types::workspace_record_id(kind)
+    collab_types::workspace_document_id(kind)
 }
 
 /// Opens the store an app keeps in the window's workspace.
@@ -94,11 +96,11 @@ impl WorkspaceRecords {
         kind: &str,
         initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<StoredRecord, RecordOpenError> {
-        let id = collab_types::workspace_record_id(kind);
-        if collab_types::workspace_record(owner, &id).is_none() {
+        let id = collab_types::workspace_document_id(kind);
+        if collab_types::workspace_document(owner, &id).is_none() {
             return Err(RecordOpenError::IdentityMismatch);
         }
-        let id = RecordId::parse(&id).ok_or(RecordOpenError::IdentityMismatch)?;
+        let id = DocumentId::parse(&id).ok_or(RecordOpenError::IdentityMismatch)?;
         self.open_at(owner, id, kind, initialize)
     }
 
@@ -117,15 +119,15 @@ impl WorkspaceRecords {
         kind: &str,
         initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<StoredRecord, RecordOpenError> {
-        let id = RecordId::parse(id).ok_or(RecordOpenError::IdentityMismatch)?;
+        let id = DocumentId::parse(id).ok_or(RecordOpenError::IdentityMismatch)?;
         self.open_at(owner, id, kind, initialize)
     }
 
     /// The record `owner` keeps **as its own primary record** of `kind`: the
     /// one record of a kind an app keeps in a workspace, under the owner's
-    /// [`RecordId::package_primary`] (Chat's of its chat, `chat.workspace`).
+    /// [`DocumentId::package_primary`] (Chat's of its chat, `chat.workspace`).
     /// [`Self::open_record_at`] cannot open it, because the primary id is a
-    /// sentinel no [`RecordId::parse`] accepts; this is the same open with
+    /// sentinel no [`DocumentId::parse`] accepts; this is the same open with
     /// the id taken as it is.
     ///
     /// # Errors
@@ -136,14 +138,14 @@ impl WorkspaceRecords {
         kind: &str,
         initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<StoredRecord, RecordOpenError> {
-        self.open_at(owner, RecordId::package_primary(), kind, initialize)
+        self.open_at(owner, DocumentId::package_primary(), kind, initialize)
     }
 
     /// Whether `owner`'s store holds the record `id` of `kind`, without
     /// opening or creating it: a list asks this to show the records that
     /// exist, not to make one for everything it could name.
     ///
-    /// `id` may be the [package primary](RecordId::package_primary) sentinel
+    /// `id` may be the [package primary](DocumentId::package_primary) sentinel
     /// that [`Self::open_primary`] opens: it is a workspace record's identity
     /// even though no route names it, so a caller checking an app's own record
     /// asks here rather than parsing it away.
@@ -151,13 +153,13 @@ impl WorkspaceRecords {
     /// # Errors
     /// `id` names no record, or the record could not be read.
     pub fn holds_record(&self, owner: &str, id: &str, kind: &str) -> Result<bool, RecordOpenError> {
-        let id = if id == RecordId::package_primary().as_str() {
-            RecordId::package_primary()
+        let id = if id == DocumentId::package_primary().as_str() {
+            DocumentId::package_primary()
         } else {
-            RecordId::parse(id).ok_or(RecordOpenError::IdentityMismatch)?
+            DocumentId::parse(id).ok_or(RecordOpenError::IdentityMismatch)?
         };
         let store = (self.open)(owner)?;
-        let checkout = RecordCheckout::new(id, RecordKind::new(kind));
+        let checkout = DocumentCheckout::new(id, ResourceType::new(kind));
         // A list names far more records than anyone opens: it never asks the
         // workspace for one it does not hold.
         match store.open_if_held(&checkout) {
@@ -168,7 +170,7 @@ impl WorkspaceRecords {
     }
 
     /// The store `owner` keeps its records of this workspace in: where a chain
-    /// kept beside one of them ([`RecordId::part`]) has its parts.
+    /// kept beside one of them ([`DocumentId::part`]) has its parts.
     ///
     /// # Errors
     /// Rejects a package or workspace that names no store.
@@ -181,12 +183,12 @@ impl WorkspaceRecords {
     fn open_at(
         &self,
         owner: &str,
-        id: RecordId,
+        id: DocumentId,
         kind: &str,
         initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<StoredRecord, RecordOpenError> {
         let store = (self.open)(owner)?;
-        let checkout = RecordCheckout::new(id, RecordKind::new(kind));
+        let checkout = DocumentCheckout::new(id, ResourceType::new(kind));
         super::person::open_in(&store, &checkout, initialize)?;
         // Every app of the workspace publishes the record, whichever app wrote
         // it first: the workspace's grants on the owner's resource decide each
@@ -232,7 +234,7 @@ mod tests {
             assert_eq!(route.app_id, "so.tilo.chat");
             assert_eq!(
                 route.record.as_deref(),
-                Some(collab_types::workspace_record_id("tilo.workspace.emoji").as_str())
+                Some(collab_types::workspace_document_id("tilo.workspace.emoji").as_str())
             );
             assert!(
                 records(&store, "alice")
@@ -307,7 +309,7 @@ mod tests {
         {
             let store = Rc::new(durable_store::MemoryStore::new());
             let records = records(&store, "alice");
-            let primary = RecordId::package_primary();
+            let primary = DocumentId::package_primary();
             assert!(
                 !records
                     .holds_record("so.tilo.chat", primary.as_str(), "chat.workspace")

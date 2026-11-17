@@ -28,11 +28,6 @@ topbar-sharing-unknown-window = a window
 # Who views a shared window when nothing names them, after "Watching:" or "In control:".
 topbar-sharing-unnamed-viewer = another device
 topbar-sharing-window-in-workspace = { $window } in { $workspace }
-topbar-watching-count = +{ $count } watching
-topbar-watching-description = { $count } { $count ->
-        [one] person
-       *[other] people
-    } watching without joining
 # A running application's icon in the bar, when the item that named it is gone.
 topbar-app-tray-item = Running application
 topbar-app-tray-unread = { $count } unread
@@ -854,7 +849,7 @@ workspace-notice-agent-finished-in = { $agent } finished: { $count ->
     [one] 1 change
    *[other] { $count } changes
 } in { $workspace }
-workspace-notice-renamed = The workspace is now called { $workspace }
+workspace-notice-renamed = { $name } renamed the workspace to { $workspace }
 # What the shell says when something a person asked for did not happen: what
 # they asked for, why, and the button that tries it again.
 answer-app-not-opened = { $app } could not open
@@ -988,9 +983,6 @@ people-follows-you = Following you
 people-follows-where = { $place }, following { $person }
 people-follows-you-where = { $place }, following you
 
-# The way out of a window that filled the display, said over it once.
-fullscreen-way-out = Press { $key } to leave full screen.
-
 ## The desktop's published actions
 desktop-actions-chrome = Desktop
 desktop-actions-shell = Windows
@@ -1067,7 +1059,7 @@ session-magnifier-toggle = Turn the magnifier on or off
 session-magnifier-zoom-in = Magnify more
 session-magnifier-zoom-out = Magnify less
 session-displays = Displays
-session-displays-next = Next display arrangement
+session-displays-next = Next display mode
 session-displays-set = Arrange the displays
 session-clipboard = Clipboard
 

@@ -157,7 +157,7 @@ tilo_test_env::scenario! {
     phase workspace_activity_detached_record_origins_do_not_collide;
     {
         use tilo_desktop::activity::*;
-        use ui::record::{RecordCheckout, RecordId, RecordKind};
+        use ui::record::{DocumentCheckout, DocumentId, ResourceType};
         let workspace = Workspace::new(WorkspaceId::from_u128(9), "Design");
         let mut doc = AutoCommit::new();
         doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
@@ -175,7 +175,7 @@ tilo_test_env::scenario! {
         let mut record = AutoCommit::new();
         record.put(ROOT, "text", "shared causal hash").unwrap();
         record.commit();
-        let checkout = RecordCheckout::new(RecordId::for_tab(1), RecordKind::new("test"));
+        let checkout = DocumentCheckout::new(DocumentId::for_tab(1), ResourceType::new("test"));
         let inputs = vec![
             DetachedRecordHistory {
                 app: "app-a".into(),
@@ -239,7 +239,7 @@ tilo_test_env::scenario! {
         use automerge::{ActorId, transaction::CommitOptions};
         use tilo_actions::{ActionContext, ChangeKind};
         use tilo_desktop::activity::*;
-        use ui::record::{RecordCheckout, RecordId, RecordKind};
+        use ui::record::{DocumentCheckout, DocumentId, ResourceType};
         let workspace = Workspace::new(WorkspaceId::from_u128(9), "Design");
         let mut doc = AutoCommit::new();
         doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
@@ -295,7 +295,7 @@ tilo_test_env::scenario! {
             &mut tree,
             vec![DetachedRecordHistory {
                 app: "so.tilo.chat".into(),
-                checkout: RecordCheckout::new(RecordId::for_tab(1), RecordKind::new("chat")),
+                checkout: DocumentCheckout::new(DocumentId::for_tab(1), ResourceType::new("chat")),
                 document: Some(record),
             }],
         );
@@ -322,7 +322,7 @@ tilo_test_env::scenario! {
     phase workspace_activity_unsettled_refresh_retains_only_current_admission_rows;
     {
         use tilo_desktop::activity::*;
-        use ui::record::{RecordCheckout, RecordId, RecordKind};
+        use ui::record::{DocumentCheckout, DocumentId, ResourceType};
         let workspace = Workspace::new(WorkspaceId::from_u128(9), "Design");
         let mut doc = AutoCommit::new();
         doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
@@ -342,7 +342,7 @@ tilo_test_env::scenario! {
         record.commit();
         let input = DetachedRecordHistory {
             app: "app".into(),
-            checkout: RecordCheckout::new(RecordId::for_tab(1), RecordKind::new("test")),
+            checkout: DocumentCheckout::new(DocumentId::for_tab(1), ResourceType::new("test")),
             document: Some(record),
         };
         let mut pane = WorkspaceActivityPane::new();

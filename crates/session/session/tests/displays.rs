@@ -403,10 +403,10 @@ fn new_windows_open_on_the_display_with_focus() {
     assert_eq!(focused(&mut session).as_deref(), Some("org.example.Right"));
 }
 
-/// The displays' own arrangement action moves the pictures: mirrored, the display beside the one
+/// The displays' own mode action moves the pictures: mirrored, the display beside the one
 /// with the window shows that window too.
 #[test]
-fn an_arrangement_action_mirrors_the_other_display() {
+fn a_mode_action_mirrors_the_other_display() {
     let _settled = ui::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);

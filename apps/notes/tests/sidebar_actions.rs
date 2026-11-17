@@ -321,9 +321,8 @@ fn sidebar_delete_and_duplicate_submit_the_notebooks_verbs() {
         assert_eq!(
             last.invoker
                 .as_ref()
-                .map(|invoker: &ui::tilo_actions::ActionInvoker| invoker.acting.by.key())
-                .as_deref(),
-            Some("agent:claude"),
+                .and_then(|invoker: &ui::tilo_actions::ActionInvoker| invoker.acting.member_id()),
+            Some(&ui::tilo_resource::MemberId::agent("claude")),
             "an agent reaches the same delete by the verb's id"
         );
     }

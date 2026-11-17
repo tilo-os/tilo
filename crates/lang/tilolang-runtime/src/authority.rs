@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::ids::{ActionId, AppId, ModuleHash, Principal};
+use crate::ids::{ActionId, Actor, AppId, ModuleHash};
 use crate::meta::EffectClass;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,8 +32,8 @@ pub struct ActionInfo {
 
 pub trait Authority {
     /// `chain` is the authorship chain, outermost first: each code author between the
-    /// invoker and the action. It is empty for a call made straight by a principal.
-    fn decide(&self, invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision;
+    /// invoker and the action. It is empty for a call made straight by an actor.
+    fn decide(&self, invoker: &Actor, chain: &[ModuleHash], action: &ActionInfo) -> Decision;
 
     /// Whether the workspace still lets `app`'s code reach `host` with `uses web`. What the
     /// package declares is checked before this ([`crate::web::granted`]); a workspace that
@@ -84,12 +84,12 @@ impl SimpleAuthority {
     }
 
     /// Trust the code a person or an agent task writes (an embedded block's author).
-    pub fn trust_principal(&self, id: &str) {
-        self.trust(&ModuleHash::principal(id));
+    pub fn trust_actor(&self, actor: &Actor) {
+        self.trust(&ModuleHash::written_by(actor));
     }
 
-    pub fn revoke_principal(&self, id: &str) {
-        self.revoke(&ModuleHash::principal(id));
+    pub fn revoke_actor(&self, actor: &Actor) {
+        self.revoke(&ModuleHash::written_by(actor));
     }
 
     /// Withdraw trust. Takes effect at the next invocation.
@@ -116,7 +116,7 @@ impl Trust {
 }
 
 impl Authority for SimpleAuthority {
-    fn decide(&self, _invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
+    fn decide(&self, _invoker: &Actor, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
         self.lock().decide(chain, action)
     }
 }

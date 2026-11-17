@@ -38,7 +38,7 @@ use tilo_resource::Doc;
 /// cannot be read as the app's resource is left out and logged.
 pub(crate) fn adopt(
     record: &mut Doc,
-    windows: &[(ui_core::record::RecordId, Doc)],
+    windows: &[(ui_core::record::DocumentId, Doc)],
     migrate: &dyn Fn(&mut Doc) -> Result<(), String>,
 ) -> Result<(), String> {
     let defaults = record.clone();
@@ -335,11 +335,11 @@ mod tests {
             let mut record = window_with_feeds(&[], "newest");
             let windows = vec![
                 (
-                    ui_core::record::RecordId::window_default(1),
+                    ui_core::record::DocumentId::window_default(1),
                     window_with_feeds(&[("a", "https://a.example/feed")], "newest"),
                 ),
                 (
-                    ui_core::record::RecordId::window_default(2),
+                    ui_core::record::DocumentId::window_default(2),
                     stamped_window(
                         &[
                             ("a", "https://a.example/feed"),
@@ -349,7 +349,7 @@ mod tests {
                     ),
                 ),
                 (
-                    ui_core::record::RecordId::window_default(3),
+                    ui_core::record::DocumentId::window_default(3),
                     window_with_feeds(&[], "newest"),
                 ),
             ];
@@ -375,7 +375,7 @@ mod tests {
         {
             let mut record = window_with_feeds(&[], "newest");
             let windows = vec![(
-                ui_core::record::RecordId::window_default(1),
+                ui_core::record::DocumentId::window_default(1),
                 window_with_feeds(&[("a", "https://a.example/feed")], "newest"),
             )];
             adopt(&mut record, &windows, &|_| Err("not this app's".into())).unwrap();

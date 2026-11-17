@@ -7,7 +7,7 @@
 //! places are points and this widget is what draws them.
 //!
 //! The camera is the widget's own state, a lens: personal, kept on this device, never in the
-//! person's arrangement. Panning and zooming move and scale the pins; a change of the pins or of
+//! person's layout. Panning and zooming move and scale the pins; a change of the pins or of
 //! the camera lays them out again. Every motion of the map (a pin gliding to a new place, the
 //! camera gliding to what it shows) is laid out on each frame it runs, as a scroll's glide is,
 //! so what stands in a pin (a window's well) is where the pin is drawn. At rest the map asks
@@ -73,7 +73,7 @@ pub struct PinPlace {
     pub x: f64,
     pub y: f64,
     pub width: f64,
-    /// How tall it stands, when the arrangement says (a window on a desktop); `None` lets its
+    /// How tall it stands, when the layout says (a window on a desktop); `None` lets its
     /// view say, as a note on a canvas is as tall as what it holds.
     pub height: Option<f64>,
     /// The room over the pin's top edge its view keeps for a handle, in screen pixels: the pin
@@ -867,7 +867,7 @@ impl Map {
     /// Take the camera to `camera` the way a scroll takes its content to what it shows: a short
     /// move glides, whoever opened what it shows and however long it took to arrive, so the person
     /// sees where it stands among the rest; a still theme or reduced motion lands. Nothing in the
-    /// arrangement moves.
+    /// layout moves.
     fn pan_to(&mut self, camera: MapCamera) {
         let now = crate::motion::frame_now();
         let view = Vec2::new(self.rect.width().max(1.0), self.rect.height().max(1.0));
@@ -1108,7 +1108,7 @@ impl Described for Map {
     /// Props given in place name the pins and carry none of their views, so the pins they name
     /// must be the pins the map holds, one for one: a map given other pins is another canvas,
     /// and is built again around them. Patching the pins it recognises would leave the pin of a
-    /// place the arrangement closed standing on screen and in the accessibility tree.
+    /// place the layout closed standing on screen and in the accessibility tree.
     fn set_props(&mut self, props: MapProps) -> bool {
         let MapProps {
             name: _,
@@ -1550,7 +1550,7 @@ impl Map {
 
     /// The camera's own gestures: a wheel with Ctrl zooms about the pointer, a middle drag pans,
     /// the arrow keys pan, and two fingers pan and pinch. It moves the lens and nothing in
-    /// the arrangement; the views' own presses fall through to the pins.
+    /// the layout; the views' own presses fall through to the pins.
     fn camera_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             // Two fingers on a touchscreen or a touchpad, and a wheel, over the canvas's free

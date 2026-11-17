@@ -28,7 +28,7 @@ impl BlockEditor {
         let text_right = brect.x1 - line.text_inset(ctx.theme);
         let now = crate::time::now();
         for (user, range, alpha) in ctx.presence.typing_marks_for_key(&key, now) {
-            if self.local_author.as_deref() == Some(user.key().as_str()) {
+            if self.local_author.as_ref() == Some(&user) {
                 continue;
             }
             let rect = line.selection_rect(ctx.theme, range.start, range.end);

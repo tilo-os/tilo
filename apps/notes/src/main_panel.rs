@@ -522,7 +522,7 @@ pub struct MainPanel {
     caret_on_rebind: Option<String>,
     /// Local user's id for authorship attribution, re-applied to the
     /// editor whenever a page is (re)bound.
-    local_author: Option<String>,
+    local_author: Option<ui::tilo_resource::MemberId>,
     /// The immediately-drawn first-note action. Keeping its rect here makes
     /// the otherwise empty document state a real, discoverable path into the
     /// editor rather than an instruction that asks people to find the sidebar.
@@ -845,7 +845,7 @@ impl MainPanel {
 
     /// Set the local user's id for authorship attribution. Re-applied to
     /// the editor on every `bind_page`.
-    pub fn set_local_author(&mut self, author: Option<String>) {
+    pub fn set_local_author(&mut self, author: Option<ui::tilo_resource::MemberId>) {
         self.local_author.clone_from(&author);
         self.editor.editor_mut().set_local_author(author);
     }

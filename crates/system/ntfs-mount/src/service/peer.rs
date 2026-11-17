@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 use super::Caller;
 
-pub use seat_peer::PeerFacts;
+pub use peer_facts::PeerFacts;
 #[cfg(target_os = "linux")]
-pub use seat_peer::facts;
+pub use peer_facts::facts;
 
 #[derive(Clone, Debug)]
 pub struct PeerPolicy {
@@ -17,7 +17,7 @@ pub struct PeerPolicy {
 
 impl Default for PeerPolicy {
     fn default() -> Self {
-        let seat = seat_peer::Seat::default();
+        let seat = peer_facts::LogindSeat::default();
         Self {
             trusted_ui: seat.trusted_ui,
             seat: seat.seat,
@@ -27,8 +27,8 @@ impl Default for PeerPolicy {
 }
 
 impl PeerPolicy {
-    fn seat(&self) -> seat_peer::Seat {
-        seat_peer::Seat {
+    fn seat(&self) -> peer_facts::LogindSeat {
+        peer_facts::LogindSeat {
             trusted_ui: self.trusted_ui.clone(),
             seat: self.seat.clone(),
             users: self.users.clone(),
@@ -36,11 +36,11 @@ impl PeerPolicy {
     }
 
     pub fn active_uid(&self) -> Option<u32> {
-        seat_peer::active_uid(&self.seat)
+        peer_facts::active_uid(&self.seat)
     }
 
     pub fn has_session(&self, uid: u32) -> bool {
-        seat_peer::has_session(&self.users, uid)
+        peer_facts::has_session(&self.users, uid)
     }
 
     pub fn decide(&self, peer: &PeerFacts) -> Result<Caller, String> {

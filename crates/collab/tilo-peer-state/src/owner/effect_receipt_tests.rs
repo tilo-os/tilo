@@ -207,7 +207,7 @@ tilo_test_env::scenario! {
             let effect = decode(&operation).unwrap();
             assert!(effects.contains(&effect));
             let mut conflict = effect;
-            conflict.actor = "another-person".into();
+            conflict.actor = tilo_actions::MemberId::person("another-person");
             let mut changed = operation;
             if let CommitOperation::EffectReceipt { redacted, .. } = &mut changed.operation {
                 *redacted = serde_json::to_vec(&conflict).unwrap();
@@ -256,9 +256,11 @@ fn request(by: &DeviceCert, status: EffectReceiptStatus) -> OwnerCommitRequest {
     ];
     let receipt = tilo_desktop_model::WorkspaceEffectReceipt {
         invocation,
-        actor: blake3::Hash::from_bytes(by.user_public_key)
-            .to_hex()
-            .to_string(),
+        actor: tilo_actions::MemberId::person(
+            blake3::Hash::from_bytes(by.user_public_key)
+                .to_hex()
+                .to_string(),
+        ),
         context,
         status,
         completed_at: 1,

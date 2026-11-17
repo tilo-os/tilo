@@ -23,7 +23,7 @@ use tilo_broker_core::custody::OwnerCustody as _;
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::owner::Holding;
 use tilo_session_client::RecordAnswer;
-use ui::record::RecordId;
+use ui::record::DocumentId;
 
 use crate::engine::{Engine, RecordReading};
 
@@ -69,6 +69,15 @@ impl NativeDocumentReads for Records {
         WorkspaceId::parse(workspace).is_some_and(|workspace| {
             self.engine.holds(workspace) && !self.engine.commits_documents(workspace)
         })
+    }
+
+    fn own_record(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> Option<collab_types::OwnRecord> {
+        self.engine.own_record(workspace, app, record)
     }
 
     fn record_read(&self, workspace: &str, app: &str, record: &str) -> RecordRead {
@@ -119,7 +128,7 @@ impl NativeDocumentReads for Records {
         // A chain's head names the chain's newest part and holds nothing of its own: it never arrives
         // here, and the part comes on its own route. Any word from the host settles it — which part
         // it sent, or none — and `chain_head_answer` says which.
-        let head = RecordId::parse(&route.record_id).is_some_and(|id| id.is_chain_head());
+        let head = DocumentId::parse(&route.record_id).is_some_and(|id| id.is_chain_head());
         let engine = Arc::clone(&self.engine);
         let (workspace, app, record) = (
             route.cluster_id.clone(),
@@ -177,7 +186,7 @@ impl NativeDocumentReads for Records {
     /// replays everything answered with its replay: what arrived is all of the chain there is here.
     fn chain_head_answer(&self, context: &NativeDocumentReadContext) -> Option<ChainHeadAnswer> {
         let route = context.route();
-        RecordId::parse(&route.record_id).filter(RecordId::is_chain_head)?;
+        DocumentId::parse(&route.record_id).filter(DocumentId::is_chain_head)?;
         let answered =
             self.engine
                 .record_answer(&route.cluster_id, &route.app_id, &route.record_id);
@@ -729,7 +738,7 @@ mod tests {
 
     /// A chat's chain of message parts: the name of its newest part, and part 1.
     fn chain_records() -> (String, String) {
-        let chain = RecordId::derived("messages", &RecordId::workspace_default());
+        let chain = DocumentId::derived("messages", &DocumentId::workspace_default());
         (
             chain.chain_head().as_str().to_owned(),
             chain.part(1).as_str().to_owned(),

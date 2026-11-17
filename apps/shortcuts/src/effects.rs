@@ -83,10 +83,10 @@ const LIBRARY_RESOURCE: &str = "shortcuts";
 
 /// Where one run stands.
 #[derive(Clone, Debug, PartialEq)]
-pub enum RunStatus {
+pub enum InvocationStatus {
     Running,
     /// It finished: what it reported, and the steps that fell short when
-    /// any did (`RunReport::degraded_summary`).
+    /// any did (`InvocationReport::degraded_summary`).
     Completed {
         value: Option<Value>,
         degraded: Option<String>,
@@ -94,7 +94,7 @@ pub enum RunStatus {
     Failed(String),
 }
 
-impl RunStatus {
+impl InvocationStatus {
     /// The status of a run that finished with `value`: a degraded run's
     /// value carries the note saying which steps fell short.
     #[must_use]
@@ -115,11 +115,11 @@ impl RunStatus {
 
 /// One run started from this app, newest first in [`EffectsState::runs`].
 #[derive(Clone, Debug, PartialEq)]
-pub struct RunRecord {
+pub struct Invocation {
     pub serial: u64,
     pub shortcut_id: String,
     pub name: String,
-    pub status: RunStatus,
+    pub status: InvocationStatus,
     /// When the run started, as the person reads the clock.
     pub started: String,
 }
@@ -179,7 +179,7 @@ pub struct Refined {
 pub struct EffectsState {
     pub catalogue: Arrival<ActionCatalog>,
     pub library: Arrival<Vec<Shortcut>>,
-    pub runs: Vec<RunRecord>,
+    pub invocations: Vec<Invocation>,
     /// Above the items: what the last save or delete came to.
     pub notice: Option<BannerNotice>,
     /// The last draft asked of the agent.
@@ -214,8 +214,8 @@ impl EffectsState {
 
     /// The last run of shortcut `id`.
     #[must_use]
-    pub fn last_run(&self, id: &str) -> Option<&RunRecord> {
-        self.runs.iter().find(|run| run.shortcut_id == id)
+    pub fn last_invocation(&self, id: &str) -> Option<&Invocation> {
+        self.invocations.iter().find(|run| run.shortcut_id == id)
     }
 }
 
@@ -454,13 +454,13 @@ impl EffectsCore {
         let serial = self.next_run;
         self.next_run = self.next_run.saturating_add(1);
         self.state.update(|state| {
-            state.runs.insert(
+            state.invocations.insert(
                 0,
-                RunRecord {
+                Invocation {
                     serial,
                     shortcut_id: shortcut.to_owned(),
                     name,
-                    status: RunStatus::Running,
+                    status: InvocationStatus::Running,
                     started: ui::clock::time_of_day(&ui::clock::local_now()),
                 },
             );
@@ -558,12 +558,9 @@ impl EffectsCore {
         }
     }
 
-    fn settle(&mut self, call: Call) {
-        let saved = self
-            .state
-            .with(|state| state.library.ready().cloned().unwrap_or_default());
-        let catalog = self.state.with(EffectsState::catalog);
-        let outcome: Result<Option<ActionOutput>, String> = match &call.answer {
+    /// What `call`'s answer came to, once it has one.
+    fn outcome(&mut self, call: &Call) -> Option<Result<Option<ActionOutput>, String>> {
+        Some(match &call.answer {
             Answer::Catalogue(answer) => match answer.get() {
                 Arrival::Ready(page) => {
                     self.state.update(|state| {
@@ -573,7 +570,7 @@ impl EffectsCore {
                     Ok(None)
                 }
                 Arrival::Failed(error) => Err(catalogue_refusal(&error)),
-                Arrival::Pending { .. } => return,
+                Arrival::Pending { .. } => return None,
             },
             Answer::Invocation(answer) => match answer.get() {
                 Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => Ok(Some(output)),
@@ -582,8 +579,18 @@ impl EffectsCore {
                     Err(message.unwrap_or_else(|| "cancelled".to_owned()))
                 }
                 Arrival::Failed(error) => Err(error.to_string()),
-                Arrival::Ready(_) | Arrival::Pending { .. } => return,
+                Arrival::Ready(_) | Arrival::Pending { .. } => return None,
             },
+        })
+    }
+
+    fn settle(&mut self, call: Call) {
+        let saved = self
+            .state
+            .with(|state| state.library.ready().cloned().unwrap_or_default());
+        let catalog = self.state.with(EffectsState::catalog);
+        let Some(outcome) = self.outcome(&call) else {
+            return;
         };
         match (&call.purpose, &outcome) {
             (Purpose::Catalogue, Err(reason)) => self.state.update(|state| {
@@ -643,13 +650,17 @@ impl EffectsCore {
             }
             (Purpose::Run { serial }, result) => {
                 let status = match result {
-                    Ok(output) => RunStatus::completed(
+                    Ok(output) => InvocationStatus::completed(
                         output.as_ref().and_then(|output| output.value.clone()),
                     ),
-                    Err(reason) => RunStatus::Failed(reason.clone()),
+                    Err(reason) => InvocationStatus::Failed(reason.clone()),
                 };
                 self.state.update(|state| {
-                    if let Some(run) = state.runs.iter_mut().find(|run| run.serial == *serial) {
+                    if let Some(run) = state
+                        .invocations
+                        .iter_mut()
+                        .find(|run| run.serial == *serial)
+                    {
                         run.status = status;
                     }
                 });
@@ -838,8 +849,8 @@ mod tests {
             "output": "Three notes",
             "degraded": "1 step did not finish as intended: the app was unavailable"
         });
-        let status = RunStatus::completed(Some(reported));
-        let RunStatus::Completed { value, degraded } = status else {
+        let status = InvocationStatus::completed(Some(reported));
+        let InvocationStatus::Completed { value, degraded } = status else {
             panic!("a finished run");
         };
         assert_eq!(value, Some(json!("Three notes")));
@@ -853,7 +864,8 @@ mod tests {
         // A run that finished as intended reports its value as it is, even
         // when the value is an object with keys of its own.
         let plain = json!({"done": true});
-        let RunStatus::Completed { value, degraded } = RunStatus::completed(Some(plain.clone()))
+        let InvocationStatus::Completed { value, degraded } =
+            InvocationStatus::completed(Some(plain.clone()))
         else {
             panic!("a finished run");
         };

@@ -13,6 +13,7 @@ fn route() -> Route {
         app_id: "so.tilo.notes".into(),
         cluster_id: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
         record_id: "note-1".into(),
+        own: None,
     }
 }
 
@@ -88,6 +89,7 @@ fn signed_frames(
                 cluster_id: route.cluster_id.clone(),
                 record_id: route.record_id.clone(),
                 envelope: Box::new(op),
+                own: None,
             })
             .unwrap();
             let payload = if snapshot_head && !sealed {

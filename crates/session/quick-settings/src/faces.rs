@@ -165,7 +165,7 @@ pub(crate) struct TileFace {
 
 /// The tiles this machine shows, in the person's order.
 pub(crate) fn tiles(state: &QuickSettingsState) -> Vec<TileFace> {
-    visible_controls(&state.arrangement, state)
+    visible_controls(&state.config, state)
         .into_iter()
         .map(|control| tile(control, state))
         .collect()
@@ -184,12 +184,12 @@ fn tile(control: QuickSettingsControl, state: &QuickSettingsState) -> TileFace {
     }
 }
 
-/// The controls of `arrangement` this machine has what they control for.
+/// The controls in `config` whose device this machine has.
 pub fn visible_controls(
-    arrangement: &QuickSettingsConfig,
+    config: &QuickSettingsConfig,
     state: &QuickSettingsState,
 ) -> Vec<QuickSettingsControl> {
-    arrangement
+    config
         .controls
         .iter()
         .copied()
@@ -237,7 +237,7 @@ pub(crate) fn section_of(
     }
 }
 
-/// A control's name, as the arrangement editor lists it.
+/// A control's name, as the controls editor lists it.
 pub(crate) fn control_label(control: QuickSettingsControl) -> String {
     t(match control {
         QuickSettingsControl::Wifi => "qs-network",
@@ -940,8 +940,7 @@ fn battery(state: &QuickSettingsState) -> Vec<Item> {
     if !offered_modes(state).is_empty() {
         items.push(Item::PowerModeLink {
             mode: state.power_profile.label(),
-            tile: visible_controls(&state.arrangement, state)
-                .contains(&QuickSettingsControl::PowerMode),
+            tile: visible_controls(&state.config, state).contains(&QuickSettingsControl::PowerMode),
         });
     }
     if let Some(awake) = awake_sentence(state) {

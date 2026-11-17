@@ -1149,7 +1149,9 @@ impl Editor {
     #[cfg(test)]
     pub(crate) fn detached() -> Self {
         let mut widget = Self::new();
-        let dispatch = ui::framework::testing::detached_dispatcher("test-author");
+        let dispatch = ui::framework::testing::detached_dispatcher(
+            &ui::tilo_resource::MemberId::person("test-author"),
+        );
         widget.inner.attach(dispatch.clone());
         widget.dispatch = Some(dispatch);
         widget

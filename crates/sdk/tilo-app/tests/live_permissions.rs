@@ -313,9 +313,9 @@ tilo_test_env::scenario! {
         let mut view = tilo_app::framework::AttachedView::open(
             definition,
             TEST_WORKSPACE,
-            tilo_app::record::RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+            tilo_app::record::DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
             app.read_document(|doc| doc.clone().save()),
-            "scribe",
+            &tilo_app::tilo_resource::MemberId::person("scribe"),
             commenting,
             false,
         )

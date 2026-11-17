@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use collab_types::Ed25519PublicKey;
-use fs_protocol::{FileActor, FileProvenance, FileRecordId};
+use fs_protocol::{FileActor, FileDocumentId, FileProvenance};
 
 use super::{Pass, STAGING_PREFIX, SyncFolder};
 use crate::fs::QuickFS;
@@ -68,7 +68,7 @@ impl Fixture {
         self.fs.read_path(Path::new(path)).ok()
     }
 
-    fn record(&self, path: &str) -> FileRecordId {
+    fn record(&self, path: &str) -> FileDocumentId {
         self.fs.entry_at(Path::new(path)).unwrap().record.unwrap()
     }
 

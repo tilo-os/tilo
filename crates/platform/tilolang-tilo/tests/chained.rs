@@ -3,7 +3,7 @@
 //! steps does.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{Principal, UiNode, Value};
+use tilolang_runtime::{Actor, UiNode, Value};
 
 use crate::fixtures::Replica;
 
@@ -86,7 +86,7 @@ fn seeded() -> (Replica, tilolang_runtime::ResourceRef) {
     ada.host
         .runtime()
         .invoke_action(
-            &Principal::new("ada"),
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             (seed.as_str(), vec![Value::resource(&bag)]),
         )
         .unwrap();

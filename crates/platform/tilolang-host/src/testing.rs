@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use collab_types::record::RecordKind;
+use collab_types::document::ResourceType;
 use collaboration::commit_log::CommitHistory;
 use collaboration::{
     ActionDirectoryRequest, CollabEvent, CollabRequest, DocumentMutation, PeerTransport, RouteSpec,
@@ -302,7 +302,7 @@ impl PeerTransport for Broker {
     /// Admits every route the connection joins: the records every app of the workspace opens
     /// beside its own (its chunks, each person's own state) travel on routes of their own, and a
     /// broker that refused the join would close the instance's whole connection.
-    fn join_route(&mut self, route: RouteSpec, _: RecordKind) -> Result<(), String> {
+    fn join_route(&mut self, route: RouteSpec, _: ResourceType) -> Result<(), String> {
         self.bus
             .join(route.clone(), self.person.clone(), Rc::clone(&self.inbox));
         self.routes.borrow_mut().push(route);

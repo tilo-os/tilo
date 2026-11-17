@@ -165,7 +165,7 @@ impl ConnectorHost {
         }
         // The connector's socket reaches it as a window's does: the launcher hands it into the
         // sandbox as the connector's own service.
-        gate.release_with_window_channel(socket.as_fd())
+        gate.release_with_window_link(socket.as_fd())
             .map_err(|error| format!("{}'s connector was not released: {error}", planned.app))?;
         tracing::info!(app = %planned.app, argv = %planned.describe(), "an origin connector started");
         Ok(child)

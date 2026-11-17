@@ -81,7 +81,7 @@ pub type DurabilityHook = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct VersionSnapshot {
-    record_id: fs_protocol::FileRecordId,
+    document_id: fs_protocol::FileDocumentId,
     content_hash: Option<fs_protocol::ContentHash>,
     metadata_hash: fs_protocol::ContentHash,
     byte_len: u64,
@@ -91,7 +91,7 @@ struct VersionSnapshot {
 fn keep_both_uuid(
     domain: &[u8],
     workspace_id: uuid::Uuid,
-    source_record: fs_protocol::FileRecordId,
+    source_record: fs_protocol::FileDocumentId,
     conflict_id: uuid::Uuid,
     selected_version: fs_protocol::FileVersionId,
     actor: fs_protocol::FileActor,
@@ -115,7 +115,7 @@ fn keep_both_uuid(
 fn merge_uuid(
     domain: &[u8],
     workspace_id: uuid::Uuid,
-    source_record: fs_protocol::FileRecordId,
+    source_record: fs_protocol::FileDocumentId,
     conflict_id: uuid::Uuid,
     versions: &[fs_protocol::FileVersionId],
     actor: fs_protocol::FileActor,
@@ -142,7 +142,7 @@ fn merge_uuid(
 
 fn keep_both_name(
     source_name: impl AsRef<[u8]>,
-    target_record: fs_protocol::FileRecordId,
+    target_record: fs_protocol::FileDocumentId,
 ) -> fs_protocol::FileNameV1 {
     let source_name = source_name.as_ref();
     let simple = target_record.0.simple().to_string();
@@ -163,7 +163,7 @@ mod exact_conflict_name_tests {
 
     #[test]
     fn keep_both_suffix_preserves_invalid_utf8_and_bounds_the_result() {
-        let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(7));
+        let record = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(7));
         let original = [b'f', 0xff, b'o'];
         let name = keep_both_name(original, record);
         assert!(name.as_bytes().starts_with(&original));
@@ -412,11 +412,11 @@ mod staging_limit_tests {
 }
 
 /// The record ids from `ino` up to the root, or `None` when one of them has no record id.
-fn record_ancestry(ns: &mut Namespace, ino: u64) -> Option<Vec<fs_protocol::FileRecordId>> {
+fn record_ancestry(ns: &mut Namespace, ino: u64) -> Option<Vec<fs_protocol::FileDocumentId>> {
     let mut ancestry = Vec::new();
     let mut cursor = Some(ino);
     while let Some(current) = cursor {
-        ancestry.push(ns.record_id_for(current)?);
+        ancestry.push(ns.document_id_for(current)?);
         cursor = ns.parent_ino(current);
     }
     Some(ancestry)
@@ -424,7 +424,7 @@ fn record_ancestry(ns: &mut Namespace, ino: u64) -> Option<Vec<fs_protocol::File
 
 fn inherited_policy(
     registry: &AvailabilityRegistry,
-    ancestry: &[fs_protocol::FileRecordId],
+    ancestry: &[fs_protocol::FileDocumentId],
 ) -> AvailabilityPolicy {
     if ancestry.iter().any(|id| {
         registry
@@ -552,8 +552,8 @@ enum PinnedProbe {
 
 #[derive(Clone)]
 struct PinnedCandidate {
-    record_id: fs_protocol::FileRecordId,
-    parent: Option<fs_protocol::FileRecordId>,
+    document_id: fs_protocol::FileDocumentId,
+    parent: Option<fs_protocol::FileDocumentId>,
     kind: RecordKind,
     version: Option<fs_protocol::FileVersionId>,
     hash: Option<Hash>,
@@ -579,29 +579,29 @@ struct AclVisibleRecordIndex {
     acl_revision: u64,
     revision: String,
     records: Vec<RecordIndexEntryV1>,
-    by_id: HashMap<fs_protocol::FileRecordId, RecordIndexEntryV1>,
+    by_id: HashMap<fs_protocol::FileDocumentId, RecordIndexEntryV1>,
     /// Rows this authority may not see, with the path they were judged at.
     /// With `by_id` it lets the next refresh under the same ACL revision
     /// re-evaluate only rows whose path changed.
-    hidden: HashMap<fs_protocol::FileRecordId, String>,
+    hidden: HashMap<fs_protocol::FileDocumentId, String>,
     #[cfg(test)]
     acl_evaluations: usize,
 }
 
 impl AclVisibleRecordIndex {
-    /// The visibility this view already decided for `record_id` at `path`, if it judged
+    /// The visibility this view already decided for `document_id` at `path`, if it judged
     /// that exact row. Visibility is a function of the ACL revision and the path alone, so
     /// the verdict holds for the same pair.
-    fn verdict(&self, record_id: fs_protocol::FileRecordId, path: &str) -> Option<bool> {
+    fn verdict(&self, document_id: fs_protocol::FileDocumentId, path: &str) -> Option<bool> {
         if self
             .by_id
-            .get(&record_id)
+            .get(&document_id)
             .is_some_and(|entry| entry.path == path)
         {
             return Some(true);
         }
         self.hidden
-            .get(&record_id)
+            .get(&document_id)
             .is_some_and(|hidden| hidden == path)
             .then_some(false)
     }
@@ -672,7 +672,7 @@ pub struct QuickFS {
     /// them without hydrating the payload.
     rich_metadata: Mutex<
         HashMap<
-            fs_protocol::FileRecordId,
+            fs_protocol::FileDocumentId,
             (fs_protocol::ContentHash, fs_protocol::FilePropertiesV1),
         >,
     >,
@@ -893,10 +893,10 @@ impl QuickFS {
         self
     }
 
-    fn unsaved_key(&self, ino: u64) -> (String, Option<fs_protocol::FileRecordId>) {
-        let record_id = self.ns().record_id_for(ino);
-        let key = record_id.map_or_else(|| format!("ino-{ino}"), |id| id.0.to_string());
-        (key, record_id)
+    fn unsaved_key(&self, ino: u64) -> (String, Option<fs_protocol::FileDocumentId>) {
+        let document_id = self.ns().document_id_for(ino);
+        let key = document_id.map_or_else(|| format!("ino-{ino}"), |id| id.0.to_string());
+        (key, document_id)
     }
 
     /// Stage the complete bytes of `stage` (an `fsync`, or a failed commit) in `store`; a
@@ -909,13 +909,13 @@ impl QuickFS {
         base_hash: Option<Hash>,
         error: Option<String>,
     ) -> io::Result<()> {
-        let (key, record_id) = self.unsaved_key(ino);
+        let (key, document_id) = self.unsaved_key(ino);
         let path = self.ns().path_for(ino);
         match stage.source()? {
             VersionSource::Bytes(data) => {
                 let entry = crate::unsaved::UnsavedEntry::describe(
                     key,
-                    record_id,
+                    document_id,
                     path,
                     base_hash,
                     data,
@@ -927,7 +927,7 @@ impl QuickFS {
             VersionSource::File { path: file, .. } => {
                 let entry = crate::unsaved::UnsavedEntry::describe_file(
                     key,
-                    record_id,
+                    document_id,
                     path,
                     base_hash,
                     file,
@@ -1365,8 +1365,8 @@ impl QuickFS {
             let target = {
                 let ns = self.ns();
                 entry
-                    .record_id
-                    .and_then(|record_id| ns.ino_for_record_id(record_id))
+                    .document_id
+                    .and_then(|document_id| ns.ino_for_document_id(document_id))
                     .filter(|ino| ns.getattr(*ino).is_some())
             };
             if let Some(ino) = target
@@ -1709,9 +1709,9 @@ impl QuickFS {
         hash: Option<Hash>,
     ) -> Option<unavailable::UnavailableNote> {
         let registry = Arc::clone(self.availability.as_ref()?);
-        let (record_id, revision) = {
+        let (document_id, revision) = {
             let ns = self.ns();
-            (ns.record_id_for(ino)?, ns.observed_content_revision(ino))
+            (ns.document_id_for(ino)?, ns.observed_content_revision(ino))
         };
         let content = hash.zip(revision).and_then(|(hash, revision)| {
             (revision.content_hash.map(|content| content.0) == Some(*hash.as_bytes())).then(|| {
@@ -1725,7 +1725,7 @@ impl QuickFS {
         });
         Some(unavailable::UnavailableNote {
             registry,
-            record_id,
+            document_id,
             content,
         })
     }
@@ -1870,12 +1870,12 @@ impl QuickFS {
         let Some(registry) = &self.availability else {
             return false;
         };
-        let Some(record_id) = self.ns().record_id_for(ino) else {
+        let Some(document_id) = self.ns().document_id_for(ino) else {
             return false;
         };
         registry
             .lock_recover()
-            .get(record_id)
+            .get(document_id)
             .is_some_and(|record| !matches!(record.residency, Residency::Resident { .. }))
     }
 
@@ -2067,9 +2067,9 @@ impl QuickFS {
     }
 
     fn remember_staged_metadata(&self, ino: u64, stage: &WriteStage) {
-        let (record_id, name, hash) = {
+        let (document_id, name, hash) = {
             let ns = self.ns();
-            let Some(record_id) = ns.record_id_for(ino) else {
+            let Some(document_id) = ns.document_id_for(ino) else {
                 return;
             };
             let Some(path) = ns.path_for(ino) else {
@@ -2080,7 +2080,7 @@ impl QuickFS {
             };
             drop(ns);
             let name = path.rsplit('/').next().unwrap_or_default().to_owned();
-            (record_id, name, hash)
+            (document_id, name, hash)
         };
         if !crate::rich_metadata::recognizes(&name) {
             return;
@@ -2090,7 +2090,7 @@ impl QuickFS {
         };
         if let Some(properties) = crate::rich_metadata::extract(&name, &prefix) {
             self.rich_metadata.lock_recover().insert(
-                record_id,
+                document_id,
                 (fs_protocol::ContentHash(*hash.as_bytes()), properties),
             );
         }
@@ -2111,17 +2111,17 @@ impl QuickFS {
         bytes: &[u8],
         hash: fs_protocol::ContentHash,
     ) -> Option<fs_protocol::FilePropertiesV1> {
-        let (record_id, name) = {
+        let (document_id, name) = {
             let ns = self.ns();
-            let record_id = ns.record_id_for(ino)?;
+            let document_id = ns.document_id_for(ino)?;
             let name = ns.path_for(ino)?.rsplit('/').next()?.to_owned();
             drop(ns);
-            (record_id, name)
+            (document_id, name)
         };
         let properties = crate::rich_metadata::extract(&name, bytes)?;
         self.rich_metadata
             .lock_recover()
-            .insert(record_id, (hash, properties.clone()));
+            .insert(document_id, (hash, properties.clone()));
         Some(properties)
     }
 
@@ -2399,7 +2399,7 @@ impl QuickFS {
     /// the last writer of its file.
     fn writer_of(
         &self,
-        record: fs_protocol::FileRecordId,
+        record: fs_protocol::FileDocumentId,
     ) -> Option<fs_protocol::FileAttributionV1> {
         self.writers.as_ref()?;
         match CURRENT_WRITER.with(|current| current.borrow().clone()) {
@@ -2407,7 +2407,7 @@ impl QuickFS {
             Some(NotedWriter::Attributed(attribution)) => return Some(attribution),
             None => {}
         }
-        let ino = self.ns().ino_for_record_id(record)?;
+        let ino = self.ns().ino_for_document_id(record)?;
         self.last_writers.lock_recover().get(&ino).cloned()
     }
 
@@ -2427,12 +2427,12 @@ impl QuickFS {
                 } else {
                     let namespace = self.ns();
                     namespace
-                        .ino_for_record_id(version.record_id)
+                        .ino_for_document_id(version.document_id)
                         .and_then(|ino| namespace.path_for(ino))
                 };
                 path.and_then(|path| attributions.for_path(&path))
             });
-        let Some(attribution) = leased.or_else(|| self.writer_of(version.record_id)) else {
+        let Some(attribution) = leased.or_else(|| self.writer_of(version.document_id)) else {
             return;
         };
         let attributed = fs_protocol::FileVersionAttributionV1 {
@@ -2441,7 +2441,7 @@ impl QuickFS {
         };
         let recorded = {
             let mut namespace = self.ns();
-            let recorded = namespace.attribute_version(version.record_id, &attributed);
+            let recorded = namespace.attribute_version(version.document_id, &attributed);
             if recorded.as_ref().is_ok_and(|recorded| *recorded) {
                 namespace.note_change();
             }
@@ -2450,7 +2450,7 @@ impl QuickFS {
         if let Err(error) = recorded {
             eprintln!(
                 "could not attribute version {:?} of {:?}: {error}",
-                version.id, version.record_id
+                version.id, version.document_id
             );
         }
     }
@@ -2477,7 +2477,7 @@ impl QuickFS {
             let Some(snapshot) = self.version_snapshot(ino, false, None) else {
                 continue;
             };
-            if !self.ns().has_history(snapshot.record_id) {
+            if !self.ns().has_history(snapshot.document_id) {
                 self.append_version(snapshot, fs_protocol::FileProvenance::Create, now_ms())?;
             }
         }
@@ -2521,7 +2521,7 @@ impl QuickFS {
         content_override: Option<fs_protocol::ContentHash>,
         byte_len_override: Option<u64>,
     ) -> Option<VersionSnapshot> {
-        let record_id = namespace.record_id_for(ino)?;
+        let document_id = namespace.document_id_for(ino)?;
         let attr = namespace.getattr(ino)?;
         let content_hash = content_override.or_else(|| {
             namespace
@@ -2541,7 +2541,7 @@ impl QuickFS {
         };
         let bytes = postcard::to_allocvec(&metadata).ok()?;
         Some(VersionSnapshot {
-            record_id,
+            document_id,
             content_hash,
             metadata_hash: fs_protocol::ContentHash(*blake3::hash(&bytes).as_bytes()),
             byte_len,
@@ -2552,10 +2552,10 @@ impl QuickFS {
     /// The metadata projection of `ino`'s current content: the rich facts this device
     /// extracted from exactly those bytes.
     fn metadata_projection_for(&self, ino: u64) -> Option<Vec<u8>> {
-        let (record_id, hash) = {
+        let (document_id, hash) = {
             let namespace = self.ns();
             (
-                namespace.record_id_for(ino)?,
+                namespace.document_id_for(ino)?,
                 namespace
                     .hash_for(ino)
                     .map(|hash| fs_protocol::ContentHash(*hash.as_bytes())),
@@ -2564,12 +2564,12 @@ impl QuickFS {
         let properties = self
             .rich_metadata
             .lock_recover()
-            .get(&record_id)
+            .get(&document_id)
             .filter(|(properties_hash, _)| Some(*properties_hash) == hash)
             .map(|(_, properties)| properties.clone())?;
         fs_protocol::MetadataProjectionV1 {
             schema_version: fs_protocol::projection::METADATA_PROJECTION_VERSION,
-            record_id,
+            document_id,
             properties,
         }
         .to_xattr_bytes()
@@ -2583,7 +2583,7 @@ impl QuickFS {
         byte_len: u64,
     ) -> Option<VersionSnapshot> {
         let namespace = self.ns();
-        let record_id = namespace.record_id_for(ino)?;
+        let document_id = namespace.document_id_for(ino)?;
         let attr = namespace.getattr(ino)?;
         let metadata = VersionMetadataDigest {
             path: namespace.path_for(ino),
@@ -2598,7 +2598,7 @@ impl QuickFS {
         drop(namespace);
         let bytes = postcard::to_allocvec(&metadata).ok()?;
         Some(VersionSnapshot {
-            record_id,
+            document_id,
             content_hash: content_hash.map(|hash| fs_protocol::ContentHash(*hash.as_bytes())),
             metadata_hash: fs_protocol::ContentHash(*blake3::hash(&bytes).as_bytes()),
             byte_len,
@@ -2627,11 +2627,11 @@ impl QuickFS {
         let Some(actor) = &self.history else {
             return Ok(fs_protocol::FileVersionId::new());
         };
-        let parents = self.ns().record_history_heads(snapshot.record_id);
+        let parents = self.ns().record_history_heads(snapshot.document_id);
         let id = fs_protocol::FileVersionId::new();
         let version = fs_protocol::FileVersionV1 {
             id,
-            record_id: snapshot.record_id,
+            document_id: snapshot.document_id,
             parents,
             actor: *actor,
             timestamp_ms,
@@ -2647,7 +2647,7 @@ impl QuickFS {
         self.attribute_version(&version, None);
         if let Some(registry) = &self.availability {
             let mut registry = registry.lock_recover();
-            if let Some(mut record) = registry.get(snapshot.record_id).cloned() {
+            if let Some(mut record) = registry.get(snapshot.document_id).cloned() {
                 record.current_version = Some(id);
                 if let Err(error) = registry.put(record) {
                     eprintln!("could not project history version into availability: {error}");
@@ -2711,9 +2711,9 @@ impl QuickFS {
 
     fn history_projection_for(&self, ino: u64) -> Option<Vec<u8>> {
         self.history.as_ref()?;
-        let record_id = self.ns().record_id_for(ino)?;
+        let document_id = self.ns().document_id_for(ino)?;
         self.ns()
-            .record_history_projection(record_id)?
+            .record_history_projection(document_id)?
             .to_xattr_bytes()
             .ok()
     }
@@ -2812,7 +2812,7 @@ impl QuickFS {
         for entry in rows {
             let visible = reusable
                 .as_deref()
-                .and_then(|index| index.verdict(entry.record_id, &entry.path))
+                .and_then(|index| index.verdict(entry.document_id, &entry.path))
                 .unwrap_or_else(|| {
                     #[cfg(test)]
                     {
@@ -2822,12 +2822,12 @@ impl QuickFS {
                 });
             if visible {
                 records.push(RecordIndexEntryV1 {
-                    record_id: entry.record_id,
+                    document_id: entry.document_id,
                     path: entry.path,
                     is_dir: entry.is_dir,
                 });
             } else {
-                hidden.insert(entry.record_id, entry.path);
+                hidden.insert(entry.document_id, entry.path);
             }
         }
 
@@ -2836,7 +2836,7 @@ impl QuickFS {
         hasher.update(&acl_revision.to_be_bytes());
         hasher.update(&(records.len() as u64).to_be_bytes());
         for record in &records {
-            hasher.update(record.record_id.0.as_bytes());
+            hasher.update(record.document_id.0.as_bytes());
             hasher.update(&(record.path.len() as u64).to_be_bytes());
             hasher.update(record.path.as_bytes());
             hasher.update(&[u8::from(record.is_dir)]);
@@ -2845,7 +2845,7 @@ impl QuickFS {
         let by_id = records
             .iter()
             .cloned()
-            .map(|record| (record.record_id, record))
+            .map(|record| (record.document_id, record))
             .collect();
         let index = Arc::new(AclVisibleRecordIndex {
             source_revision: source_revision.clone(),
@@ -2913,7 +2913,7 @@ impl QuickFS {
                 .into_iter()
                 .filter(|entry| self.in_view(&entry.path))
                 .map(|entry| RecordIndexEntryV1 {
-                    record_id: entry.record_id,
+                    document_id: entry.document_id,
                     path: entry.path,
                     is_dir: entry.is_dir,
                 })
@@ -3022,9 +3022,9 @@ impl QuickFS {
         (bytes.len() <= fs_protocol::projection::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
     }
 
-    fn record_index_by_id_v2(&self, record_id: fs_protocol::FileRecordId) -> Option<Vec<u8>> {
+    fn record_index_by_id_v2(&self, document_id: fs_protocol::FileDocumentId) -> Option<Vec<u8>> {
         let index = self.acl_visible_record_index()?;
-        let entry = index.by_id.get(&record_id)?.clone();
+        let entry = index.by_id.get(&document_id)?.clone();
         let projection = fs_protocol::projection::RecordIndexExactV2 {
             schema_version: RECORD_INDEX_V2_VERSION,
             revision: index.revision.clone(),
@@ -3045,8 +3045,8 @@ impl QuickFS {
     ) -> Result<Vec<u8>, i32> {
         self.check_access(ino, Access::Read)?;
         self.history.as_ref().ok_or(libc::ENOTSUP)?;
-        let record_id = self.ns().record_id_for(ino).ok_or(ENOENT)?;
-        let (version, _) = self.ns().record_version(record_id, version_id);
+        let document_id = self.ns().document_id_for(ino).ok_or(ENOENT)?;
+        let (version, _) = self.ns().record_version(document_id, version_id);
         let version = version.ok_or(EINVAL)?;
         let Some(content_hash) = version.content_hash else {
             return Ok(Vec::new());
@@ -3074,10 +3074,10 @@ impl QuickFS {
     fn history_merge_preflight(&self, ino: u64, conflict_id: uuid::Uuid) -> Result<Vec<u8>, i32> {
         self.check_access(ino, Access::Read)?;
         self.history.as_ref().ok_or(libc::ENOTSUP)?;
-        let (record_id, source_name) = {
+        let (document_id, source_name) = {
             let namespace = self.ns();
             (
-                namespace.record_id_for(ino).ok_or(ENOENT)?,
+                namespace.document_id_for(ino).ok_or(ENOENT)?,
                 namespace.file_name_for(ino).ok_or(EIO)?,
             )
         };
@@ -3091,7 +3091,7 @@ impl QuickFS {
         if !matches!(extension.as_str(), "txt" | "qdoc" | "tilo-doc") {
             return Err(libc::ENOTSUP);
         }
-        let state = self.ns().record_history(record_id).ok_or(EINVAL)?;
+        let state = self.ns().record_history(document_id).ok_or(EINVAL)?;
         let conflict = state
             .conflicts
             .iter()
@@ -3218,17 +3218,17 @@ impl QuickFS {
             return Err(libc::ENOTSUP);
         }
         let actor = self.history.as_ref().ok_or(libc::ENOTSUP)?;
-        let (record_id, expected_revision) = {
+        let (document_id, expected_revision) = {
             let namespace = self.ns();
             (
-                namespace.record_id_for(ino).ok_or(ENOENT)?,
+                namespace.document_id_for(ino).ok_or(ENOENT)?,
                 namespace.observed_content_revision(ino).ok_or(EIO)?,
             )
         };
-        if expected_revision.record_id != record_id {
+        if expected_revision.document_id != document_id {
             return Err(EIO);
         }
-        let state = self.ns().record_history(record_id).ok_or(EINVAL)?;
+        let state = self.ns().record_history(document_id).ok_or(EINVAL)?;
         let conflict = state
             .conflicts
             .iter()
@@ -3281,7 +3281,7 @@ impl QuickFS {
         let timestamp_ms = now_ms();
         let result_version = fs_protocol::FileVersionV1 {
             id: fs_protocol::FileVersionId::new(),
-            record_id,
+            document_id,
             parents,
             actor: *actor,
             timestamp_ms,
@@ -3301,7 +3301,7 @@ impl QuickFS {
 
         let converged = fs_protocol::ContentRevisionV1 {
             schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            record_id,
+            document_id,
             version_id: result_version.id,
             content_hash: result_snapshot.content_hash,
             byte_len: result_snapshot.byte_len,
@@ -3313,9 +3313,9 @@ impl QuickFS {
                 .append_version(result_version.clone())
                 .map_err(|_| EIO)?;
             namespace
-                .resolve_history_conflict(record_id, conflict_id, &resolution)
+                .resolve_history_conflict(document_id, conflict_id, &resolution)
                 .map_err(|_| EIO)?;
-            if namespace.record_id_for(ino) != Some(record_id)
+            if namespace.document_id_for(ino) != Some(document_id)
                 || namespace.observed_content_revision(ino) != Some(expected_revision)
             {
                 return Err(EBUSY);
@@ -3329,7 +3329,7 @@ impl QuickFS {
         self.publish();
         if let Some(registry) = &self.availability {
             let mut registry = registry.lock_recover();
-            if let Some(mut record) = registry.get(record_id).cloned() {
+            if let Some(mut record) = registry.get(document_id).cloned() {
                 record.current_version = Some(converged.version_id);
                 registry.put(record).map_err(|_| EIO)?;
             }
@@ -3350,16 +3350,16 @@ impl QuickFS {
     ) -> Result<(), i32> {
         let actor = self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let workspace_id = self.mount_workspace()?;
-        let (record_id, current_revision, parent_record, source_name) = {
+        let (document_id, current_revision, parent_record, source_name) = {
             let mut namespace = self.ns();
-            let record_id = namespace.record_id_for(ino).ok_or(ENOENT)?;
+            let document_id = namespace.document_id_for(ino).ok_or(ENOENT)?;
             let current = namespace.observed_content_revision(ino).ok_or(EIO)?;
             let parent = namespace
                 .parent_ino(ino)
-                .and_then(|parent| namespace.record_id_for(parent))
+                .and_then(|parent| namespace.document_id_for(parent))
                 .ok_or(EIO)?;
             let name = namespace.file_name_for(ino).ok_or(EIO)?;
-            (record_id, current, parent, name)
+            (document_id, current, parent, name)
         };
         let extension = std::str::from_utf8(source_name.as_bytes())
             .ok()
@@ -3371,7 +3371,7 @@ impl QuickFS {
         if !matches!(extension.as_str(), "txt" | "qdoc" | "tilo-doc") {
             return Err(libc::ENOTSUP);
         }
-        let state = self.ns().record_history(record_id).ok_or(EINVAL)?;
+        let state = self.ns().record_history(document_id).ok_or(EINVAL)?;
         let conflict = state
             .conflicts
             .iter()
@@ -3380,7 +3380,7 @@ impl QuickFS {
         let result_id = fs_protocol::FileVersionId(merge_uuid(
             b"result",
             workspace_id,
-            record_id,
+            document_id,
             conflict_id,
             &conflict.versions,
             *actor,
@@ -3497,7 +3497,7 @@ impl QuickFS {
         }
         let proposed_version = fs_protocol::FileVersionV1 {
             id: result_id,
-            record_id,
+            document_id,
             parents,
             actor: *actor,
             timestamp_ms,
@@ -3506,12 +3506,12 @@ impl QuickFS {
             provenance: fs_protocol::FileProvenance::ConflictResolution,
         };
         let mut participant = fs_protocol::FileMutationParticipant {
-            record_id,
+            document_id,
             role: fs_protocol::FileMutationParticipantRole::MergeSource,
             expected_version: current_revision.version_id,
             proposed_binding: fs_protocol::FileBindingV1 {
                 schema_version: fs_protocol::FILE_BINDING_VERSION,
-                record_id,
+                document_id,
                 parent: Some(parent_record),
                 name: source_name.clone(),
                 kind: fs_protocol::FileNodeKind::File,
@@ -3521,7 +3521,7 @@ impl QuickFS {
             },
             proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
                 schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                record_id,
+                document_id,
                 version_id: result_id,
                 content_hash: snapshot.content_hash,
                 byte_len: snapshot.byte_len,
@@ -3544,7 +3544,7 @@ impl QuickFS {
             transaction_id: merge_uuid(
                 b"transaction",
                 workspace_id,
-                record_id,
+                document_id,
                 conflict_id,
                 &conflict.versions,
                 *actor,
@@ -3553,7 +3553,7 @@ impl QuickFS {
             actor: *actor,
             timestamp_ms,
             operation: fs_protocol::FileMutationOperation::MergeContentConflict {
-                source_record: record_id,
+                source_record: document_id,
                 parent_record,
                 source_name,
                 conflict_id,
@@ -3589,10 +3589,10 @@ impl QuickFS {
         let workspace_id = self.mount_workspace()?;
         let (source_record, current_revision, parent_record, source_name, source_path) = {
             let mut namespace = self.ns();
-            let source_record = namespace.record_id_for(ino).ok_or(ENOENT)?;
+            let source_record = namespace.document_id_for(ino).ok_or(ENOENT)?;
             let current_revision = namespace.observed_content_revision(ino).ok_or(EIO)?;
             let parent_ino = namespace.parent_ino(ino).ok_or(EIO)?;
-            let parent_record = namespace.record_id_for(parent_ino).ok_or(EIO)?;
+            let parent_record = namespace.document_id_for(parent_ino).ok_or(EIO)?;
             let source_path = namespace.path_for(ino).ok_or(EIO)?;
             let source_name = namespace.file_name_for(ino).ok_or(EIO)?;
             (
@@ -3613,7 +3613,7 @@ impl QuickFS {
                 *actor,
             )
         };
-        let target_record = fs_protocol::FileRecordId(derive(b"target-record"));
+        let target_record = fs_protocol::FileDocumentId(derive(b"target-record"));
         let target_version_id = fs_protocol::FileVersionId(derive(b"target-version"));
         let result_version_id = fs_protocol::FileVersionId(derive(b"source-result"));
         let transaction_id = derive(b"transaction");
@@ -3626,7 +3626,10 @@ impl QuickFS {
         if let Some(resolution) = &conflict.resolution {
             return if resolution.strategy == fs_protocol::ConflictStrategy::KeepBoth
                 && resolution.result == result_version_id
-                && self.ns().ensure_ino_for_record_id(target_record).is_some()
+                && self
+                    .ns()
+                    .ensure_ino_for_document_id(target_record)
+                    .is_some()
             {
                 Ok(())
             } else {
@@ -3702,7 +3705,7 @@ impl QuickFS {
         }
         let source_version = fs_protocol::FileVersionV1 {
             id: result_version_id,
-            record_id: source_record,
+            document_id: source_record,
             parents,
             actor: *actor,
             timestamp_ms,
@@ -3712,7 +3715,7 @@ impl QuickFS {
         };
         let target_version = fs_protocol::FileVersionV1 {
             id: target_version_id,
-            record_id: target_record,
+            document_id: target_record,
             parents: Vec::new(),
             actor: *actor,
             timestamp_ms,
@@ -3721,12 +3724,12 @@ impl QuickFS {
             provenance: fs_protocol::FileProvenance::Create,
         };
         let mut source_participant = fs_protocol::FileMutationParticipant {
-            record_id: source_record,
+            document_id: source_record,
             role: fs_protocol::FileMutationParticipantRole::KeepBothSource,
             expected_version: current_revision.version_id,
             proposed_binding: fs_protocol::FileBindingV1 {
                 schema_version: fs_protocol::FILE_BINDING_VERSION,
-                record_id: source_record,
+                document_id: source_record,
                 parent: Some(parent_record),
                 name: source_name.clone(),
                 kind: fs_protocol::FileNodeKind::File,
@@ -3736,7 +3739,7 @@ impl QuickFS {
             },
             proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
                 schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                record_id: source_record,
+                document_id: source_record,
                 version_id: result_version_id,
                 content_hash: current.content_hash,
                 byte_len: current_revision.byte_len,
@@ -3749,12 +3752,12 @@ impl QuickFS {
             .computed_projection_hash()
             .map_err(|_| EIO)?;
         let mut sibling_participant = fs_protocol::FileMutationParticipant {
-            record_id: target_record,
+            document_id: target_record,
             role: fs_protocol::FileMutationParticipantRole::KeepBothSibling,
             expected_version: selected_version,
             proposed_binding: fs_protocol::FileBindingV1 {
                 schema_version: fs_protocol::FILE_BINDING_VERSION,
-                record_id: target_record,
+                document_id: target_record,
                 parent: Some(parent_record),
                 name: target_name.clone(),
                 kind: fs_protocol::FileNodeKind::File,
@@ -3764,7 +3767,7 @@ impl QuickFS {
             },
             proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
                 schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                record_id: target_record,
+                document_id: target_record,
                 version_id: target_version_id,
                 content_hash: selected.content_hash,
                 byte_len: selected_len,
@@ -3777,7 +3780,7 @@ impl QuickFS {
             .computed_projection_hash()
             .map_err(|_| EIO)?;
         let mut participants = vec![source_participant, sibling_participant];
-        participants.sort_by_key(|participant| participant.record_id);
+        participants.sort_by_key(|participant| participant.document_id);
         let manifest = fs_protocol::FileMutationTransactionManifest {
             schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
             transaction_id,
@@ -3814,9 +3817,9 @@ impl QuickFS {
     )]
     fn availability_for(&self, ino: u64) -> Option<Vec<u8>> {
         let registry = self.availability.as_ref()?;
-        let (record_id, kind, parent, size, ancestry) = {
+        let (document_id, kind, parent, size, ancestry) = {
             let mut ns = self.ns();
-            let record_id = ns.record_id_for(ino)?;
+            let document_id = ns.document_id_for(ino)?;
             let attr = ns.getattr(ino)?;
             let kind = if attr.kind == FileType::Directory {
                 RecordKind::Directory
@@ -3825,16 +3828,16 @@ impl QuickFS {
             };
             let parent = ns
                 .parent_ino(ino)
-                .and_then(|parent_ino| ns.record_id_for(parent_ino));
+                .and_then(|parent_ino| ns.document_id_for(parent_ino));
             let ancestry = record_ancestry(&mut ns, ino)?;
-            (record_id, kind, parent, attr.size, ancestry)
+            (document_id, kind, parent, attr.size, ancestry)
         };
         let (mut record, effective_policy) = {
             let registry = registry.lock_recover();
             let record = registry
-                .get(record_id)
+                .get(document_id)
                 .cloned()
-                .unwrap_or_else(|| RecordAvailability::new(record_id, kind));
+                .unwrap_or_else(|| RecordAvailability::new(document_id, kind));
             (record, inherited_policy(&registry, &ancestry))
         };
         record.parent = parent;
@@ -3865,7 +3868,7 @@ impl QuickFS {
             let mut ancestry = Vec::new();
             let mut cursor = Some(ino);
             while let Some(current_ino) = cursor {
-                let current_id = ns.record_id_for(current_ino).ok_or(ENOENT)?;
+                let current_id = ns.document_id_for(current_ino).ok_or(ENOENT)?;
                 let attr = ns.getattr(current_ino).ok_or(ENOENT)?;
                 let kind = if attr.kind == FileType::Directory {
                     RecordKind::Directory
@@ -3873,7 +3876,7 @@ impl QuickFS {
                     RecordKind::File
                 };
                 let parent_ino = ns.parent_ino(current_ino);
-                let parent = parent_ino.and_then(|parent_ino| ns.record_id_for(parent_ino));
+                let parent = parent_ino.and_then(|parent_ino| ns.document_id_for(parent_ino));
                 ancestry.push((current_id, kind, parent));
                 cursor = parent_ino;
             }
@@ -3901,19 +3904,19 @@ impl QuickFS {
     fn retry_transfer(&self, ino: u64) -> Result<(), i32> {
         self.check_access(ino, Access::Read)?;
         let registry = self.availability.as_ref().ok_or(libc::ENOTSUP)?.clone();
-        let (record_id, hash, size) = {
+        let (document_id, hash, size) = {
             let namespace = self.ns();
-            let record_id = namespace.record_id_for(ino).ok_or(ENOENT)?;
+            let document_id = namespace.document_id_for(ino).ok_or(ENOENT)?;
             let hash = namespace.hash_for(ino);
             let size = namespace.getattr(ino).ok_or(ENOENT)?.size;
-            (record_id, hash, size)
+            (document_id, hash, size)
         };
         let scheduled_by_pin_worker = {
             let mut registry = registry.lock_recover();
             let mut record = registry
-                .get(record_id)
+                .get(document_id)
                 .cloned()
-                .unwrap_or_else(|| RecordAvailability::new(record_id, RecordKind::File));
+                .unwrap_or_else(|| RecordAvailability::new(document_id, RecordKind::File));
             if record.transfer.phase.is_active() {
                 return Err(libc::EALREADY);
             }
@@ -3939,7 +3942,7 @@ impl QuickFS {
             registry.put(record).map_err(|_| EIO)?;
             self.pinned_hydration.is_some()
                 && matches!(
-                    registry.effective_policy(record_id),
+                    registry.effective_policy(document_id),
                     Ok(Some(AvailabilityPolicy::Pinned))
                 )
         };
@@ -3953,7 +3956,7 @@ impl QuickFS {
 
         let hydrator = self.hydrator.clone();
         self.hydrator.runtime_handle.spawn(async move {
-            update_retry_state(&registry, record_id, |record| {
+            update_retry_state(&registry, document_id, |record| {
                 record.transfer.phase = TransferPhase::Downloading;
             });
             let mut last_persisted = 0_u64;
@@ -3970,7 +3973,7 @@ impl QuickFS {
                             return;
                         }
                         last_persisted = completed_bytes;
-                        update_retry_state(&registry, record_id, |record| {
+                        update_retry_state(&registry, document_id, |record| {
                             record.transfer.phase = TransferPhase::Downloading;
                             record.transfer.progress = Some(fs_protocol::TransferProgress {
                                 completed_bytes,
@@ -3981,7 +3984,7 @@ impl QuickFS {
                 )
                 .await
             {
-                Ok(true) => update_retry_state(&registry, record_id, |record| {
+                Ok(true) => update_retry_state(&registry, document_id, |record| {
                     record.residency = Residency::Resident { bytes: size };
                     record.transfer.phase = TransferPhase::Idle;
                     record.transfer.progress = None;
@@ -3990,7 +3993,7 @@ impl QuickFS {
                     record.transfer.retry_at_ms = None;
                     record.freshness.local_verified_at_ms = Some(now_ms());
                 }),
-                Ok(false) => update_retry_state(&registry, record_id, |record| {
+                Ok(false) => update_retry_state(&registry, document_id, |record| {
                     record.transfer.phase = TransferPhase::Idle;
                     record.transfer.progress = None;
                     record.transfer.last_error = Some(crate::availability::TransferError {
@@ -4000,7 +4003,7 @@ impl QuickFS {
                     record.transfer.retry_count = 1;
                     record.transfer.retry_at_ms = None;
                 }),
-                Err(_) => update_retry_state(&registry, record_id, |record| {
+                Err(_) => update_retry_state(&registry, document_id, |record| {
                     record.transfer.phase = TransferPhase::Idle;
                     record.transfer.progress = None;
                     record.transfer.last_error = Some(crate::availability::TransferError {
@@ -4019,22 +4022,22 @@ impl QuickFS {
     /// local until an exact backend observation proves every requested blob absent.
     fn free_local_space(&self, ino: u64, mode: EvictionMode) -> Result<(), i32> {
         self.check_access(ino, Access::Read)?;
-        let record_id = self.ns().record_id_for(ino).ok_or(ENOENT)?;
-        let request_id = self.prepare_eviction_request(record_id, mode, None)?;
-        self.spawn_eviction_observer(record_id, request_id)?;
+        let document_id = self.ns().document_id_for(ino).ok_or(ENOENT)?;
+        let request_id = self.prepare_eviction_request(document_id, mode, None)?;
+        self.spawn_eviction_observer(document_id, request_id)?;
         Ok(())
     }
 
     fn prepare_eviction_request(
         &self,
-        record_id: fs_protocol::FileRecordId,
+        document_id: fs_protocol::FileDocumentId,
         mode: EvictionMode,
         existing_request: Option<EvictionRequestId>,
     ) -> Result<EvictionRequestId, i32> {
         let coordinator = self.eviction_coordinator()?;
         self.hydrator.block_on(async {
             coordinator
-                .prepare(record_id, mode, existing_request, None)
+                .prepare(document_id, mode, existing_request, None)
                 .await
                 .map(|(request_id, _)| request_id)
                 .map_err(|_| EBUSY)
@@ -4043,11 +4046,11 @@ impl QuickFS {
 
     fn spawn_eviction_observer(
         &self,
-        record_id: fs_protocol::FileRecordId,
+        document_id: fs_protocol::FileDocumentId,
         request_id: EvictionRequestId,
     ) -> Result<(), i32> {
         self.eviction_coordinator()?
-            .spawn_observer(record_id, request_id);
+            .spawn_observer(document_id, request_id);
         Ok(())
     }
 
@@ -4078,7 +4081,7 @@ impl QuickFS {
                 if let Ok(coordinator) = self.eviction_coordinator() {
                     let _ = self
                         .hydrator
-                        .block_on(coordinator.observe_once(request.record_id, request.id));
+                        .block_on(coordinator.observe_once(request.document_id, request.id));
                 }
                 continue;
             }
@@ -4091,9 +4094,11 @@ impl QuickFS {
                 );
                 continue;
             }
-            match self.prepare_eviction_request(request.record_id, request.mode, Some(request.id)) {
+            match self.prepare_eviction_request(request.document_id, request.mode, Some(request.id))
+            {
                 Ok(request_id) => {
-                    if let Err(error) = self.spawn_eviction_observer(request.record_id, request_id)
+                    if let Err(error) =
+                        self.spawn_eviction_observer(request.document_id, request_id)
                     {
                         eprintln!("could not resume eviction observation: errno {error}");
                     }
@@ -4113,7 +4118,7 @@ impl QuickFS {
     ) -> bool {
         let namespace = self.ns();
         namespace.live_node_ids().into_iter().any(|node_id| {
-            namespace.record_id_for_id(&node_id) == Some(request.record_id)
+            namespace.document_id_for_id(&node_id) == Some(request.document_id)
                 && namespace
                     .content_revision_for_id(&node_id)
                     .is_some_and(|revision| revision.version_id == request.version_id)
@@ -4624,7 +4629,7 @@ impl QuickFS {
                 return Err(io::Error::from_raw_os_error(EBUSY));
             }
             if let Some(fence) = fence
-                && let Some(record) = ns.record_id_for(ino)
+                && let Some(record) = ns.document_id_for(ino)
                 && !ns.put_version_fence(record, hash.map(|h| *h.as_bytes()), byte_len, fence)
             {
                 return Err(io::Error::other("could not tag the version with its lease"));
@@ -4840,11 +4845,11 @@ fn child_path(dir: &str, name: &[u8]) -> String {
 
 fn update_retry_state(
     registry: &Arc<Mutex<AvailabilityRegistry>>,
-    record_id: fs_protocol::FileRecordId,
+    document_id: fs_protocol::FileDocumentId,
     update: impl FnOnce(&mut RecordAvailability),
 ) {
     let mut registry = registry.lock_recover();
-    let Some(mut record) = registry.get(record_id).cloned() else {
+    let Some(mut record) = registry.get(document_id).cloned() else {
         return;
     };
     update(&mut record);
@@ -4863,9 +4868,9 @@ fn pinned_candidates(
     let mut candidates = Vec::new();
     {
         let namespace = namespace.lock_recover();
-        if let Some(record_id) = namespace.record_id_for(crate::namespace::ROOT_INO) {
+        if let Some(document_id) = namespace.document_id_for(crate::namespace::ROOT_INO) {
             candidates.push(PinnedCandidate {
-                record_id,
+                document_id,
                 parent: None,
                 kind: RecordKind::Directory,
                 version: None,
@@ -4882,8 +4887,8 @@ fn pinned_candidates(
                 continue;
             };
             candidates.push(PinnedCandidate {
-                record_id: entry.record_id,
-                parent: namespace.record_id_for_id(&entry.parent),
+                document_id: entry.document_id,
+                parent: namespace.document_id_for_id(&entry.parent),
                 kind: if namespace.node_is_dir(&id) == Some(true) {
                     RecordKind::Directory
                 } else {
@@ -4913,7 +4918,7 @@ fn update_candidate_state(
     update: impl FnOnce(&mut RecordAvailability),
 ) {
     let mut registry = registry.lock_recover();
-    let Some(mut record) = registry.get(candidate.record_id).cloned() else {
+    let Some(mut record) = registry.get(candidate.document_id).cloned() else {
         return;
     };
     if record.current_version != candidate.version {
@@ -4925,16 +4930,16 @@ fn update_candidate_state(
     }
 }
 
-/// Whether a pin covers `record_id` once this pass records the namespace's topology: the walk
+/// Whether a pin covers `document_id` once this pass records the namespace's topology: the walk
 /// follows each visible candidate's current parent, and the registry's recorded parent above
 /// them.
 fn covered_by_pin(
     registry: &AvailabilityRegistry,
-    parents: &HashMap<fs_protocol::FileRecordId, Option<fs_protocol::FileRecordId>>,
-    record_id: fs_protocol::FileRecordId,
+    parents: &HashMap<fs_protocol::FileDocumentId, Option<fs_protocol::FileDocumentId>>,
+    document_id: fs_protocol::FileDocumentId,
 ) -> bool {
     let mut seen = std::collections::HashSet::new();
-    let mut cursor = Some(record_id);
+    let mut cursor = Some(document_id);
     while let Some(id) = cursor {
         if !seen.insert(id) {
             return false;
@@ -4960,7 +4965,7 @@ fn topology_update(
 ) -> Option<RecordAvailability> {
     let mut record = current
         .cloned()
-        .unwrap_or_else(|| RecordAvailability::new(candidate.record_id, candidate.kind));
+        .unwrap_or_else(|| RecordAvailability::new(candidate.document_id, candidate.kind));
     let version_changed = record.current_version != candidate.version;
     let mut changed =
         current.is_none() || record.kind != candidate.kind || record.parent != candidate.parent;
@@ -5059,14 +5064,14 @@ struct PinnedPassPlan {
 fn plan_pinned_pass(
     registry: &mut AvailabilityRegistry,
     candidates: &[PinnedCandidate],
-    probes: &HashMap<fs_protocol::FileRecordId, PinnedProbe>,
+    probes: &HashMap<fs_protocol::FileDocumentId, PinnedProbe>,
     observed_at: u64,
 ) -> PinnedPassPlan {
     let mut plan = PinnedPassPlan::default();
     let mut unparented = 0_usize;
     for candidate in candidates {
         let Some(record) =
-            topology_update(registry.get(candidate.record_id), candidate, observed_at)
+            topology_update(registry.get(candidate.document_id), candidate, observed_at)
         else {
             continue;
         };
@@ -5091,11 +5096,11 @@ fn plan_pinned_pass(
         .iter()
         .filter(|candidate| candidate.kind == RecordKind::File && candidate.hash.is_some())
     {
-        let Some(current) = registry.get(candidate.record_id).cloned() else {
+        let Some(current) = registry.get(candidate.document_id).cloned() else {
             continue;
         };
         let pinned = matches!(
-            registry.effective_policy(candidate.record_id),
+            registry.effective_policy(candidate.document_id),
             Ok(Some(AvailabilityPolicy::Pinned))
         );
         if !pinned {
@@ -5112,7 +5117,7 @@ fn plan_pinned_pass(
             }
             continue;
         }
-        let Some(probe) = probes.get(&candidate.record_id).copied() else {
+        let Some(probe) = probes.get(&candidate.document_id).copied() else {
             continue;
         };
         let (update, due) = pinned_state_update(&current, candidate, probe, observed_at);
@@ -5122,7 +5127,7 @@ fn plan_pinned_pass(
         }
         if !matches!(probe, PinnedProbe::Missing { .. })
             || registry
-                .get(candidate.record_id)
+                .get(candidate.document_id)
                 .is_none_or(|record| record.transfer.phase != TransferPhase::Queued)
         {
             continue;
@@ -5134,7 +5139,7 @@ fn plan_pinned_pass(
                 plan.outcome.more_due = true;
             }
         } else if let Some(retry_at) = registry
-            .get(candidate.record_id)
+            .get(candidate.document_id)
             .and_then(|record| record.transfer.retry_at_ms)
         {
             plan.outcome.next_retry_at_ms = Some(
@@ -5153,7 +5158,7 @@ fn plan_pinned_pass(
 fn commit_pinned_pass(
     registry: &Arc<Mutex<AvailabilityRegistry>>,
     candidates: &[PinnedCandidate],
-    probes: &HashMap<fs_protocol::FileRecordId, PinnedProbe>,
+    probes: &HashMap<fs_protocol::FileDocumentId, PinnedProbe>,
     observed_at: u64,
 ) -> PinnedPassPlan {
     let mut registry = registry.lock_recover();
@@ -5167,14 +5172,14 @@ fn commit_pinned_pass(
         );
         let mut rejected = std::collections::HashSet::new();
         for record in std::mem::take(&mut plan.writes) {
-            let record_id = record.record_id;
+            let document_id = record.document_id;
             if let Err(error) = registry.put(record) {
                 eprintln!("could not reconcile pinned record: {error}");
-                rejected.insert(record_id);
+                rejected.insert(document_id);
             }
         }
         plan.fetches
-            .retain(|candidate| !rejected.contains(&candidate.record_id));
+            .retain(|candidate| !rejected.contains(&candidate.document_id));
     }
     plan
 }
@@ -5212,14 +5217,14 @@ async fn reconcile_pinned_hydration(
         let registry = registry.lock_recover();
         let parents = candidates
             .iter()
-            .map(|candidate| (candidate.record_id, candidate.parent))
+            .map(|candidate| (candidate.document_id, candidate.parent))
             .collect::<HashMap<_, _>>();
         candidates
             .iter()
             .filter(|candidate| {
                 candidate.kind == RecordKind::File
                     && candidate.hash.is_some()
-                    && covered_by_pin(&registry, &parents, candidate.record_id)
+                    && covered_by_pin(&registry, &parents, candidate.document_id)
             })
             .cloned()
             .collect::<Vec<_>>()
@@ -5249,7 +5254,7 @@ async fn reconcile_pinned_hydration(
                     .min(candidate.size),
             }
         };
-        probes.insert(candidate.record_id, probe);
+        probes.insert(candidate.document_id, probe);
     }
 
     let plan = commit_pinned_pass(&registry, &candidates, &probes, observed_at);
@@ -5414,13 +5419,13 @@ fn pinned_candidate_is_current(
 ) -> bool {
     let pinned = registry
         .lock_recover()
-        .effective_policy(candidate.record_id)
+        .effective_policy(candidate.document_id)
         .is_ok_and(|policy| policy == Some(AvailabilityPolicy::Pinned));
     if !pinned {
         return false;
     }
     let namespace = namespace.lock_recover();
-    let Some(ino) = namespace.ino_for_record_id(candidate.record_id) else {
+    let Some(ino) = namespace.ino_for_document_id(candidate.document_id) else {
         return false;
     };
     namespace
@@ -6222,10 +6227,10 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(collab_types::record::RECORD_ID_XATTR) {
-            let record_id = self.ns().record_id_for(ino.0);
-            match record_id {
-                Some(record_id) => reply_xattr_bytes(reply, record_id.0.as_bytes(), size),
+        if name.to_str() == Some(collab_types::document::DOCUMENT_ID_XATTR) {
+            let document_id = self.ns().document_id_for(ino.0);
+            match document_id {
+                Some(document_id) => reply_xattr_bytes(reply, document_id.0.as_bytes(), size),
                 None => reply.error(to_errno(libc::ENODATA)),
             }
             return;
@@ -6280,19 +6285,19 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if let Some(record_id) = name
+        if let Some(document_id) = name
             .to_str()
             .and_then(|name| {
                 name.strip_prefix(fs_protocol::projection::RECORD_INDEX_BY_ID_XATTR_PREFIX)
             })
             .and_then(|value| uuid::Uuid::parse_str(value).ok())
-            .map(fs_protocol::FileRecordId)
+            .map(fs_protocol::FileDocumentId)
         {
             if ino.0 != crate::namespace::ROOT_INO {
                 reply.error(to_errno(libc::ENODATA));
                 return;
             }
-            match self.record_index_by_id_v2(record_id) {
+            match self.record_index_by_id_v2(document_id) {
                 Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
                 None => reply.error(to_errno(libc::ENODATA)),
             }
@@ -6406,8 +6411,8 @@ impl Filesystem for QuickFS {
             buf.extend_from_slice(fs_protocol::CONTENT_HASH_XATTR.as_bytes());
             buf.push(0);
         }
-        if self.ns().record_id_for(ino.0).is_some() {
-            buf.extend_from_slice(collab_types::record::RECORD_ID_XATTR.as_bytes());
+        if self.ns().document_id_for(ino.0).is_some() {
+            buf.extend_from_slice(collab_types::document::DOCUMENT_ID_XATTR.as_bytes());
             buf.push(0);
         }
         if self.metadata_projection_for(ino.0).is_some() {
@@ -6427,7 +6432,7 @@ impl Filesystem for QuickFS {
             buf.push(0);
         }
 
-        if self.history.is_some() && self.ns().record_id_for(ino.0).is_some() {
+        if self.history.is_some() && self.ns().document_id_for(ino.0).is_some() {
             buf.extend_from_slice(fs_protocol::HISTORY_XATTR.as_bytes());
             buf.push(0);
             buf.extend_from_slice(fs_protocol::HISTORY_CONTROL_XATTR.as_bytes());

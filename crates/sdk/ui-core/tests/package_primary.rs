@@ -1,6 +1,6 @@
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use tilo_ui::portable_storage::{PortableStorage, StorageKey};
-use tilo_ui::record::{RecordCheckout, RecordId, RecordKind, RecordOwners};
+use tilo_ui::record::{DocumentCheckout, DocumentId, RecordOwners, ResourceType};
 
 tilo_test_env::scenario! {
     fn a_package_primary_record_is_shared_admitted_and_partitioned;
@@ -8,7 +8,7 @@ tilo_test_env::scenario! {
     phase primary_owner_is_shared_and_keeps_recordless_wire_identity;
     {
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let checkout = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
+        let checkout = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
         let a = RecordOwners::portable(cache.clone())
             .open("so.tilo.chat", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
             .unwrap();
@@ -53,7 +53,7 @@ tilo_test_env::scenario! {
                 .iter()
                 .any(|w| matches!(w.key, StorageKey::Primary { .. }))
         );
-        assert_ne!(checkout.id, RecordId::for_tab(1));
+        assert_ne!(checkout.id, DocumentId::for_tab(1));
     }
 
     phase native_primary_directory_matches_existing_workspace_document;
@@ -81,7 +81,7 @@ tilo_test_env::scenario! {
         let store = RecordOwners::new(root.path().into())
             .open(package, workspace_id)
             .unwrap();
-        let checkout = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
+        let checkout = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
         store.try_open_record(&checkout).unwrap();
         let original = AutoCommit::load(&bytes).unwrap();
         assert_eq!(
@@ -102,12 +102,12 @@ tilo_test_env::scenario! {
     phase primary_admission_rejects_stamped_records_and_wire_parse_rejects_internal_key;
     {
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let checkout = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
-        assert!(RecordId::parse(checkout.id.as_str()).is_none());
+        let checkout = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
+        assert!(DocumentId::parse(checkout.id.as_str()).is_none());
         let mut doc = AutoCommit::new();
         tilo_ui::record::init_scoped(
             &mut doc,
-            &RecordId::for_tab(7),
+            &DocumentId::for_tab(7),
             &checkout.kind,
             "workspace",
             Some("workspace"),
@@ -135,7 +135,7 @@ tilo_test_env::scenario! {
     phase primary_custody_is_partitioned_by_package_workspace_and_kind;
     {
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let checkout = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
+        let checkout = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
         let mut owners = RecordOwners::portable(cache);
         let a = owners.open("so.tilo.chat", "workspace-a").unwrap();
         a.reserve_record(&checkout)
@@ -157,7 +157,7 @@ tilo_test_env::scenario! {
                 .is_err()
         );
         assert!(
-            a.try_open_record(&RecordCheckout::package_primary(RecordKind::new(
+            a.try_open_record(&DocumentCheckout::package_primary(ResourceType::new(
                 "wrong.kind"
             )))
             .is_err()

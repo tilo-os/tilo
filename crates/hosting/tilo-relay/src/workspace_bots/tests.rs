@@ -163,7 +163,7 @@ async fn post_with(
         .unwrap();
     let mut held = Vec::new();
     for (app, record) in workspaces.record_routes(workspace).await.unwrap() {
-        let Some(part) = ui::record::RecordId::parse(&record)
+        let Some(part) = ui::record::DocumentId::parse(&record)
             .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
         else {
             continue;
@@ -184,7 +184,7 @@ async fn post_with(
             author,
             ReplicaActor::Owner,
             Seed::Existing {
-                record: ui::record::RecordId::package_primary(),
+                record: ui::record::DocumentId::package_primary(),
                 changes: vec![chat],
             },
         )
@@ -474,12 +474,12 @@ async fn an_installed_bot_answers_a_post_in_the_workspace_once() {
     assert_eq!(
         reports.len(),
         1,
-        "{reports:?}, not run: {:?}",
+        "{reports:?}, not invocation: {:?}",
         runner.dead_letters().collect::<Vec<_>>()
     );
     assert_eq!(
         reports[0].outcome,
-        tilo_automation::RunOutcome::Completed,
+        tilo_automation::InvocationOutcome::Completed,
         "{reports:?}"
     );
     // Its own post is a bot's, which the trigger does not count.
@@ -607,7 +607,7 @@ async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
     ada_says(&workspaces, &workspace, &cert, general.as_str(), "hello").await;
     let reports = runner.step().await.unwrap();
     assert!(
-        matches!(reports[..], [ref report] if matches!(report.outcome, tilo_automation::RunOutcome::Failed { .. })),
+        matches!(reports[..], [ref report] if matches!(report.outcome, tilo_automation::InvocationOutcome::Failed { .. })),
         "{reports:?}"
     );
     drop(runner);
@@ -742,11 +742,11 @@ async fn a_bot_step_reads_the_records_it_follows_through_the_record_api() {
     ada_says(&workspaces, &workspace, &cert, &general, "what is here?").await;
     let reports = runner.step().await.unwrap();
     let [report] = &reports[..] else {
-        panic!("one run: {reports:?}");
+        panic!("one invocation: {reports:?}");
     };
     assert_eq!(
         report.outcome,
-        tilo_automation::RunOutcome::Completed,
+        tilo_automation::InvocationOutcome::Completed,
         "{report:?}"
     );
     let read = |step: &str| {
@@ -800,7 +800,7 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
     ada_says(&workspaces, &workspace, &cert, general.as_str(), "hello").await;
     let reports = runner.step().await.unwrap();
     assert!(
-        matches!(reports[..], [ref report] if report.outcome == tilo_automation::RunOutcome::Completed),
+        matches!(reports[..], [ref report] if report.outcome == tilo_automation::InvocationOutcome::Completed),
         "the workspace admits the bridge's post: {reports:?}"
     );
     let bytes = workspaces
@@ -1041,7 +1041,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
             &hex::encode(guest_cert.user_public_key),
             ReplicaActor::Owner,
             Seed::Existing {
-                record: ui::record::RecordId::package_primary(),
+                record: ui::record::DocumentId::package_primary(),
                 changes: vec![chat],
             },
         )
@@ -1067,7 +1067,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     .await;
     let reports = runner.step().await.unwrap();
     assert!(
-        matches!(reports[..], [ref report] if report.outcome == tilo_automation::RunOutcome::Completed),
+        matches!(reports[..], [ref report] if report.outcome == tilo_automation::InvocationOutcome::Completed),
         "the workspace admits the bot's post to the sealed chat: {reports:?}"
     );
 

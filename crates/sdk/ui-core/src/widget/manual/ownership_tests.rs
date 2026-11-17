@@ -3,7 +3,7 @@ use crate::application::{ApplicationDefinition, HostContext, HostContextInputs, 
 use crate::application_view::InstanceViewStore;
 use crate::bound_dispatch::CallbackBinding;
 use crate::permissions::{MemberId, PermissionContext};
-use crate::record::{RecordKind, RecordOwners};
+use crate::record::{RecordOwners, ResourceType};
 use crate::widget::{IconDescriptor, Text};
 use std::cell::RefCell;
 struct BoundRoot {
@@ -46,7 +46,7 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
         app_id: "dev.tilo.manual-test".into(),
         title: "Manual".into(),
         icon: IconDescriptor::Glyph("M"),
-        record_kind: RecordKind::new("manual"),
+        record_kind: ResourceType::new("manual"),
         required: vec![],
         optional: vec![],
         opens: &[],

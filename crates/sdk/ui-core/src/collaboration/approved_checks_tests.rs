@@ -119,7 +119,7 @@ tilo_test_env::scenario! {
 
     phase approved_check_bridge_refuses_ambiguous_foreign_full_and_retired_routes;
     {
-        let route = format!("so.tilo.git#{}#record:project", uuid::Uuid::new_v4());
+        let route = format!("so.tilo.git#{}#document:project", uuid::Uuid::new_v4());
         let (endpoint, mut receive) = admit_for_test(route.clone()).unwrap();
         let request = Request {
             version: 1,

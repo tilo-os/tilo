@@ -228,14 +228,12 @@ impl Continuations {
             .collect()
     }
 
-    /// The record `tab`'s window shows and the kind of resource it keeps,
-    /// for the windows a person may share.
+    /// The record `tab`'s window shows, for the windows a person may share,
+    /// and the kind of resource it keeps when the window said so: a record's
+    /// id names no kind.
     pub(crate) fn window_record(&self, tab: u64) -> Option<(String, String)> {
         let record = self.shown.lock_recover().get(&tab)?.record.clone();
-        let kind = tilo_action_policy::member_record(&record)
-            .map(|(_, kind)| kind.to_owned())
-            .unwrap_or_default();
-        Some((record, kind))
+        Some((record, String::new()))
     }
 
     /// Take up what the windows' apps answered about a handoff step since the last pass: what a
@@ -511,24 +509,6 @@ mod tests {
             notes.read(&[], &notes_app(), &std::collections::BTreeSet::new());
             assert_eq!(notes.window_record(12), None);
             assert!(notes.of_workspace(workspace).is_empty());
-        }
-
-        phase a_members_record_notes_the_kind_of_resource_it_keeps;
-        {
-            let notes = Continuations::default();
-            let workspace = WorkspaceId::new();
-            let person = "abababababababababababababababababababababababababababababababab";
-            let record = tilo_action_policy::member_record_id(person, "tilo.note");
-            notes.read(
-                &held(workspace, 12, &[&record]),
-                &notes_app(),
-                &instances(&held(workspace, 12, &[&record])),
-            );
-            assert_eq!(
-                notes.window_record(12),
-                Some((record, "tilo.note".to_owned())),
-                "a person's note is shared as the note it is"
-            );
         }
     }
 }

@@ -56,25 +56,34 @@ pub(super) fn shell_with(
 /// A shell whose one window holds `windows` windows' tabs on its bar, as a strip does once the
 /// windows have been gathered into one.
 pub(super) fn one_window_shell(windows: usize) -> (DesktopSurface, DesktopHandle) {
+    tabbed_shell(windows, 0)
+}
+
+/// A shell whose first window holds `tabbed` tabs on its bar, with `alone` windows of one tab
+/// after it.
+pub(super) fn tabbed_shell(tabbed: usize, alone: usize) -> (DesktopSurface, DesktopHandle) {
     let mut minter = IdMinter::new(7);
-    let tabs = windows_tabs(&mut minter, windows);
+    let tabs = windows_tabs(&mut minter, tabbed.saturating_add(alone));
     let mut tree = seed_tree(&mut minter, "Office", tabs);
     let strip = &mut tree.workspaces[0].strips[0];
     let id = strip.window_groups[0].id;
     let tabs: Vec<Tab> = strip
         .window_groups
-        .drain(..)
+        .drain(..tabbed)
         .flat_map(|group| group.tabs)
         .collect();
     let active_tab = tabs[0].id;
-    strip.window_groups = vec![tilo_desktop_model::WindowGroup {
-        id,
-        tabs,
-        active_tab,
-        width: WindowWidth::Normal,
-        maximized: false,
-        focus_history: Vec::new(),
-    }];
+    strip.window_groups.insert(
+        0,
+        tilo_desktop_model::WindowGroup {
+            id,
+            tabs,
+            active_tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        },
+    );
     DesktopSurface::new(tree, 7, Box::new(Notices))
 }
 
@@ -121,59 +130,6 @@ fn a_window_someone_else_holds_is_not_closed_and_the_desktop_says_why() {
     handle
         .dispatch(LayoutEffect::CloseTab { tab: route.tab })
         .unwrap();
-}
-
-/// Workspace and strip edits go through the model's commands: a strip made that way is shown, and a
-/// name the model refuses changes nothing.
-#[test]
-fn workspace_and_strip_commands_run_through_the_models_reduction() {
-    use tilo_desktop_model::commands::DesktopCommand;
-    let (_surface, handle) = desktop(1);
-    let made = handle
-        .apply_command(&DesktopCommand::CreateStrip {
-            name: "Second".into(),
-        })
-        .unwrap()
-        .expect("a strip was made");
-    handle.read(|tree| {
-        let workspace = tree.active_workspace().unwrap();
-        assert_eq!(workspace.strips.len(), 2);
-        assert_eq!(tree.active_strip.get(&workspace.id()), Some(&made));
-    });
-    // A valid name is taken for the workspace's governance to record; the shell's name is the
-    // one the governance projects onto it.
-    let named = handle.read(|tree| tree.active_workspace().unwrap().name.clone());
-    handle
-        .apply_command(&DesktopCommand::RenameWorkspace {
-            name: " Lounge ".into(),
-        })
-        .unwrap();
-    assert!(
-        handle
-            .apply_command(&DesktopCommand::RenameWorkspace { name: " ".into() })
-            .is_err()
-    );
-    handle
-        .apply_command(&DesktopCommand::RemoveStrip { strip: made.0 })
-        .unwrap();
-    handle.read(|tree| {
-        let workspace = tree.active_workspace().unwrap();
-        assert_eq!(workspace.name, named);
-        assert_eq!(workspace.strips.len(), 1);
-        assert_eq!(
-            tree.active_strip.get(&workspace.id()),
-            Some(&workspace.strips[0].id)
-        );
-    });
-    // Windows change through navigation, never through this API.
-    assert!(
-        handle
-            .apply_command(&DesktopCommand::OpenApp {
-                app: "so.tilo.notes".into(),
-                beside: None,
-            })
-            .is_err()
-    );
 }
 
 /// Hover never moves a window: the pointer over a window's bar, above its top edge, on its body or
@@ -768,18 +724,16 @@ fn shared_snapshot_keeps_stream_tab_and_focus_but_applies_real_closes() {
     assert!(handle.focus_tab(stream));
     surface.update(&state, &ui::automerge::ROOT);
     let before = handle.snapshot("g", vec![]).active;
-    let named = local.workspaces[0].name.clone();
     let mut incoming = local;
     incoming.remove_tab(stream);
     incoming.remove_tab(removed);
-    // What the workspace sends carries no name: the one this shell projected stays.
-    incoming.workspaces[0].name = String::new();
+    incoming.workspaces[0].name = "Shared rename".into();
     // Reproduce the browser's inbound snapshot replacement.
     handle.replace_shared_tree(incoming, &[stream]);
     surface.update(&state, &ui::automerge::ROOT);
     assert_eq!(handle.snapshot("g", vec![]).active, before);
     handle.read(|tree| {
-        assert_eq!(tree.workspaces[0].name, named);
+        assert_eq!(tree.workspaces[0].name, "Shared rename");
         let tabs: Vec<_> = tree.workspaces[0].strips[0]
             .window_groups
             .iter()
@@ -1812,7 +1766,7 @@ fn on_clock<T>(after: Duration, step: impl FnOnce() -> T) -> T {
 }
 
 /// `count` frames of a 60 Hz display, each presented, on the clock motion runs by.
-fn play_frames(frame: &mut ui::headless::FrameHarness, count: usize) {
+pub(super) fn play_frames(frame: &mut ui::headless::FrameHarness, count: usize) {
     for _ in 0..count {
         on_clock(Duration::from_millis(16), || {
             assert!(frame.poll_frame().is_ok(), "{:?}", frame.poll_frame());
@@ -2623,7 +2577,7 @@ fn agent_opens_notes_out_of_sight(
 }
 
 /// Whether the window showing `tab` stands wholly in the shell's view.
-fn in_view(frame: &ui::headless::FrameHarness, tab: TabId) -> bool {
+pub(super) fn in_view(frame: &ui::headless::FrameHarness, tab: TabId) -> bool {
     let surface = frame.root::<DesktopSurface>();
     let viewport = surface.get_rect();
     surface.shown_row_ref().is_some_and(|row| {
@@ -2711,6 +2665,54 @@ fn revealing_a_window_scrolls_it_into_view_and_leaves_focus_alone() {
     assert!(in_view(&frame, last), "the window comes into view");
     assert_eq!(handle.snapshot("g", vec![]).active, Some(first));
     assert!(!handle.reveal_tab(9_999_999), "no window shows that tab");
+}
+
+/// A window the person moves along the strip from its menu stays wholly in view at each step: the
+/// strip follows it rather than leaving it cut at the edge.
+#[test]
+fn a_window_moved_along_the_strip_stays_in_view() {
+    let (surface, handle) = desktop(6);
+    handle.set_viewport_width(1440.0);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1440, 900),
+        Theme::dark(),
+    );
+    frame.relayout();
+    let first = handle.snapshot("g", vec![]).entries[0].route.clone();
+    let tab: TabId = first.tab.parse().unwrap();
+    assert!(handle.focus_tab(tab));
+    play_frames(&mut frame, 60);
+    for step in 1..6 {
+        handle
+            .choose_window_menu(tab, window_menu::MOVE_RIGHT, None)
+            .unwrap();
+        play_frames(&mut frame, 60);
+        assert!(in_view(&frame, tab), "in view after move {step}");
+    }
+    for step in 1..6 {
+        handle
+            .choose_window_menu(tab, window_menu::MOVE_LEFT, None)
+            .unwrap();
+        play_frames(&mut frame, 60);
+        assert!(in_view(&frame, tab), "in view after move back {step}");
+    }
+    // A window moved from its menu while another has the focus takes the focus along.
+    let last: TabId = handle.snapshot("g", vec![]).entries[5]
+        .route
+        .tab
+        .parse()
+        .unwrap();
+    assert!(
+        !in_view(&frame, last),
+        "the last window starts out of sight"
+    );
+    handle
+        .choose_window_menu(last, window_menu::MOVE_LEFT, None)
+        .unwrap();
+    play_frames(&mut frame, 60);
+    assert!(in_view(&frame, last), "the moved window comes into view");
 }
 
 /// Press, carry to `to` in small steps, and let go: the hand that drags a window.

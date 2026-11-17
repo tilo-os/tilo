@@ -397,19 +397,19 @@ mod tests {
             _: uuid::Uuid,
             _: &tilo_user_identity::DeviceCert,
         ) -> Result<(), String> {
-            Err("this fixture admits only the native seat".into())
+            Err("this fixture admits only the native device".into())
         }
     }
 
-    /// A broker serving the person at this device's own seat, with `launcher` and a durable
+    /// A broker serving the person at this device, with `launcher` and a durable
     /// journal: what the session's own control apis and palette invoke through.
-    struct NativeSeat {
+    struct NativeDevice {
         state: Arc<AppBrokerState>,
         bridge: std::sync::mpsc::Receiver<super::super::ActionDirectoryBridgeRequest>,
         caller: Caller,
         workspace_id: String,
         certificate: tilo_user_identity::DeviceCert,
-        /// The owner's policy clock the seat decides at, kept while the seat lives.
+        /// The owner's policy clock the device decides at, kept while the device lives.
         _clock: (
             crate::policy_clock::OwnerPolicyClock,
             crate::policy_clock::PolicyOrigin,
@@ -418,7 +418,7 @@ mod tests {
         _scratch: tempfile::TempDir,
     }
 
-    impl NativeSeat {
+    impl NativeDevice {
         fn new(launcher: Arc<dyn crate::services::LauncherServices>) -> Self {
             use tilo_identity_host::provisioning::{self, IdentityStorage};
             let scratch = tempfile::tempdir().unwrap();
@@ -519,8 +519,8 @@ mod tests {
         phase native_launch_and_close_keep_certified_ownership_and_signed_terminals;
         {
             let launcher = Arc::new(Ticketed::default());
-            let NativeSeat { state, bridge, caller, workspace_id, certificate, _clock, _env, _scratch } =
-                NativeSeat::new(launcher.clone());
+            let NativeDevice { state, bridge, caller, workspace_id, certificate, _clock, _env, _scratch } =
+                NativeDevice::new(launcher.clone());
             for step in 0..6 {
                 match step {
                     4 => *launcher.outcome.lock().unwrap() = Some(Ok(Launched::Unconfirmed)),
@@ -616,13 +616,13 @@ mod tests {
 
         phase the_broker_serves_its_apps_while_an_open_waits_for_the_launch;
         {
-            // The person opens an app at their seat. While the launcher makes the launch, the
+            // The person opens an app at their device. While the launcher makes the launch, the
             // broker's loop goes on: here, a task of it is what lets the launch go.
             let (entered, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
             let (release, release_rx) = std::sync::mpsc::channel();
             let held = Arc::new(Held { entered, release: Mutex::new(release_rx) });
-            let NativeSeat { state, bridge, caller, workspace_id, _clock, _env, _scratch, .. } =
-                NativeSeat::new(held);
+            let NativeDevice { state, bridge, caller, workspace_id, _clock, _env, _scratch, .. } =
+                NativeDevice::new(held);
             let directories =
                 std::rc::Rc::new(super::super::LocalActionDirectoryRegistry::new(bridge));
             let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
@@ -682,7 +682,7 @@ mod tests {
                 workspace,
                 host: journal.host(),
                 owner: super::super::InvocationOwner::Local {
-                    actor: hex::encode([41; 32]),
+                    actor: tilo_actions::MemberId::person(hex::encode([41; 32])),
                 },
                 invocation: request.invocation,
             };

@@ -120,7 +120,7 @@ pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
     (doc, autosave)
 }
 
-/// [`open_stored`] for a member's own record of an app (`member:<person>:…`),
+/// [`open_stored`] for a member's own record of an app ([`collab_types::OwnRecord`]),
 /// which may have kept its records in the workspace's record before: when this
 /// device holds no copy of the person's record yet and holds the workspace's
 /// record of the app (`workspace`), the person's record starts as that copy,

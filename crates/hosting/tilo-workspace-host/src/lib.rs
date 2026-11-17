@@ -53,7 +53,7 @@ pub mod workspaces;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 #[cfg(all(test, feature = "agents"))]
-tilo_agent_participant::app_worker!();
+tilo_agent_session::app_worker!();
 
 use tilo_relay_client::frame;
 use tilo_relay_protocol::{auth, policy};

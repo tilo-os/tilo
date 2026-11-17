@@ -49,7 +49,7 @@ use tilolang_runtime::store::{
     Store, StoreError, SubId, Txn, Version, field_json, field_of,
 };
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
-use tilolang_runtime::{ActionInfo, Authority, Decision, ModuleHash, Principal, Runtime};
+use tilolang_runtime::{ActionInfo, Actor, Authority, Decision, ModuleHash, Runtime};
 
 use crate::bundle::Bundle;
 use crate::host::{Host, argument_json};
@@ -134,7 +134,7 @@ struct Steps {
 pub struct TaskSession {
     runtime: Runtime,
     /// The person the task acts for: `me`.
-    person: Option<Principal>,
+    person: Option<Actor>,
     session: RefCell<Session>,
     steps: Rc<RefCell<Steps>>,
     reads: Rc<RefCell<Reads>>,
@@ -150,7 +150,7 @@ pub struct TaskSession {
 struct DecidesNothing;
 
 impl Authority for DecidesNothing {
-    fn decide(&self, _: &Principal, _: &[ModuleHash], _: &ActionInfo) -> Decision {
+    fn decide(&self, _: &Actor, _: &[ModuleHash], _: &ActionInfo) -> Decision {
         Decision::Deny
     }
 }
@@ -254,7 +254,8 @@ impl TaskSession {
         runtime.set_clock(crate::host::system_time);
         let session = Self {
             runtime,
-            person: person.map(Principal::new),
+            person: person
+                .map(|person| Actor::Member(crate::runtime::ids::MemberId::person(person))),
             session: RefCell::new(Session::new()),
             steps,
             reads,
@@ -386,7 +387,7 @@ impl TaskSession {
     /// `confirm`. The program runs as its author: the agent's as the agent, a line its person
     /// typed as the person. The answer: `{state, output, detail, lets, steps, changed, apps}`,
     /// `state` one of `done`, `preview`, `suspended`, `rejected`, `failed`.
-    pub fn run(&self, source: &str, confirm: bool, author: &Principal) -> Json {
+    pub fn run(&self, source: &str, confirm: bool, author: &Actor) -> Json {
         if !confirm {
             let saved = self.session.borrow().clone();
             let (answer, steps) = self.run_once(source, true, author);
@@ -412,7 +413,7 @@ impl TaskSession {
         self.run_once(source, false, author).0
     }
 
-    fn run_once(&self, source: &str, provisional: bool, author: &Principal) -> (Json, Steps) {
+    fn run_once(&self, source: &str, provisional: bool, author: &Actor) -> (Json, Steps) {
         *self.steps.borrow_mut() = Steps {
             provisional,
             ..Steps::default()

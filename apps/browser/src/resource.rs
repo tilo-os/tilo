@@ -448,6 +448,7 @@ impl ResourceApp for BrowserShell {
                 if mode.holds_account_custody()
                     && cx
                         .me()
+                        .and_then(ui::tilo_resource::MemberId::person_id)
                         .and_then(crate::service_sessions::identity)
                         .is_some()
                 {
@@ -568,6 +569,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     window.attach_dispatcher(cx.dispatcher(), cx.actions());
     window.attach_services(
         cx.me()
+            .and_then(ui::tilo_resource::MemberId::person_id)
             .and_then(crate::service_sessions::identity)
             .filter(|_| custody),
         cx.waker(),
@@ -584,6 +586,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     if custody
         && cx
             .me()
+            .and_then(ui::tilo_resource::MemberId::person_id)
             .and_then(crate::service_sessions::identity)
             .is_some()
     {
@@ -617,7 +620,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
             .page_mut()
             .attach_page_record(record, cx.device().unwrap_or_default());
     }
-    if custody && let Some(person) = cx.me() {
+    if custody && let Some(person) = cx.me().and_then(ui::tilo_resource::MemberId::person_id) {
         window
             .page_mut()
             .attach_continuity(person, cx.storage().files(), cx.waker());

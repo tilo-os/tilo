@@ -12,7 +12,7 @@ use ui::application::AppComponent;
 use ui::headless::FrameHarness;
 use ui::widget::TileHost;
 
-fn page_count(f: &NotebookFixture, checkout: &ui::record::RecordCheckout) -> usize {
+fn page_count(f: &NotebookFixture, checkout: &ui::record::DocumentCheckout) -> usize {
     f.records
         .read(&checkout.id, |doc| notes::read::list_pages(doc).len())
         .unwrap()
@@ -37,7 +37,7 @@ impl TileSource for Arriving {
 /// creates a page.
 fn assert_plus_creates_a_page(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
     harness: &mut FrameHarness,
     press: impl FnOnce(&mut FrameHarness),
 ) {

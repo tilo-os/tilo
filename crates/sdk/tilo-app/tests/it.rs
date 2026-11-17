@@ -73,6 +73,8 @@ pub mod model_contract;
 pub mod other_records;
 #[path = "outbox.rs"]
 pub mod outbox;
+#[path = "support/own_kinds.rs"]
+pub mod own_kinds;
 #[path = "person_records.rs"]
 pub mod person_records;
 #[path = "private_windows.rs"]

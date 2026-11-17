@@ -18,7 +18,7 @@ mod tests {
     use super::*;
     use crate::activity::testing::{TestTree as WorkspaceTree, next_id};
     use tilo_desktop_model::WorkspaceId;
-    use ui::record::RecordStore;
+    use ui::{record::RecordStore, widget::HistoryAuthor};
 
     /// The pane with a device that may mutate the workspace.
     fn native_pane() -> WorkspaceActivityPane {
@@ -616,7 +616,7 @@ mod tests {
                 .put(automerge::ROOT, "text", "shared causal hash")
                 .unwrap();
             record.commit();
-            let checkout = ui::RecordCheckout::new(RecordId::for_tab(1), ui::RecordKind::new("test"));
+            let checkout = ui::DocumentCheckout::new(DocumentId::for_tab(1), ui::ResourceType::new("test"));
             let input = |app: &str, document| crate::activity::DetachedRecordHistory {
                 app: app.into(),
                 checkout: checkout.clone(),
@@ -650,12 +650,17 @@ mod tests {
         pane
     }
 
-    fn agent_task_fixture() -> (WorkspaceTree, RecordStore, WorkspaceActivityPane, RecordId) {
+    fn agent_task_fixture() -> (
+        WorkspaceTree,
+        RecordStore,
+        WorkspaceActivityPane,
+        DocumentId,
+    ) {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let workspace = tree.desktop.active_workspace().expect("workspace").id();
         let records = RecordStore::in_memory();
-        let record = RecordId::for_file("campaign-brief.tilo-doc");
-        let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document"));
+        let record = DocumentId::for_file("campaign-brief.tilo-doc");
+        let checkout = ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("document"));
         assert!(records.open_record(&checkout));
         let agent = ActorId::from(b"writing-agent".as_slice());
         let issuer = ActorId::from(b"ada-identity".as_slice());
@@ -716,14 +721,9 @@ mod tests {
 
         let mut pane = native_pane();
         pane.view = ActivityView::Explore;
-        pane.authors_mut().register(
-            &agent_hex,
-            ui::widget::HistoryAuthor::new("Quill", 210.0, "agent"),
-        );
-        pane.authors_mut().register(
-            &issuer_hex,
-            ui::widget::HistoryAuthor::new("Ada", 120.0, "ada"),
-        );
+        let authors = pane.authors_mut();
+        authors.register(&agent_hex, HistoryAuthor::new("Quill", 210.0, "agent"));
+        authors.register(&issuer_hex, HistoryAuthor::new("Ada", 120.0, "ada"));
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
         let end = pane.agent_sessions[0].session.steps[0].run.end;
@@ -794,11 +794,11 @@ mod tests {
     /// document rather than a mounted store.
     fn detached_records(
         records: &RecordStore,
-        record: &RecordId,
+        record: &DocumentId,
     ) -> Vec<crate::activity::DetachedRecordHistory> {
         vec![crate::activity::DetachedRecordHistory {
             app: "org.tilo.Writer".to_string(),
-            checkout: ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document")),
+            checkout: ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("document")),
             document: records.read(record, Clone::clone),
         }]
     }
@@ -886,7 +886,7 @@ mod tests {
         // The host reads the record from its store on every refresh: a document of its own.
         let read = |record: &mut automerge::AutoCommit| crate::activity::DetachedRecordHistory {
             app: "so.tilo.notes".into(),
-            checkout: ui::RecordCheckout::package_primary(ui::RecordKind::new("so.tilo.notes")),
+            checkout: ui::DocumentCheckout::package_primary(ui::ResourceType::new("so.tilo.notes")),
             document: Some(automerge::AutoCommit::load(&record.save()).unwrap()),
         };
         let mut pane = native_pane();
@@ -1191,9 +1191,9 @@ mod tests {
         let identity = tree.active_workspace().expect("workspace").id();
         let identity_text = identity.to_string();
         for n in 0..12 {
-            let id = RecordId::for_file(format!("result-{n}.note"));
-            let kind = ui::RecordKind::new("note");
-            assert!(records.open_record(&ui::RecordCheckout::new(id.clone(), kind.clone())));
+            let id = DocumentId::for_file(format!("result-{n}.note"));
+            let kind = ui::ResourceType::new("note");
+            assert!(records.open_record(&ui::DocumentCheckout::new(id.clone(), kind.clone())));
             records.with(&id, |doc| {
                 ui::record::init(doc, &id, &kind, &identity_text);
                 doc.commit();

@@ -25,13 +25,15 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::remote::{Caller, Pending};
-use tilo_agent_participant::bot::api::{BotApi, OutboxSpec, PerformError, Performer};
-use tilo_agent_participant::bot::held::HeldRecords;
-use tilo_agent_participant::{AppCatalogue, ReplicaActor};
+use tilo_agent_session::bot::api::{BotApi, OutboxSpec, PerformError, Performer};
+use tilo_agent_session::bot::held::HeldRecords;
+use tilo_agent_session::{AppCatalogue, ReplicaActor};
 use tilo_automation::dispatch::queue::{DeadLetter, Finished, FiringQueue};
 use tilo_automation::dispatch::{Armed, ConnectorEvent, Event, Firer, Firing};
-use tilo_automation::run::{AskRequest, ConfirmationRequest, RunHooks};
-use tilo_automation::{RunMode, RunRequest, RunTrigger, Shortcut, TriggerSpec};
+use tilo_automation::run::{AskRequest, ConfirmationRequest, InvocationHooks};
+use tilo_automation::{
+    InvocationMode, InvocationRequest, InvocationTrigger, Shortcut, TriggerSpec,
+};
 use tilo_connector::ConnectorProcess;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::DeviceCert;
@@ -160,7 +162,7 @@ impl Performer for ConnectorPerformer {
 /// and the API answers every step at once.
 struct Unattended;
 
-impl RunHooks for Unattended {
+impl InvocationHooks for Unattended {
     fn confirm(
         &self,
         _request: ConfirmationRequest,
@@ -179,7 +181,7 @@ impl RunHooks for Unattended {
 
 /// How a firing went on this host.
 enum Fired {
-    Ran(Box<tilo_automation::RunReport>),
+    Ran(Box<tilo_automation::InvocationReport>),
     /// It ran, and the workspace refused what it changed, for this reason.
     Refused(String),
 }
@@ -387,7 +389,7 @@ impl BotRunner {
     ///
     /// # Errors
     /// A record could not be read or the state file written.
-    pub async fn step(&mut self) -> Result<Vec<tilo_automation::RunReport>, String> {
+    pub async fn step(&mut self) -> Result<Vec<tilo_automation::InvocationReport>, String> {
         let now = tilo_clock::unix_now_ms_i64();
         for firing in self.take_in().await? {
             if let Some(dead) = self.progress.queue.push(firing, now) {
@@ -416,12 +418,12 @@ impl BotRunner {
                         .progress
                         .queue
                         .finished(&report, tilo_clock::unix_now_ms_i64());
-                    tracing::info!(installation = %self.bot.installation, run = %firing.run.0, outcome = ?report.outcome, ?finished, "bot run finished");
+                    tracing::info!(installation = %self.bot.installation, run = %firing.invocation.0, outcome = ?report.outcome, ?finished, "bot run finished");
                     reports.push(*report);
                     finished
                 }
                 Err(error) => {
-                    tracing::warn!(installation = %self.bot.installation, run = %firing.run.0, %error, "bot run could not be run");
+                    tracing::warn!(installation = %self.bot.installation, run = %firing.invocation.0, %error, "bot run could not be run");
                     self.progress
                         .queue
                         .not_run(&error, tilo_clock::unix_now_ms_i64())
@@ -477,9 +479,9 @@ impl BotRunner {
             // part of a chat's messages) is what happened since: read whole.
             // So is a record every app of the workspace opens (the workspace's
             // emoji), which its first change creates.
-            let part = ui::record::RecordId::parse(&record)
+            let part = ui::record::DocumentId::parse(&record)
                 .is_some_and(|record| record.chain_part().is_some())
-                || collab_types::workspace_record(&app, &record).is_some();
+                || collab_types::workspace_document(&app, &record).is_some();
             let since = match self.progress.records.get(&key).cloned() {
                 Some(since) => since,
                 None if part && self.follows_app(&app) => Vec::new(),
@@ -498,7 +500,7 @@ impl BotRunner {
                         .map(|definition| definition.record_kind.as_str().to_owned())
                 })
                 .unwrap_or_default();
-            for (event, _) in tilo_agent_participant::bot::events_since(
+            for (event, _) in tilo_agent_session::bot::events_since(
                 &self.workspace,
                 &record,
                 &kind,
@@ -574,7 +576,8 @@ impl BotRunner {
         // with it.
         let mut routes = self.routes().await?;
         routes.sort_by_key(|(_, record)| {
-            ui::record::RecordId::parse(record).is_some_and(|record| record.chain_part().is_some())
+            ui::record::DocumentId::parse(record)
+                .is_some_and(|record| record.chain_part().is_some())
         });
         for (app, record) in routes {
             if let Some(saved) = self.reads(&app, &record).await {
@@ -607,7 +610,11 @@ impl BotRunner {
             Arc::clone(&self.shortcut),
             tokio::runtime::Handle::current(),
         );
-        let (run, trigger, cause) = (firing.run, firing.trigger.clone(), firing.cause.clone());
+        let (run, trigger, cause) = (
+            firing.invocation,
+            firing.trigger.clone(),
+            firing.cause.clone(),
+        );
         api.set_cause(cause.clone());
         // Replicas and connector performs block; the run is driven on its
         // own blocking thread so they never hold a runtime worker.
@@ -615,12 +622,12 @@ impl BotRunner {
             handle.block_on(tilo_automation::run::run(
                 &*api,
                 &Unattended,
-                RunRequest {
+                InvocationRequest {
                     shortcut: &shortcut,
-                    run,
+                    invocation: run,
                     caller,
-                    mode: RunMode::Unattended,
-                    trigger: RunTrigger::Fired(trigger),
+                    mode: InvocationMode::Unattended,
+                    trigger: InvocationTrigger::Fired(trigger),
                     inputs,
                     caused_by: cause,
                     parent: None,
@@ -656,7 +663,7 @@ impl BotRunner {
                 );
                 tracing::warn!(
                     installation = %self.bot.installation,
-                    run = %firing.run.0,
+                    run = %firing.invocation.0,
                     app = %route.app_id,
                     record = %route.record,
                     change = index.saturating_add(1),
@@ -713,7 +720,7 @@ impl BotRunner {
     pub(crate) async fn emoji_input(&self) -> Result<Value, String> {
         use tilo_resource::Resource as _;
         use tilo_workspace_emoji::{KIND, OWNER, WorkspaceEmoji};
-        let record = collab_types::workspace_record_id(KIND);
+        let record = collab_types::workspace_document_id(KIND);
         let Some(saved) = self.read(OWNER, &record).await? else {
             return Ok(serde_json::json!({ "emoji": [] }));
         };
@@ -741,12 +748,11 @@ impl BotRunner {
     async fn routes(&self) -> Result<Vec<(String, String)>, String> {
         Ok(self
             .workspaces
-            .record_routes(&self.workspace)
+            .workspace_record_routes(&self.workspace)
             .await
             .map_err(|error| error.to_string())?
             .into_iter()
             .filter(|(app, _)| self.apps.contains(app))
-            .filter(|(_, record)| tilo_action_policy::member_record(record).is_none())
             .collect())
     }
 
@@ -954,7 +960,7 @@ pub fn governance_events(
             incoming_message: false,
             housekeeping: false,
             shortcut: None,
-            run: None,
+            invocation: None,
         });
     };
     for (person, now) in after {

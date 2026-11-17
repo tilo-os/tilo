@@ -134,7 +134,7 @@ impl LegacyWorkspaceProjection for WorkspaceTreeHandle {
         &self,
         workspace: &str,
         invocation: tilo_actions::InvocationId,
-        actor: &str,
+        actor: &tilo_actions::MemberId,
         context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
     ) -> Result<(), String> {

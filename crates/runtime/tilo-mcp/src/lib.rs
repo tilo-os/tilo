@@ -60,7 +60,7 @@ pub struct McpServer<H> {
     /// One transport-issued execution scope, independent of history labels.
     caller: Caller,
     /// The agent run every invocation of this connection is attributed to.
-    run: std::sync::Mutex<Option<tilo_actions::WorkGroup>>,
+    agent_session: std::sync::Mutex<Option<tilo_actions::WorkGroup>>,
     /// The page `tilo_query` answers when a call names no `detail`; a client
     /// that parses v1 rows pins `full` for its session at `initialize`.
     detail: std::sync::Mutex<Detail>,
@@ -653,7 +653,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             workspace,
             actor,
             caller,
-            run: std::sync::Mutex::new(None),
+            agent_session: std::sync::Mutex::new(None),
             detail: std::sync::Mutex::new(Detail::Compact),
             invoking: InFlight::default(),
             handles: std::sync::Mutex::default(),
@@ -1287,9 +1287,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// history, undo and activity tell concurrent agents apart. Provenance
     /// only: authority stays the profile actor's.
     #[must_use]
-    pub fn with_agent_run(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
+    pub fn with_agent_session(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
         *self
-            .run
+            .agent_session
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tilo_actions::WorkGroup {
             id: id.into(),
@@ -1302,7 +1302,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
     /// The agent run this session's invocations are attributed to now.
     fn agent_session(&self) -> Option<tilo_actions::WorkGroup> {
-        self.run.lock_recover().clone()
+        self.agent_session.lock_recover().clone()
     }
     /// The page detail this session answers with when a call names none.
     fn detail(&self) -> Detail {
@@ -1515,7 +1515,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .take(64)
             .collect();
         let run = {
-            let mut run = self.run.lock_recover();
+            let mut run = self.agent_session.lock_recover();
             if run.is_none() || continued.is_some() {
                 let label = run.take().map_or(label, |run| run.label);
                 *run = Some(tilo_actions::WorkGroup {

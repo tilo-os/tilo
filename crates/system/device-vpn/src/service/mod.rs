@@ -18,7 +18,7 @@ use crate::protocol::{
 use plan::Command;
 use record::{ClientRecord, ExitRecord, ProfileBlockRecord, Record};
 
-/// A caller the service answers: the compositor of the person at the seat.
+/// A caller the service answers: the compositor of the person logged in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Caller {
     pub uid: u32,
@@ -331,7 +331,7 @@ impl<B: Backend> Service<B> {
     /// kill switch to keep. A profile block stays when its owner's session
     /// ends: a shell that crashed takes the session with it, and the block
     /// exists for exactly that moment. Its owner's next shell adopts it,
-    /// and once the owner is logged out the person at the seat may lift it.
+    /// and once the owner is logged out the person logged in may lift it.
     pub fn housekeeping(&mut self) {
         if let Some(client) = &self.record.client {
             let owner_gone = !self.backend.has_session(client.owner);

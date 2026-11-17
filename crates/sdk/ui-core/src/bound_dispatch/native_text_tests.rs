@@ -135,7 +135,7 @@ fn edit(
         })
         .unwrap();
 }
-fn value(records: &RecordStore, checkout: &RecordCheckout, field: &str) -> String {
+fn value(records: &RecordStore, checkout: &DocumentCheckout, field: &str) -> String {
     records
         .read(&checkout.id, |doc| {
             doc.get(ROOT, field)
@@ -166,9 +166,9 @@ tilo_test_env::scenario! {
         )
         .open("so.tilo.test", "workspace")
         .unwrap();
-        let checkout = RecordCheckout::new(
-            crate::record::RecordId::minted(),
-            crate::record::RecordKind::new("text"),
+        let checkout = DocumentCheckout::new(
+            crate::record::DocumentId::minted(),
+            crate::record::ResourceType::new("text"),
         );
         records.create_record(&checkout).unwrap();
         let (binding, _scope, _owner) =
@@ -210,9 +210,9 @@ tilo_test_env::scenario! {
             )
             .open("so.tilo.test", "workspace")
             .unwrap();
-            let checkout = RecordCheckout::new(
-                crate::record::RecordId::minted(),
-                crate::record::RecordKind::new("text"),
+            let checkout = DocumentCheckout::new(
+                crate::record::DocumentId::minted(),
+                crate::record::ResourceType::new("text"),
             );
             records.create_record(&checkout).unwrap();
             let (one, _one_scope, _one_owner) =
@@ -253,9 +253,9 @@ tilo_test_env::scenario! {
         )
         .open("so.tilo.test", "workspace")
         .unwrap();
-        let checkout = RecordCheckout::new(
-            crate::record::RecordId::minted(),
-            crate::record::RecordKind::new("text"),
+        let checkout = DocumentCheckout::new(
+            crate::record::DocumentId::minted(),
+            crate::record::ResourceType::new("text"),
         );
         records.create_record(&checkout).unwrap();
         let (binding, _scope, _owner) =
@@ -291,9 +291,9 @@ tilo_test_env::scenario! {
         )
         .open("so.tilo.test", "workspace")
         .unwrap();
-        let checkout = RecordCheckout::new(
-            crate::record::RecordId::minted(),
-            crate::record::RecordKind::new("text"),
+        let checkout = DocumentCheckout::new(
+            crate::record::DocumentId::minted(),
+            crate::record::ResourceType::new("text"),
         );
         records.create_record(&checkout).unwrap();
         let (binding, _scope, _owner) =

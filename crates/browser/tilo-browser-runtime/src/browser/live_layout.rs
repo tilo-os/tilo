@@ -62,7 +62,7 @@ impl Mount {
     }
 }
 
-/// `{app, record}` naming one window the way the rest of the presence does:
+/// `{app, document}` naming one window the way the rest of the presence does:
 /// the app and the 16-hex [`LiveRecord::short_digest`] of its record, never
 /// the record id, so that a receiver matches it against what it holds and
 /// learns nothing more than the app of a window on something not shared with
@@ -70,11 +70,11 @@ impl Mount {
 fn named(app: String, record: String) -> serde_json::Value {
     let named = LiveRecord { app, record };
     let short = hex::encode(named.short_digest());
-    serde_json::json!({"app": named.app, "record": short})
+    serde_json::json!({"app": named.app, "document": short})
 }
 
 /// The layout's JSON as the page's presence carries it: `{size: [w, h],
-/// windows: [{app, record, rect, focused}]}`, `record` the 16-hex short
+/// windows: [{app, document, rect, focused}]}`, `document` the 16-hex short
 /// digest, laid out in the content `area` (the strip's, under the bar) by the
 /// placement rule every host uses ([`tilo_session::sync::layout::placed`]).
 /// `record_of` names a tab's live record; a window without one is left out.
@@ -90,7 +90,7 @@ pub(super) fn layout_value(
         "size": layout.size,
         "windows": layout.windows.iter().map(|window| serde_json::json!({
             "app": window.app,
-            "record": hex::encode(window.record),
+            "document": hex::encode(window.record),
             "rect": window.rect,
             "focused": window.focused,
         })).collect::<Vec<_>>(),
@@ -112,7 +112,7 @@ mod tests {
             record: "a record id".into(),
         };
         assert_eq!(value["app"], "so.tilo.notes");
-        assert_eq!(value["record"], hex::encode(record.short_digest()));
-        assert_eq!(value["record"].as_str().map(str::len), Some(16));
+        assert_eq!(value["document"], hex::encode(record.short_digest()));
+        assert_eq!(value["document"].as_str().map(str::len), Some(16));
     }
 }

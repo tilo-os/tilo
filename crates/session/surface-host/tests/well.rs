@@ -121,7 +121,7 @@ fn a_window_opens_at_exactly_its_wells_rectangle() {
             &[(window.clone(), LayoutRect::new(at, size.into()))],
             &outputs,
         )
-        .expect("an arrangement");
+        .expect("a placement");
     assert_eq!(arranged.len(), 1);
     let (same, _rest) = arranged.split_first().expect("the window is arranged");
     assert_eq!(same.location, at);
@@ -187,7 +187,7 @@ fn a_well_that_moves_moves_its_window_in_the_same_frame_without_running_the_view
     assert!(
         policy
             .arrange(&[(window, LayoutRect::new(at, size.into()))], &outputs)
-            .expect("an arrangement")
+            .expect("a placement")
             .first()
             .expect("the window is arranged")
             .size
@@ -213,7 +213,7 @@ fn a_place_with_no_well_on_screen_waits_off_the_output() {
             &[(window, LayoutRect::new(at, (100, 100).into()))],
             &outputs,
         )
-        .expect("an arrangement");
+        .expect("a placement");
     let (off, _rest) = arranged.split_first().expect("the window is arranged");
     assert!(off.location.x < 0, "still off the output");
 }
@@ -251,7 +251,7 @@ fn with_nothing_changing_no_client_is_configured_and_no_well_reported_twice() {
     // The generation moves only when a well reports something new.
     let generation = wells.generation();
     for _ in 0..200 {
-        let arranged = policy.arrange(&windows, &outputs).expect("an arrangement");
+        let arranged = policy.arrange(&windows, &outputs).expect("a placement");
         assert_eq!(arranged.len(), 1);
         let (laid, _rest) = arranged.split_first().expect("the window is arranged");
         assert_eq!(laid.location, at);
@@ -322,7 +322,7 @@ fn a_client_that_rounds_its_commit_to_a_cell_grid_is_never_configured_again_by_a
             &[(window.clone(), LayoutRect::new(at, client.committed.into()))],
             &outputs,
         )
-        .expect("an arrangement");
+        .expect("a placement");
     if let Some(size) = arranged.first().and_then(|laid| laid.size) {
         client.committed = client.rounded(size);
     }
@@ -334,7 +334,7 @@ fn a_client_that_rounds_its_commit_to_a_cell_grid_is_never_configured_again_by_a
     for _ in 0..10 {
         let current = LayoutRect::new(at, client.committed.into());
         let arranged = policy.arrange(&[(window.clone(), current)], &outputs);
-        let arranged = arranged.expect("an arrangement");
+        let arranged = arranged.expect("a placement");
         let (laid, _rest) = arranged.split_first().expect("the window is arranged");
         if let Some(size) = laid.size
             && size != client.committed

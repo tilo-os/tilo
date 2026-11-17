@@ -159,7 +159,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
         id: "host-version",
         doc: "A version of a resource, as history keeps it: who made it, when, by which action, in which run, and what it did.",
         fields: &[
-            ("who", "Principal", "Who made it: a person, or an agent."),
+            ("who", "Actor", "Who made it: a person, or an agent."),
             ("at", "Time", "When it was made."),
             (
                 "what",
@@ -252,7 +252,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
         id: "host-step",
         doc: "A step of a resource's history as people read it: consecutive versions by the same person, or by the same run, folded into one.",
         fields: &[
-            ("who", "Principal", "Who made it: a person, or an agent."),
+            ("who", "Actor", "Who made it: a person, or an agent."),
             ("at", "Time", "When its last version was made."),
             (
                 "run",
@@ -397,7 +397,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
         id: "host-lens",
         doc: "Someone's lens on a resource: a person or an agent whose window shows it now.",
         fields: &[
-            ("who", "Principal", "Whose lens it is."),
+            ("who", "Actor", "Whose lens it is."),
             (
                 "composing",
                 "Bool",
@@ -515,7 +515,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ),
             (
                 "written_by",
-                "Option<Principal>",
+                "Option<Actor>",
                 "Who wrote that run of text, when the system knows: an authored run, or a resource only one person changed.",
             ),
             (
@@ -600,7 +600,7 @@ pub fn host_meta() -> PackageMeta {
                 field("name", "Text", "Its name."),
                 field("app", "Text", "The app that declares it."),
                 field("args", "Text", "The arguments, as JSON."),
-                field("author", "Principal", "Who wrote the block."),
+                field("author", "Actor", "Who wrote the block."),
                 field(
                     "state",
                     "Text",
@@ -643,7 +643,7 @@ pub fn host_meta() -> PackageMeta {
             name: "Notice".to_string(),
             doc: "Something a person is told: the record `notify` writes in the change that tells them, addressed to them alone, and kept until they have seen it. Every device of theirs shows it through its notifications; one of them dismissing or opening it marks it seen for all.".to_string(),
             fields: vec![
-                notice_field(NOTICE_TO, "to", "Principal", MergeKind::Register, "The person told."),
+                notice_field(NOTICE_TO, "to", "Actor", MergeKind::Register, "The person told."),
                 notice_field(NOTICE_TITLE, "title", "Text", MergeKind::Text, "What the notification shows: a line."),
                 notice_field(NOTICE_BODY, "body", "Text", MergeKind::Text, "What it shows below that line, empty for nothing."),
                 notice_field(NOTICE_OPENS, "opens", "Resource", MergeKind::Register, "The resource choosing the notification opens."),

@@ -303,33 +303,32 @@ impl DesktopChrome {
 
     /// Carry the window in front into the strip above (`steps < 0`) or below, landing last there,
     /// as its menu's row for that strip does; focus follows it. Below the last strip is a new one,
-    /// made as the strip switcher's New strip makes it, for a window that shares its strip.
+    /// as its menu's New strip row makes it.
     fn move_focused_group_to_strip(&self, steps: isize) {
-        let route = self.focused_route();
-        let tab = route
-            .as_ref()
-            .and_then(|route| route.tab.parse::<u64>().ok());
-        let (next, shares_its_strip) = route.map_or((None, false), |route| {
+        let next = self.focused_route().and_then(|route| {
             self.handle.read(|tree| {
                 let strips = tree.active_workspace().map_or(&[][..], |w| &w.strips[..]);
                 let at = strips
                     .iter()
-                    .position(|strip| strip.id.0.to_string() == route.strip);
-                let next = at
-                    .and_then(|at| strips.get(at.checked_add_signed(steps)?))
-                    .map(|strip| strip.id);
-                let shares = at
-                    .and_then(|at| strips.get(at))
-                    .is_some_and(|strip| strip.window_groups.len() > 1);
-                (next, shares)
+                    .position(|strip| strip.id.0.to_string() == route.strip)?;
+                Some(
+                    strips
+                        .get(at.checked_add_signed(steps)?)
+                        .map(|strip| window_menu::move_to_strip_id(strip.id)),
+                )
             })
         });
-        let target = next.or_else(|| {
-            (steps > 0 && shares_its_strip)
-                .then(|| self.add_strip(String::new()))
-                .flatten()
+        self.move_focused_group_to(match next {
+            Some(None) if steps > 0 => Some(window_menu::MOVE_TO_NEW_STRIP.to_owned()),
+            next => next.flatten(),
         });
-        let moved = tab.zip(target).is_some_and(|(tab, strip)| {
+    }
+
+    /// Carry the window `tab` into a new strip below the last one, made as the strip switcher's
+    /// New strip makes it: the one move its menu's New strip row and the chord past the last strip
+    /// ask for.
+    pub(super) fn move_to_new_strip(&self, tab: tilo_desktop_model::TabId) {
+        let moved = self.add_strip(String::new()).is_some_and(|strip| {
             self.handle
                 .choose_window_menu(tab, &window_menu::move_to_strip_id(strip), None)
                 .is_ok()

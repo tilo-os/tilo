@@ -367,7 +367,7 @@ fn validate_open_uri(manifest: &ManifestView, opts: &RunOptions) -> Result<(), R
         .ok_or_else(|| RunError::InvalidOpenUri("URI has no scheme".into()))?;
     let scheme = scheme.to_ascii_lowercase();
     // Every app opens its own records; the record names nothing outside them.
-    let own_record = scheme == collab_types::RECORD_URI_SCHEME;
+    let own_record = scheme == collab_types::DOCUMENT_URI_SCHEME;
     if rest.is_empty()
         || !(own_record || manifest.opens_schemes.iter().any(|claim| claim == &scheme))
     {
@@ -510,7 +510,7 @@ mod headless_console_launch_tests {
                 };
                 validate_open_uri(&manifest, &accepted).unwrap();
                 let own_record = RunOptions {
-                    open_uri: Some("tilo-record:3f0c9a1e-2b4d-4e8f-9a6b-7c5d1e2f3a4b".into()),
+                    open_uri: Some("tilo-document:3f0c9a1e-2b4d-4e8f-9a6b-7c5d1e2f3a4b".into()),
                     ..Default::default()
                 };
                 validate_open_uri(&manifest, &own_record)
@@ -520,7 +520,7 @@ mod headless_console_launch_tests {
                     "http://example.test",
                     "file:///etc/passwd",
                     "https://x\n--flag",
-                    "tilo-record:",
+                    "tilo-document:",
                 ] {
                     let opts = RunOptions {
                         open_uri: Some(uri.into()),
@@ -3224,24 +3224,24 @@ pub(crate) fn run_with_context(
         // of the app attach over it.
         #[cfg(target_os = "linux")]
         if opts.tilolang_connector.is_some()
-            && let Some(channel) = crate::registration_gate::take_window_channel()
+            && let Some(link) = crate::registration_gate::take_window_link()
         {
             resolved.push(crate::services::ResolvedService {
                 name: runtime_portal::origin_connector::SERVICE.to_owned(),
-                host: channel,
+                host: link,
                 child_fd: runtime_portal::origin_connector::CHILD_FD,
             });
         }
-        // The shell opens the app's later windows in this process through the channel it released this
+        // The shell opens the app's later windows in this process through the link it released this
         // launch with (`runtime_portal::windows`).
         #[cfg(target_os = "linux")]
         if matches!(opts.mode, LaunchMode::Gui)
             && opts.tilolang_connector.is_none()
-            && let Some(channel) = crate::registration_gate::take_window_channel()
+            && let Some(link) = crate::registration_gate::take_window_link()
         {
             resolved.push(crate::services::ResolvedService {
                 name: runtime_portal::windows::SERVICE.to_owned(),
-                host: channel,
+                host: link,
                 child_fd: runtime_portal::windows::CHILD_FD,
             });
         }

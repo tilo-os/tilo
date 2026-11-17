@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, Principal, ResourceRef, Runtime, UiNode, Value, ViewInstance};
+    use tilolang_runtime::{Actor, AmStore, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 
     const TASKS: &str = crate::common::TASKS_SOURCE;
     /// What a task's page says about it: tasks are made from discussions of them.
@@ -14,7 +14,7 @@ mod cases {
     struct Installed {
         rt: Runtime,
         app: App,
-        me: Principal,
+        me: Actor,
         /// Held for the run: the platform trusts the module for as long as it stands.
         _auth: TestAuthority,
     }

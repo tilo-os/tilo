@@ -649,7 +649,7 @@ impl DownloadedProgram {
 const RECORD_PREFIX: &str = "record:";
 /// The extended attribute Tilo's filesystem serves each file's record id on (16
 /// bytes), the same through every move and rename.
-const RECORD_ID_XATTR: &str = "user.tilo.record-id";
+const DOCUMENT_ID_XATTR: &str = "user.tilo.document-id";
 
 fn parse_record(hex: &str) -> Option<[u8; 16]> {
     let digits: Vec<u8> = hex.bytes().filter(|byte| *byte != b'-').collect();
@@ -679,7 +679,7 @@ fn format_record(id: &[u8; 16]) -> String {
 fn record_id(path: &Path) -> Option<[u8; 16]> {
     use std::os::unix::ffi::OsStrExt as _;
     let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    let name = std::ffi::CString::new(RECORD_ID_XATTR).ok()?;
+    let name = std::ffi::CString::new(DOCUMENT_ID_XATTR).ok()?;
     let mut id = [0_u8; 16];
     // SAFETY: both strings are NUL-terminated and outlive the call, and the
     // buffer is writable for the length passed.

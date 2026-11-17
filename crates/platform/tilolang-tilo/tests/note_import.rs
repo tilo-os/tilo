@@ -9,7 +9,7 @@ use std::rc::Rc;
 use automerge::AutoCommit;
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
 use tilolang_runtime::rich::RichValue;
-use tilolang_runtime::{InvokeOutcome, Principal, ResourceRef, Value};
+use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value};
 use tilolang_tilo::host::Package;
 
 use crate::fixtures::{Replica, action_id};
@@ -112,7 +112,9 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
         let package = r.host.package(APP).expect("the notes package");
         action_id(&package.meta, action)
     };
-    let who = Principal::new(r.name.clone());
+    let who = Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
+        r.name.clone(),
+    ));
     match r.host.runtime().invoke_action(&who, (id.as_str(), args)) {
         Ok(InvokeOutcome::Done(value)) => value,
         other => panic!("`{action}` answered {other:?}"),

@@ -11,7 +11,7 @@ use tilolang::{CompiledView, Diagnostic, PackageMeta, Span};
 
 use crate::core::Core;
 use crate::error::RuntimeError;
-use crate::ids::{ModuleHash, Principal};
+use crate::ids::{Actor, ModuleHash};
 use crate::meta::ParamMeta;
 use crate::registry::Package;
 use crate::render::ViewTarget;
@@ -87,23 +87,27 @@ impl Core {
     /// The written view `source` by `author`, compiled against the packages loaded now, cached by
     /// its source, its writer and that package set. Its writer is part of what it is: the same
     /// text two people wrote is two modules, each bounded by its own writer.
-    pub(crate) fn written_view(&self, source: &str, author: &Principal) -> CachedView {
+    pub(crate) fn written_view(&self, source: &str, author: &Actor) -> CachedView {
         let (visible, mut fingerprint) = self.visible_metas();
         fingerprint.update(b"\0view\0");
-        fingerprint.update(author.0.as_bytes());
+        fingerprint.update(crate::ids::actor_text(author).as_bytes());
         fingerprint.update(b"\0");
         fingerprint.update(source.as_bytes());
         let key = fingerprint.finalize().to_hex().to_string();
         if let Some(hit) = self.embeds.borrow().views.get(&key) {
             return hit.clone();
         }
-        let built = match tilolang::compile_view_definition(source, &author.0, &visible) {
+        let built = match tilolang::compile_view_definition(
+            source,
+            &crate::ids::actor_text(author),
+            &visible,
+        ) {
             Ok(view) => match self.load_block(&view.wasm, &view.meta) {
                 Ok(pkg) => {
                     self.embeds
                         .borrow_mut()
                         .authors
-                        .insert(pkg.hash.clone(), ModuleHash::principal(&author.0));
+                        .insert(pkg.hash.clone(), ModuleHash::written_by(author));
                     Ok(Rc::new(WrittenView { view, pkg }))
                 }
                 Err(e) => Err(Rc::new(vec![Diagnostic::new(
@@ -122,7 +126,7 @@ impl Core {
     pub(crate) fn check_written_view(
         &self,
         source: &str,
-        author: &Principal,
+        author: &Actor,
     ) -> Result<WrittenViewInfo, Vec<Diagnostic>> {
         let view = self
             .written_view(source, author)
@@ -137,9 +141,9 @@ impl Core {
     /// Open the written view `source` for `viewer` over `args`, its code author `author`.
     pub(crate) fn open_written_view(
         self: &Rc<Self>,
-        viewer: &Principal,
+        viewer: &Actor,
         source: &str,
-        author: &Principal,
+        author: &Actor,
         args: Vec<Value>,
     ) -> Result<ViewInstance, RuntimeError> {
         let view = self.written_view(source, author).map_err(|diags| {

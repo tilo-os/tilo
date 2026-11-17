@@ -28,7 +28,7 @@ impl Row {
         let (_, last) = issue.comments.iter().last()?;
         let speaker = people
             .provenance(
-                &last.author,
+                last.author.as_ref(),
                 &last.author_name,
                 last.at_ms,
                 last.origin.as_ref(),
@@ -69,7 +69,7 @@ fn rows(tracker: &Tracker, people: &ui::framework::People) -> Vec<(Id, Row)> {
 
 pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
     let chosen = nav.filter.clone();
-    let me = cx.me().map(str::to_owned);
+    let me = cx.me().cloned();
     let people = cx.people();
     let nav = nav.clone();
     let list = cx.switch(&chosen, move |cx, chosen| {
@@ -79,7 +79,7 @@ pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
         let me = me.clone();
         let people = people.clone();
         cx.switch(&tracker, move |_, tracker| {
-            list_of(tracker, &nav, &filter, me.as_deref(), &people)
+            list_of(tracker, &nav, &filter, me.as_ref(), &people)
         })
     });
     // The view's name is the window's location: the bar says where the
@@ -97,7 +97,7 @@ fn list_of(
     tracker: &Tracker,
     nav: &Nav,
     filter: &Filter,
-    me: Option<&str>,
+    me: Option<&ui::tilo_resource::MemberId>,
     people: &ui::framework::People,
 ) -> Element {
     if tracker.issues.is_empty() {

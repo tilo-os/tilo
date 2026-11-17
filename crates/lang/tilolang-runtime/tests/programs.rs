@@ -6,7 +6,7 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::program::{ProgramOutcome, ProgramReply, Session};
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, Principal, ResourceRef, Runtime, SimpleAuthority, Value,
+        Actor, AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value,
     };
 
     const TODO: &str = crate::common::TASKS_SOURCE;
@@ -21,8 +21,8 @@ mod cases {
         notes: Vec<ResourceRef>,
     }
 
-    fn agent() -> Principal {
-        Principal::new("agent:claude")
+    fn agent() -> Actor {
+        crate::common::agent("claude")
     }
 
     fn world() -> World {
@@ -129,7 +129,7 @@ mod cases {
         phase lets_survive_between_programs_of_a_session;
         {
             let w = world();
-            w.auth.trust_principal(&agent().0);
+            w.auth.trust_actor(&agent());
             let mut session = Session::new();
             let first = session.run(
                 &w.rt,
@@ -313,7 +313,7 @@ mod cases {
     #[test]
     fn the_programs_agents_reach_for_are_taught_what_works() {
         let w = world();
-        w.auth.trust_principal(&agent().0);
+        w.auth.trust_actor(&agent());
         let mut session = Session::new();
         done(&session.run(
             &w.rt,

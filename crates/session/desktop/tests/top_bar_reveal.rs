@@ -241,7 +241,6 @@ tilo_test_env::scenario! {
         assert_eq!(reveals.presence(None, false), TopBarPresence::Hidden);
         reveals.follow(&[(None, DISPLAY, false)], ms(t0, 5000));
         assert_eq!(reveals.presence(None, false), TopBarPresence::Docked);
-        assert_eq!(reveals.entered(), None);
         assert_eq!(reveals.deadline(), None);
     }
 
@@ -291,8 +290,11 @@ tilo_test_env::scenario! {
         assert_eq!(reveals.presence(None, false), TopBarPresence::Shown);
         assert_eq!(reveals.deadline(), Some(due + FULLSCREEN_BAR_IDLE));
 
-        // Resting on it, it stays; leaving it for the window hides it.
+        // Resting on it or on the covering window's own bar under it, it stays; leaving both for
+        // the window hides it.
+        reveals.set_below(Some(Rect::new(0.0, BAR_HEIGHT, 1280.0, BAR_HEIGHT + 40.0)));
         reveals.motion(Point::new(600.0, 12.0), ms(t0, 2500));
+        reveals.motion(Point::new(1240.0, BAR_HEIGHT + 20.0), ms(t0, 2540));
         reveals.settle(due + FULLSCREEN_BAR_IDLE, idle);
         assert_eq!(reveals.presence(None, false), TopBarPresence::Shown);
         let t = ms(t0, 7000);

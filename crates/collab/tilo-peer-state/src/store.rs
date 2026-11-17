@@ -856,6 +856,7 @@ mod tests {
             cluster_id: CLUSTER.into(),
             record_id: RECORD.into(),
             envelope: Box::new(op),
+            own: None,
         };
         Frame::of(&message).unwrap()
     }
@@ -1231,6 +1232,7 @@ mod tests {
                 cluster_id: CLUSTER.into(),
                 record_id: RECORD.into(),
                 envelope: Box::new(unsigned),
+                own: None,
             };
             assert_eq!(Frame::of(&message), Err(Refusal::Unsigned));
 
@@ -1250,6 +1252,7 @@ mod tests {
                 cluster_id: CLUSTER.into(),
                 record_id: RECORD.into(),
                 envelope: Box::new(cleartext),
+                own: None,
             };
             assert_eq!(Frame::of(&message), Err(Refusal::NotSealed));
 
@@ -1270,6 +1273,7 @@ mod tests {
                 cluster_id: CLUSTER.into(),
                 record_id: RECORD.into(),
                 envelope: Box::new(mls),
+                own: None,
             };
             assert_eq!(Frame::of(&message), Err(Refusal::NotSealed));
         }

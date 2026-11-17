@@ -5,7 +5,7 @@
 //! to run somewhere: in the workspace's own VM, on the host that
 //! keeps that VM. The relay asks that host's member device over
 //! the device plane, as the device it is, the way it asks for a shell command
-//! ([`environment_runs`](super::environment_runs)):
+//! ([`environment_commands`](super::environment_commands)):
 //!
 //! - [`target`] names a Browser open, an action of the workspace's
 //!   environment ([`RESOURCE`]); the argument is an [`OpenBrowser`].

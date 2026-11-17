@@ -54,7 +54,7 @@ pub struct WindowInfo {
 
 /// Where a window goes and the size it is asked to take.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Arrangement {
+pub struct WindowPlacement {
     /// The window ([`WindowInfo::id`]).
     pub id: u64,
     /// Its top-left corner in the logical layout.
@@ -64,6 +64,9 @@ pub struct Arrangement {
     /// The part of the logical layout it may draw on and take the pointer in, or `None` for all of
     /// it: a window of a strip spread over several displays shows on its own display only.
     pub clip: Option<LayoutRect>,
+    /// Whether the policy has it cover its display, or `None` to leave that to the window's own
+    /// asking. A window that asked for its display and is no longer given it is told so.
+    pub fullscreen: Option<bool>,
 }
 
 /// Which edges of a window a resize drags.
@@ -115,7 +118,7 @@ pub trait WindowPolicy {
         &mut self,
         _windows: &[(WindowInfo, LayoutRect)],
         _outputs: &[LayoutRect],
-    ) -> Option<Vec<Arrangement>> {
+    ) -> Option<Vec<WindowPlacement>> {
         None
     }
 
@@ -124,7 +127,7 @@ pub trait WindowPolicy {
     /// a layout follows between ports. `primary` names the monitor the
     /// person made primary, while it is lit; `None` while they named none,
     /// or the one they named is off or gone, and the first output stands
-    /// in. Told when either changes, before the next arrangement.
+    /// in. Told when either changes, before the next placement.
     fn monitors(&mut self, _monitors: &[(LayoutRect, String)], _primary: Option<&str>) {}
 
     /// The pointer moved to `(x, y)` in the logical layout, wherever it went: over a window, a
@@ -186,7 +189,7 @@ pub trait WindowPolicy {
     }
 
     /// The window the policy brought forward itself (a person switching windows from the desktop's
-    /// own controls), asked after every arrangement: the compositor gives it the keyboard. `None`
+    /// own controls), asked after every placement: the compositor gives it the keyboard. `None`
     /// leaves focus where it is.
     fn focused(&mut self) -> Option<u64> {
         None

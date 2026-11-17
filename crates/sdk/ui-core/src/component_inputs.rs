@@ -176,7 +176,7 @@ pub(crate) fn read_owned_by(owner: &WakeHandle) {
 #[inline(never)]
 pub(crate) fn read_record(
     store: &crate::record::RecordStore,
-    id: &crate::record::RecordId,
+    id: &crate::record::DocumentId,
     document: &automerge::AutoCommit,
 ) {
     let key = Key::Record(store.key(), fold(0, id.as_str().as_bytes()));

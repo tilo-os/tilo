@@ -108,15 +108,15 @@ impl PartialEq<String> for FileNameV1 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct FileRecordId(pub Uuid);
+pub struct FileDocumentId(pub Uuid);
 
-impl FileRecordId {
+impl FileDocumentId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
 }
 
-impl Default for FileRecordId {
+impl Default for FileDocumentId {
     fn default() -> Self {
         Self::new()
     }
@@ -152,7 +152,7 @@ pub struct ContentHash(pub [u8; 32]);
 #[serde(deny_unknown_fields)]
 pub struct ContentRevisionV1 {
     pub schema_version: u16,
-    pub record_id: FileRecordId,
+    pub document_id: FileDocumentId,
     pub version_id: FileVersionId,
     pub content_hash: Option<ContentHash>,
     pub byte_len: u64,
@@ -160,17 +160,17 @@ pub struct ContentRevisionV1 {
 }
 
 impl ContentRevisionV1 {
-    pub fn validate(&self) -> Result<(), FileRecordError> {
+    pub fn validate(&self) -> Result<(), FileDocumentError> {
         if self.schema_version != CONTENT_REVISION_VERSION {
-            return Err(FileRecordError::UnsupportedContentRevisionVersion(
+            return Err(FileDocumentError::UnsupportedContentRevisionVersion(
                 self.schema_version,
             ));
         }
-        if self.record_id.0.is_nil() {
-            return Err(FileRecordError::NilRecordId);
+        if self.document_id.0.is_nil() {
+            return Err(FileDocumentError::NilRecordId);
         }
         if self.version_id.0.is_nil() {
-            return Err(FileRecordError::NilVersionId);
+            return Err(FileDocumentError::NilVersionId);
         }
         Ok(())
     }
@@ -201,10 +201,10 @@ pub enum FileNodeKind {
 #[serde(deny_unknown_fields)]
 pub struct FileBindingV1 {
     pub schema_version: u16,
-    pub record_id: FileRecordId,
+    pub document_id: FileDocumentId,
     /// `None` identifies the workspace root. Every other binding has a stable
     /// directory record as parent, including tombstones.
-    pub parent: Option<FileRecordId>,
+    pub parent: Option<FileDocumentId>,
     pub name: FileNameV1,
     pub kind: FileNodeKind,
     pub tombstoned: bool,
@@ -214,30 +214,30 @@ pub struct FileBindingV1 {
 
 impl FileBindingV1 {
     /// Validate the structural binding and its bounded exact-byte name.
-    pub fn validate(&self) -> Result<(), FileRecordError> {
+    pub fn validate(&self) -> Result<(), FileDocumentError> {
         if self.schema_version != FILE_BINDING_VERSION {
-            return Err(FileRecordError::UnsupportedBindingVersion(
+            return Err(FileDocumentError::UnsupportedBindingVersion(
                 self.schema_version,
             ));
         }
-        if self.record_id.0.is_nil() {
-            return Err(FileRecordError::NilRecordId);
+        if self.document_id.0.is_nil() {
+            return Err(FileDocumentError::NilRecordId);
         }
         if self.parent.is_some_and(|parent| parent.0.is_nil()) {
-            return Err(FileRecordError::NilParentRecordId);
+            return Err(FileDocumentError::NilParentRecordId);
         }
-        if self.parent == Some(self.record_id) {
-            return Err(FileRecordError::BindingSelfParent);
+        if self.parent == Some(self.document_id) {
+            return Err(FileDocumentError::BindingSelfParent);
         }
         if self.parent.is_none() {
             if !self.name.is_empty() || self.kind != FileNodeKind::Directory || self.tombstoned {
-                return Err(FileRecordError::InvalidRootBinding);
+                return Err(FileDocumentError::InvalidRootBinding);
             }
         } else if self.name.is_empty()
             || self.name.len() > MAX_FILE_NAME_BYTES
             || !valid_file_name(&self.name)
         {
-            return Err(FileRecordError::InvalidBindingName);
+            return Err(FileDocumentError::InvalidBindingName);
         }
         Ok(())
     }
@@ -283,9 +283,9 @@ pub struct FilePropertiesV1 {
 }
 
 impl FilePropertiesV1 {
-    pub fn validate(&self) -> Result<(), FileRecordError> {
+    pub fn validate(&self) -> Result<(), FileDocumentError> {
         if self.schema_version != FILE_PROPERTIES_VERSION {
-            return Err(FileRecordError::UnsupportedPropertiesVersion(
+            return Err(FileDocumentError::UnsupportedPropertiesVersion(
                 self.schema_version,
             ));
         }
@@ -293,19 +293,19 @@ impl FilePropertiesV1 {
             (Some(w), Some(h))
                 if w > 0 && h > 0 && w <= MAX_IMAGE_DIMENSION && h <= MAX_IMAGE_DIMENSION => {}
             (None, None) => {}
-            _ => return Err(FileRecordError::InvalidImageDimensions),
+            _ => return Err(FileDocumentError::InvalidImageDimensions),
         }
         if self
             .duration_ms
             .is_some_and(|v| v == 0 || v > MAX_MEDIA_DURATION_MS)
         {
-            return Err(FileRecordError::InvalidMediaDuration);
+            return Err(FileDocumentError::InvalidMediaDuration);
         }
         if self
             .page_count
             .is_some_and(|v| v == 0 || v > MAX_DOCUMENT_PAGES)
         {
-            return Err(FileRecordError::InvalidDocumentPageCount);
+            return Err(FileDocumentError::InvalidDocumentPageCount);
         }
         for token in [&self.codec, &self.container].into_iter().flatten() {
             if token.is_empty()
@@ -314,7 +314,7 @@ impl FilePropertiesV1 {
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'+' | b'_' | b'-'))
             {
-                return Err(FileRecordError::InvalidMetadataToken);
+                return Err(FileDocumentError::InvalidMetadataToken);
             }
         }
         if self.image_width.is_none()
@@ -323,7 +323,7 @@ impl FilePropertiesV1 {
             && self.codec.is_none()
             && self.container.is_none()
         {
-            return Err(FileRecordError::EmptyFileProperties);
+            return Err(FileDocumentError::EmptyFileProperties);
         }
         Ok(())
     }
@@ -332,7 +332,7 @@ impl FilePropertiesV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileMetadataV1 {
     pub schema_version: u16,
-    pub record_id: FileRecordId,
+    pub document_id: FileDocumentId,
     pub content_hash: Option<ContentHash>,
     pub byte_len: u64,
     pub mime: Option<String>,
@@ -349,7 +349,7 @@ impl Serialize for FileMetadataV1 {
         let mut state =
             serializer.serialize_struct("FileMetadataV1", if legacy { 9 } else { 10 })?;
         state.serialize_field("schema_version", &self.schema_version)?;
-        state.serialize_field("record_id", &self.record_id)?;
+        state.serialize_field("document_id", &self.document_id)?;
         state.serialize_field("content_hash", &self.content_hash)?;
         state.serialize_field("byte_len", &self.byte_len)?;
         state.serialize_field("mime", &self.mime)?;
@@ -382,7 +382,7 @@ impl<'de> Deserialize<'de> for FileMetadataV1 {
                 let schema_version: u16 = next!("schema_version");
                 Ok(FileMetadataV1 {
                     schema_version,
-                    record_id: next!("record_id"),
+                    document_id: next!("document_id"),
                     content_hash: next!("content_hash"),
                     byte_len: next!("byte_len"),
                     mime: next!("mime"),
@@ -403,7 +403,7 @@ impl<'de> Deserialize<'de> for FileMetadataV1 {
                 #[serde(deny_unknown_fields)]
                 struct NamedMetadata {
                     schema_version: u16,
-                    record_id: FileRecordId,
+                    document_id: FileDocumentId,
                     content_hash: Option<ContentHash>,
                     byte_len: u64,
                     mime: Option<String>,
@@ -417,7 +417,7 @@ impl<'de> Deserialize<'de> for FileMetadataV1 {
                 let value = NamedMetadata::deserialize(MapAccessDeserializer::new(map))?;
                 Ok(FileMetadataV1 {
                     schema_version: value.schema_version,
-                    record_id: value.record_id,
+                    document_id: value.document_id,
                     content_hash: value.content_hash,
                     byte_len: value.byte_len,
                     mime: value.mime,
@@ -431,7 +431,7 @@ impl<'de> Deserialize<'de> for FileMetadataV1 {
         }
         const FIELDS: &[&str] = &[
             "schema_version",
-            "record_id",
+            "document_id",
             "content_hash",
             "byte_len",
             "mime",
@@ -447,21 +447,21 @@ impl<'de> Deserialize<'de> for FileMetadataV1 {
 
 impl FileMetadataV1 {
     /// Validate the metadata schema and every bounded nested value.
-    pub fn validate(&self) -> Result<(), FileRecordError> {
+    pub fn validate(&self) -> Result<(), FileDocumentError> {
         if !matches!(
             self.schema_version,
             FILE_METADATA_LEGACY_VERSION | FILE_METADATA_VERSION
         ) {
-            return Err(FileRecordError::UnsupportedVersion(self.schema_version));
+            return Err(FileDocumentError::UnsupportedVersion(self.schema_version));
         }
         if self.mime.as_ref().is_some_and(|s| s.len() > MAX_MIME_BYTES) {
-            return Err(FileRecordError::MimeTooLong);
+            return Err(FileDocumentError::MimeTooLong);
         }
         if self.previews.len() > MAX_PREVIEW_VARIANTS {
-            return Err(FileRecordError::TooManyPreviews);
+            return Err(FileDocumentError::TooManyPreviews);
         }
         if self.schema_version == FILE_METADATA_LEGACY_VERSION && self.properties.is_some() {
-            return Err(FileRecordError::UnsupportedVersion(self.schema_version));
+            return Err(FileDocumentError::UnsupportedVersion(self.schema_version));
         }
         if let Some(properties) = &self.properties {
             properties.validate()?;
@@ -505,7 +505,7 @@ pub enum ConflictMergeCodecV1 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileMutationParticipant {
-    pub record_id: FileRecordId,
+    pub document_id: FileDocumentId,
     pub role: FileMutationParticipantRole,
     pub expected_version: FileVersionId,
     pub proposed_binding: FileBindingV1,
@@ -517,7 +517,7 @@ pub struct FileMutationParticipant {
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
 struct ParticipantProjectionView<'a> {
-    record_id: FileRecordId,
+    document_id: FileDocumentId,
     role: FileMutationParticipantRole,
     expected_version: FileVersionId,
     proposed_binding: &'a FileBindingV1,
@@ -528,7 +528,7 @@ struct ParticipantProjectionView<'a> {
 impl FileMutationParticipant {
     fn projection_view(&self) -> ParticipantProjectionView<'_> {
         ParticipantProjectionView {
-            record_id: self.record_id,
+            document_id: self.document_id,
             role: self.role,
             expected_version: self.expected_version,
             proposed_binding: &self.proposed_binding,
@@ -546,22 +546,22 @@ impl FileMutationParticipant {
     ///
     /// # Errors
     ///
-    /// Returns a [`FileRecordError`] when any signed participant invariant fails.
-    pub fn validate(&self, actor: FileActor) -> Result<(), FileRecordError> {
-        if self.record_id.0.is_nil() || self.expected_version.0.is_nil() {
-            return Err(FileRecordError::InvalidTransactionParticipant);
+    /// Returns a [`FileDocumentError`] when any signed participant invariant fails.
+    pub fn validate(&self, actor: FileActor) -> Result<(), FileDocumentError> {
+        if self.document_id.0.is_nil() || self.expected_version.0.is_nil() {
+            return Err(FileDocumentError::InvalidTransactionParticipant);
         }
         self.proposed_binding.validate()?;
         self.proposed_version.validate()?;
         if let Some(revision) = &self.proposed_content_revision {
             revision.validate()?;
         }
-        if self.proposed_binding.record_id != self.record_id
-            || self.proposed_version.record_id != self.record_id
+        if self.proposed_binding.document_id != self.document_id
+            || self.proposed_version.document_id != self.document_id
             || self.proposed_version.actor != actor
             || self.proposed_binding.actor != actor
         {
-            return Err(FileRecordError::InvalidTransactionParticipant);
+            return Err(FileDocumentError::InvalidTransactionParticipant);
         }
         let valid_parents = match self.role {
             FileMutationParticipantRole::Source
@@ -581,17 +581,17 @@ impl FileMutationParticipant {
             }
         };
         if !valid_parents {
-            return Err(FileRecordError::InvalidTransactionParticipant);
+            return Err(FileDocumentError::InvalidTransactionParticipant);
         }
         match &self.proposed_content_revision {
             Some(revision)
-                if revision.record_id == self.record_id
+                if revision.document_id == self.document_id
                     && revision.version_id == self.proposed_version.id
                     && revision.content_hash == self.proposed_version.content_hash
                     && revision.metadata_hash == self.proposed_version.metadata_hash => {}
             None if self.proposed_binding.kind == FileNodeKind::Directory
                 && self.proposed_version.content_hash.is_none() => {}
-            _ => return Err(FileRecordError::InvalidTransactionParticipant),
+            _ => return Err(FileDocumentError::InvalidTransactionParticipant),
         }
         let valid_role = match self.role {
             FileMutationParticipantRole::Source => {
@@ -636,7 +636,7 @@ impl FileMutationParticipant {
             }
         };
         if !valid_role || self.computed_projection_hash().ok() != Some(self.projection_hash) {
-            return Err(FileRecordError::InvalidTransactionParticipant);
+            return Err(FileDocumentError::InvalidTransactionParticipant);
         }
         Ok(())
     }
@@ -652,17 +652,17 @@ pub enum FileMutationOperation {
         compensates: Option<Uuid>,
     },
     ReplacementRename {
-        source_parent: FileRecordId,
+        source_parent: FileDocumentId,
         source_name: FileNameV1,
-        destination_parent: FileRecordId,
+        destination_parent: FileDocumentId,
         destination_name: FileNameV1,
-        source_record: FileRecordId,
-        replaced_record: FileRecordId,
+        source_record: FileDocumentId,
+        replaced_record: FileDocumentId,
     },
     KeepBothContentConflict {
-        source_record: FileRecordId,
-        sibling_record: FileRecordId,
-        parent_record: FileRecordId,
+        source_record: FileDocumentId,
+        sibling_record: FileDocumentId,
+        parent_record: FileDocumentId,
         source_name: FileNameV1,
         sibling_name: FileNameV1,
         conflict_id: Uuid,
@@ -670,8 +670,8 @@ pub enum FileMutationOperation {
         selected_version: FileVersionId,
     },
     MergeContentConflict {
-        source_record: FileRecordId,
-        parent_record: FileRecordId,
+        source_record: FileDocumentId,
+        parent_record: FileDocumentId,
         source_name: FileNameV1,
         conflict_id: Uuid,
         conflict_versions: Vec<FileVersionId>,
@@ -680,11 +680,11 @@ pub enum FileMutationOperation {
         codec: ConflictMergeCodecV1,
     },
     AtomicSave {
-        parent_record: FileRecordId,
+        parent_record: FileDocumentId,
         document_name: FileNameV1,
         temporary_name: FileNameV1,
-        document_record: FileRecordId,
-        temporary_record: FileRecordId,
+        document_record: FileDocumentId,
+        temporary_record: FileDocumentId,
         prior_document_version: FileVersionId,
     },
 }
@@ -715,7 +715,7 @@ impl FileMutationTransactionManifest {
         clippy::too_many_lines,
         reason = "keeping the mutually exclusive signed operation variants in one validator makes their complete invariants auditable"
     )]
-    pub fn validate(&self) -> Result<(), FileRecordError> {
+    pub fn validate(&self) -> Result<(), FileDocumentError> {
         if !matches!(
             self.schema_version,
             FILE_MUTATION_TRANSACTION_VERSION
@@ -723,21 +723,21 @@ impl FileMutationTransactionManifest {
                 | FILE_MUTATION_TRANSACTION_VERSION_V3
                 | FILE_MUTATION_TRANSACTION_VERSION_V4
         ) {
-            return Err(FileRecordError::UnsupportedMutationTransactionVersion(
+            return Err(FileDocumentError::UnsupportedMutationTransactionVersion(
                 self.schema_version,
             ));
         }
         if self.transaction_id.is_nil() || self.workspace_id.is_nil() {
-            return Err(FileRecordError::InvalidMutationTransactionScope);
+            return Err(FileDocumentError::InvalidMutationTransactionScope);
         }
         if self.participants.is_empty()
             || self.participants.len() > MAX_TRANSACTION_PARTICIPANTS
             || self
                 .participants
                 .windows(2)
-                .any(|pair| matches!(pair, [left, right] if left.record_id >= right.record_id))
+                .any(|pair| matches!(pair, [left, right] if left.document_id >= right.document_id))
         {
-            return Err(FileRecordError::InvalidTransactionParticipants);
+            return Err(FileDocumentError::InvalidTransactionParticipants);
         }
         for participant in &self.participants {
             participant.validate(self.actor)?;
@@ -751,12 +751,12 @@ impl FileMutationTransactionManifest {
             } => {
                 request
                     .validate()
-                    .map_err(|_| FileRecordError::InvalidTransactionParticipant)?;
+                    .map_err(|_| FileDocumentError::InvalidTransactionParticipant)?;
                 prior_revision.validate()?;
                 let participant = self
                     .participants
                     .first()
-                    .ok_or(FileRecordError::InvalidTransactionParticipants)?;
+                    .ok_or(FileDocumentError::InvalidTransactionParticipants)?;
                 let action_valid = match request.operation {
                     CheckedHistoryOperationV1::Restore { version_id } => {
                         version_id == *selected_version && compensates.is_none()
@@ -772,8 +772,8 @@ impl FileMutationTransactionManifest {
                     || self.participants.len() != 1
                     || request.intent_id != self.transaction_id
                     || request.review.workspace_id != self.workspace_id
-                    || request.review.record_id != participant.record_id
-                    || prior_revision.record_id != participant.record_id
+                    || request.review.document_id != participant.document_id
+                    || prior_revision.document_id != participant.document_id
                     || prior_revision.version_id != participant.expected_version
                     || selected_version.0.is_nil()
                     || participant.role != FileMutationParticipantRole::RestoreContent
@@ -784,7 +784,7 @@ impl FileMutationTransactionManifest {
                     || participant.proposed_version.timestamp_ms != self.timestamp_ms
                     || !action_valid
                 {
-                    return Err(FileRecordError::InvalidTransactionParticipant);
+                    return Err(FileDocumentError::InvalidTransactionParticipant);
                 }
                 Ok(())
             }
@@ -809,20 +809,20 @@ impl FileMutationTransactionManifest {
                     || !valid_transaction_name(document_name)
                     || !valid_transaction_name(temporary_name)
                 {
-                    return Err(FileRecordError::InvalidReplacementRename);
+                    return Err(FileDocumentError::InvalidReplacementRename);
                 }
                 let document = self
                     .participants
                     .iter()
                     .find(|p| p.role == FileMutationParticipantRole::AtomicSaveDocument)
-                    .ok_or(FileRecordError::InvalidTransactionParticipants)?;
+                    .ok_or(FileDocumentError::InvalidTransactionParticipants)?;
                 let temporary = self
                     .participants
                     .iter()
                     .find(|p| p.role == FileMutationParticipantRole::AtomicSaveTemporary)
-                    .ok_or(FileRecordError::InvalidTransactionParticipants)?;
-                if document.record_id != *document_record
-                    || temporary.record_id != *temporary_record
+                    .ok_or(FileDocumentError::InvalidTransactionParticipants)?;
+                if document.document_id != *document_record
+                    || temporary.document_id != *temporary_record
                     || document.expected_version != *prior_document_version
                     || document.proposed_binding.parent != Some(*parent_record)
                     || document.proposed_binding.name != *document_name
@@ -831,7 +831,7 @@ impl FileMutationTransactionManifest {
                     || document.proposed_version.timestamp_ms != self.timestamp_ms
                     || temporary.proposed_version.timestamp_ms != self.timestamp_ms
                 {
-                    return Err(FileRecordError::InvalidTransactionParticipant);
+                    return Err(FileDocumentError::InvalidTransactionParticipant);
                 }
                 Ok(())
             }
@@ -850,7 +850,7 @@ impl FileMutationTransactionManifest {
                     || !valid_transaction_name(source_name)
                     || !valid_transaction_name(destination_name)
                 {
-                    return Err(FileRecordError::InvalidReplacementRename);
+                    return Err(FileDocumentError::InvalidReplacementRename);
                 }
                 let source = self
                     .participants
@@ -861,16 +861,16 @@ impl FileMutationTransactionManifest {
                     .iter()
                     .find(|participant| participant.role == FileMutationParticipantRole::Replaced);
                 let (Some(source), Some(replaced)) = (source, replaced) else {
-                    return Err(FileRecordError::InvalidTransactionParticipants);
+                    return Err(FileDocumentError::InvalidTransactionParticipants);
                 };
-                if source.record_id != *source_record
-                    || replaced.record_id != *replaced_record
+                if source.document_id != *source_record
+                    || replaced.document_id != *replaced_record
                     || source.proposed_binding.parent != Some(*destination_parent)
                     || source.proposed_binding.name != *destination_name
                     || replaced.proposed_binding.parent != Some(*destination_parent)
                     || replaced.proposed_binding.name != *destination_name
                 {
-                    return Err(FileRecordError::InvalidReplacementRename);
+                    return Err(FileDocumentError::InvalidReplacementRename);
                 }
                 Ok(())
             }
@@ -900,7 +900,7 @@ impl FileMutationTransactionManifest {
                     || !valid_transaction_name(sibling_name)
                     || source_name == sibling_name
                 {
-                    return Err(FileRecordError::InvalidKeepBothTransaction);
+                    return Err(FileDocumentError::InvalidKeepBothTransaction);
                 }
                 let source = self.participants.iter().find(|participant| {
                     participant.role == FileMutationParticipantRole::KeepBothSource
@@ -909,10 +909,10 @@ impl FileMutationTransactionManifest {
                     participant.role == FileMutationParticipantRole::KeepBothSibling
                 });
                 let (Some(source), Some(sibling)) = (source, sibling) else {
-                    return Err(FileRecordError::InvalidTransactionParticipants);
+                    return Err(FileDocumentError::InvalidTransactionParticipants);
                 };
-                if source.record_id != *source_record
-                    || sibling.record_id != *sibling_record
+                if source.document_id != *source_record
+                    || sibling.document_id != *sibling_record
                     || source.proposed_binding.parent != Some(*parent_record)
                     || source.proposed_binding.name != *source_name
                     || sibling.proposed_binding.parent != Some(*parent_record)
@@ -926,7 +926,7 @@ impl FileMutationTransactionManifest {
                     || source.proposed_version.timestamp_ms != self.timestamp_ms
                     || sibling.proposed_version.timestamp_ms != self.timestamp_ms
                 {
-                    return Err(FileRecordError::InvalidKeepBothTransaction);
+                    return Err(FileDocumentError::InvalidKeepBothTransaction);
                 }
                 Ok(())
             }
@@ -956,13 +956,13 @@ impl FileMutationTransactionManifest {
                     || matches!(codec, ConflictMergeCodecV1::PlainUtf8ThreeWayV1)
                         && base_version.is_none()
                 {
-                    return Err(FileRecordError::InvalidMergeTransaction);
+                    return Err(FileDocumentError::InvalidMergeTransaction);
                 }
                 let Some(source) = self.participants.first() else {
-                    return Err(FileRecordError::InvalidMergeTransaction);
+                    return Err(FileDocumentError::InvalidMergeTransaction);
                 };
                 if source.role != FileMutationParticipantRole::MergeSource
-                    || source.record_id != *source_record
+                    || source.document_id != *source_record
                     || source.expected_version != *current_version
                     || source.proposed_binding.parent != Some(*parent_record)
                     || source.proposed_binding.name != *source_name
@@ -971,7 +971,7 @@ impl FileMutationTransactionManifest {
                         .all(|version| source.proposed_version.parents.contains(version))
                     || source.proposed_version.timestamp_ms != self.timestamp_ms
                 {
-                    return Err(FileRecordError::InvalidMergeTransaction);
+                    return Err(FileDocumentError::InvalidMergeTransaction);
                 }
                 Ok(())
             }
@@ -1058,7 +1058,7 @@ pub enum FileMutationTransactionError {
     #[error("transaction signing key does not match its actor device")]
     WrongSigningKey,
     #[error(transparent)]
-    InvalidManifest(#[from] FileRecordError),
+    InvalidManifest(#[from] FileDocumentError),
     #[error(transparent)]
     Canonical(#[from] CanonicalError),
     #[error(transparent)]
@@ -1071,7 +1071,7 @@ pub enum FileMutationTransactionError {
 #[serde(deny_unknown_fields)]
 pub struct FileVersionV1 {
     pub id: FileVersionId,
-    pub record_id: FileRecordId,
+    pub document_id: FileDocumentId,
     pub parents: Vec<FileVersionId>,
     pub actor: FileActor,
     pub timestamp_ms: u64,
@@ -1082,12 +1082,12 @@ pub struct FileVersionV1 {
 
 impl FileVersionV1 {
     /// Validate bounded, acyclic parent references.
-    pub fn validate(&self) -> Result<(), FileRecordError> {
+    pub fn validate(&self) -> Result<(), FileDocumentError> {
         if self.parents.len() > MAX_VERSION_PARENTS {
-            return Err(FileRecordError::TooManyParents);
+            return Err(FileDocumentError::TooManyParents);
         }
         if self.parents.contains(&self.id) {
-            return Err(FileRecordError::SelfParent);
+            return Err(FileDocumentError::SelfParent);
         }
         Ok(())
     }
@@ -1176,10 +1176,10 @@ impl FileAttributionV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`FileRecordError::InvalidAttribution`] unless every id of the
+    /// Returns [`FileDocumentError::InvalidAttribution`] unless every id of the
     /// writer and the label are non-empty, bounded and free of control
     /// characters, and the ids carry no surrounding space.
-    pub fn validate(&self) -> Result<(), FileRecordError> {
+    pub fn validate(&self) -> Result<(), FileDocumentError> {
         let presentable = |text: &str| {
             !text.trim().is_empty()
                 && text.len() <= MAX_ATTRIBUTION_TEXT_BYTES
@@ -1193,7 +1193,7 @@ impl FileAttributionV1 {
         {
             Ok(())
         } else {
-            Err(FileRecordError::InvalidAttribution)
+            Err(FileDocumentError::InvalidAttribution)
         }
     }
 }
@@ -1218,7 +1218,7 @@ pub enum ConflictStatus {
 #[serde(deny_unknown_fields)]
 pub struct FileConflictV1 {
     pub id: Uuid,
-    pub record_id: FileRecordId,
+    pub document_id: FileDocumentId,
     pub versions: Vec<FileVersionId>,
     pub status: ConflictStatus,
     pub resolution: Option<ConflictResolution>,
@@ -1226,12 +1226,12 @@ pub struct FileConflictV1 {
 
 impl FileConflictV1 {
     /// Validate the bounded conflict membership and status/resolution pairing.
-    pub fn validate(&self) -> Result<(), FileRecordError> {
+    pub fn validate(&self) -> Result<(), FileDocumentError> {
         if self.versions.len() < 2 {
-            return Err(FileRecordError::ConflictNeedsTwoVersions);
+            return Err(FileDocumentError::ConflictNeedsTwoVersions);
         }
         if self.versions.len() > MAX_CONFLICT_VERSIONS {
-            return Err(FileRecordError::TooManyConflictVersions);
+            return Err(FileDocumentError::TooManyConflictVersions);
         }
         let unique = self
             .versions
@@ -1239,13 +1239,13 @@ impl FileConflictV1 {
             .copied()
             .collect::<std::collections::BTreeSet<_>>();
         if unique.len() != self.versions.len() {
-            return Err(FileRecordError::DuplicateConflictVersion);
+            return Err(FileDocumentError::DuplicateConflictVersion);
         }
         match (self.status, self.resolution.as_ref()) {
             (ConflictStatus::Open, None) | (ConflictStatus::Resolved, Some(_)) => Ok(()),
-            (ConflictStatus::Open, Some(_)) => Err(FileRecordError::OpenConflictHasResolution),
+            (ConflictStatus::Open, Some(_)) => Err(FileDocumentError::OpenConflictHasResolution),
             (ConflictStatus::Resolved, None) => {
-                Err(FileRecordError::ResolvedConflictNeedsResolution)
+                Err(FileDocumentError::ResolvedConflictNeedsResolution)
             }
         }
     }
@@ -1356,23 +1356,23 @@ impl MergePreflightProjectionV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`FileRecordError::InvalidMergePreflight`] when the schema,
+    /// Returns [`FileDocumentError::InvalidMergePreflight`] when the schema,
     /// conflict identifier, or user-facing explanation is invalid.
-    pub fn validate(&self) -> Result<(), FileRecordError> {
+    pub fn validate(&self) -> Result<(), FileDocumentError> {
         if self.schema_version != MERGE_PREFLIGHT_VERSION
             || self.conflict_id.is_nil()
             || self.explanation.is_empty()
             || self.explanation.len() > 512
             || self.diff_summary.len() > 1_024
         {
-            return Err(FileRecordError::InvalidMergePreflight);
+            return Err(FileDocumentError::InvalidMergePreflight);
         }
         Ok(())
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
-pub enum FileRecordError {
+pub enum FileDocumentError {
     #[error("unsupported file metadata version {0}")]
     UnsupportedVersion(u16),
     #[error("unsupported file properties version {0}")]
@@ -1456,7 +1456,7 @@ mod tests {
         {
             let mut metadata = FileMetadataV1 {
                 schema_version: FILE_METADATA_VERSION,
-                record_id: FileRecordId::new(),
+                document_id: FileDocumentId::new(),
                 content_hash: None,
                 byte_len: 12,
                 mime: Some("image/png".into()),
@@ -1507,7 +1507,7 @@ mod tests {
             };
             assert_eq!(
                 invalid.validate(),
-                Err(FileRecordError::InvalidImageDimensions)
+                Err(FileDocumentError::InvalidImageDimensions)
             );
         }
 
@@ -1515,7 +1515,7 @@ mod tests {
         {
             let metadata = FileMetadataV1 {
                 schema_version: FILE_METADATA_VERSION,
-                record_id: FileRecordId::new(),
+                document_id: FileDocumentId::new(),
                 content_hash: Some(ContentHash([3; 32])),
                 byte_len: 42,
                 mime: Some("image/png".into()),
@@ -1540,7 +1540,7 @@ mod tests {
         {
             let revision = ContentRevisionV1 {
                 schema_version: CONTENT_REVISION_VERSION,
-                record_id: FileRecordId::new(),
+                document_id: FileDocumentId::new(),
                 version_id: FileVersionId::new(),
                 content_hash: Some(ContentHash([8; 32])),
                 byte_len: 4096,
@@ -1566,24 +1566,25 @@ mod tests {
     /// or self-parent; a record scope survives paths and matches only its record.
     #[test]
     fn file_bindings_keep_exact_bytes_and_cannot_forge_structure() {
+        use FileDocumentError::{BindingSelfParent, InvalidBindingName, InvalidRootBinding};
         // Phase: byte_name_encoding_migrates_old_utf8_binding_without_changing_bytes.
         {
             #[derive(Serialize)]
             struct LegacyBinding {
                 schema_version: u16,
-                record_id: FileRecordId,
-                parent: Option<FileRecordId>,
+                document_id: FileDocumentId,
+                parent: Option<FileDocumentId>,
                 name: String,
                 kind: FileNodeKind,
                 tombstoned: bool,
                 actor: FileActor,
                 observed_at_ms: u64,
             }
-            let record_id = FileRecordId::new();
-            let parent = FileRecordId::new();
+            let document_id = FileDocumentId::new();
+            let parent = FileDocumentId::new();
             let legacy = LegacyBinding {
                 schema_version: FILE_BINDING_VERSION,
-                record_id,
+                document_id,
                 parent: Some(parent),
                 name: "Grüße.png".into(),
                 kind: FileNodeKind::File,
@@ -1602,8 +1603,8 @@ mod tests {
         {
             let binding = |name: Vec<u8>| FileBindingV1 {
                 schema_version: FILE_BINDING_VERSION,
-                record_id: FileRecordId::new(),
-                parent: Some(FileRecordId::new()),
+                document_id: FileDocumentId::new(),
+                parent: Some(FileDocumentId::new()),
                 name: name.into(),
                 kind: FileNodeKind::File,
                 tombstoned: false,
@@ -1613,21 +1614,21 @@ mod tests {
             assert!(binding(b"raw-\xFF".to_vec()).validate().is_ok());
             assert_eq!(
                 binding(b"bad/name".to_vec()).validate(),
-                Err(FileRecordError::InvalidBindingName)
+                Err(FileDocumentError::InvalidBindingName)
             );
             assert_eq!(
                 binding(b"bad\0name".to_vec()).validate(),
-                Err(FileRecordError::InvalidBindingName)
+                Err(FileDocumentError::InvalidBindingName)
             );
         }
 
         // Phase: structural_bindings_are_bounded_and_cannot_forge_roots_or_self_parent.
         {
-            let record_id = FileRecordId::new();
-            let parent = FileRecordId::new();
+            let document_id = FileDocumentId::new();
+            let parent = FileDocumentId::new();
             let mut binding = FileBindingV1 {
                 schema_version: FILE_BINDING_VERSION,
-                record_id,
+                document_id,
                 parent: Some(parent),
                 name: "report.txt".into(),
                 kind: FileNodeKind::File,
@@ -1641,19 +1642,19 @@ mod tests {
                 collab_types::canonical::from_canonical_bytes::<FileBindingV1>(&bytes).unwrap(),
                 binding
             );
-            binding.parent = Some(record_id);
-            assert_eq!(binding.validate(), Err(FileRecordError::BindingSelfParent));
+            binding.parent = Some(document_id);
+            assert_eq!(binding.validate(), Err(BindingSelfParent));
             binding.parent = None;
-            assert_eq!(binding.validate(), Err(FileRecordError::InvalidRootBinding));
+            assert_eq!(binding.validate(), Err(InvalidRootBinding));
             binding.parent = Some(parent);
             binding.name = "../escape".into();
-            assert_eq!(binding.validate(), Err(FileRecordError::InvalidBindingName));
+            assert_eq!(binding.validate(), Err(InvalidBindingName));
         }
 
         // Phase: record_scope_survives_paths_and_matches_only_its_record.
         {
-            let record = FileRecordId::new();
-            let other = FileRecordId::new();
+            let record = FileDocumentId::new();
+            let other = FileDocumentId::new();
             let scope = collab_types::Scope::FsRecord(record.0.to_string());
             assert!(
                 scope.matches_resource(&collab_types::ResourceRef::FsRecord(record.0.to_string()))
@@ -1676,7 +1677,7 @@ mod tests {
             let id = FileVersionId::new();
             let mut version = FileVersionV1 {
                 id,
-                record_id: FileRecordId::new(),
+                document_id: FileDocumentId::new(),
                 parents: vec![id],
                 actor: actor(),
                 timestamp_ms: 1,
@@ -1684,11 +1685,11 @@ mod tests {
                 metadata_hash: ContentHash([0; 32]),
                 provenance: FileProvenance::Create,
             };
-            assert_eq!(version.validate(), Err(FileRecordError::SelfParent));
+            assert_eq!(version.validate(), Err(FileDocumentError::SelfParent));
             version.parents = (0..=MAX_VERSION_PARENTS)
                 .map(|_| FileVersionId::new())
                 .collect();
-            assert_eq!(version.validate(), Err(FileRecordError::TooManyParents));
+            assert_eq!(version.validate(), Err(FileDocumentError::TooManyParents));
         }
 
         // Phase: conflicts_are_bounded_unique_and_have_consistent_status.
@@ -1697,7 +1698,7 @@ mod tests {
             let second = FileVersionId::new();
             let mut conflict = FileConflictV1 {
                 id: Uuid::new_v4(),
-                record_id: FileRecordId::new(),
+                document_id: FileDocumentId::new(),
                 versions: vec![first, second],
                 status: ConflictStatus::Open,
                 resolution: None,
@@ -1707,33 +1708,33 @@ mod tests {
             conflict.versions = vec![first, first];
             assert_eq!(
                 conflict.validate(),
-                Err(FileRecordError::DuplicateConflictVersion)
+                Err(FileDocumentError::DuplicateConflictVersion)
             );
             conflict.versions = vec![first, second];
             conflict.status = ConflictStatus::Resolved;
             assert_eq!(
                 conflict.validate(),
-                Err(FileRecordError::ResolvedConflictNeedsResolution)
+                Err(FileDocumentError::ResolvedConflictNeedsResolution)
             );
         }
     }
 
     fn transaction_participant(
-        record_id: FileRecordId,
+        document_id: FileDocumentId,
         role: FileMutationParticipantRole,
-        parent: FileRecordId,
+        parent: FileDocumentId,
         name: &str,
         actor: FileActor,
     ) -> FileMutationParticipant {
         let expected_version = FileVersionId::new();
         let proposed_version = FileVersionV1 {
             id: FileVersionId::new(),
-            record_id,
+            document_id,
             parents: vec![expected_version],
             actor,
             timestamp_ms: 44,
             content_hash: None,
-            metadata_hash: ContentHash([record_id.0.as_bytes()[0]; 32]),
+            metadata_hash: ContentHash([document_id.0.as_bytes()[0]; 32]),
             provenance: match role {
                 FileMutationParticipantRole::Source => FileProvenance::Rename,
                 FileMutationParticipantRole::AtomicSaveDocument => FileProvenance::Edit,
@@ -1743,12 +1744,12 @@ mod tests {
             },
         };
         let mut participant = FileMutationParticipant {
-            record_id,
+            document_id,
             role,
             expected_version,
             proposed_binding: FileBindingV1 {
                 schema_version: FILE_BINDING_VERSION,
-                record_id,
+                document_id,
                 parent: Some(parent),
                 name: name.into(),
                 kind: FileNodeKind::File,
@@ -1762,7 +1763,7 @@ mod tests {
             },
             proposed_content_revision: Some(ContentRevisionV1 {
                 schema_version: CONTENT_REVISION_VERSION,
-                record_id,
+                document_id,
                 version_id: proposed_version.id,
                 content_hash: proposed_version.content_hash,
                 byte_len: 0,
@@ -1782,9 +1783,9 @@ mod tests {
             person: Ed25519PublicKey([9; 32]),
             device: Ed25519PublicKey(key.verifying_key().to_bytes()),
         };
-        let parent = FileRecordId::new();
-        let document = FileRecordId::new();
-        let temporary = FileRecordId::new();
+        let parent = FileDocumentId::new();
+        let document = FileDocumentId::new();
+        let temporary = FileDocumentId::new();
         let doc = transaction_participant(
             document,
             FileMutationParticipantRole::AtomicSaveDocument,
@@ -1803,7 +1804,7 @@ mod tests {
                 actor,
             ),
         ];
-        participants.sort_by_key(|p| p.record_id);
+        participants.sort_by_key(|p| p.document_id);
         let manifest = FileMutationTransactionManifest {
             schema_version: FILE_MUTATION_TRANSACTION_VERSION_V4,
             transaction_id: Uuid::new_v4(),
@@ -1826,7 +1827,7 @@ mod tests {
             .manifest
             .participants
             .iter()
-            .find(|p| p.record_id == document)
+            .find(|p| p.document_id == document)
             .unwrap();
         assert_eq!(doc.proposed_version.parents, [prior]);
         assert_eq!(doc.proposed_version.provenance, FileProvenance::Edit);
@@ -1865,7 +1866,7 @@ mod tests {
         let doc = changed
             .participants
             .iter_mut()
-            .find(|p| p.record_id == document)
+            .find(|p| p.document_id == document)
             .unwrap();
         doc.role = FileMutationParticipantRole::Source;
         doc.proposed_version.provenance = FileProvenance::Rename;
@@ -1889,10 +1890,10 @@ mod tests {
                 person: Ed25519PublicKey([9; 32]),
                 device: Ed25519PublicKey(key.verifying_key().to_bytes()),
             };
-            let source_parent = FileRecordId::new();
-            let destination_parent = FileRecordId::new();
-            let source_record = FileRecordId::new();
-            let replaced_record = FileRecordId::new();
+            let source_parent = FileDocumentId::new();
+            let destination_parent = FileDocumentId::new();
+            let source_record = FileDocumentId::new();
+            let replaced_record = FileDocumentId::new();
             let mut participants = vec![
                 transaction_participant(
                     source_record,
@@ -1909,7 +1910,7 @@ mod tests {
                     actor,
                 ),
             ];
-            participants.sort_by_key(|participant| participant.record_id);
+            participants.sort_by_key(|participant| participant.document_id);
             let manifest = FileMutationTransactionManifest {
                 schema_version: FILE_MUTATION_TRANSACTION_VERSION,
                 transaction_id: Uuid::new_v4(),
@@ -1934,7 +1935,7 @@ mod tests {
             assert!(matches!(
                 reordered.verify(),
                 Err(FileMutationTransactionError::InvalidManifest(
-                    FileRecordError::InvalidTransactionParticipants
+                    FileDocumentError::InvalidTransactionParticipants
                 ))
             ));
 
@@ -1963,7 +1964,7 @@ mod tests {
                     review: FileRestoreReviewV1 {
                         schema_version: 1,
                         workspace_id: manifest.workspace_id,
-                        record_id: participant.record_id,
+                        document_id: participant.document_id,
                         mount_lifetime: Uuid::new_v4(),
                         frontier: [9; 32],
                     },
@@ -1979,12 +1980,12 @@ mod tests {
             mislabeled_v1.schema_version = FILE_MUTATION_TRANSACTION_VERSION;
             assert_eq!(
                 mislabeled_v1.validate(),
-                Err(FileRecordError::InvalidTransactionParticipant)
+                Err(FileDocumentError::InvalidTransactionParticipant)
             );
             manifest.validate().unwrap();
             let mut forged = manifest.clone();
             if let FileMutationOperation::RestoreContent { request, .. } = &mut forged.operation {
-                request.review.record_id = FileRecordId::new();
+                request.review.document_id = FileDocumentId::new();
             }
             assert!(forged.validate().is_err());
             let key = SigningKey::from_bytes(&[42; 32]);
@@ -2018,7 +2019,7 @@ mod tests {
             }
             assert_eq!(
                 stale_current.validate(),
-                Err(FileRecordError::InvalidMergeTransaction)
+                Err(FileDocumentError::InvalidMergeTransaction)
             );
 
             let mut missing_base = valid.clone();
@@ -2029,7 +2030,7 @@ mod tests {
             }
             assert_eq!(
                 missing_base.validate(),
-                Err(FileRecordError::InvalidMergeTransaction)
+                Err(FileDocumentError::InvalidMergeTransaction)
             );
 
             let mut member_as_base = valid;
@@ -2043,7 +2044,7 @@ mod tests {
             }
             assert_eq!(
                 member_as_base.validate(),
-                Err(FileRecordError::InvalidMergeTransaction)
+                Err(FileDocumentError::InvalidMergeTransaction)
             );
         }
     }
@@ -2054,14 +2055,14 @@ mod tests {
             person: Ed25519PublicKey([7; 32]),
             device: Ed25519PublicKey(key.verifying_key().to_bytes()),
         };
-        let record_id = FileRecordId::new();
-        let parent = FileRecordId::new();
+        let document_id = FileDocumentId::new();
+        let parent = FileDocumentId::new();
         let base = FileVersionId::new();
         let current = FileVersionId::new();
         let other = FileVersionId::new();
         let result = FileVersionV1 {
             id: FileVersionId::new(),
-            record_id,
+            document_id,
             parents: vec![current, other],
             actor,
             timestamp_ms: 50,
@@ -2070,12 +2071,12 @@ mod tests {
             provenance: FileProvenance::ConflictResolution,
         };
         let mut participant = FileMutationParticipant {
-            record_id,
+            document_id,
             role: FileMutationParticipantRole::MergeSource,
             expected_version: current,
             proposed_binding: FileBindingV1 {
                 schema_version: FILE_BINDING_VERSION,
-                record_id,
+                document_id,
                 parent: Some(parent),
                 name: "merge.txt".into(),
                 kind: FileNodeKind::File,
@@ -2085,7 +2086,7 @@ mod tests {
             },
             proposed_content_revision: Some(ContentRevisionV1 {
                 schema_version: CONTENT_REVISION_VERSION,
-                record_id,
+                document_id,
                 version_id: result.id,
                 content_hash: result.content_hash,
                 byte_len: 12,
@@ -2102,7 +2103,7 @@ mod tests {
             actor,
             timestamp_ms: 50,
             operation: FileMutationOperation::MergeContentConflict {
-                source_record: record_id,
+                source_record: document_id,
                 parent_record: parent,
                 source_name: "merge.txt".into(),
                 conflict_id: Uuid::new_v4(),
@@ -2151,7 +2152,7 @@ mod tests {
         ] {
             assert_eq!(
                 attribution(writer.clone(), label).validate(),
-                Err(FileRecordError::InvalidAttribution),
+                Err(FileDocumentError::InvalidAttribution),
                 "{writer:?} / {label:?}"
             );
         }

@@ -184,7 +184,7 @@ impl CalendarApp {
 mod tests {
     use super::*;
     use ui::framework::{ResourceApp, ViewCx, testing::TestApp};
-    use ui::tilo_resource::Id as RecordId;
+    use ui::tilo_resource::Id as DocumentId;
     use ui::widget::{Element, Text};
 
     struct ContactsOwner;
@@ -204,7 +204,7 @@ mod tests {
         let mut owner = TestApp::<ContactsOwner>::new().unwrap();
         let directory = owner.shared_person::<ContactDirectory>().unwrap();
         for person in [FIRST, SECOND] {
-            let person = RecordId::from_raw(person);
+            let person = DocumentId::from_raw(person);
             directory
                 .invoke(&ContactDirectory::PROJECT_CONTACT.with((person.clone(), "Alex".into())))
                 .unwrap();
@@ -315,10 +315,10 @@ mod tests {
         let chosen = open(&mut calendar, event)[0].clone();
         let directory = owner.shared_person::<ContactDirectory>().unwrap();
         directory
-            .invoke(
-                &ContactDirectory::PROJECT_CONTACT
-                    .with((RecordId::from_raw(chosen.hint.person.clone()), "Sam".into())),
-            )
+            .invoke(&ContactDirectory::PROJECT_CONTACT.with((
+                DocumentId::from_raw(chosen.hint.person.clone()),
+                "Sam".into(),
+            )))
             .unwrap();
         calendar.settle();
         assert!(
@@ -334,7 +334,7 @@ mod tests {
         directory
             .invoke(
                 &ContactDirectory::REMOVE_CONTACT
-                    .with(RecordId::from_raw(chosen.hint.person.clone())),
+                    .with(DocumentId::from_raw(chosen.hint.person.clone())),
             )
             .unwrap();
         calendar.settle();
@@ -348,7 +348,7 @@ mod tests {
             calendar
                 .shared_person::<ContactDirectory>()
                 .unwrap()
-                .invoke(&ContactDirectory::REMOVE_CONTACT.with(RecordId::from_raw(FIRST)))
+                .invoke(&ContactDirectory::REMOVE_CONTACT.with(DocumentId::from_raw(FIRST)))
                 .is_err(),
             "Calendar cannot edit the address book"
         );

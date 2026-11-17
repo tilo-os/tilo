@@ -36,7 +36,7 @@ pub(super) struct InspectorLayout {
     pub(super) nums: Vec<(NumField, Rect)>,
     pub(super) pip: Vec<(&'static str, (f64, f64), Rect)>,
     /// The two halves of the frame, as the buttons that put a picture in
-    /// one — the arrangement two camera angles of one moment need.
+    /// one — the layout two camera angles of one moment need.
     pub(super) sides: Vec<(&'static str, Side, Rect)>,
     /// "Fill frame" — clears the transform back to the plain aspect-fit.
     pub(super) reset_transform: Option<Rect>,

@@ -106,13 +106,13 @@ pub(crate) fn own_live_rgb(sync: Option<&crate::sync::Client>, identity: &str) -
 /// face's letters and colour come from — the root key they are here by, else the id this device
 /// sits as. The bar's own avatar and their own card both read it here, so one person wears one
 /// initial and one colour wherever they see themselves.
-pub(crate) fn own_face(own: &crate::sync::OwnPresence, seated: &str) -> (String, String) {
+pub(crate) fn own_face(own: &crate::sync::OwnPresence, device_person: &str) -> (String, String) {
     let identity = own
         .user
         .as_deref()
         .map(str::trim)
         .filter(|user| !user.is_empty())
-        .unwrap_or(seated)
+        .unwrap_or(device_person)
         .to_owned();
     let name = crate::platform::person::person_name(
         ui::local_identity::load().map(|identity| identity.display_name),
@@ -548,7 +548,7 @@ pub struct Given {
     /// Where the panel stands and how finely it draws.
     pub scale: f64,
     /// This device's person, as the panel names them before presence says otherwise.
-    pub seated: String,
+    pub device_person: String,
     /// What each window of the shell shows, by its tab: the record it holds, as
     /// the host that runs the windows reads them.
     pub notes: WindowRecords,
@@ -589,7 +589,7 @@ pub fn mount(
         open: Rc::clone(&open),
         handle: given.handle,
         drawn: Cell::new(0),
-        seated: given.seated,
+        device_person: given.device_person,
         sync: given.sync,
         here: given.here,
         notes: given.notes,
@@ -649,7 +649,7 @@ struct Panel {
     drawn: Cell<u64>,
     /// The id this device sits as, which the person's own face falls back to before their presence
     /// names the root key they are here by.
-    seated: String,
+    device_person: String,
     sync: Option<Rc<crate::sync::Client>>,
     /// Who is here, written into the shell's member rows as the bar's faces read them
     /// ([`Given::here`]).
@@ -872,7 +872,7 @@ impl Panel {
             .sync
             .as_ref()
             .map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
-        let (name, identity) = own_face(&own, &self.seated);
+        let (name, identity) = own_face(&own, &self.device_person);
         let devices = self.sync.as_ref().map_or_else(Vec::new, |sync| {
             let here = sync.here();
             let here = here.borrow();

@@ -33,6 +33,8 @@ unicode-segmentation = "1.12"
 # The toolkit's component descriptions, read as the package `ui`.
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 wasm-encoder = "0.252"
+# Who an actor value names: the identity type every crate shares.
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # The clock that also reads in a browser page, where std has none.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # One rule for which language a locale names, shared with the packs.

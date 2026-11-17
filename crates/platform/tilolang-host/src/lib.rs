@@ -87,7 +87,7 @@ pub fn route_under(
 /// Whether an instance joining `route` opens the record `asked`, as a launch names it: a member's
 /// own, by its id. The workspace's record of the app is no record a launch names.
 fn opens_record(route: &collaboration::RouteSpec, asked: &str) -> bool {
-    collab_types::record::RecordId::parse(asked)
+    collab_types::document::DocumentId::parse(asked)
         .is_some_and(|asked| asked.route() == route.record.as_deref().unwrap_or_default())
 }
 
@@ -680,7 +680,7 @@ impl TilolangHost {
         }
         let _scope = self.scope.enter();
         let manager = collaboration::CollaborationManager::join_instance(
-            &collab_types::record::RecordKind::new(bundle.meta.record_kind()),
+            &collab_types::document::ResourceType::new(bundle.meta.record_kind()),
             broker,
             identity.as_fd(),
             route,
@@ -1052,7 +1052,7 @@ impl TilolangHost {
                 .iter()
                 .map(|(app, record, mutation)| collaboration::UnitMutation {
                     app,
-                    record,
+                    document_id: record,
                     mutation,
                     document: None,
                 })
@@ -1199,7 +1199,7 @@ mod tests {
     #[test]
     fn an_instance_opens_only_the_record_its_route_names() {
         let workspace = uuid::Uuid::from_u128(7);
-        let own = collab_types::record::RecordId::for_file_record(uuid::Uuid::from_u128(9));
+        let own = collab_types::document::DocumentId::for_file_document(uuid::Uuid::from_u128(9));
         let workspaces = collaboration::RouteSpec::app("so.tilo.lang.notes", workspace);
         let owns = collaboration::RouteSpec::record("so.tilo.lang.notes", workspace, own.route());
         assert!(opens_record(&owns, own.as_str()));
@@ -1207,12 +1207,13 @@ mod tests {
             !opens_record(&workspaces, own.as_str()),
             "the workspace's record is never named: a launch that names one names another"
         );
-        let other = collab_types::record::RecordId::for_file_record(uuid::Uuid::from_u128(10));
+        let other =
+            collab_types::document::DocumentId::for_file_document(uuid::Uuid::from_u128(10));
         assert!(!opens_record(&owns, other.as_str()));
         assert!(!opens_record(&owns, "not a record"));
         // Naming nothing names no record: not the workspace's, whose route names none, by the
         // empty name or by the key its custody keeps it under, and not a member's own.
-        let primary = collab_types::record::RecordId::package_primary();
+        let primary = collab_types::document::DocumentId::package_primary();
         for unnamed in ["", primary.as_str()] {
             assert!(
                 !opens_record(&workspaces, unnamed),

@@ -9,14 +9,14 @@ pub trait RecordScoped: Widget {
     /// Which record this widget's document should be, so opening a second
     /// file checks out a different document instead of overwriting the
     /// first. `None` keeps the default package-level document.
-    fn record_intent(&self) -> Option<super::RecordCheckout> {
+    fn record_intent(&self) -> Option<super::DocumentCheckout> {
         None
     }
 
     /// Inverse of [`Self::record_intent`]. A widget that publishes presence
     /// must fold this into its presence key: two instances of one app are
     /// two records, and a key that only names the field collides.
-    fn set_record_scope(&mut self, _record: &super::RecordId) {}
+    fn set_record_scope(&mut self, _record: &super::DocumentId) {}
 
     /// Detach every receiver, queued result and deferred document write owned
     /// by the current record before a host retains this root under another
@@ -33,11 +33,11 @@ pub trait RecordScoped: Widget {
 const REFUSAL: &str =
     "This application cannot release retained work from its current document owner";
 
-pub fn record_intent(widget: &(impl Widget + ?Sized)) -> Option<super::RecordCheckout> {
+pub fn record_intent(widget: &(impl Widget + ?Sized)) -> Option<super::DocumentCheckout> {
     capability::<dyn RecordScoped>(widget)?.record_intent()
 }
 
-pub fn set_record_scope(widget: &mut (impl Widget + ?Sized), record: &super::RecordId) {
+pub fn set_record_scope(widget: &mut (impl Widget + ?Sized), record: &super::DocumentId) {
     if let Some(scoped) = capability_mut::<dyn RecordScoped>(widget) {
         scoped.set_record_scope(record);
     }

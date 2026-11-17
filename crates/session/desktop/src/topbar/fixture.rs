@@ -23,7 +23,6 @@ pub struct State {
     /// only its own app's.
     pub activities: Vec<(String, ui::live_activity::Summary)>,
     pub active_exposures: Vec<ActiveExposure>,
-    pub watching: u32,
     pub intents: Vec<ChromeIntent>,
     pub own: Option<OwnChip>,
     pub can_invite: bool,
@@ -68,7 +67,6 @@ impl FixtureChrome {
             glance: ActivityGlance::default(),
             activities: Vec::new(),
             active_exposures: Vec::new(),
-            watching: 0,
             intents: Vec::new(),
             own: None,
             can_invite: false,
@@ -102,7 +100,6 @@ impl DesktopChromeSource for FixtureChrome {
             activity_glance: state.glance.clone(),
             activities: ui::floating_layer::pill(&state.activities),
             active_exposures: state.active_exposures.clone(),
-            watching: state.watching,
             own: state.own.clone(),
             invite: crate::chrome::Invite::when(state.can_invite),
             waved: state.waved.clone(),

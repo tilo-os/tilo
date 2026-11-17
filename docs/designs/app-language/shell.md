@@ -6,9 +6,9 @@ components.md and layout.md.
 
 ## 1. Decisions
 
-- **A shell is a view** of the workspace's arrangement and resources: resources, tasks,
+- **A shell is a view** of the workspace's layout and resources: resources, tasks,
   presence, notifications. It is chosen per person and device class, and switching keeps the
-  arrangement.
+  layout.
 - **Rust keeps the mechanics, tilolang the structure.** The compositor, input, rendering and
   the UI host are Rust; so are the hot interactions, as described components: window drag and
   resize, strip scrolling, canvas pan and zoom, gestures at native refresh. Each commits one
@@ -26,9 +26,9 @@ components.md and layout.md.
   always reaches the system are drawn above any shell view. A shell view never sees secrets,
   never draws an ask and can't take input the system layer claims.
 
-## 2. Arrangement
+## 2. Layout
 
-Each shell declares its arrangement type, in its own terms:
+Each shell declares its layout type, in its own terms:
 
 ```
 type Strips { strips: List<Strip> }            type Strip { places: List<Place>, width: … }
@@ -38,7 +38,7 @@ type Canvas { places: Map<Place, Point> }      type Place { shows: Resource, vie
 - It lives in the person's own record (`records: .own`), synced across their devices that use
   the same shell, with history and undo. Nothing about it is shared with other members.
 - A shell that doesn't know a place a different shell made ignores it and leaves it alone.
-- Today's arrangement in `tilo_desktop_model` (shared, on the workspace) moves here; the
+- Today's layout in `tilo_desktop_model` (shared, on the workspace) moves here; the
   migration keeps every window, strip and canvas place.
 
 ## 3. References, not opening
@@ -106,20 +106,20 @@ The agent does the same work under any of these, and may read them to present it
 
 ## 6. Shells as packages
 
-A style is a tilolang view of the person's arrangement, and nothing more. A person, or an
+A style is a tilolang view of the person's layout, and nothing more. A person, or an
 agent working for them, makes a new one the way they make any app: write a package, install
 it, pick it. The four styles that ship (strips, frames, spaces, desktop) are written exactly
 that way, and are the examples.
 
-**What makes a view a style.** Its first parameter is the session's arrangement, the type
-whose origin is `session.arrangement`:
+**What makes a view a style.** Its first parameter is the session's layout, the type
+whose origin is `session.layout`:
 
 ```tilolang
 use so.tilo.session as session
 use so.tilo.shell as shell        // the shipped parts: bar, dock, notices, quick settings
 
 /// My agents' work as a timeline, today's newest first.
-view timeline(a: shell.Arrangement) {
+view timeline(a: shell.Layout) {
     shell.style_shell(a, false) {
         ui.List(a.places.newest(), |p| ui.Card(p.title) { place_view(p) })
     }
@@ -137,17 +137,17 @@ reads installed packages from the person's package store the way it reads every 
 - `compile_shell()`'s built-in copy (`include_str!` of `apps/tl/shell`) stays only as the
   fallback described below. It is not the way the shell normally loads.
 
-**Picking a style.** The person's `Viewing` record (`arrangement.tl`, `records: .own`) holds
+**Picking a style.** The person's `Viewing` record (`layout.tl`, `records: .own`) holds
 the style as a view reference: package and view name. It is not the closed `Preset` enum,
 which goes away.
 - The style switch in the bar and the Appearance page of Settings list every style of every
   installed package, by the view's doc line.
 - The shell part's screen layer (`screen_layer()`, today fixed to `so.tilo.shell`'s
   `style_shell`) shows the referenced view.
-- Switching keeps every place where it was, because the arrangement is the session's and the
+- Switching keeps every place where it was, because the layout is the session's and the
   same in every style.
 
-**What a style can do.** Read the session's resources (arrangement, places, windows, shell,
+**What a style can do.** Read the session's resources (layout, places, windows, shell,
 notices, people, the device) and call their actions, exactly as the shipped styles do. It can
 show any resource's view in a place (`place_view`). It never draws trusted surfaces: the sheet,
 asks, sign-in and lock stay the system's (§1). Looks stay the theme's: a style names roles, never
@@ -225,7 +225,7 @@ A shell's own data is derived, not saved. What the session owns and can make aga
 clock, the shell, the device's state, the session origin's resources) is written into the store's
 unsaved layer, never into a collaborative record: a change of one reaches the views at once, and
 leaves no change to be committed, synced or replayed. A minute therefore costs a view run and a
-draw, not a record round-trip. Data that is the person's (their arrangement, their settings)
+draw, not a record round-trip. Data that is the person's (their layout, their settings)
 stays a saved record, synced and undoable like any app's.
 
 ## 8. On the native session
@@ -247,8 +247,8 @@ seams:
   person, notifications), the desktop model (workspaces, strips, windows), tasks and presence
   become typed resources and actions a shell view reads and invokes through the action API, the same
   ones agents use. A shell view never reaches Rust state any other way.
-- **Arrangement through the policy.** A shell's arrangement type is a record of the person's.
-  A `WindowPolicy` implementation per arrangement mechanic (scrolling strips: today's
+- **Layout through the policy.** A shell's layout type is a record of the person's.
+  A `WindowPolicy` implementation per layout mechanic (scrolling strips: today's
   `tilo-desktop-policy`; canvas; floating desktop) reads it and places windows; gestures are
   Rust and commit one arranging action at their end.
 - **Frames.** A window's frame (bar, tabs, actions) is a shell view drawn on the shell layer
@@ -259,7 +259,7 @@ seams:
   resource is composed as a view instead (below).
 
   ```
-  view place_window(p: ArrangementPlace) {
+  view place_window(p: LayoutPlace) {
       stack {
           frame_bar(p)                 // the shell's: title, tabs, actions, presence
           ui.WindowWell(place: p.key)  // the app's window, at this rectangle
@@ -281,23 +281,23 @@ seams:
   another workspace) leaves its window unmapped from the output, so it gets no frame callbacks.
 
   A place's key is the tab id the desktop model gives the window when it maps
-  (`DesktopPolicy::map`), so a well and its window meet by that id. A window the arrangement
+  (`DesktopPolicy::map`), so a well and its window meet by that id. A window the layout
   has no place for gets one through the arranging action, never a well of its own.
 
 - **The canvas composes views; it opens nothing.** The four layers stay apart:
-  - *Resource:* a mailbox, a message, a channel page. The workspace's arrangement is a resource
+  - *Resource:* a mailbox, a message, a channel page. The workspace's layout is a resource
     too: which resources are open, through which view, where.
   - *Action:* putting the mailbox on the canvas as its `inbox` view at a point is an action on
-    the **arrangement** (`shell:layout`, `layout.tl`), never on the mailbox. Archiving
+    the **layout** (`shell:layout`, `layout.tl`), never on the mailbox. Archiving
     a message is an action on the message. A person, an agent and the REPL show things the same
     way, attributed and undoable. No resource carries an action that shows it.
-  - *View:* the canvas is a view over the arrangement. For each entry it calls the entry's view
+  - *View:* the canvas is a view over the layout. For each entry it calls the entry's view
     of its resource, the same views the app's own default view is made of: `mail.inbox(m)`,
     `mail.message(msg)`, `yt.channel(c)`. "Mail" is never placed. A mailbox's list, one message
     and the folder sidebar are three entries, laid out by the person or an agent. A composed
     view's buttons press its own app's actions, as child invocations carrying that view's
     author (`tilolang_runtime::foreign`).
-  - *Theme:* an entry names a resource and a view id, never a look. An arrangement, or an
+  - *Theme:* an entry names a resource and a view id, never a look. A layout, or an
     agent's summary made of views, renders in each viewer's own theme.
 
   The mechanism: the shell's runtime runs another tilolang package's views inline, under that
@@ -307,11 +307,11 @@ seams:
   records stay its app's, read from the readings the session publishes (`Runtime::set_reading`,
   `tilolang_runtime::foreign`), and its actions are child invocations at its action API. A view that
   `use`s the app calls its views by name (`mail.inbox(m)`, a `view:` node). The canvas, which
-  can't `use` every app, finds the resource by the id the arrangement keeps and names the view
+  can't `use` every app, finds the resource by the id the layout keeps and names the view
   as text:
 
   ```
-  view place_view(p: ArrangementPlace) {
+  view place_view(p: LayoutPlace) {
       if let r = placed_resource(p.record) {        // `resource(id)`: its type from where it is held
           if p.shown_as != "" or meta(r).opens {
               show(r, view: p.shown_as)               // that view, or its type's default
@@ -365,7 +365,7 @@ no run and no transcript; it places the channel like any resource.
 - **The view.** The conversation is Chat's own: the window Chat opens shows it with Chat's
   views, so the canvas gets no second chat.
 - **Any action.** The agent's tools are the broker's catalogue. The session publishes its
-  own actions there too (the arrangement's `place`, `place_at`, `open`; windows; notices),
+  own actions there too (the layout's `place`, `place_at`, `open`; windows; notices),
   so an agent answering a person's turn can arrange the screen exactly as the REPL can. Each
   call is authorized per step against the turn's grants, attributed to the agent and the
   person who asked, and undone like any change.
@@ -389,7 +389,7 @@ tilolang shell follows them.
    the top bar as a tilolang view: one bar per display, following hotplug, each stepping aside
    on a display a fullscreen window owns (`Compositor::fullscreen_outputs`).
 2. The canvas composes views (§8, first point above): a package's views run inline in the
-   shell's runtime, arrangement entries name a resource and a view, and the canvas places them
+   shell's runtime, layout entries name a resource and a view, and the canvas places them
    from `find`.
 3. The conversation (§8.1) as a canvas place, beside the REPL.
 4. The canvas shell as a whole: `WellPolicy` for canvas places, point and type (canvas.md),
@@ -407,8 +407,8 @@ tilolang shell follows them.
 
 The shell is held to AGENTS.md's first principle: one type per concept and one declaration per
 action, owned by whoever owns the state. This section is the working model for the tilolang
-shell's code. Its arrangement and workspace parts are not settled (§9): they wait on what people
-learn using a shared arrangement in the Rust shell.
+shell's code. Its layout and workspace parts are not settled (§9): they wait on what people
+learn using a shared layout in the Rust shell.
 
 ### The session's resources
 
@@ -432,13 +432,13 @@ carries its own actions:
   shell declares no wrapper action around one of these.
 - No reading bundles them. `Shell` (the old chrome's every input in one record) and the
   `desktop:shell`, `desktop:chrome` and `desktop:tab:N` addresses are replaced by the types above.
-  `Room` and `ArrangementWorkspace` are replaced by `Workspace`, and `Win` by `Window`.
+  `Room` and `LayoutWorkspace` are replaced by `Workspace`, and `Win` by `Window`.
 - Values the session derives (the time, which surface is up, whether the pointer is at an edge)
   stay unsaved (§7).
 
-### The arrangement belongs to each shell
+### The layout belongs to each shell
 
-Each layout is a shell package with its own arrangement type in the person's own record
+Each layout is a shell package with its own layout type in the person's own record
 (`records: .own`), as §2 says. A place is a resource and a view, and never an app. The app follows
 from the resource, and a foreign window's place names the `Window`.
 
@@ -468,10 +468,10 @@ type Pin     { place: Place, x: Int, y: Int, width: Int, height: Int }
   `place`, `move`, `close`, `resize`, `raise`. Each is attributed and undoable like any action on
   a record.
 - **Every shell answers two actions under the same names**: `place(resource, view)` and
-  `close(place)` on its arrangement root. The checker enforces this for a package of category
-  `.shell`. The session publishes the person's active shell's arrangement root as
+  `close(place)` on its layout root. The checker enforces this for a package of category
+  `.shell`. The session publishes the person's active shell's layout root as
   `shell:layout`, so the agent, the REPL and a reference's activation call
-  `arrangement.place(r, view:)` without knowing which shell is up. When an app maps a new
+  `layout.place(r, view:)` without knowing which shell is up. When an app maps a new
   window, the session calls `place` with that `Window`, so every window gets a place in whatever
   shell is active.
 - Switching shells maps places across. Each shell has a `from(places: List<Place>)` that lays out
@@ -516,10 +516,10 @@ model. The design maps each piece onto the code: [one-app-model.md](one-app-mode
 
 ## 9. Open
 
-- Shared or personal arrangement. A workspace whose arrangement everyone shares gives presence
-  for free (cursors, viewports, following); a personal arrangement gives each person their own
+- Shared or personal layout. A workspace whose layout everyone shares gives presence
+  for free (cursors, viewports, following); a personal layout gives each person their own
   layout and makes presence something to rebuild per view. Which one, or which mix, is learned
-  by using the shared arrangement in the Rust shell first.
+  by using the shared layout in the Rust shell first.
 - Canvas or scrolling strips as the native form of a shared workspace.
 - What a workspace is: an audience and agent scope, a place people share, or a person's focus
   on one piece of work; and where things that are a person's own (music playing, device

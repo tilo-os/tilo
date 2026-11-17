@@ -759,10 +759,10 @@ async fn answer_of(job: &super::InvocationJob) -> InvocationCompletion {
 
 use tilo_actions::remote::{ActionHostError, Caller, InvocationReceipt, InvokeRequest};
 
-/// A host's own step that is a turn's (`for_turns`): the session's arrangement, out here.
+/// A host's own step that is a turn's (`for_turns`): the session's layout, out here.
 #[derive(Default)]
 struct TurnSteps {
-    taken: Mutex<Vec<String>>,
+    taken: Mutex<Vec<tilo_actions::MemberId>>,
 }
 
 impl crate::services::HostStepServices for TurnSteps {
@@ -780,9 +780,9 @@ impl crate::services::HostStepServices for TurnSteps {
             did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
-            address: tilo_actions::ActionAddress::new("shell:arrangement", "place"),
+            address: tilo_actions::ActionAddress::new("shell:layout", "place"),
             resource_kind: "shell".into(),
-            resource_label: "The person's arrangement".into(),
+            resource_label: "The person's layout".into(),
             action_label: "Put a resource on the canvas".into(),
             keywords: Vec::new(),
             icon: None,
@@ -805,7 +805,7 @@ impl crate::services::HostStepServices for TurnSteps {
         self.taken
             .lock()
             .unwrap()
-            .push(request.actor.id().to_owned());
+            .push(request.actor.member().clone());
         Ok(tilo_actions::remote::Pending::ready(Ok(
             tilo_actions::ActionOutput::default(),
         )))
@@ -827,7 +827,7 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
                 .lock()
                 .unwrap()
                 .push((SESSION.into(), crate::services::GoingSession::default()));
-            grant_the_arrangement(&f, true);
+            grant_the_layout(&f, true);
             let turn =
                 tilo_action_policy::turn::Turn::new("chat.workspace/channels/c_tide", "message-1");
             let person = hex::encode(f.native.certificate.user_public_key);
@@ -840,12 +840,12 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
             stray_invoke(&f.state, &agent, 92).expect("the turn takes the session's step");
             assert_eq!(
                 steps.taken.lock().unwrap().as_slice(),
-                ["agent:scribe"],
+                [tilo_actions::MemberId::agent("scribe")],
                 "the step ran once, as the turn's agent"
             );
 
             // A turn's step is listed to the agent working the turn, and to the person at this
-            // seat as their other steps are: the REPL types what the agent would.
+            // device as their other steps are: the REPL types what the agent would.
             let listed = |caller: &Caller| {
                 let actor = BrokerActor::for_caller(caller);
                 f.state
@@ -861,11 +861,11 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
                 listed(&agent),
                 "the agent working the turn is offered the session's step"
             );
-            let seated =
+            let local =
                 Caller::local_person(person.clone()).in_workspace(workspace_id().to_string());
             assert!(
-                listed(&seated),
-                "the person at this seat is offered the session's step too"
+                listed(&local),
+                "the person at this device is offered the session's step too"
             );
 
             // An agent whose session is over takes no step.
@@ -881,7 +881,7 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
             assert_eq!(steps.taken.lock().unwrap().len(), 1, "nothing ran for it");
 
             // The grants refuse it: the same refusal an app action hears.
-            grant_the_arrangement(&f, false);
+            grant_the_layout(&f, false);
             let refused = stray_invoke(&f.state, &agent, 94);
             assert!(
                 matches!(
@@ -896,15 +896,15 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
         .await;
 }
 
-/// Let the turn's agent `place` on the session's arrangement, or refuse it, as the person who
+/// Let the turn's agent `place` on the session's layout, or refuse it, as the person who
 /// started the turn.
-fn grant_the_arrangement(f: &Fixture, may: bool) {
+fn grant_the_layout(f: &Fixture, may: bool) {
     use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
     let node = tilo_actions::action_node(
         &TreePath::workspace(workspace_id().to_string()),
         tilo_actions::remote::session_actions::PROVIDER,
         "shell",
-        "shell:arrangement",
+        "shell:layout",
         None,
         "place",
     );
@@ -912,9 +912,9 @@ fn grant_the_arrangement(f: &Fixture, may: bool) {
         f,
         Grant::new(
             if may {
-                "fixture-arrangement-place"
+                "fixture-layout-place"
             } else {
-                "fixture-arrangement-deny"
+                "fixture-layout-deny"
             },
             Grantee::agent("scribe"),
             node,
@@ -940,7 +940,7 @@ fn stray_invoke(
                 invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(invocation)),
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider: tilo_actions::remote::session_actions::PROVIDER.into(),
-                    address: tilo_actions::ActionAddress::new("shell:arrangement", "place"),
+                    address: tilo_actions::ActionAddress::new("shell:layout", "place"),
                 },
                 argument: tilo_actions::remote::InvokeArgument::None,
                 context: None,

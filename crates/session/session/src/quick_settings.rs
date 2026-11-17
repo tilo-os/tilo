@@ -196,16 +196,7 @@ impl crate::Session {
             // Where the stack places it, and the most room it has there, resting against the edge
             // of that room the stack chose: below the caret's line, or above it. Down, it keeps
             // the last place, so it leaves from where it stood.
-            self.compositor.place_layer_in(
-                SURFACE_NAMESPACE,
-                Some((
-                    offset(standing.room.x0),
-                    offset(standing.room.y0),
-                    offset(standing.room.width()).max(1),
-                    offset(standing.room.height()).max(1),
-                )),
-                standing.rests_at_bottom,
-            );
+            self.stand_layer(SURFACE_NAMESPACE, &standing);
         }
         // Where it stands is as tall as its page: what a press outside it is judged by. A surface
         // still drawing the frame it fits takes no press until the person sees it.
@@ -454,6 +445,25 @@ impl crate::Session {
             let _ = self.ask_panel(&["show-controls"]);
         }
     }
+
+    /// Stand the session's layer surface `namespace` where the overlay stack placed it.
+    pub(crate) fn stand_layer(
+        &mut self,
+        namespace: &str,
+        standing: &tilo_desktop::overlays::Standing,
+    ) {
+        let room = standing.room;
+        self.compositor.place_layer_in(
+            namespace,
+            Some((
+                offset(room.x0),
+                offset(room.y0),
+                offset(room.width()).max(1),
+                offset(room.height()).max(1),
+            )),
+            standing.rests_at_bottom,
+        );
+    }
 }
 
 /// `length` logical pixels as a whole number of them, never below one.
@@ -533,18 +543,18 @@ pub(crate) fn open_settings(shared: &Shared, link: &str) {
 /// Which controls the panel shows, and in what order: the person's own setting of this device,
 /// published as an action so that a press in the panel, an agent and a script change it the same
 /// way, whether the panel is drawn or not.
-pub const ARRANGEMENT: &str = "session:quick-settings";
-/// What the arrangement resource is, to a reader with no words of its own.
-const ARRANGEMENT_KIND: &str = "session.quick-settings";
+pub const QUICK_SETTINGS: &str = "session:quick-settings";
+/// The resource the panel publishes, for a reader that names none.
+const KIND: &str = "session.quick-settings";
 
-/// What the arrangement resource offers: the controls the panel shows.
+/// What the Quick Settings resource offers: the controls the panel shows.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "so.tilo.session.quick-settings")]
 pub(crate) enum LayoutAction {
     /// Show a control on the panel
     #[effect(own_device, idempotent)]
     ShowControl {
-        /// The control's name, as the panel's arrangement lists it
+        /// The control's name, as the panel lists it
         #[param(
             "The control: `wifi`, `bluetooth`, `vpn`, `night_light`, `airplane_mode`, `mobile_data`, `do_not_disturb`, `rotation_lock` or `power_mode`"
         )]
@@ -553,14 +563,14 @@ pub(crate) enum LayoutAction {
     /// Take a control off the panel. Wi-Fi stays: it is how a desktop without a network gets online
     #[effect(own_device, idempotent)]
     HideControl {
-        /// The control's name, as the panel's arrangement lists it
+        /// The control's name, as the panel lists it
         #[param("The control, as Show control names it")]
         control: String,
     },
     /// Move a control to another place on the panel
     #[effect(own_device, idempotent)]
     MoveControl {
-        /// The control's name, as the panel's arrangement lists it
+        /// The control's name, as the panel lists it
         #[param("The control, as Show control names it")]
         control: String,
         /// The control it stands in front of; none for the last place
@@ -572,24 +582,24 @@ pub(crate) enum LayoutAction {
     ResetControls,
 }
 
-/// The arrangement resource: which controls the panel shows, read by the panel and by anyone else
+/// The Quick Settings resource: which controls the panel shows, read by the panel and by anyone else
 /// who asks.
-fn arrangement_resource() -> tilo_actions::ResourceSpec {
+fn quick_settings_resource() -> tilo_actions::ResourceSpec {
     tilo_service::offer::<LayoutAction>(
         tilo_actions::ResourceSpec::new(
-            ARRANGEMENT,
-            ARRANGEMENT_KIND,
+            QUICK_SETTINGS,
+            KIND,
             crate::i18n::t("session-quick-settings"),
         )
         .with_personal_reading(),
     )
 }
 
-/// Which controls the panel shows, as the panel reads them: the person's arrangement of this
+/// Which controls the panel shows, as the panel reads them: the person's choice of controls on this
 /// device, kept in its settings document.
 #[derive(Default)]
 pub(crate) struct QuickSettingsService {
-    /// The arrangement as last read, published as the reading.
+    /// The controls as last read, published as the reading.
     shown: std::cell::RefCell<settings_store::hardware::QuickSettingsConfig>,
     /// Whether the settings document was read at all, and the version that was read: one that did
     /// not move is not read again.
@@ -598,14 +608,14 @@ pub(crate) struct QuickSettingsService {
 }
 
 impl QuickSettingsService {
-    /// The service, holding the person's arrangement as their settings document has it.
+    /// The service, holding the person's controls as their settings document has them.
     pub(crate) fn new() -> Self {
         let mut service = Self::default();
         service.follow();
         service
     }
 
-    /// Read the person's arrangement, and say the resource changed when it is not what was
+    /// Read the person's controls, and say the resource changed when they are not what was
     /// published.
     fn follow(&mut self) -> bool {
         let stamp = settings_store::stamp();
@@ -614,42 +624,36 @@ impl QuickSettingsService {
         }
         self.seen = true;
         self.stamp = stamp;
-        let arrangement = settings_store::hardware::QuickSettingsConfig::load().normalised();
-        let changed = *self.shown.borrow() != arrangement;
-        *self.shown.borrow_mut() = arrangement;
+        let config = settings_store::hardware::QuickSettingsConfig::load().normalised();
+        let changed = *self.shown.borrow() != config;
+        *self.shown.borrow_mut() = config;
         changed
     }
 
-    /// Carry `action` out on the person's arrangement, and keep it: whether it changed.
+    /// Carry `action` out on the person's controls, and keep it: whether they changed.
     fn carry(&mut self, action: &LayoutAction) -> Result<bool, tilo_actions::ApiError> {
-        let mut arrangement = self.shown.borrow().clone();
+        let mut config = self.shown.borrow().clone();
         let changed = match action {
             LayoutAction::ShowControl { control } => {
-                tilo_quick_settings::host::show_control(&mut arrangement, control)
+                tilo_quick_settings::host::show_control(&mut config, control)
             }
             LayoutAction::HideControl { control } => {
-                tilo_quick_settings::host::hide_control(&mut arrangement, control)
+                tilo_quick_settings::host::hide_control(&mut config, control)
             }
             LayoutAction::MoveControl { control, before } => {
-                tilo_quick_settings::host::move_control(
-                    &mut arrangement,
-                    control,
-                    before.as_deref(),
-                )
+                tilo_quick_settings::host::move_control(&mut config, control, before.as_deref())
             }
-            LayoutAction::ResetControls => {
-                tilo_quick_settings::host::reset_controls(&mut arrangement)
-            }
+            LayoutAction::ResetControls => tilo_quick_settings::host::reset_controls(&mut config),
         };
         if !changed {
             return Ok(false);
         }
-        arrangement.save().map_err(|error| {
+        config.save().map_err(|error| {
             tilo_actions::ApiError::Failed(format!(
-                "the Quick Settings arrangement was not kept: {error}"
+                "the Quick Settings config was not kept: {error}"
             ))
         })?;
-        *self.shown.borrow_mut() = arrangement;
+        *self.shown.borrow_mut() = config;
         self.stamp = settings_store::stamp();
         Ok(true)
     }
@@ -657,11 +661,11 @@ impl QuickSettingsService {
 
 impl tilo_service::Service for QuickSettingsService {
     fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
-        vec![arrangement_resource()]
+        vec![quick_settings_resource()]
     }
 
     fn read(&self, resource: &str) -> Option<serde_json::Value> {
-        (resource == ARRANGEMENT).then(|| {
+        (resource == QUICK_SETTINGS).then(|| {
             serde_json::json!({
                 "controls": self
                     .shown
@@ -699,28 +703,28 @@ mod tests {
 
     use super::*;
 
-    /// Ask the arrangement resource `action` with `arguments`, as the API decodes it.
+    /// Ask the config resource `action` with `arguments`, as the API decodes it.
     fn asked(service: &mut QuickSettingsService, action: &str, arguments: &serde_json::Value) {
         let arguments = arguments.as_object().cloned().unwrap_or_default();
         service
-            .invoke(ARRANGEMENT, action, &arguments)
-            .expect("the arrangement takes it");
+            .invoke(QUICK_SETTINGS, action, &arguments)
+            .expect("the config takes it");
     }
 
-    /// The controls the arrangement publishes now.
+    /// The controls the config publishes now.
     fn shown(service: &QuickSettingsService) -> String {
         service
-            .read(ARRANGEMENT)
-            .expect("the arrangement is published")["controls"]
+            .read(QUICK_SETTINGS)
+            .expect("the config is published")["controls"]
             .to_string()
     }
 
     tilo_test_env::scenario! {
         #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
-        fn the_quick_settings_panel_keeps_its_arrangement_and_comes_from_its_corner;
+        fn the_quick_settings_panel_keeps_its_config_and_comes_from_its_corner;
 
-        phase the_arrangement_is_published_by_the_session_and_kept;
-        // The arrangement is the person's own setting, so it is read, changed and kept whether the
+        phase the_config_is_published_by_the_session_and_kept;
+        // The config is the person's own setting, so it is read, changed and kept whether the
         // panel is drawn or not, and a control moves in front of the one it was dropped on.
         {
             let _home = tilo_test_env::TestHome::new().expect("a home");

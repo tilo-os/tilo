@@ -505,7 +505,7 @@ impl Pending {
                 }
                 out.extend(members.into_iter().map(|who| {
                     let label = names.name(&who);
-                    (who.0, label)
+                    (crate::runtime::ids::actor_text(&who), label)
                 }));
             }
             FieldType::Resource(kind) => {
@@ -718,7 +718,7 @@ fn text_of(meta: &Meta, ty: &FieldType, value: &Value) -> String {
         Value::Int(number) => number.to_string(),
         Value::Float(number) => number.to_string(),
         Value::Opt(Some(held)) => text_of(meta, ty, held),
-        Value::Principal(who) => who.0.clone(),
+        Value::Actor(who) => crate::runtime::ids::actor_text(who),
         Value::Ref(r) => crate::publish::resource_id(&meta.app, &r.target.id_string()),
         Value::Enum(case) => meta
             .enums
@@ -795,10 +795,11 @@ fn read(host: &Host, meta: &Meta, field: &Field, text: &str) -> Result<Value, St
             Some(secs) => Json::from(secs),
             None => return Err("Not a length of time".to_owned()),
         },
-        FieldType::Principal => match trimmed.strip_prefix("agent:") {
-            Some(agent) => json!({ "agent": agent }),
-            None => json!({ "person": trimmed }),
-        },
+        FieldType::Principal => {
+            let who = crate::runtime::ids::actor_of_text(trimmed)
+                .ok_or_else(|| "Not someone in the workspace".to_owned())?;
+            crate::runtime::value::to_json(&Value::Actor(who))?
+        }
         _ => Json::String(trimmed.to_owned()),
     };
     host.argument(meta, &json, &field.ty)

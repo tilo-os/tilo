@@ -430,7 +430,7 @@ impl TestTree {
         ));
         let receipt = WorkspaceEffectReceipt {
             invocation,
-            actor: actor.to_string(),
+            actor: tilo_actions::MemberId::person(actor),
             context,
             status,
             completed_at: tilo_clock::unix_now_i64(),
@@ -562,8 +562,8 @@ pub(crate) fn detached_records(
         .unwrap_or_default();
     held.into_iter()
         .filter_map(|(id, kind)| {
-            let id = ui::RecordId::parse(&id)?;
-            let checkout = ui::RecordCheckout::new(id.clone(), ui::RecordKind::new(kind));
+            let id = ui::DocumentId::parse(&id)?;
+            let checkout = ui::DocumentCheckout::new(id.clone(), ui::ResourceType::new(kind));
             let document = records.read(&id, automerge::AutoCommit::clone);
             Some(super::DetachedRecordHistory {
                 app: RECORD_APP.to_owned(),

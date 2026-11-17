@@ -6,20 +6,20 @@ use fs_protocol::files::{
 };
 use fs_protocol::history::RecordHistorySnapshot;
 use fs_protocol::{
-    ConflictStatus, ContentHash, Ed25519PublicKey, FileActor, FileProvenance, FileRecordId,
+    ConflictStatus, ContentHash, Ed25519PublicKey, FileActor, FileDocumentId, FileProvenance,
     FileVersionAttributionV1, FileVersionId, FileVersionV1,
 };
 use uuid::Uuid;
 
 /// The snapshot a record with `count` versions has: each version its
 /// parent's child, all metadata-only.
-fn metadata_snapshot(record: FileRecordId, count: u64) -> RecordHistorySnapshot {
+fn metadata_snapshot(record: FileDocumentId, count: u64) -> RecordHistorySnapshot {
     let mut versions = Vec::new();
     let mut parent = None;
     for index in 0..count {
         let version = FileVersionV1 {
             id: FileVersionId::new(),
-            record_id: record,
+            document_id: record,
             parents: parent.into_iter().collect(),
             actor: FileActor {
                 person: Ed25519PublicKey([1; 32]),
@@ -40,7 +40,7 @@ fn metadata_snapshot(record: FileRecordId, count: u64) -> RecordHistorySnapshot 
     versions.sort_by_key(|version| version.id);
     let head = versions.last().map(|version| version.id);
     RecordHistorySnapshot {
-        record_id: record,
+        document_id: record,
         versions,
         heads: head.into_iter().collect(),
         conflicts: Vec::new(),
@@ -52,13 +52,13 @@ tilo_test_env::scenario! {
 
     phase metadata_history_uses_exact_bounded_shared_query;
     {
-        let record = FileRecordId::new();
+        let record = FileDocumentId::new();
         let snapshot = metadata_snapshot(record, 25);
         let latest = snapshot.heads[0];
         let scope = Scope {
             workspace_id: Uuid::new_v4(),
             mount_lifetime: Uuid::new_v4(),
-            record_id: record,
+            document_id: record,
             frontier: [7; 32],
         };
         let Value::Page(first) = snapshot
@@ -145,14 +145,14 @@ tilo_test_env::scenario! {
     // caused, and nothing about versions on other pages; a single-version
     // read carries that version's.
     {
-        let record = FileRecordId::new();
+        let record = FileDocumentId::new();
         let snapshot = metadata_snapshot(record, 25);
         let latest = snapshot.heads[0];
         let oldest = snapshot.versions.first().unwrap().id;
         let scope = Scope {
             workspace_id: Uuid::new_v4(),
             mount_lifetime: Uuid::new_v4(),
-            record_id: record,
+            document_id: record,
             frontier: [7; 32],
         };
         let scribe = fs_protocol::FileAttributionV1 {

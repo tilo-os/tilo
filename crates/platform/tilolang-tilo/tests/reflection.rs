@@ -4,7 +4,7 @@
 //! at that time.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{InvokeOutcome, Principal, Value};
+use tilolang_runtime::{Actor, InvokeOutcome, Value};
 use tilolang_tilo::host::RootView;
 
 use crate::fixtures::Replica;
@@ -99,7 +99,10 @@ fn call(r: &Replica, who: &str, action: &str, args: Vec<Value>) -> Value {
     match r
         .host
         .runtime()
-        .invoke_action(&Principal::new(who), (id.as_str(), args))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(who)),
+            (id.as_str(), args),
+        )
         .unwrap()
     {
         InvokeOutcome::Done(v) => v,
@@ -169,7 +172,7 @@ tilo_test_env::scenario! {
         let scenario = loaded[0].meta.scenarios[0].action.clone();
         ada.host
             .runtime()
-            .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+            .invoke_action(&Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), (scenario.as_str(), vec![]))
             .unwrap();
         ada.commit();
         let lines = match ada.host.runtime().read(&talk, "lines").unwrap() {
@@ -551,7 +554,10 @@ fn call_in(r: &Replica, app: &str, action: &str, args: Vec<Value>) -> Value {
     match r
         .host
         .runtime()
-        .invoke_action(&Principal::new(&r.name), (id.as_str(), args))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&r.name)),
+            (id.as_str(), args),
+        )
         .unwrap()
     {
         InvokeOutcome::Done(v) => v,

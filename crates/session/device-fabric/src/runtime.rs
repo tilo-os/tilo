@@ -470,7 +470,7 @@ impl FabricRuntime {
     }
 
     /// The person's devices and the outputs each says it shows, as the
-    /// shared arrangement lays them out.
+    /// shared placement lays them out.
     pub fn person_devices(&self) -> Vec<settings_store::person_displays::PersonDevice> {
         let Some(local) = self.local.as_ref() else {
             return Vec::new();

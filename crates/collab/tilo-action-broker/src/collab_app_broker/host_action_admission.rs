@@ -8,6 +8,7 @@ use super::{
     AppBrokerState, BrokerActor, InvocationCaller, InvocationKey, InvocationOwner,
     invocation_journal, person_id_for_root,
 };
+use tilo_action_policy::MemberId;
 use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
 use tilo_actions::{ActionDescriptor, InvocationId, InvocationUpdate};
 
@@ -109,10 +110,7 @@ impl AppBrokerState {
                     .map_err(unavailable)?;
                 let current = self.current_action_caller(original).map_err(unavailable)?;
                 let expected = current.broker_actor();
-                if original.workspace != workspace
-                    || expected.id != actor.id
-                    || expected.is_agent != actor.is_agent
-                {
+                if original.workspace != workspace || expected.member() != actor.member() {
                     return Err(ActionHostError::NotPermitted);
                 }
                 // Revalidation checks the full certificate, not a principal supplied
@@ -122,7 +120,7 @@ impl AppBrokerState {
                 })?;
                 if caller.device_public_key().is_none() {
                     // Only the native facade combines a physical projection
-                    // with retained signed admission. Recheck its protected seat
+                    // with retained signed admission. Recheck its protected device
                     // at the effect barrier, not only when it queued the request.
                     self.current_native_person(workspace, certificate)
                         .map_err(unavailable)?;
@@ -150,21 +148,20 @@ impl AppBrokerState {
                         ));
                     }
                     // Only an explicitly identity-free host retains connection
-                    // compatibility. A missing seat service is not bootstrap.
+                    // compatibility. A missing device service is not bootstrap.
                     // Retain pre-identity connection compatibility without
                     // upgrading its displayed actor into signed user evidence.
                     let expected = current.broker_actor();
-                    if route.cluster_id != workspace
-                        || expected.id != actor.id
-                        || expected.is_agent != actor.is_agent
-                    {
+                    if route.cluster_id != workspace || expected.member() != actor.member() {
                         return Err(ActionHostError::NotPermitted);
                     }
-                    return Ok(InvocationOwner::Local { actor: actor.id });
+                    return Ok(InvocationOwner::Local {
+                        actor: actor.member().clone(),
+                    });
                 };
                 let expected = current.agent_id.as_ref().map_or_else(
-                    || person_id_for_root(certificate.user_public_key),
-                    |agent| format!("agent:{}", agent.strip_prefix("agent:").unwrap_or(agent)),
+                    || MemberId::person(person_id_for_root(certificate.user_public_key)),
+                    |agent| MemberId::agent(super::delegated_agent_name(agent)),
                 );
                 // The connection's app acting under its own identity, by what
                 // the workspace grants it: decided as that app and owned by it,
@@ -176,12 +173,11 @@ impl AppBrokerState {
                         .as_ref()
                         .is_some_and(|app| app.as_str() == route.app_id)
                 {
-                    return Ok(InvocationOwner::Local { actor: actor.id });
+                    return Ok(InvocationOwner::Local {
+                        actor: actor.member().clone(),
+                    });
                 }
-                if route.cluster_id != workspace
-                    || expected != actor.id
-                    || current.agent_id.is_some() != actor.is_agent
-                {
+                if route.cluster_id != workspace || expected != *actor.member() {
                     return Err(ActionHostError::NotPermitted);
                 }
                 InvocationOwner::AuthenticatedLocal {
@@ -201,14 +197,14 @@ impl AppBrokerState {
                     .map_err(unavailable)?;
                 if original_workspace != workspace
                     || *original_invocation != invocation
-                    || actor.is_agent
-                    || actor.id != person_id_for_root(certificate.user_public_key)
+                    || actor.member().person_id()
+                        != Some(person_id_for_root(certificate.user_public_key).as_str())
                 {
                     tracing::warn!(
                         %workspace,
                         original_workspace,
-                        caller = %actor.id,
-                        "an action of the person's own was refused: its admission names another seat"
+                        caller = %actor.member(),
+                        "an action of the person's own was refused: its admission names another device"
                     );
                     return Err(ActionHostError::NotPermitted);
                 }
@@ -221,7 +217,7 @@ impl AppBrokerState {
             None => {
                 // A transport key is not retained certificate custody. Do not
                 // silently downgrade a certified caller to actor-only ownership.
-                // A host with a seat or native certificates serves everyone
+                // A host with a device or native certificates serves everyone
                 // through retained custody, so a caller that arrives with no
                 // original admission is refused rather than downgraded.
                 if self.services.local_person.is_some()
@@ -233,7 +229,9 @@ impl AppBrokerState {
                         "action_evidence_unavailable: original caller missing",
                     ));
                 }
-                InvocationOwner::Local { actor: actor.id }
+                InvocationOwner::Local {
+                    actor: actor.member().clone(),
+                }
             }
         };
         Ok(owner)
@@ -293,7 +291,7 @@ impl AppBrokerState {
                 "contract": descriptor.contract,
                 "operation_kind": descriptor.kind,
                 "context": request.context,
-                "actor": actor.id,
+                "actor": actor.member(),
                 "app_id": app_id,
                 "record_id": "",
                 "resource": descriptor.address.resource,

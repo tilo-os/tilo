@@ -4,7 +4,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-use fs_protocol::FileRecordId;
+use fs_protocol::FileDocumentId;
 use serde::{Deserialize, Serialize};
 
 use super::Namespace;
@@ -47,7 +47,7 @@ impl PosixAttrs {
 }
 
 impl Namespace {
-    pub fn posix_attrs(&self, record: FileRecordId) -> Option<PosixAttrs> {
+    pub fn posix_attrs(&self, record: FileDocumentId) -> Option<PosixAttrs> {
         let key = format!("{POSIX_PREFIX}{}", record.0);
         match self.doc.get(&ROOT, key.as_str()) {
             Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -59,7 +59,7 @@ impl Namespace {
     }
 
     /// The caller broadcasts the next incremental save.
-    pub fn put_posix_attrs(&mut self, record: FileRecordId, attrs: &PosixAttrs) -> bool {
+    pub fn put_posix_attrs(&mut self, record: FileDocumentId, attrs: &PosixAttrs) -> bool {
         let Ok(bytes) = postcard::to_allocvec(attrs) else {
             return false;
         };
@@ -80,7 +80,7 @@ mod tests {
         phase attributes_replicate_and_keep_only_what_is_portable;
         {
             let mut a = Namespace::new("a").unwrap();
-            let record = FileRecordId::new();
+            let record = FileDocumentId::new();
             assert!(a.posix_attrs(record).is_none());
             let exec = PosixAttrs::of_local(0o104_755, false, false);
             assert_eq!(exec.mode, 0o755, "setuid and the file type are dropped");
@@ -100,7 +100,7 @@ mod tests {
                 .create_file(crate::namespace::ROOT_INO, "tool", None, 0, 1)
                 .unwrap();
             assert_eq!(ns.getattr(ino).unwrap().perm, 0o644);
-            let record = ns.record_id_for(ino).unwrap();
+            let record = ns.document_id_for(ino).unwrap();
             assert!(ns.put_posix_attrs(record, &PosixAttrs::of_local(0o104_755, false, false)));
             assert_eq!(
                 ns.getattr(ino).unwrap().perm,

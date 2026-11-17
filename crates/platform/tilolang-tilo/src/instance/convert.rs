@@ -15,7 +15,7 @@ use super::rows;
 use super::wire::{self, Convert};
 use super::{Instance, cases};
 use crate::host::Host;
-use crate::runtime::{Binding, NameHost, Principal, ResourceRef, UiNode, Value, ViewInstance};
+use crate::runtime::{Actor, Binding, NameHost, ResourceRef, UiNode, Value, ViewInstance};
 
 /// The window's tree of `view`, converted over `host`: what the window is sent, and what
 /// converting it read of the workspace beside what the view read — the records the cards in its
@@ -140,7 +140,9 @@ pub fn inline_view(
     if let Some(person) = reference.as_person() {
         return InlineView::Person {
             identity: person.to_owned(),
-            name: names.name(&Principal::new(person)),
+            name: names.name(&Actor::Member(crate::runtime::ids::MemberId::person(
+                person,
+            ))),
         };
     }
     let Some(mut target) = referenced_resource(host, reference) else {

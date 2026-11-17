@@ -15,7 +15,7 @@ use crate::core::{Args, Core, HResult, ret_f64, ret_i32, ret_i64, ret_void, trap
 use crate::engine::Wasm;
 use crate::error::RuntimeError;
 use crate::handles::FrameKind;
-use crate::ids::{AppId, ModuleHash, Principal};
+use crate::ids::{AppId, ModuleHash};
 use crate::meta::{FieldKind, Ty};
 use crate::num::{counter_to_float, float_to_counter};
 use crate::registry::{FieldInfo, TypeInfo};
@@ -62,9 +62,8 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         Ty::List(_) | Ty::Set(_) | Ty::Map(_) | Ty::Collection(_) => Value::List(Vec::new()),
         Ty::Tuple(items) => Value::Tuple(items.iter().map(type_default).collect::<Result<_, _>>()?),
         Ty::Unit => Value::Unit,
-        // A person a record was never given is no one: an empty identity, never a trap.
-        Ty::Principal => Value::Principal(Principal::new("")),
-        Ty::Record(_)
+        Ty::Actor
+        | Ty::Record(_)
         | Ty::Union(_)
         | Ty::Duration
         | Ty::Action
@@ -120,18 +119,17 @@ pub(crate) fn to_scalar(v: &Value, ty: &Ty) -> Result<Scalar, String> {
             check_dated(s, ty)?;
             Ok(Scalar::Text(s.clone()))
         }
-        // A control picking a person hands their identity; none is an empty text.
-        (Value::Text(s), Ty::Principal) => {
-            to_json(&Value::Principal(crate::ids::Principal::new(s.clone()))).map(Scalar::Json)
+        // A control picking a person hands their identity as text; none is an empty text.
+        (Value::Text(s), Ty::Actor) => {
+            let who = crate::ids::actor_of_text(s).ok_or_else(|| format!("{s} names no one"))?;
+            to_json(&Value::Actor(who)).map(Scalar::Json)
         }
-        (Value::Text(s), Ty::Option(inner)) if matches!(**inner, Ty::Principal) => {
+        (Value::Text(s), Ty::Option(inner)) if matches!(**inner, Ty::Actor) => {
             if s.is_empty() {
                 return to_json(&Value::none()).map(Scalar::Json);
             }
-            to_json(&Value::some(Value::Principal(crate::ids::Principal::new(
-                s.clone(),
-            ))))
-            .map(Scalar::Json)
+            let who = crate::ids::actor_of_text(s).ok_or_else(|| format!("{s} names no one"))?;
+            to_json(&Value::some(Value::Actor(who))).map(Scalar::Json)
         }
         // A control picking an optional day hands its text, empty for none.
         (Value::Text(s), Ty::Option(inner)) if matches!(**inner, Ty::Date | Ty::Time) => {
@@ -187,7 +185,7 @@ fn key_of(v: &Value) -> Result<String, String> {
         Value::Int(i) => Ok(i.to_string()),
         Value::Float(f) => Ok(f.to_string()),
         Value::Ref(r) => Ok(r.target.id_string()),
-        Value::Principal(p) => Ok(p.0.clone()),
+        Value::Actor(p) => Ok(crate::ids::actor_text(p)),
         other => Err(format!(
             "a {} cannot be a set element or map key",
             other.kind_name()
@@ -532,7 +530,9 @@ impl Core {
         let items = keys
             .into_iter()
             .map(|k| match element {
-                Some(Ty::Principal) => Ok(Value::Principal(Principal::new(k))),
+                Some(Ty::Actor) => crate::ids::actor_of_text(&k)
+                    .map(Value::Actor)
+                    .ok_or_else(|| format!("{k} names no one")),
                 Some(Ty::Int) => k
                     .parse::<i64>()
                     .map(Value::Int)

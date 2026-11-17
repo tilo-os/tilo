@@ -1030,12 +1030,12 @@ tilo_test_env::scenario! {
 
     phase a_records_genesis_can_be_left_out_of_a_feed_of_what_people_did;
     {
-        use crate::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, genesis_actor};
+        use crate::record::{DocumentCheckout, DocumentId, ResourceType, RecordOwners, genesis_actor};
         let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
         let store = RecordOwners::portable(cache)
             .open("test", "workspace")
             .unwrap();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+        let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("document"));
         store.create_record(&checkout).unwrap();
         let mut doc = store.read(&checkout.id, AutoCommit::clone).unwrap();
         let genesis = genesis_actor(&doc).expect("a record names its genesis actor");
@@ -1081,12 +1081,12 @@ tilo_test_env::scenario! {
 
     phase a_package_primary_documents_genesis_is_left_out_of_a_feed_too;
     {
-        use crate::record::{RecordCheckout, RecordKind, RecordOwners, genesis_actor};
+        use crate::record::{DocumentCheckout, ResourceType, RecordOwners, genesis_actor};
         let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
         let store = RecordOwners::portable(cache)
             .open("test", "workspace")
             .unwrap();
-        let checkout = RecordCheckout::package_primary(RecordKind::new("chat"));
+        let checkout = DocumentCheckout::package_primary(ResourceType::new("chat"));
         store
             .reserve_record(&checkout)
             .unwrap()

@@ -1351,7 +1351,7 @@ mod tests {
     fn opening_the_storage_page_writes_no_change() {
         fn documents(
             app: &ui::prelude::TestApp<crate::SettingsShell>,
-        ) -> Vec<(ui::record::RecordId, Option<Vec<u8>>)> {
+        ) -> Vec<(ui::record::DocumentId, Option<Vec<u8>>)> {
             app.open_records()
                 .into_iter()
                 .map(|record| {
@@ -1760,7 +1760,7 @@ mod tests {
         let open_disks = crate::effects::SettingsEffect::from(StorageEffect::OpenDisks);
 
         app.effect(&open_disks).expect("the person opens Disks");
-        app.effect_by("agent:scribe", &open_disks)
+        app.effect_by(&ui::tilo_resource::MemberId::agent("scribe"), &open_disks)
             .expect("the agent opens Disks");
 
         let asked = std::mem::take(&mut *asked.lock().unwrap());

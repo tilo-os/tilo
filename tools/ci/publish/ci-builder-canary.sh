@@ -19,7 +19,7 @@
 # every publication waits for it. `browser-tests` compiles the browser peer and the agent
 # participant, which reads nearly every source file and so moved with every commit: it runs on
 # release candidates, when asked and when t has room. The same tests run on every commit in the
-# pinned builder (`test/tilo-session-client`, `test-x86_64/tilo-agent-participant`), so what the
+# pinned builder (`test/tilo-session-client`, `test-x86_64/tilo-agent-session`), so what the
 # candidate adds is the image alone.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
@@ -113,7 +113,7 @@ JS
       --target-dir "$CARGO_TARGET_DIR" --tool-config-file "tilo-canary:$store_config" -p tilo-session-client --test it \
       -E 'test(carriers::) or test(passkey_root::) or test(node_workspace::) or test(voice_browsers::)'
     bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=fail \
-      --target-dir "$CARGO_TARGET_DIR" --tool-config-file "tilo-canary:$store_config" -p tilo-agent-participant --test it \
+      --target-dir "$CARGO_TARGET_DIR" --tool-config-file "tilo-canary:$store_config" -p tilo-agent-session --test it \
       -E 'test(=host_agents::the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart) or test(=host_agents::a_browser_sees_every_task_of_an_agent_live_and_after_a_reload) or test(=host_agents::the_creator_and_a_joined_page_both_see_every_task_live)'
     ;;
   *) die 'usage: ci-builder-canary.sh cold|warm DIR, browser or browser-tests' ;;

@@ -112,14 +112,12 @@ const briefly = (tab, expression, otherwise) => Promise.race([
 ]);
 const pageText = tab => briefly(tab, `(document.body.innerText || '').replace(/\\s+/g, ' ').trim()`, '(the page did not answer)');
 // Wait until `expression` holds in the page, or fail naming what never came.
+// The page does the waiting: it reads the expression again on each change it
+// shows, and the wait carries on in the next document after a navigation.
 const until = async (tab, expression, what, timeout = stepLimit(3)) => {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    const value = await tab.evaluate(expression).catch(() => false);
-    if (value) return value;
-    if (Date.now() > deadline) await fail(`${what} never happened: ${(await pageText(tab)).slice(0, 600)}`);
-    await sleep(250);
-  }
+  const value = await tab.waitFor(expression, {timeout}).catch(() => false);
+  if (value) return value;
+  await fail(`${what} never happened: ${(await pageText(tab)).slice(0, 600)}`);
 };
 
 // The computer the agent runs on: its own home, a `claude` that records how
@@ -266,9 +264,19 @@ const clipboardNow = tab => tab.evaluate(`navigator.clipboard.readText().catch((
 // clipboard is the browser's, shared by every tab: a prompt an earlier copy
 // left there is not this one, so the read waits for the clipboard to change
 // from what it held before the click (`before`).
-const copied = (tab, what, before) => until(tab,
-  `navigator.clipboard.readText().then(text => text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`,
-  `${what} on the clipboard`);
+const copied = async (tab, what, before) => {
+  const read = `navigator.clipboard.readText().then(text =>
+    text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
+  // The clipboard is the browser's, not the page's: a write landing is no
+  // change the page tells anyone about, so this is the one wait here that
+  // reads on a clock, and it holds a step.
+  for (const deadline = Date.now() + stepLimit(3); Date.now() < deadline;) {
+    const text = await tab.evaluate(read).catch(() => '');
+    if (text) return text;
+    await sleep(200);
+  }
+  await fail(`${what} never reached the clipboard`);
+};
 // The code and site a prompt names.
 const commandOf = prompt => {
   const match = prompt.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?: --site (\S+?))?(?:,|\s|$)/);
@@ -280,8 +288,7 @@ const commandOf = prompt => {
 // page drew and replaced (or the screen left with) between two reads was
 // never seen; and the list, hidden once the screen says the agent is in,
 // reads as one run-together line.
-const followSteps = async (tab, until) => {
-  const deadline = Date.now() + stepLimit(4);
+const followSteps = async (tab, done) => {
   await tab.evaluate(`(() => {
     const seen = globalThis.__gateSteps ??= [];
     const read = () => {
@@ -294,12 +301,10 @@ const followSteps = async (tab, until) => {
     globalThis.__gateStepsWatch.observe(document.documentElement, {subtree: true, childList: true, characterData: true});
     read();
   })()`).catch(error => fail(`the tab's steps could not be followed: ${error.message}`));
-  for (;;) {
-    const {seen, done} = await tab.evaluate(`({seen: globalThis.__gateSteps ?? [], done: !!(${until})})`)
-      .catch(() => ({seen: [], done: false}));
-    if (done || Date.now() > deadline) return seen;
-    await sleep(200);
-  }
+  // The watch above keeps every line the list held; the wait ends when the
+  // screen says it is done, or a step's worth of steps has gone by.
+  await tab.waitFor(`!!(${done})`, {timeout: stepLimit(4)}).catch(() => {});
+  return tab.evaluate('globalThis.__gateSteps ?? []').catch(() => []);
 };
 // The person the page is, by their root, and the workspace in front.
 // The person is who the page keeps its memberships as, on the relay's host.
@@ -469,12 +474,19 @@ if (!firstSaid.includes(noteTitle)) await fail(`the first agent no longer reads 
 // The window the second agent's open put on the workspace's shared desktop
 // reaches the person's page as a window of Notes, and its content shows the
 // note it wrote. The shell draws windows in one canvas, so what a window
-// shows is read from the semantics it publishes, as the other pages do.
-await until(first, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? [])
-  .some(entry => entry.app === 'so.tilo.notes')`,
-  'the person\'s tab showing the Notes window the second agent opened', stepLimit(3));
+// shows is read from the semantics it publishes, as the other pages do, and
+// the window's own state says when it has presented (or what it says instead).
+const drawnWindow = app => `(() => {
+  const entries = globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? [];
+  const windows = globalThis.tiloMount?.state?.()?.windows ?? {};
+  const found = entries.find(entry => entry.app === ${JSON.stringify(app)});
+  // A window is named in the status by its tab in hex, and by its tab's own
+  // decimal in the navigation's route.
+  return !!(found && windows[BigInt(found.route?.tab ?? '0').toString(16)]?.state === 'drawn');
+})()`;
+await until(first, drawnWindow('so.tilo.notes'),
+  'the person\'s tab showing the Notes window the second agent opened drawn', stepLimit(3));
 const windowText = `(() => {
-  globalThis.tiloMount?.requestSemantics?.();
   const out = [];
   const node = n => { for (const part of [n.name, n.value]) if (part) out.push(part); (n.children || []).forEach(node); };
   const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
@@ -482,6 +494,7 @@ const windowText = `(() => {
   if (root) walk(root);
   return out.join('\\n');
 })()`;
+await first.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
 report.noteWindow = await first.evaluate(windowText).catch(() => '(the tab did not answer)');
 await until(first, `${windowText}.includes(${JSON.stringify(noteTitle)})`,
   'the person\'s tab showing the second agent\'s note', stepLimit(3));

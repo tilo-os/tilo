@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use crate::ids::{ModuleHash, Principal, RunId};
+use crate::ids::{Actor, ModuleHash, RunId};
 use crate::run::{Clock, Journal, JournalEntry};
 use crate::space::Space;
 use crate::store::Txn;
@@ -32,20 +32,20 @@ pub struct ActionState {
     pub action: String,
     /// The first resource passed in; the home of the action's outbox entries.
     pub primary: Option<ResourceRef>,
-    /// The principal the runtime authenticated for this invocation: what `invoker` reads.
-    pub invoker: Principal,
+    /// The actor the runtime authenticated for this invocation: what `invoker` reads.
+    pub invoker: Actor,
     /// What the person a suggestion was accepted from proposed, if this run is one: recorded in
     /// its change so history says who suggested it ([`crate::store::Version::suggested_by`]).
-    pub suggested_by: Option<Principal>,
+    pub suggested_by: Option<Actor>,
     /// The actions the action proposed (`suggest act(args)`), recorded once it has committed:
     /// a proposal is workspace state of its own, never part of this action's transaction.
-    pub suggestions: Vec<(Principal, ActionRef)>,
+    pub suggestions: Vec<(Actor, ActionRef)>,
     /// Blocks to evaluate once the action has committed (`run_block`).
     pub queued: Vec<QueuedBlock>,
     /// Set for a scenario's action, the only one that may act as a named person.
     pub scenario: bool,
     /// The invocations a scenario runs in (`invoke(act(args), by: mia, at: time, from: r)`),
-    /// innermost last: `invoker` and `now` read the last one, or the invocation's own principal
+    /// innermost last: `invoker` and `now` read the last one, or the invocation's own actor
     /// and time when it names none.
     pub invocations: Vec<Invocation>,
     /// What the change records about its cause; a scenario commits each invocation under it, as
@@ -62,7 +62,7 @@ pub struct ActionState {
 /// from, each where the scenario names one.
 #[derive(Clone, Debug)]
 pub struct Invocation {
-    pub who: Principal,
+    pub who: Actor,
     pub at: Option<String>,
     pub from: Option<ResourceRef>,
 }
@@ -83,9 +83,9 @@ pub struct RunState {
     pub run: RunId,
     pub journal: Journal,
     pub cursor: usize,
-    pub invoker: Principal,
+    pub invoker: Actor,
     /// Who proposed the run, when the person running it accepted a suggestion.
-    pub suggested_by: Option<Principal>,
+    pub suggested_by: Option<Actor>,
     /// The clock and the person's zone, read once per run: a run resumed tomorrow reads the
     /// moment it started ([`JournalEntry::Clock`]).
     pub clock: Option<Clock>,
@@ -127,7 +127,6 @@ impl RunState {
     }
 }
 
-#[derive(Default)]
 pub struct ViewState {
     /// The space this run of the view was offered.
     pub space: Space,
@@ -137,7 +136,7 @@ pub struct ViewState {
     /// The window the view runs in: what its `state` is kept under.
     pub window: String,
     /// The person looking: whose `state` the view reads.
-    pub viewer: Principal,
+    pub viewer: Actor,
     /// Every view state slot read, with its generation at the time.
     pub state_reads: Vec<(StateKey, u64)>,
     /// The value each slot read had, its default included while it was never set.
@@ -171,6 +170,27 @@ pub struct ViewState {
 }
 
 impl ViewState {
+    /// A run of a view `viewer` looks at, offered no space yet.
+    #[must_use]
+    pub fn of(viewer: Actor) -> Self {
+        Self {
+            space: Space::default(),
+            open: false,
+            window: String::new(),
+            viewer,
+            state_reads: Vec::new(),
+            state_seen: Vec::new(),
+            space_reads: Vec::new(),
+            person_reads: false,
+            reads: Vec::new(),
+            decides: false,
+            changes_at: None,
+            colls: Vec::new(),
+            listings: Vec::new(),
+            nodes: Vec::new(),
+        }
+    }
+
     /// Note that this run showed something only the window knows: a participant's name, a day or
     /// a time of day in the person's formats, a word in the language their window speaks.
     pub(crate) fn read_person(&mut self) {

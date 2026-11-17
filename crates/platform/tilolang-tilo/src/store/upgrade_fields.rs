@@ -12,7 +12,7 @@
 //! The change is a [`DynEdit::Edit`] under the field, applying as the splices and marks that
 //! make the rich text read the words ([`tilo_document::RichTextAction::SyncClips`]), which a
 //! field still holding plain text turns first ([`tilo_document::convert_field`]). It is
-//! committed under the package version's migration principal, as a `migration action` is.
+//! committed under the package version's migration actor, as a `migration action` is.
 
 use automerge::{ObjType, ReadDoc as _};
 use serde_json::Value as Json;
@@ -25,14 +25,13 @@ use crate::schema::{MergeKind, TypeSchema, lookup};
 
 impl Inner {
     /// Turn the plain text each record of `app` holds in a field its type now keeps as rich
-    /// text, and write each as a change of the record: one committed action per record changed.
-    /// `by` is the invoker the change is recorded under (the package version's migration
-    /// principal). Returns how many records changed.
+    /// text, and write each as a change of the record: one committed action per record changed,
+    /// the app's own. Returns how many records changed.
     ///
     /// A field is one to turn when its type keeps it as a [`MergeKind::RichText`] and a record
     /// holds a text object there: a record the new build made holds rich text from the start,
     /// so nothing is written for it, and a second open finds nothing to write.
-    pub(super) fn upgrade_plain_text(&mut self, app: &str, module: &str, by: &str) -> usize {
+    pub(super) fn upgrade_plain_text(&mut self, app: &str, module: &str) -> usize {
         let docs: Vec<(String, String)> = self
             .index
             .iter()
@@ -41,7 +40,7 @@ impl Inner {
             .collect();
         let mut changed = 0usize;
         for (doc, ty) in docs {
-            if self.upgrade_record(app, module, by, &ty, &doc) {
+            if self.upgrade_record(app, module, &ty, &doc) {
                 changed = changed.saturating_add(1);
             }
         }
@@ -51,7 +50,7 @@ impl Inner {
     /// [`Self::upgrade_plain_text`] of one record `doc` of the type `ty`: every field the type
     /// now keeps as rich text that the record — or an item of it — holds as plain text, turned
     /// and written, then committed as one action of the record. Whether it wrote anything.
-    fn upgrade_record(&mut self, app: &str, module: &str, by: &str, ty: &str, doc: &str) -> bool {
+    fn upgrade_record(&mut self, app: &str, module: &str, ty: &str, doc: &str) -> bool {
         let Some(schema) = lookup(ty) else {
             return false;
         };
@@ -108,7 +107,6 @@ impl Inner {
             action_id: EDIT_TEXT_ACTION.to_owned(),
             args: Json::Object(args),
             authorship: Authorship {
-                invoker: by.to_owned(),
                 module: module.to_owned(),
                 ..Authorship::default()
             },

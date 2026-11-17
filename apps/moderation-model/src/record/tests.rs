@@ -41,7 +41,7 @@ fn a_person_reports_someone_and_it_stays_open_until_decided() {
     let state = ada.state().unwrap();
     let open: Vec<_> = state.open_reports_on(MALLORY).collect();
     assert_eq!(open.len(), 1);
-    assert_eq!(open[0].reporter, ADA);
+    assert_eq!(open[0].reporter, MemberId::person(ADA));
     assert_eq!(open[0].item.as_deref(), Some("m1"));
     let id = open[0].id.clone();
 
@@ -52,7 +52,7 @@ fn a_person_reports_someone_and_it_stays_open_until_decided() {
     let state = moderator.state().unwrap();
     assert_eq!(state.open_reports().count(), 0);
     let decision = state.decisions.find(&Id::from_raw("d1")).unwrap();
-    assert_eq!(decision.by, MOD);
+    assert_eq!(decision.by, MemberId::person(MOD));
     assert_eq!(decision.reports, vec![id]);
 }
 
@@ -140,7 +140,7 @@ fn a_moderator_overturns_once() {
     let state = moderator.state().unwrap();
     let decision = state.decisions.find(&Id::from_raw("d1")).unwrap();
     assert!(!decision.stands());
-    assert_eq!(decision.overturned_by.as_deref(), Some(MOD));
+    assert_eq!(decision.overturned_by, Some(MemberId::person(MOD)));
     assert!(moderator.apply(overturn()).is_err());
 }
 
@@ -179,7 +179,7 @@ fn a_decision_kept_as_json_strings_migrates_to_lists() {
                     "reasoning": "spam in every channel",
                     "model": "",
                     "reverted": r#"[{"app":"so.tilo.chat","record":"","run":"run-1","changes":3}]"#,
-                    "by": MOD,
+                    "by": r#"{"person":"mod"}"#,
                     "at_ms": 5,
                 },
             },

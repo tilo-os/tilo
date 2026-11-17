@@ -91,10 +91,12 @@ impl PreparedEffect {
             InvocationOwner::Certified { root, .. }
             | InvocationOwner::AuthenticatedLocal {
                 root, agent: None, ..
-            } => Some(super::super::person_id_for_root(*root)),
+            } => Some(tilo_actions::MemberId::person(
+                super::super::person_id_for_root(*root),
+            )),
             InvocationOwner::AuthenticatedLocal {
                 agent: Some(agent), ..
-            } => Some(format!("agent:{agent}")),
+            } => Some(tilo_actions::MemberId::agent(agent.clone())),
         };
         let context: tilo_actions::ActionContext =
             serde_json::from_value(record.intent.get("context").cloned().unwrap_or_default())
@@ -108,21 +110,15 @@ impl PreparedEffect {
             status,
             tilo_clock::unix_now_i64(),
         );
+        let actor =
+            serde_json::to_value(&receipt.actor).map_err(|_| "prepared receipt actor encoding")?;
         // completed_at belongs to the original preparation, never recovery time.
         if receipt.invocation != expected.invocation
-            || owner_actor
-                .as_deref()
-                .is_some_and(|actor| actor != receipt.actor)
-            || record
-                .intent
-                .get("actor")
-                .and_then(serde_json::Value::as_str)
-                != Some(receipt.actor.as_str())
+            || owner_actor.is_some_and(|actor| actor != receipt.actor)
+            || record.intent.get("actor") != Some(&actor)
             || receipt.context != expected.context
             || receipt.status != expected.status
-            || receipt.actor.is_empty()
-            || receipt.actor.chars().count() > 160
-            || receipt.actor.chars().any(char::is_control)
+            || !tilo_desktop_model::receipt::actor_is_bounded(&receipt.actor)
             || receipt.completed_at < 0
             || serde_json::to_vec(&receipt).map_err(|_| "prepared receipt encoding")?
                 != self.redacted

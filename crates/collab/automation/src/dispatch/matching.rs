@@ -7,7 +7,7 @@ use tilo_actions::params::ParamType;
 
 use super::event::{ConnectorEvent, Event};
 use super::{Cause, MAX_CHAIN_DEPTH};
-use crate::RunId;
+use crate::InvocationId;
 use crate::shortcut::{ActorFilter, EVENT_INPUT, Shortcut, TriggerSpec};
 
 /// Who a firing runs as.
@@ -44,7 +44,7 @@ pub struct Firing {
     pub firer: String,
     pub trigger_index: usize,
     pub trigger: TriggerSpec,
-    pub run: RunId,
+    pub invocation: InvocationId,
     pub inputs: Map<String, Value>,
     /// What the run records on each change it makes (bots only).
     pub cause: Option<Cause>,
@@ -105,7 +105,7 @@ pub fn dispatch(armed: &[Armed<'_>], event: Event<'_>) -> Dispatched {
                 firer: key,
                 trigger_index: index,
                 trigger: trigger.clone(),
-                run: run_id(&armed.firer, index, event),
+                invocation: run_id(&armed.firer, index, event),
                 inputs: inputs(armed.shortcut, event),
                 cause,
                 event: event.identity(),
@@ -119,9 +119,9 @@ pub fn dispatch(armed: &[Armed<'_>], event: Event<'_>) -> Dispatched {
 /// event, so the same event firing twice (a restart, a redelivery) reuses
 /// every invocation id and acts once.
 #[must_use]
-pub fn run_id(firer: &Firer<'_>, trigger_index: usize, event: Event<'_>) -> RunId {
+pub fn run_id(firer: &Firer<'_>, trigger_index: usize, event: Event<'_>) -> InvocationId {
     let mut hasher = Sha256::new();
-    hasher.update(b"tilo.automation.run\0");
+    hasher.update(b"tilo.automation.invocation\0");
     hasher.update(firer.key().as_bytes());
     hasher.update([0]);
     hasher.update(
@@ -135,7 +135,7 @@ pub fn run_id(firer: &Firer<'_>, trigger_index: usize, event: Event<'_>) -> RunI
     for (byte, digested) in bytes.iter_mut().zip(digest.iter()) {
         *byte = *digested;
     }
-    RunId(uuid::Builder::from_custom_bytes(bytes).into_uuid())
+    InvocationId(uuid::Builder::from_custom_bytes(bytes).into_uuid())
 }
 
 fn matches(trigger: &TriggerSpec, armed: &Armed<'_>, event: Event<'_>) -> bool {

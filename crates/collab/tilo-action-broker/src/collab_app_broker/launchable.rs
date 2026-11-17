@@ -17,6 +17,7 @@ use std::time::Duration;
 use super::{PublishedAction, PublishedSurface};
 use crate::collab_broker::CrdtRoute;
 use crate::services::LaunchPlace;
+use tilo_action_policy::MemberId;
 use tilo_lock::MutexRecover as _;
 
 /// Prefix of the provider token naming a retained launchable surface.
@@ -111,14 +112,14 @@ const REMEMBERED_ACTORS: usize = 1024;
 #[derive(Default)]
 struct ActorViews {
     /// `(workspace, actor)` → (app, when it was noted).
-    views: HashMap<(String, String), (String, u64)>,
+    views: HashMap<(String, MemberId), (String, u64)>,
     clock: u64,
 }
 
 impl ActorViews {
-    fn note(&mut self, workspace: &str, actor: &str, app_id: &str) {
+    fn note(&mut self, workspace: &str, actor: &MemberId, app_id: &str) {
         self.clock = self.clock.wrapping_add(1);
-        let key = (workspace.to_owned(), actor.to_owned());
+        let key = (workspace.to_owned(), actor.clone());
         if !self.views.contains_key(&key) && self.views.len() >= REMEMBERED_ACTORS {
             let oldest = self
                 .views
@@ -132,9 +133,9 @@ impl ActorViews {
         self.views.insert(key, (app_id.to_owned(), self.clock));
     }
 
-    fn of(&self, workspace: &str, actor: &str) -> Option<&str> {
+    fn of(&self, workspace: &str, actor: &MemberId) -> Option<&str> {
         self.views
-            .get(&(workspace.to_owned(), actor.to_owned()))
+            .get(&(workspace.to_owned(), actor.clone()))
             .map(|(app, _)| app.as_str())
     }
 }
@@ -278,12 +279,12 @@ impl LaunchableCatalogue {
 
     /// `actor` just ran an action of `app_id` in `workspace`: that view is
     /// where it works now.
-    pub(super) fn note_view(&self, workspace: &str, actor: &str, app_id: &str) {
+    pub(super) fn note_view(&self, workspace: &str, actor: &MemberId, app_id: &str) {
         self.views.lock_recover().note(workspace, actor, app_id);
     }
 
     /// The app whose view `actor` last worked in, in `workspace`.
-    pub(super) fn view_of(&self, workspace: &str, actor: &str) -> Option<String> {
+    pub(super) fn view_of(&self, workspace: &str, actor: &MemberId) -> Option<String> {
         self.views
             .lock_recover()
             .of(workspace, actor)
@@ -512,9 +513,27 @@ mod tests {
             actions: vec![
                 action("new-window", tilo_actions::ConfirmationPolicy::None),
                 action("empty-trash", tilo_actions::ConfirmationPolicy::Confirm),
+                open_link(),
             ],
             live: true,
         }
+    }
+
+    /// The `open-link` every framework app publishes: a view, taking the link to show.
+    fn open_link() -> PublishedAction {
+        let mut open = action(
+            tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+            tilo_actions::ConfirmationPolicy::None,
+        );
+        open.operation_kind = tilo_actions::OperationKind::View;
+        open.contract.kind = tilo_actions::ActionKind::Read;
+        open.contract.risk = tilo_actions::RiskLevel::None;
+        open.params = vec![tilo_actions::ActionParam::required_owned(
+            tilo_actions::remote::OPEN_LINK_PARAM,
+            tilo_actions::ParamType::Text,
+            "The link to show",
+        )];
+        open
     }
 
     /// `surface(7, workspace)` for the record `record`.
@@ -706,7 +725,7 @@ mod tests {
                     .iter()
                     .map(|action| action.action.as_str())
                     .collect::<Vec<_>>(),
-                ["new-window", "empty-trash", "rename"],
+                ["new-window", "empty-trash", "open-link", "rename"],
                 "no action needs to opt in to being reachable while its app is closed"
             );
         }
@@ -1236,7 +1255,7 @@ mod tests {
                 appearance: None,
                 on_behalf_of: None,
             };
-            let binding = state.witness_binding("agent:scribe", &workspace, &request);
+            let binding = state.witness_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
             let witnessed = state.witness_confirmation(&binding).unwrap();
             request.confirmation = Some(Confirmation::Witnessed(witnessed));
             let call = |request: &InvokeRequest| {
@@ -1263,7 +1282,7 @@ mod tests {
                 call(&request).err(),
                 Some(ActionHostError::confirmation_required())
             );
-            let mut other_binding = state.witness_binding("agent:scribe", &workspace, &request);
+            let mut other_binding = state.witness_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
             other_binding.action = "empty-trash".into();
             request.confirmation = Some(Confirmation::Witnessed(
                 state.witness_confirmation(&other_binding).unwrap(),
@@ -1504,7 +1523,7 @@ mod tests {
         invoke(&state, &client, "5", "new-window", None).unwrap();
         let delivered = app.try_recv().unwrap();
         let accepted = events.try_recv().unwrap();
-        assert_eq!(accepted.actor, "agent:mcp-1");
+        assert_eq!(accepted.actor, tilo_actions::MemberId::agent("mcp-1"));
         assert!(matches!(
             heard.try_recv().unwrap(),
             CollabEvent::RemotePresenceUpdate {
@@ -1542,7 +1561,7 @@ mod tests {
                 CollabEvent::RemotePresenceUpdate {
                     payload: PresencePayload::Interaction(interaction), ..
                 } if interaction.invocation == delivered.invocation
-                    && interaction.actor.by.key() == "agent:mcp-1"
+                    && interaction.actor.by == tilo_actions::Actor::member(tilo_actions::MemberId::agent("mcp-1"))
                     && interaction.phase == tilo_actions::InteractionPhase::Committed
             ),
             "the view receives the running action's actual outcome"
@@ -2173,6 +2192,14 @@ mod tests {
                 offer("new-window", OfferKind::Undoable, false),
                 offer("empty-trash", OfferKind::Undoable, true),
                 offer("never-published", OfferKind::Read, false),
+                tilo_app_package::manifest::OfferedAction {
+                    operation: tilo_app_package::manifest::OfferOperation::View,
+                    ..offer(
+                        tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+                        OfferKind::Read,
+                        false,
+                    )
+                },
             ],
         }]);
         let (state, _bridge) = AppBrokerState::test_state(
@@ -2259,6 +2286,44 @@ mod tests {
                 offered_rows(&state, &owner, "never-published").is_empty(),
                 "a running app offers only what it publishes"
             );
+        }
+
+        phase a_link_reaches_a_closed_app_through_its_offered_open_link;
+        // A link for an app that is not running starts it through the `open-link` its manifest
+        // offers, and the app is handed the link the caller named: the manifest's offer takes no
+        // parameters, and the running app's own action is what admits the link.
+        {
+            let (state, workspace) = broker_with_installed_files(&workspace());
+            let (streams, launches) = app_comes_up_as(&state, 8);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let target = tilo_actions::remote::application_action_target(
+                &workspace,
+                APP,
+                "files.app",
+                tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+            );
+            invoke_with(
+                &state,
+                &owner,
+                &target.provider,
+                &target.address,
+                InvokeArgument::Json(tilo_actions::remote::open_link_arguments("files:/notes/a.md")),
+                None,
+            )
+            .expect("admitted once launched");
+            assert_eq!(*launches.lock().expect("launches"), [APP], "the app was started");
+            let mut stream = streams.try_recv().expect("the app came up");
+            let delivered = stream.try_recv().expect("the link reached the app");
+            assert_eq!(delivered.action, tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION);
+            let argument: serde_json::Value = serde_json::from_str(
+                delivered
+                    .argument
+                    .as_deref()
+                    .and_then(|slot| slot.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+                    .expect("the link rides along as the action's arguments"),
+            )
+            .expect("JSON arguments");
+            assert_eq!(argument["link"], "files:/notes/a.md");
         }
 
         phase a_retained_action_supersedes_the_manifest_offer;

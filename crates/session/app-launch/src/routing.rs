@@ -17,7 +17,7 @@
 
 use std::path::Path;
 
-use collab_types::record::RecordId;
+use collab_types::document::DocumentId;
 use desktop_policy::{
     AppCandidate, DefaultAppResolver, MimeAppsChain, PersonalDefaults, ResourceKind,
     WorkspaceDefaults,
@@ -101,13 +101,13 @@ pub fn link(uri: &str, candidates: &[AppCandidate], defaults: &Defaults<'_>) -> 
 }
 
 /// What an app is asked to open to reach the record `record`: the record's
-/// own URI ([`RecordId::uri`]), which its launcher hands the app as the
+/// own URI ([`DocumentId::uri`]), which its launcher hands the app as the
 /// record to open. `None` when `record` is not a record id — the launch
 /// comes from a window, so its record is checked before it reaches an app's
 /// command line.
 #[must_use]
 pub fn record(record: &str) -> Option<Open> {
-    Some(Open::Uri(RecordId::parse(record)?.uri()))
+    Some(Open::Uri(DocumentId::parse(record)?.uri()))
 }
 
 /// The kinds of file `path` is, the narrowest first: its extension, then the type its name
@@ -408,13 +408,13 @@ mod tests {
 
     #[test]
     fn a_record_is_asked_for_by_its_own_uri_and_nothing_else_is_a_record() {
-        let note = RecordId::for_file("/home/you/Notes.note");
+        let note = DocumentId::for_file("/home/you/Notes.note");
         assert_eq!(
             record(note.as_str()),
-            Some(Open::Uri(format!("tilo-record:{}", note.as_str()))),
+            Some(Open::Uri(format!("tilo-document:{}", note.as_str()))),
             "the app is asked for the record, not for the file it is kept in"
         );
-        let minted = RecordId::minted();
+        let minted = DocumentId::minted();
         assert_eq!(
             record(minted.as_str()),
             Some(Open::Uri(minted.uri())),

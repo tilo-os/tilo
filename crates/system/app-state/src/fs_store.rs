@@ -987,7 +987,7 @@ impl DurableStore for FsStore {
         validate_document_key(claimant)?;
         let marker = match key {
             // A workspace record adopted under a new identity (see
-            // `ui::RecordCheckout::formerly`): the claimant is its successor.
+            // `ui::DocumentCheckout::formerly`): the claimant is its successor.
             StorageKey::Document { .. } => match self.target(key)? {
                 Target::Document(directory) => directory.join(DOCUMENT_SUCCESSOR_CLAIM),
                 Target::View(_) => {

@@ -750,6 +750,13 @@ pub trait SurfaceHost {
         Vec::new()
     }
 
+    /// What this surface draws over one window itself, in the logical layout: the bar of a window
+    /// covering its display, shown over its content. The window, and everything behind it, is drawn
+    /// around it, and a point on it belongs to this surface.
+    fn drawn_over_window(&self) -> Option<(u64, (i32, i32, i32, i32))> {
+        None
+    }
+
     /// The regions this surface draws translucent material in, which take a blur of what lies below
     /// them.
     fn backdrops(&self) -> Vec<BackdropRequest> {
@@ -851,6 +858,7 @@ impl<T: SurfaceHost + ?Sized> SurfaceHost for Rc<RefCell<T>> {
         text_input() -> Option<HostTextInput>;
         window_pictures() -> Vec<WindowPicture>;
         drawn_over_windows() -> Vec<WindowCover>;
+        drawn_over_window() -> Option<(u64, (i32, i32, i32, i32))>;
         backdrops() -> Vec<BackdropRequest>;
         next_deadline() -> Option<std::time::Instant>;
         cursor() -> CursorIcon;

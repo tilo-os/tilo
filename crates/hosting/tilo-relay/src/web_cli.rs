@@ -206,10 +206,10 @@ impl AgentArgs {
             .model_name
             .clone()
             .or_else(|| env("TILO_AGENT_MODEL_NAME"));
-        let model = tilo_agent_participant::ModelChoice::parse(
+        let model = tilo_agent_session::ModelChoice::parse(
             &spec,
             name.as_deref(),
-            tilo_agent_participant::ApiKey::from_env(
+            tilo_agent_session::ApiKey::from_env(
                 env("TILO_AGENT_API_KEY"),
                 env("TILO_AGENT_API_KEY_FILE"),
             ),
@@ -235,7 +235,7 @@ impl AgentArgs {
 pub struct HostedRelay {
     pub relay: Relay,
     #[cfg(feature = "agents")]
-    agents: Option<tilo_agent_participant::AgentHost>,
+    agents: Option<tilo_agent_session::AgentHost>,
     /// Its state's lock, released once it stopped.
     _lock: tilo_relay::state_lock::StateLock,
 }
@@ -282,7 +282,7 @@ pub async fn start_relay(
 pub struct Lent {
     /// The model its workspaces' reporters may have look over their reports.
     #[cfg(feature = "agents")]
-    pub feedback_reviewer: Option<std::sync::Arc<dyn tilo_agent_participant::FeedbackReviewer>>,
+    pub feedback_reviewer: Option<std::sync::Arc<dyn tilo_agent_session::FeedbackReviewer>>,
 }
 
 /// [`start_relay`], lending the workspaces what `lent` holds.

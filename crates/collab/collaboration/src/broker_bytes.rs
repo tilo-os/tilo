@@ -462,7 +462,7 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             }
             if let HandoffRequest::Retire { successor, .. } = request {
                 meter.string_capacity(&successor.workspace);
-                meter.string_capacity(&successor.record);
+                meter.string_capacity(&successor.document);
                 meter.string_capacity(&successor.by);
             }
             "Handoff"

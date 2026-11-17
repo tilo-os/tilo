@@ -100,7 +100,7 @@ fn lang_type(ty: &Type) -> crate::types::Ty {
         Type::Int => Ty::Int,
         Type::Float => Ty::Float,
         Type::Bool => Ty::Bool,
-        Type::Principal => Ty::Principal,
+        Type::Principal => Ty::Actor,
         Type::Time => Ty::Time,
         Type::RichText => Ty::RichText,
         Type::Option(inner) => Ty::Option(Box::new(lang_type(inner))),

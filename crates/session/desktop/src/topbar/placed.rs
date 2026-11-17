@@ -25,8 +25,6 @@ pub(super) struct BarPlaced {
     pub own_face: Option<f64>,
     /// The sharing disclosure's words and the room its label had.
     pub sharing: Option<(String, f64)>,
-    /// The watching count's words and where it stands.
-    pub watching: Option<(String, Rect)>,
     /// The others' faces shown, by roster index, the badge counting the rest, and where the stack
     /// ends.
     pub faces: Option<FacesPlaced>,

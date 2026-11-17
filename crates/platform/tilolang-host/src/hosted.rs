@@ -50,6 +50,7 @@ use tilolang_tilo::publish::package_resource_id;
 use tilolang_tilo::publish::{
     Caller, Committer, Moved, Planner, Publications, host_resource, publish_package,
 };
+use tilolang_tilo::runtime::ids::MemberId;
 use tilolang_tilo::used::UsedApp;
 use tilolang_tilo::{HostEffect, OpenEffect};
 
@@ -1608,13 +1609,14 @@ impl Hosted {
         let invoker = ActionInvoker::delivered(&actor, context.as_deref());
         // A member's own record is that person's alone: anyone else is refused before anything
         // of it is read.
-        let key = invoker.acting.by.key();
-        let person = if invoker.acting.is_person() {
-            Some(key.as_str())
-        } else {
-            invoker.acting.acted_for_person()
-        };
-        if !tilolang_tilo::reaches(self.record.route().record.as_deref(), person) {
+        let person = invoker
+            .acting
+            .by
+            .member_id()
+            .and_then(MemberId::person_id)
+            .or_else(|| invoker.acting.acted_for_person());
+        let route = self.record.route();
+        if !tilolang_tilo::reaches(&route.app_id, route.record.as_deref(), person) {
             let update = failed(
                 invocation,
                 Refused::new("permission_denied", "this is another member's own record"),
@@ -1850,7 +1852,7 @@ impl Hosted {
         // The action is applied as soon as it is built: the run that builds it is the one whose
         // writes the record commits.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
-        let (address, encoded) = host.carrying_out(invoker.acting.by.key().as_bytes(), || {
+        let (address, encoded) = host.carrying_out(&invoker.acting.by, || {
             self.encode_named(&surface, &shown, address, argument)
         });
         CALLER.with(|slot| *slot.borrow_mut() = None);
@@ -1958,7 +1960,7 @@ impl Hosted {
             // version; a read runs no action.
             let past = Host::new(
                 &frozen,
-                tilolang_tilo::runtime::Principal::new("reader"),
+                tilolang_tilo::runtime::Actor::Member(MemberId::person("reader")),
                 tilolang_tilo::authority::holding_nothing("reader"),
             )
             .map_err(|error| error.to_string())?;
@@ -2563,7 +2565,7 @@ impl Applier {
             tilolang_tilo::host::Opening {
                 ..tilolang_tilo::host::Opening::default()
             },
-            tilolang_tilo::runtime::Principal::new(spec.person.clone()),
+            tilolang_tilo::runtime::Actor::Member(MemberId::person(spec.person.clone())),
             || None,
         )
         .map_err(|error| error.to_string())?;
@@ -2742,7 +2744,7 @@ impl Applier {
         // Made as the invoker's step: the store writes it as theirs.
         self.host
             .store()
-            .writing_as(invoker.acting.by.key().as_bytes(), || {
+            .writing_as(&invoker.acting.by, || {
                 self.host.root_record(&self.spec.app, ty)
             })
             .map_err(|error| error.to_string())?;
@@ -2793,11 +2795,9 @@ impl Applier {
         // The action is applied as soon as it is built: the run that builds it is the one whose
         // writes the record commits, as the invoker's.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller));
-        let encoded = self
-            .host
-            .carrying_out(invoker.acting.by.key().as_bytes(), || {
-                tilo_actions::api::encode_json(&resources, &address, &change.arguments)
-            });
+        let encoded = self.host.carrying_out(&invoker.acting.by, || {
+            tilo_actions::api::encode_json(&resources, &address, &change.arguments)
+        });
         CALLER.with(|slot| *slot.borrow_mut() = None);
         let encoded = match encoded {
             Ok(encoded) if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE => {

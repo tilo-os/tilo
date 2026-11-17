@@ -10,7 +10,7 @@ use serde_json::{Map, Value as Json, json};
 use tilo_service::{Service, Started};
 use tilo_session_core::notice::Notice;
 use tilolang::IdsLock;
-use tilolang_runtime::{Principal, ResourceRef, UiNode, Value};
+use tilolang_runtime::{Actor, ResourceRef, UiNode, Value};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::notices::Notices;
 use tilolang_tilo::publish::resource_id;
@@ -139,7 +139,7 @@ tilo_test_env::scenario! {
     // (`docs/designs/app-language/one-app-model.md` §3; shell.md §8, "The canvas composes views; it
     // opens nothing"). The record publishes the `open` so an agent reading the catalogue finds it,
     // and invoking it changes nothing of the record — the place it asks for waits for the session to
-    // stand through its arrangement, beside the place the asking step was in.
+    // stand through its layout, beside the place the asking step was in.
     {
         let (mut service, _) = service();
         let note = new_note(&mut service);
@@ -181,7 +181,11 @@ tilo_test_env::scenario! {
         let opened = service.take_open();
         assert_eq!(opened.len(), 1, "one place asked for");
         let (invoker, place) = &opened[0];
-        assert_eq!(invoker.acting.by.key(), "agent:tide", "asked as the agent");
+        assert_eq!(
+            invoker.acting.by,
+            tilolang_tilo::runtime::ids::MemberId::agent("tide").into(),
+            "asked as the agent"
+        );
         assert_eq!(place.resource, note, "the note the invocation addressed");
         assert_eq!(place.view, "", "its primary view: its own default `open`");
         assert_eq!(
@@ -242,7 +246,7 @@ tilo_test_env::scenario! {
         let reading = service.read(&note).unwrap();
 
         // The shell's side: notes is another app's package here, its records read from the session.
-        let shell = Host::new(&AutoCommit::new(), Principal::new("ada"), || None).unwrap();
+        let shell = Host::new(&AutoCommit::new(), Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), || None).unwrap();
         let discussion =
             tilolang::compile_package(DISCUSSION.0, &IdsLock::parse(DISCUSSION.1).unwrap(), &[])
                 .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
@@ -424,7 +428,7 @@ fn notices(host: &Host) -> Vec<(String, String, String, String)> {
         .filter_map(|id| {
             let at = ResourceRef::root(id, tilolang::NOTICE_TYPE.to_owned());
             let to = match host.runtime().read(&at, tilolang::NOTICE_TO).ok()? {
-                Value::Principal(person) => person.0,
+                Value::Actor(person) => person.id().to_owned(),
                 _ => return None,
             };
             let Value::Text(title) = host.runtime().read(&at, tilolang::NOTICE_TITLE).ok()? else {

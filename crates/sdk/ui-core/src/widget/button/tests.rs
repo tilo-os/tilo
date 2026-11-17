@@ -1880,7 +1880,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_count_stands_inside_the_face_and_leaves_its_parents_margins_alone;
-    // A node's margins are its parent's (an arrangement puts its gaps there), and a count stands
+    // A node's margins are its parent's (a layout puts its gaps there), and a count stands
     // inside the button's face: a button with a count leaves its parent's margins as they are,
     // and a second layout pass finds nothing to change, so the layout settles. The count itself
     // never leaves the face, so the bar's top edge cannot cut it.

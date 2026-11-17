@@ -539,7 +539,7 @@ pub fn effect_slices_kept(
             return false;
         };
         if receipt.invocation.0.to_string() != *invocation
-            || !(receipt.actor == person || receipt.actor.starts_with(AGENT_ACTOR_PREFIX))
+            || !(receipt.actor.person_id() == Some(person.as_str()) || receipt.actor.is_agent())
         {
             return false;
         }
@@ -706,10 +706,6 @@ pub fn only_reader_writes_differ(before: Option<&AutoCommit>, after: &AutoCommit
         })
     })
 }
-
-/// How an effect receipt names an agent as its actor (`agent:<id>`), as
-/// against a person, named by the hex of their key.
-pub(crate) const AGENT_ACTOR_PREFIX: &str = "agent:";
 
 /// Whether `new` carries different evidence than `prior` for one invocation.
 /// Equal bytes are the same receipt and are never decoded; only a differing

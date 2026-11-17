@@ -9,7 +9,7 @@ use tilo_app::framework::testing::TEST_WORKSPACE;
 use tilo_app::framework::{AttachedView, definition};
 use tilo_app::permissions::{KindSet, PermissionContext, TreePath};
 use tilo_app::prelude::*;
-use tilo_app::record::RecordCheckout;
+use tilo_app::record::DocumentCheckout;
 use tilo_app::tilo_resource::profiling::observe;
 
 use crate::kinds::{Tally, TallyApp};
@@ -29,9 +29,9 @@ fn attached(app: &TestApp<TallyApp>, permissions: PermissionContext) -> Attached
     AttachedView::open(
         definition,
         TEST_WORKSPACE,
-        RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+        DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
         app.read_document(|doc| doc.clone().save()),
-        AGENT,
+        &MemberId::person(AGENT),
         permissions,
         false,
     )
@@ -83,7 +83,7 @@ tilo_test_env::scenario! {
         app.merge_peer(&mut peer).unwrap();
         assert_eq!(app.state().count, 1);
         let version = app.versions().into_iter().last().unwrap();
-        assert_eq!(version.context.unwrap().invoker.unwrap().acting.by.key(), AGENT);
+        assert_eq!(version.context.unwrap().invoker.unwrap().acting.by, MemberId::person(AGENT).into());
     }
 
     phase history_names_the_agent_its_app_and_the_run_it_acts_in;
@@ -108,7 +108,7 @@ tilo_test_env::scenario! {
             panic!("the agent's edit records its verb: {context:?}");
         };
         assert_eq!(verb.action.action, "bump");
-        assert_eq!(context.invoker.unwrap().acting.by.key(), AGENT);
+        assert_eq!(context.invoker.unwrap().acting.by, MemberId::person(AGENT).into());
         assert_eq!(context.app.unwrap().id, TallyApp::ID);
         assert_eq!(context.group.unwrap().id, "run-1");
     }
@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
         let mut view = AttachedView::open_for(
             definition,
             TEST_WORKSPACE,
-            RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+            DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
             app.read_document(|doc| doc.clone().save()),
             &agent,
             writer(),
@@ -255,9 +255,9 @@ tilo_test_env::scenario! {
             AttachedView::open(
                 definition,
                 TEST_WORKSPACE,
-                RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+                DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
                 app.read_document(|doc| doc.clone().save()),
-                AGENT,
+                &MemberId::person(AGENT),
                 PermissionContext::permissive(),
                 created,
             )
@@ -362,9 +362,9 @@ tilo_test_env::scenario! {
         let mut view = AttachedView::open(
             definition,
             TEST_WORKSPACE,
-            RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+            DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
             app.read_document(|doc| doc.clone().save()),
-            AGENT,
+            &MemberId::person(AGENT),
             PermissionContext::permissive(),
             false,
         )
@@ -410,9 +410,9 @@ tilo_test_env::scenario! {
             AttachedView::open(
                 definition,
                 TEST_WORKSPACE,
-                RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+                DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
                 saved.clone(),
-                AGENT,
+                &MemberId::person(AGENT),
                 writer(),
                 false,
             )

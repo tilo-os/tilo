@@ -231,8 +231,8 @@ async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants()
             );
             let invoker = tilo_actions::ActionInvoker::delivered(&note.actor, note.context());
             assert_eq!(
-                invoker.acting.by.key(),
-                "agent:scribe",
+                invoker.acting.by,
+                tilo_actions::Actor::member(tilo_actions::MemberId::agent("scribe")),
                 "its history names the agent"
             );
             assert!(notes.try_recv().is_err(), "one call, one delivery");
@@ -435,7 +435,7 @@ async fn a_persons_read_does_not_make_their_edit_unasked() {
         .await;
 }
 
-/// The rig with the host's native seat, the API the person's own palette
+/// The rig with the host's native device, the API the person's own palette
 /// and sheets invoke through.
 async fn native_person_rig(env: &Environment) -> Rig {
     Rig::with_services(
@@ -450,9 +450,9 @@ async fn native_person_rig(env: &Environment) -> Rig {
     .await
 }
 
-/// The seat of a host whose identity a login is still writing: reading it
+/// The device of a host whose identity a login is still writing: reading it
 /// answers that the registry has not named the person yet, and the ask the
-/// seat's first action makes waits for it, after which the identity is there.
+/// device's first action makes waits for it, after which the identity is there.
 struct Arriving {
     host: Arc<CurrentHost>,
     named: std::sync::atomic::AtomicBool,

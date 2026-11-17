@@ -34,7 +34,7 @@ use ui_core::collaboration::DocumentMutation;
 use ui_core::headless::FrameHarness;
 use ui_core::permissions::{MemberId, PermissionContext, SharedPermissions};
 use ui_core::portable_storage::{PortableStorage, StorageKey};
-use ui_core::record::{RecordCheckout, RecordOwners, RecordStore, RecordSync};
+use ui_core::record::{DocumentCheckout, RecordOwners, RecordStore, RecordSync};
 
 /// The component instance a view mounts.
 const INSTANCE: u64 = 1;
@@ -84,7 +84,7 @@ struct Standing {
 /// module docs.
 pub struct AttachedView {
     definition: &'static ApplicationDefinition,
-    checkout: RecordCheckout,
+    checkout: DocumentCheckout,
     /// The app's view of the record: mounted, laid out, never drawn. Laid
     /// out when it is next read after a change ([`Self::frame`]).
     frame: RefCell<Box<FrameHarness>>,
@@ -103,7 +103,7 @@ pub struct AttachedView {
     records: RecordStore,
     permissions: SharedPermissions,
     /// Who acts through the view: the invoker its operations are admitted for.
-    me: String,
+    me: MemberId,
     /// The invoker as admitted: its kind and the person it acts for.
     invoker: tilo_actions::ActionInvoker,
     /// The task the invoker is carrying out, recorded with what it does.
@@ -114,7 +114,7 @@ pub struct AttachedView {
     sync: RecordSync,
     /// Each record the view holds beside its own (the parts of a chain), by
     /// id: what was taken or merged of it so far.
-    beside: std::collections::HashMap<ui_core::record::RecordId, RecordSync>,
+    beside: std::collections::HashMap<ui_core::record::DocumentId, RecordSync>,
     /// Where the view keeps its records, and the workspace: what a record
     /// beside its own that a peer started is kept in before it opens.
     cache: PortableStorage,
@@ -126,7 +126,7 @@ pub struct AttachedView {
 pub struct OpenView<'a> {
     definition: &'static ApplicationDefinition,
     workspace: &'a str,
-    checkout: RecordCheckout,
+    checkout: DocumentCheckout,
     document: Vec<u8>,
     invoker: tilo_actions::ActionInvoker,
     permissions: PermissionContext,
@@ -181,9 +181,9 @@ impl AttachedView {
     pub fn open(
         definition: &'static ApplicationDefinition,
         workspace: &str,
-        checkout: RecordCheckout,
+        checkout: DocumentCheckout,
         document: Vec<u8>,
-        me: &str,
+        me: &MemberId,
         permissions: PermissionContext,
         created: bool,
     ) -> Result<Self, String> {
@@ -192,7 +192,7 @@ impl AttachedView {
             workspace,
             checkout,
             document,
-            &tilo_actions::ActionInvoker::person(me),
+            &tilo_actions::ActionInvoker::member(me.clone()),
             permissions,
             created,
         )
@@ -207,7 +207,7 @@ impl AttachedView {
     pub fn open_for(
         definition: &'static ApplicationDefinition,
         workspace: &str,
-        checkout: RecordCheckout,
+        checkout: DocumentCheckout,
         document: Vec<u8>,
         invoker: &tilo_actions::ActionInvoker,
         permissions: PermissionContext,
@@ -227,7 +227,7 @@ impl AttachedView {
     pub fn opening<'a>(
         definition: &'static ApplicationDefinition,
         workspace: &'a str,
-        checkout: RecordCheckout,
+        checkout: DocumentCheckout,
         document: Vec<u8>,
     ) -> OpenView<'a> {
         OpenView {
@@ -254,7 +254,7 @@ impl AttachedView {
             content,
         } = view;
         let invoker = &invoker;
-        let me = &*invoker.acting.by.key();
+        let me = member_of(invoker)?;
         let joined_at = (!created).then(|| heads_of(&document)).transpose()?;
         let cache = PortableStorage::new("attached-views", DEVICE)?;
         let key = if checkout.id.is_package_primary() {
@@ -292,7 +292,7 @@ impl AttachedView {
                 device_id: DEVICE.into(),
                 instance_id: INSTANCE,
                 permissions: permissions.clone(),
-                author: MemberId::person(me.to_owned()),
+                author: me.clone(),
                 action_context: tilo_actions::ActionContext::default()
                     .with_invoker(invoker.clone()),
             },
@@ -339,7 +339,7 @@ impl AttachedView {
             moves: Cell::new(0),
             records,
             permissions,
-            me: me.to_owned(),
+            me: me.clone(),
             invoker: invoker.clone(),
             context: None,
             landed,
@@ -357,13 +357,13 @@ impl AttachedView {
     }
 
     #[must_use]
-    pub const fn checkout(&self) -> &RecordCheckout {
+    pub const fn checkout(&self) -> &DocumentCheckout {
         &self.checkout
     }
 
     /// Who acts through the view.
     #[must_use]
-    pub fn me(&self) -> &str {
+    pub fn me(&self) -> &MemberId {
         &self.me
     }
 
@@ -978,7 +978,7 @@ impl AttachedView {
     /// record. `None` for a record this view does not hold.
     pub fn changed_keys(
         &self,
-        record: &ui_core::record::RecordId,
+        record: &ui_core::record::DocumentId,
         mutation: &DocumentMutation,
     ) -> Option<Result<Vec<Vec<String>>, String>> {
         self.settle();
@@ -989,7 +989,7 @@ impl AttachedView {
     /// What the view's records ask the workspace's hosts for
     /// ([`RecordStore::wanted_records`]).
     #[must_use]
-    pub fn wanted_records(&self) -> Vec<ui_core::record::RecordId> {
+    pub fn wanted_records(&self) -> Vec<ui_core::record::DocumentId> {
         // What the records ask for is what the view's last frame asked.
         self.settle();
         self.records.wanted_records()
@@ -1000,7 +1000,7 @@ impl AttachedView {
     /// next frame.
     pub fn workspace_answered(
         &mut self,
-        record: ui_core::record::RecordId,
+        record: ui_core::record::DocumentId,
         answer: ui_core::record::WorkspaceAnswer,
     ) {
         self.records.note_workspace_answer(record, answer);
@@ -1011,16 +1011,16 @@ impl AttachedView {
     /// ([`Chain`](super::Chain)), as the view publishes them: each chain's
     /// id and the kind of its parts.
     #[must_use]
-    pub fn chains(&self) -> Vec<RecordCheckout> {
+    pub fn chains(&self) -> Vec<DocumentCheckout> {
         // Published beside the app's resource, among its children.
         self.frame_tree()
             .iter()
             .flat_map(|resource| std::iter::once(resource).chain(&resource.children))
             .filter_map(|resource| {
                 let chain = super::chain_of_resource_id(resource.id.as_str())?;
-                Some(RecordCheckout::new(
+                Some(DocumentCheckout::new(
                     chain,
-                    ui_core::record::RecordKind::new(resource.kind.clone()),
+                    ui_core::record::ResourceType::new(resource.kind.clone()),
                 ))
             })
             .collect()
@@ -1030,19 +1030,19 @@ impl AttachedView {
     /// app's chains ([`Self::chains`]), of that chain's kind. `None` for
     /// any other record.
     #[must_use]
-    pub fn beside(&self, record: &ui_core::record::RecordId) -> Option<RecordCheckout> {
+    pub fn beside(&self, record: &ui_core::record::DocumentId) -> Option<DocumentCheckout> {
         let (chain, _) = record.chain_part()?;
         self.chains()
             .into_iter()
             .find(|held| held.id == chain)
-            .map(|held| RecordCheckout::new(record.clone(), held.kind))
+            .map(|held| DocumentCheckout::new(record.clone(), held.kind))
     }
 
     /// The records the view holds beside its own: the parts of the app's
     /// chains ([`Self::chains`]) open here, as they sync on routes of their
     /// own.
     #[must_use]
-    pub fn records_beside(&self) -> Vec<RecordCheckout> {
+    pub fn records_beside(&self) -> Vec<DocumentCheckout> {
         let chains = self.chains();
         self.records
             .open_records()
@@ -1058,7 +1058,7 @@ impl AttachedView {
 
     pub fn read_record<R>(
         &self,
-        record: &ui_core::record::RecordId,
+        record: &ui_core::record::DocumentId,
         read: impl FnOnce(&ui_core::automerge::AutoCommit) -> R,
     ) -> Option<R> {
         self.beside(record)?;
@@ -1074,7 +1074,7 @@ impl AttachedView {
     /// As [`Self::take_changes`].
     pub fn take_record_changes(
         &mut self,
-        record: &ui_core::record::RecordId,
+        record: &ui_core::record::DocumentId,
     ) -> Result<Option<DocumentMutation>, String> {
         self.settle();
         let sync = self.beside.entry(record.clone()).or_default();
@@ -1089,7 +1089,7 @@ impl AttachedView {
     /// are kept to go with the next call, so a write is never half reported.
     pub fn take_records_beside_changes(
         &mut self,
-    ) -> Result<Vec<(ui_core::record::RecordId, DocumentMutation)>, String> {
+    ) -> Result<Vec<(ui_core::record::DocumentId, DocumentMutation)>, String> {
         let mut taken = Vec::new();
         for checkout in self.records_beside() {
             match self.take_record_changes(&checkout.id) {
@@ -1115,7 +1115,7 @@ impl AttachedView {
     /// changed.
     pub fn merge_record(
         &mut self,
-        record: &ui_core::record::RecordId,
+        record: &ui_core::record::DocumentId,
         mutation: &DocumentMutation,
     ) -> Result<bool, String> {
         let checkout = self.beside(record).ok_or_else(|| {
@@ -1187,7 +1187,7 @@ impl AttachedView {
 fn publish(
     sync: &mut RecordSync,
     records: &RecordStore,
-    id: &ui_core::record::RecordId,
+    id: &ui_core::record::DocumentId,
 ) -> Result<Option<DocumentMutation>, String> {
     let failed = |error: String| {
         format!(
@@ -1209,7 +1209,7 @@ fn publish(
 /// Why a peer's change to `record` was not merged: this participant's own
 /// changes to it could not be set aside first, so the record is left as it
 /// was, its own changes still to go out, rather than merged around them.
-fn set_aside_failed(record: &ui_core::record::RecordId, error: &str) -> String {
+fn set_aside_failed(record: &ui_core::record::DocumentId, error: &str) -> String {
     format!(
         "a peer's change to {} was not merged: this participant's own changes to it \
          could not be set aside first ({error})",
@@ -1261,6 +1261,15 @@ fn changed_keys_of(
         .collect())
 }
 
+/// The member `invoker` is: an automation opens no view of its own.
+fn member_of(invoker: &tilo_actions::ActionInvoker) -> Result<&MemberId, String> {
+    invoker
+        .acting
+        .by
+        .member_id()
+        .ok_or_else(|| "an automation opens no view of its own".to_owned())
+}
+
 fn heads_of(document: &[u8]) -> Result<Vec<ui_core::automerge::ChangeHash>, String> {
     ui_core::automerge::AutoCommit::load(document)
         .map(|mut doc| doc.get_heads())
@@ -1272,7 +1281,7 @@ fn heads_of(document: &[u8]) -> Result<Vec<ui_core::automerge::ChangeHash>, Stri
 fn refuse_written_on_open(
     definition: &ApplicationDefinition,
     records: &RecordStore,
-    checkout: &RecordCheckout,
+    checkout: &DocumentCheckout,
     joined_at: &[ui_core::automerge::ChangeHash],
 ) -> Result<(), String> {
     match records.with(&checkout.id, |doc| written_on_open(doc, joined_at)) {

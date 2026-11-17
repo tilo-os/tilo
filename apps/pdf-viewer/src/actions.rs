@@ -301,7 +301,7 @@ pub fn import_existing_action(
                 page_id: a.page_id.clone(),
                 mark: a.kind.clone(),
                 color: a.color,
-                author: a.author.clone(),
+                author: a.author.file_name().to_owned(),
                 created_ms: a.created_ms,
             })
             .collect(),

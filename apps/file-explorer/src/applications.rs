@@ -71,7 +71,7 @@ pub fn app_entry(app: &AppEntry) -> Entry {
         mime: APP_MIME.to_owned(),
         sync_state: None,
         content_hash: None,
-        record_id: None,
+        document_id: None,
         availability: None,
         history: None,
         rich_metadata: None,

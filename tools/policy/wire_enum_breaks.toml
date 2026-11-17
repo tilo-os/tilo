@@ -84,12 +84,12 @@ enum = "ActivityView"
 reason = "the pane's own view select, encoded as a JSON name (`rename_all = kebab-case`); nothing outside the binary keeps it, so a retired view cannot be read back from stored bytes"
 
 [[break]]
-file = "crates/agent/agent-participant/src/worker/proto.rs"
+file = "crates/agent/agent-session/src/worker/proto.rs"
 enum = "Request"
 reason = "postcard frames between a supervisor and the app worker it starts from its own executable; the variant inserts came with PROTOCOL_VERSION bumps, and a stale worker is refused on its greeting before any request is decoded"
 
 [[break]]
-file = "crates/agent/agent-participant/src/worker/proto.rs"
+file = "crates/agent/agent-session/src/worker/proto.rs"
 enum = "Reply"
 reason = "postcard frames between a supervisor and the app worker it starts from its own executable; the variant inserts came with PROTOCOL_VERSION bumps, and a stale worker is refused on its greeting before any reply is decoded"
 
@@ -201,7 +201,7 @@ reason = "one JSON frame over the daemon's local control socket, written and rea
 [[break]]
 file = "crates/collab/tilo-peer-state/src/workspace/rows.rs"
 enum = "GovernanceRow"
-reason = "the rows a writer's operation names are new in this type and no build writes an operation naming `Layout`: the workspace's shared arrangement is no longer a governed row, and every operation stored before it is one that names a row that still exists"
+reason = "the rows a writer's operation names are new in this type and no build writes an operation naming `Layout`: the workspace's shared layout is no longer a governed row, and every operation stored before it is one that names a row that still exists"
 
 [[break]]
 file = "crates/runtime/legacy-vm/src/hosted/size.rs"
@@ -316,7 +316,7 @@ reason = "each update travels as JSON, named by its `kind`, on the authenticated
 [[break]]
 file = "crates/session/desktop-model/src/commands.rs"
 enum = "DesktopCommand"
-reason = "`SetArrangement` is renamed `SetLayout` at the same index: postcard writes no names, so the bytes read the same"
+reason = "`SetLayout` is renamed `SetLayout` at the same index: postcard writes no names, so the bytes read the same"
 
 [[break]]
 file = "crates/collab/tilo-action-broker/src/invocation_journal.rs"
@@ -342,3 +342,8 @@ reason = "the retired variant is renamed `Entry` at the same index: postcard wri
 file = "crates/collab/tilo-peer-state/src/workspace_membership.rs"
 enum = "SettingsChange"
 reason = "the retired variant is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"
+
+[[break]]
+file = "crates/lang/tilolang/src/pred.rs"
+enum = "Lit"
+reason = "the language's type for who acted is the shared `Actor`, and a literal holds that typed actor; stored formats change with the code and nothing written before is read"

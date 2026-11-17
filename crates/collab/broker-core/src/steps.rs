@@ -3,7 +3,7 @@
 //!
 //! A host serves two kinds of action: the ones its apps publish, and the ones the host itself
 //! runs for the person ([`HostStepServices`]) — pairing a device, administering identities, the
-//! session's own arrangement. Both are decided by the same admission, and a caller reads both
+//! session's own layout. Both are decided by the same admission, and a caller reads both
 //! through one [`ActionHost`](tilo_actions::remote::ActionHost): what differs between a Linux
 //! desktop and the page is only where the steps are carried out, which is the host's own
 //! business, not the role's.
@@ -56,7 +56,7 @@ pub trait HostStepServices: Send + Sync {
             })
             .collect()
     }
-    /// Whether its steps are a turn's (the session's own actions: the arrangement, its undo, the
+    /// Whether its steps are a turn's (the session's own actions: the layout, its undo, the
     /// windows and the notices). Such a step is offered in an agent's catalogue while it works a
     /// turn and admitted by that turn, exactly as the same agent's app action in it is.
     fn for_turns(&self) -> bool {

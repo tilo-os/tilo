@@ -558,12 +558,15 @@ pub(super) fn launch_author(
     workspace: &tilo_desktop_model::Workspace,
     now: u64,
 ) -> Option<String> {
-    (actor.direct()
-        && actor.may_in(
-            workspace,
-            &workspace.node(),
-            tilo_action_policy::ActionKind::Undoable,
-            now,
-        ))
-    .then(|| actor.id().to_owned())
+    actor
+        .direct_person()
+        .filter(|_| {
+            actor.may_in(
+                workspace,
+                &workspace.node(),
+                tilo_action_policy::ActionKind::Undoable,
+                now,
+            )
+        })
+        .map(str::to_owned)
 }

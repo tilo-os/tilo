@@ -711,7 +711,7 @@ fn pass() -> Vec<Step> {
             )],
         ),
         each(
-            "chat_arrangements",
+            "chat_orders",
             vec![chat(
                 "arrange-chat",
                 "arrange-channels",

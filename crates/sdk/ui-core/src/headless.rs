@@ -933,7 +933,7 @@ impl FrameHarness {
     }
 
     /// The record the mounted component shows.
-    pub fn component_record(&self) -> Option<&crate::record::RecordCheckout> {
+    pub fn component_record(&self) -> Option<&crate::record::DocumentCheckout> {
         self.component_wake
             .as_ref()
             .map(|wake| &wake.binding.checkout)
@@ -2576,6 +2576,7 @@ impl FrameHarness {
                 .iter()
                 .filter_map(|root| root.next_wake_deadline())
                 .chain(self.presence.interaction_next_wake_deadline(now))
+                .chain(self.presence.widgets_change_at(now))
                 .chain(self.tooltips.schedule().1)
                 .min();
             FrameSchedule {
@@ -2856,6 +2857,7 @@ impl FrameHarness {
         if due {
             self.invalidate_local();
         }
+        self.presence.prune_composing(crate::time::now());
         self.polls_frames = true;
         if !self.tick_is_idle() {
             self.host_tick();
@@ -9436,7 +9438,7 @@ mod tests {
                         "controlled-profile",
                         "controlled-workspace",
                         CONTROLLED_HISTORY.app_id,
-                        crate::RecordId::for_tab(record),
+                        crate::DocumentId::for_tab(record),
                     ),
                 },
             ],
@@ -11497,7 +11499,7 @@ mod tests {
     }
 
     struct RecordRootProbe {
-        checkout: crate::record::RecordCheckout,
+        checkout: crate::record::DocumentCheckout,
     }
     impl Widget for RecordRootProbe {
         crate::provides!(
@@ -11509,7 +11511,7 @@ mod tests {
     }
 
     impl crate::record::capability::RecordScoped for RecordRootProbe {
-        fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+        fn record_intent(&self) -> Option<crate::record::DocumentCheckout> {
             Some(self.checkout.clone())
         }
     }
@@ -11526,10 +11528,10 @@ mod tests {
 
     #[test]
     fn standalone_record_backed_root_publishes_its_resources() {
-        use crate::record::{RecordCheckout, RecordId, RecordKind, RecordSet};
-        let checkout = RecordCheckout::new(
-            RecordId::for_file("standalone-record-root"),
-            RecordKind::new("document"),
+        use crate::record::{DocumentCheckout, DocumentId, RecordSet, ResourceType};
+        let checkout = DocumentCheckout::new(
+            DocumentId::for_file("standalone-record-root"),
+            ResourceType::new("document"),
         );
         let root = RecordRootProbe {
             checkout: checkout.clone(),

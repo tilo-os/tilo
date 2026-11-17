@@ -79,14 +79,14 @@ pub const MAX_HEARD: usize = 32;
 /// Who of a scope's devices a plane reads now, and who it does not.
 #[derive(Default)]
 struct Hearing {
-    /// The devices read, each with how many of its tracks' readers hold its
-    /// seat: at most [`MAX_HEARD`] devices.
-    seated: BTreeMap<[u8; 32], usize>,
-    /// The devices carried here that no seat is free for.
+    /// The devices read, each with how many of its tracks' readers hold it:
+    /// at most [`MAX_HEARD`] devices.
+    held: BTreeMap<[u8; 32], usize>,
+    /// The devices carried here that no reader holds: they wait for one to let go.
     beyond: BTreeSet<[u8; 32]>,
     /// Whether the presence readers read ([`Plane::hear_presence`]).
     presence: bool,
-    /// The readers waiting for a seat, or for presence to be read.
+    /// The readers waiting for a hold, or for presence to be read.
     waiting: Vec<Waker>,
 }
 
@@ -415,7 +415,7 @@ impl Shared {
                 hook();
             }
             self.wake();
-            // A reader waiting for a seat has nothing left to wait for.
+            // A reader waiting for a hold has nothing left to wait for.
             self.wake_waiting();
         }
     }
@@ -434,20 +434,20 @@ impl Shared {
             hook();
         }
     }
-    /// Take a seat for `device`, whose broadcast is carried here: at once
+    /// Take a hold for `device`, whose broadcast is carried here: at once
     /// when its other tracks' readers hold one or one is free, and otherwise
     /// when one is given back, until when the device counts as beyond what
     /// this plane reads.
-    fn poll_seat(&self, device: [u8; 32], cx: &Context<'_>) -> Poll<()> {
+    fn poll_hold(&self, device: [u8; 32], cx: &Context<'_>) -> Poll<()> {
         let mut hearing = self.hearing.lock_recover();
         let before = hearing.beyond.len();
-        if let Some(readers) = hearing.seated.get_mut(&device) {
+        if let Some(readers) = hearing.held.get_mut(&device) {
             *readers = readers.saturating_add(1);
             return Poll::Ready(());
         }
-        let seated = hearing.seated.len() < MAX_HEARD;
-        if seated {
-            hearing.seated.insert(device, 1);
+        let held = hearing.held.len() < MAX_HEARD;
+        if held {
+            hearing.held.insert(device, 1);
             hearing.beyond.remove(&device);
         } else {
             hearing.beyond.insert(device);
@@ -461,11 +461,7 @@ impl Shared {
         }
         drop(hearing);
         self.unheard_moved(before);
-        if seated {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
+        if held { Poll::Ready(()) } else { Poll::Pending }
     }
     fn hears_presence(&self) -> bool {
         self.hearing.lock_recover().presence
@@ -489,24 +485,24 @@ impl Shared {
         }
         Poll::Pending
     }
-    /// One reader let go of `device`'s seat: with the last of them the seat
+    /// One reader let go of `device`'s hold: with the last of them the hold
     /// is free, and whoever waits for one is told.
-    fn leave_seat(&self, device: [u8; 32]) {
+    fn leave_hold(&self, device: [u8; 32]) {
         let mut hearing = self.hearing.lock_recover();
-        let left = hearing.seated.get_mut(&device).map(|readers| {
+        let left = hearing.held.get_mut(&device).map(|readers| {
             *readers = readers.saturating_sub(1);
             *readers
         });
         let freed = left == Some(0);
         if freed {
-            hearing.seated.remove(&device);
+            hearing.held.remove(&device);
         }
         drop(hearing);
         if freed {
             self.wake_waiting();
         }
     }
-    /// `device`, which waited for a seat, is carried here no longer, or is
+    /// `device`, which waited for a hold, is carried here no longer, or is
     /// not read any more: it is not one this plane does not hear.
     fn stops_waiting(&self, device: [u8; 32]) {
         let before = {
@@ -517,7 +513,7 @@ impl Shared {
         };
         self.unheard_moved(before);
     }
-    /// Have every reader that waits for a seat look again.
+    /// Have every reader that waits for a hold look again.
     fn wake_waiting(&self) {
         let waiting = std::mem::take(&mut self.hearing.lock_recover().waiting);
         for waiting in waiting {
@@ -653,35 +649,35 @@ impl Drop for ReadGuard {
     }
 }
 
-/// One reader's hold on its device's seat ([`Shared::poll_seat`]), let go when
-/// the reader stops reading the broadcast it took it for.
-struct Seat(Arc<Shared>, [u8; 32]);
+/// One reader's hold on its device ([`Shared::poll_hold`]), let go when the
+/// reader stops reading the broadcast it took it for.
+struct Hold(Arc<Shared>, [u8; 32]);
 
-impl Drop for Seat {
+impl Drop for Hold {
     fn drop(&mut self) {
-        self.0.leave_seat(self.1);
+        self.0.leave_hold(self.1);
     }
 }
 
-/// Take a seat for `device`, whose `broadcast` is carried here, waiting for
+/// Take a hold for `device`, whose `broadcast` is carried here, waiting for
 /// one while the plane reads as many devices as it reads at once: `None`
 /// when the broadcast went away first, the plane ended or the roster names
 /// the device no longer.
-async fn seat(
+async fn hold(
     shared: &Arc<Shared>,
     device: [u8; 32],
     broadcast: &moq_net::broadcast::Consumer,
-) -> Option<Seat> {
+) -> Option<Hold> {
     let mut gone = std::pin::pin!(broadcast.closed());
-    let seated = std::future::poll_fn(|cx| {
+    let held = std::future::poll_fn(|cx| {
         if shared.ended() || !shared.admits(device) || gone.as_mut().poll(cx).is_ready() {
             return Poll::Ready(false);
         }
-        shared.poll_seat(device, cx).map(|()| true)
+        shared.poll_hold(device, cx).map(|()| true)
     })
     .await;
-    if seated {
-        Some(Seat(Arc::clone(shared), device))
+    if held {
+        Some(Hold(Arc::clone(shared), device))
     } else {
         shared.stops_waiting(device);
         None
@@ -1366,7 +1362,7 @@ impl Plane {
         self.shared.opener.lock_recover().set_roster(roster.clone());
         *self.shared.roster.lock_recover() = roster;
         read_roster(&self.shared, &mut self.readers.lock_recover());
-        // A reader that waits for a seat for a device the roster names no
+        // A reader that waits for a hold for a device the roster names no
         // longer has nothing left to wait for.
         self.shared.wake_waiting();
     }
@@ -1590,7 +1586,7 @@ pub(crate) async fn unused(track: &moq_net::track::Producer) {
 /// announcement and reads the track again, so the device is heard here
 /// without this plane joining again; what it said before is not played twice.
 ///
-/// A track every device is read by ([`TRACKS`]) is read from a seat: its
+/// A track every device is read by ([`TRACKS`]) is read from a hold: its
 /// device is one of the [`MAX_HEARD`] this plane reads at once, or the
 /// reader waits for one of those to go and the device counts as not heard
 /// until then ([`Plane::unheard`]). A track asked for by what the device
@@ -1600,7 +1596,7 @@ pub(crate) async fn unused(track: &moq_net::track::Producer) {
 async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
     let address = Namespace::new(&shared.join.scope, device).path();
     let name = live::track(track);
-    let seated = TRACKS.contains(&track);
+    let takes_hold = TRACKS.contains(&track);
     let presence = track == Track::Presence;
     loop {
         if presence {
@@ -1617,13 +1613,13 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
         else {
             return;
         };
-        let _seat = if seated {
-            let Some(seat) = seat(&shared, device, &broadcast).await else {
+        let _hold = if takes_hold {
+            let Some(hold) = hold(&shared, device, &broadcast).await else {
                 // The broadcast went away while this reader waited for a
-                // seat, or there is nothing left to read it for.
+                // hold, or there is nothing left to read it for.
                 continue;
             };
-            Some(seat)
+            Some(hold)
         } else {
             None
         };

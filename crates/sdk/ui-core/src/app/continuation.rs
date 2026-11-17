@@ -7,9 +7,9 @@ pub const GENERIC_VIEW_CONTINUATION_SCHEMA: u16 = u16::MAX;
 pub const STRUCTURAL_CONTINUATION_SCHEMA: u16 = u16::MAX - 1;
 
 /// Host-owned generic continuation. Deliberately excludes widget `ephemeral`
-/// strings and `RecordId::for_file` values: both may contain local paths or
+/// strings and `DocumentId::for_file` values: both may contain local paths or
 /// app secrets. File navigation is restored by the shell's typed
-/// `FileRecordId` launch intent; this fallback carries presentation only.
+/// `FileDocumentId` launch intent; this fallback carries presentation only.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct PortableContinuationView {
     scroll: Vec<f64>,
@@ -49,7 +49,7 @@ impl PortableContinuationView {
                 ephemeral: String::new(),
             }),
             // Stable file records are routed by the shell and never encoded
-            // as the toolkit's path-bearing `RecordId::for_file`.
+            // as the toolkit's path-bearing `DocumentId::for_file`.
             open_resource: None,
             viewport: self.viewport,
             view_mode: self.view_mode,
@@ -94,7 +94,7 @@ struct StructuralContinuationEnvelope {
 
 /// Whether `record` may name a window's record in a continuation.
 fn portable_record(record: &str) -> bool {
-    let Some(id) = crate::record::RecordId::parse(record) else {
+    let Some(id) = crate::record::DocumentId::parse(record) else {
         return false;
     };
     let mut leaf = id.as_str();
@@ -104,8 +104,8 @@ fn portable_record(record: &str) -> bool {
         };
         leaf = source;
     }
-    crate::record::RecordId::parse(leaf).is_some_and(|leaf| {
-        !leaf.is_package_primary() && leaf.file_path().is_none() && leaf.file_record().is_none()
+    crate::record::DocumentId::parse(leaf).is_some_and(|leaf| {
+        !leaf.is_package_primary() && leaf.file_path().is_none() && leaf.file_document().is_none()
     })
 }
 
@@ -114,7 +114,7 @@ fn portable_record(record: &str) -> bool {
 #[must_use]
 pub fn with_continuation_record(
     metadata: crate::collaboration::ContinuationMetadata,
-    record: &crate::record::RecordId,
+    record: &crate::record::DocumentId,
 ) -> crate::collaboration::ContinuationMetadata {
     if metadata.schema_version != STRUCTURAL_CONTINUATION_SCHEMA
         || !portable_record(record.as_str())
@@ -147,14 +147,14 @@ mod continuation_record_tests {
             let base = compose_structural_continuation_metadata(crate::view::View::default(), None)
                 .expect("a checkpoint");
             assert_eq!(structural_continuation_record(&base.bytes), None);
-            let minted = crate::record::RecordId::minted();
+            let minted = crate::record::DocumentId::minted();
             let named = with_continuation_record(base.clone(), &minted);
             assert_eq!(structural_continuation_record(&named.bytes), Some(minted));
             assert!(
                 sanitize_structural_continuation_metadata(&named.bytes, |_, _| true).is_some(),
                 "a named record passes the shell boundary"
             );
-            let file = crate::record::RecordId::for_file("/home/ada/secret.txt");
+            let file = crate::record::DocumentId::for_file("/home/ada/secret.txt");
             let unnamed = with_continuation_record(base.clone(), &file);
             assert_eq!(unnamed, base, "a file's path never travels in a checkpoint");
         }
@@ -164,14 +164,14 @@ mod continuation_record_tests {
             let base =
                 compose_structural_continuation_metadata(crate::view::View::default(), None).unwrap();
             for file in [
-                crate::record::RecordId::for_file("/home/ada/secret.txt"),
-                crate::record::RecordId::for_file_record(uuid::Uuid::new_v4()),
+                crate::record::DocumentId::for_file("/home/ada/secret.txt"),
+                crate::record::DocumentId::for_file_document(uuid::Uuid::new_v4()),
             ] {
-                let inner = crate::record::RecordId::derived("editor", &file);
-                let nested = crate::record::RecordId::derived("buffer", &inner);
+                let inner = crate::record::DocumentId::derived("editor", &file);
+                let nested = crate::record::DocumentId::derived("buffer", &inner);
                 assert_eq!(with_continuation_record(base.clone(), &nested), base);
             }
-            let safe = crate::record::RecordId::derived("editor", &crate::record::RecordId::minted());
+            let safe = crate::record::DocumentId::derived("editor", &crate::record::DocumentId::minted());
             let named = with_continuation_record(base, &safe);
             assert_eq!(structural_continuation_record(&named.bytes), Some(safe));
         }
@@ -179,7 +179,7 @@ mod continuation_record_tests {
 }
 
 /// The record a structural checkpoint says its window shows.
-pub fn structural_continuation_record(bytes: &[u8]) -> Option<crate::record::RecordId> {
+pub fn structural_continuation_record(bytes: &[u8]) -> Option<crate::record::DocumentId> {
     let envelope = postcard::from_bytes::<StructuralContinuationEnvelope>(bytes).ok()?;
     if !valid_structural_envelope(&envelope) {
         return None;
@@ -187,7 +187,7 @@ pub fn structural_continuation_record(bytes: &[u8]) -> Option<crate::record::Rec
     envelope
         .record
         .as_deref()
-        .and_then(crate::record::RecordId::parse)
+        .and_then(crate::record::DocumentId::parse)
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]

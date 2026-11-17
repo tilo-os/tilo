@@ -8,7 +8,7 @@ use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
 use ui::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
 use ui::portable_storage::PortableStorage;
-use ui::record::{RecordCheckout, RecordStore};
+use ui::record::{DocumentCheckout, RecordStore};
 
 use ui::framework::{LaunchInput, ResourceApp, SeedCx, ViewCx};
 use ui::tilo_resource::Invoke;
@@ -74,7 +74,7 @@ impl Fixture {
         definition: &'static ApplicationDefinition,
         instance: u64,
         target: LaunchTarget,
-    ) -> (FrameHarness, RecordCheckout) {
+    ) -> (FrameHarness, DocumentCheckout) {
         self.driver_with(definition, instance, target, &bundled_book(), |_| {})
     }
 
@@ -111,7 +111,7 @@ impl Fixture {
         target: LaunchTarget,
         book: &str,
         host: impl FnOnce(&mut HostContext),
-    ) -> (FrameHarness, RecordCheckout) {
+    ) -> (FrameHarness, DocumentCheckout) {
         let component = self
             .component(definition, instance, target, host)
             .unwrap_or_else(|why| panic!("Books component: {why}"));
@@ -501,7 +501,7 @@ fn highlight_passage(driver: &mut FrameHarness, book: &str, passage: serde_json:
 /// The book's highlights in the record: chapter, block and excerpt.
 fn book_highlights(
     fixture: &Fixture,
-    record: &RecordCheckout,
+    record: &DocumentCheckout,
     book_id: &str,
 ) -> Vec<(usize, usize, String)> {
     fixture

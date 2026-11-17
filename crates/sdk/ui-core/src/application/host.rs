@@ -1,9 +1,9 @@
 //! Explicit process-host services shared by standalone application runners. Apps supply their
 //! definition and migration; this owner supplies storage, identity, authority and local presentation.
 use super::{
-    ApplicationDefinition, ApplicationLocalView, ComponentRunnerInputs, HostContext,
-    HostContextInputs, InstanceId, InstanceViewStore, LaunchError, LaunchTarget, MemberId,
-    PermissionContext, PreparedComponentInputs, RecordCheckout, RecordId, RecordOpenError,
+    ApplicationDefinition, ApplicationLocalView, ComponentRunnerInputs, DocumentCheckout,
+    DocumentId, HostContext, HostContextInputs, InstanceId, InstanceViewStore, LaunchError,
+    LaunchTarget, MemberId, PermissionContext, PreparedComponentInputs, RecordOpenError,
     RecordStore, RestoreInput, SavedInstanceView, View, validate_identity,
 };
 use crate::record::RecordOwners;
@@ -27,7 +27,7 @@ const DEVICE_ID_FILE: &str = ".tilo-device-id";
 pub struct NativeProcessHost {
     host: ApplicationHost,
     instance_id: InstanceId,
-    default_record: RecordId,
+    default_record: DocumentId,
     workspace_scoped: bool,
 }
 
@@ -77,9 +77,9 @@ impl NativeProcessHost {
             host,
             instance_id: resolved.instance_id,
             default_record: if launcher_instance {
-                RecordId::window_default(resolved.instance_id)
+                DocumentId::window_default(resolved.instance_id)
             } else {
-                RecordId::workspace_default()
+                DocumentId::workspace_default()
             },
             workspace_scoped: resolved.workspace_scoped,
         })
@@ -111,7 +111,7 @@ impl NativeProcessHost {
     pub fn prepare_launch(
         &mut self,
         definition: &ApplicationDefinition,
-        named: Option<RecordId>,
+        named: Option<DocumentId>,
         inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
         let kind = definition.record_kind.clone();
@@ -119,13 +119,13 @@ impl NativeProcessHost {
             Some(id) => self.host.prepare_record(
                 definition,
                 self.instance_id,
-                RecordCheckout::new(id, kind),
+                DocumentCheckout::new(id, kind),
                 inputs,
             ),
             None => self.host.prepare_default(
                 definition,
                 self.instance_id,
-                RecordCheckout::new(self.default_record.clone(), kind),
+                DocumentCheckout::new(self.default_record.clone(), kind),
                 None,
                 inputs,
             ),
@@ -137,15 +137,15 @@ impl NativeProcessHost {
     }
 
     /// Prepare a window of this process: its first, or one the shell opened in it later
-    /// (`crate::window_channel`).
+    /// (`crate::window_link`).
     pub fn prepare_window(
         definition: &ApplicationDefinition,
-        named: Option<RecordId>,
+        named: Option<DocumentId>,
         inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
         Self::with_process_host(
             definition,
-            |host| match crate::window_channel::requested_instance() {
+            |host| match crate::window_link::requested_instance() {
                 Some(instance) => host.prepare_instance(definition, instance, named, inputs),
                 None => host.prepare_launch(definition, named, inputs),
             },
@@ -162,7 +162,7 @@ impl NativeProcessHost {
         definition: &ApplicationDefinition,
     ) -> Result<Option<PathBuf>, LaunchError> {
         Self::with_process_host(definition, |host| {
-            let instance = crate::window_channel::requested_instance().unwrap_or(host.instance_id);
+            let instance = crate::window_link::requested_instance().unwrap_or(host.instance_id);
             Ok(host
                 .host
                 .saved_view(instance)?
@@ -199,7 +199,7 @@ impl NativeProcessHost {
         &mut self,
         definition: &ApplicationDefinition,
         instance: InstanceId,
-        named: Option<RecordId>,
+        named: Option<DocumentId>,
         inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
         let kind = definition.record_kind.clone();
@@ -207,13 +207,13 @@ impl NativeProcessHost {
             Some(id) => self.host.prepare_record(
                 definition,
                 instance,
-                RecordCheckout::new(id, kind),
+                DocumentCheckout::new(id, kind),
                 inputs,
             ),
             None => self.host.prepare_default(
                 definition,
                 instance,
-                RecordCheckout::new(RecordId::window_default(instance), kind),
+                DocumentCheckout::new(DocumentId::window_default(instance), kind),
                 None,
                 inputs,
             ),
@@ -513,7 +513,7 @@ impl NativeProfile {
         &self,
         view: &SavedInstanceView,
         instance: InstanceId,
-        record: &RecordCheckout,
+        record: &DocumentCheckout,
     ) -> Result<Option<crate::record::transfer::Landing>, LaunchError> {
         let adopted = SavedInstanceView {
             device_id: self.device_id.clone(),
@@ -989,12 +989,12 @@ impl ApplicationHost {
         &self,
         definition: &ApplicationDefinition,
         instance_id: InstanceId,
-    ) -> Result<Option<(RecordCheckout, SavedInstanceView)>, LaunchError> {
+    ) -> Result<Option<(DocumentCheckout, SavedInstanceView)>, LaunchError> {
         let Some(saved) = self.saved_view(instance_id)? else {
             return Ok(None);
         };
         let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
-        let id = RecordId::parse(&saved.record_id).ok_or(LaunchError::BindingMismatch)?;
+        let id = DocumentId::parse(&saved.record_id).ok_or(LaunchError::BindingMismatch)?;
         if package_id != definition.app_id()
             || saved.app_id != package_id
             || definition.record_kind.as_str() != saved.record_kind
@@ -1003,7 +1003,7 @@ impl ApplicationHost {
             return Err(LaunchError::BindingMismatch);
         }
         Ok(Some((
-            RecordCheckout::new(id, definition.record_kind.clone()),
+            DocumentCheckout::new(id, definition.record_kind.clone()),
             saved,
         )))
     }
@@ -1022,7 +1022,7 @@ impl ApplicationHost {
         &mut self,
         definition: &ApplicationDefinition,
         instance_id: InstanceId,
-        default: RecordCheckout,
+        default: DocumentCheckout,
         initial_view: Option<ApplicationLocalView>,
         runner_inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
@@ -1031,7 +1031,7 @@ impl ApplicationHost {
         }
         let records = self.records_for(definition)?;
         if definition.keeps_workspace_record() {
-            let primary = RecordCheckout::package_primary(definition.record_kind.clone());
+            let primary = DocumentCheckout::package_primary(definition.record_kind.clone());
             let target = if definition.opens_before_record
                 && records
                     .begin_opening(&primary)
@@ -1115,12 +1115,12 @@ impl ApplicationHost {
         &mut self,
         definition: &ApplicationDefinition,
         instance_id: InstanceId,
-        checkout: RecordCheckout,
+        checkout: DocumentCheckout,
         runner_inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
         let records = self.records_for(definition)?;
         if checkout.kind != definition.record_kind
-            || RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
+            || DocumentId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
             || checkout.id.is_package_primary()
         {
             return Err(LaunchError::BindingMismatch);
@@ -1143,7 +1143,7 @@ impl ApplicationHost {
         definition: &ApplicationDefinition,
         records: RecordStore,
         instance_id: InstanceId,
-        mut checkout: RecordCheckout,
+        mut checkout: DocumentCheckout,
         mut saved: Option<SavedInstanceView>,
         initial_view: Option<ApplicationLocalView>,
     ) -> Result<(HostContext, LaunchTarget, RestoreInput), LaunchError> {
@@ -1167,8 +1167,8 @@ impl ApplicationHost {
                 Err(RecordOpenError::Retired) if successors < MAX_SUCCESSORS => {
                     successors += 1;
                     saved = None;
-                    checkout = RecordCheckout::new(
-                        RecordId::derived("successor", &checkout.id),
+                    checkout = DocumentCheckout::new(
+                        DocumentId::derived("successor", &checkout.id),
                         checkout.kind.clone(),
                     );
                 }
@@ -1232,7 +1232,7 @@ mod native_process_tests {
             app_id: app_id.into(),
             title: "Host probe".into(),
             icon: crate::widget::IconDescriptor::Glyph("H"),
-            record_kind: crate::record::RecordKind::new("host.probe"),
+            record_kind: crate::record::ResourceType::new("host.probe"),
             required: vec![],
             optional: vec![],
             opens: &[],
@@ -1273,7 +1273,7 @@ mod native_process_tests {
             )
             .unwrap()
         };
-        let of_file = RecordId::for_file(&file);
+        let of_file = DocumentId::for_file(&file);
         {
             let mut native = launch();
             let opened = native
@@ -1299,7 +1299,7 @@ mod native_process_tests {
         let fresh = native
             .prepare_launch(&definition, None, probe::runner_inputs())
             .expect("a window whose file is gone opens on the app's default");
-        assert_eq!(fresh.context.record().id, RecordId::window_default(51));
+        assert_eq!(fresh.context.record().id, DocumentId::window_default(51));
         assert!(matches!(fresh.restore, RestoreInput::None));
     }
 
@@ -1399,12 +1399,12 @@ mod native_process_tests {
             let (ada, bo) = ("ab".repeat(32), "cd".repeat(32));
             assert_eq!(
                 record_of(&ada),
-                RecordId::of_member(&ada, "host.probe").unwrap(),
+                DocumentId::of_member(&ada, "host.probe").unwrap(),
                 "Ada's window opens her own record of the workspace"
             );
             assert_eq!(
                 record_of(&bo),
-                RecordId::of_member(&bo, "host.probe").unwrap(),
+                DocumentId::of_member(&bo, "host.probe").unwrap(),
                 "Bo's opens his, never hers"
             );
             assert!(
@@ -1426,7 +1426,7 @@ mod native_process_tests {
                 .unwrap();
             assert_eq!(
                 standalone_record.context.record().id,
-                RecordId::workspace_default()
+                DocumentId::workspace_default()
             );
             drop(standalone_record);
             drop(standalone);
@@ -1453,8 +1453,8 @@ mod native_process_tests {
                 .prepare_default(
                     &definition,
                     51,
-                    RecordCheckout::new(
-                        RecordId::workspace_default(),
+                    DocumentCheckout::new(
+                        DocumentId::workspace_default(),
                         definition.record_kind.clone(),
                     ),
                     None,
@@ -1473,7 +1473,7 @@ mod native_process_tests {
             let old = restored
                 .prepare_launch(&definition, None, probe::runner_inputs())
                 .unwrap();
-            assert_eq!(old.context.record().id, RecordId::workspace_default());
+            assert_eq!(old.context.record().id, DocumentId::workspace_default());
             assert!(matches!(old.target, LaunchTarget::Record { .. }));
             drop(old);
             drop(restored);
@@ -1526,7 +1526,7 @@ mod native_process_tests {
                     .unwrap();
                 assert_eq!(
                     prepared.context.record().id,
-                    RecordId::window_default(instance)
+                    DocumentId::window_default(instance)
                 );
                 prepared
                     .context
@@ -1549,8 +1549,8 @@ mod native_process_tests {
                     .map(|(id, doc)| (id.clone(), note(doc)))
                     .collect::<Vec<_>>(),
                 [
-                    (RecordId::window_default(41), Some("first".into())),
-                    (RecordId::window_default(42), Some("second".into())),
+                    (DocumentId::window_default(41), Some("first".into())),
+                    (DocumentId::window_default(42), Some("second".into())),
                 ]
             );
             created
@@ -1623,7 +1623,7 @@ mod native_process_tests {
                 .unwrap();
             let mut incompatible = definition(probe::APP);
             incompatible.workspace_record = true;
-            incompatible.record_kind = crate::record::RecordKind::new("host.changed");
+            incompatible.record_kind = crate::record::ResourceType::new("host.changed");
             let existing = native.host.records_for(&incompatible).unwrap();
             assert!(
                 existing.same_owner(&prepared.context.records),
@@ -1668,27 +1668,27 @@ mod native_process_tests {
         phase window_default_storage_keys_name_exactly_their_record;
         {
             for instance in [0, 0x42, 0xf276_0000_0000_0044, u64::MAX] {
-                let id = RecordId::window_default(instance);
+                let id = DocumentId::window_default(instance);
                 assert_eq!(
-                    RecordId::window_default_of_storage_key(&id.storage_key()),
+                    DocumentId::window_default_of_storage_key(&id.storage_key()),
                     Some(id)
                 );
             }
-            assert_eq!(RecordId::window_default(0), RecordId::workspace_default());
+            assert_eq!(DocumentId::window_default(0), DocumentId::workspace_default());
             for other in [
-                RecordId::package_primary(),
-                RecordId::for_tab(0x42),
-                RecordId::derived("notes", &RecordId::for_tab(0x42)),
+                DocumentId::package_primary(),
+                DocumentId::for_tab(0x42),
+                DocumentId::derived("notes", &DocumentId::for_tab(0x42)),
             ] {
                 assert_eq!(
-                    RecordId::window_default_of_storage_key(&other.storage_key()),
+                    DocumentId::window_default_of_storage_key(&other.storage_key()),
                     None
                 );
             }
-            let real = RecordId::window_default(0x42).storage_key();
+            let real = DocumentId::window_default(0x42).storage_key();
             let last = if real.ends_with('0') { '1' } else { '0' };
             let forged = format!("{}{last}", real.get(..real.len() - 1).unwrap());
-            assert_eq!(RecordId::window_default_of_storage_key(&forged), None);
+            assert_eq!(DocumentId::window_default_of_storage_key(&forged), None);
         }
 
         phase a_saved_view_names_the_record_and_a_retired_one_gives_way;
@@ -1698,11 +1698,11 @@ mod native_process_tests {
             let temp = tempfile::tempdir().unwrap();
             let workspace = "3f2b1c00-0000-4000-8000-0000000000c1";
             let definition = definition(probe::APP);
-            let default = RecordCheckout::new(
-                RecordId::derived("default", &RecordId::for_tab(0)),
+            let default = DocumentCheckout::new(
+                DocumentId::derived("default", &DocumentId::for_tab(0)),
                 definition.record_kind.clone(),
             );
-            let carried = RecordCheckout::new(RecordId::minted(), definition.record_kind.clone());
+            let carried = DocumentCheckout::new(DocumentId::minted(), definition.record_kind.clone());
             {
                 let mut owners = RecordOwners::new(temp.path().to_owned());
                 let records = owners.open(probe::APP, workspace).unwrap();

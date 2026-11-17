@@ -1,4 +1,4 @@
-//! Display: the connected outputs and their arrangement, brightness and the
+//! Display: the connected outputs and their placement, brightness and the
 //! display comfort preferences.
 //!
 //! The compositor owns KMS, so Settings takes modes and capabilities from its
@@ -113,7 +113,7 @@ pub enum DisplayEffect {
         x: i32,
         y: i32,
     },
-    /// Inspect the observed displays and their shared arrangement, including offline devices.
+    /// Inspect the observed displays and their shared placement, including offline devices.
     #[effect(view, returns, kind = "read")]
     InspectSharedDisplays,
     /// Show another display's picture, or extend the workspace. Staged
@@ -147,13 +147,13 @@ pub enum DisplayEffect {
     /// Show each display's number and name on it for a few seconds.
     #[effect(returns)]
     IdentifyDisplays,
-    /// Preview the staged arrangement; it is kept only when confirmed.
+    /// Preview the staged placement; it is kept only when confirmed.
     #[effect(returns)]
     ApplyDisplayChanges,
-    /// Keep the arrangement being previewed.
+    /// Keep the placement being previewed.
     #[effect(returns)]
     KeepDisplayChanges,
-    /// Go back to the arrangement before the preview.
+    /// Go back to the placement before the preview.
     #[effect(returns)]
     RevertDisplayChanges,
     /// Ask again before keeping display changes from a layout tool.
@@ -648,7 +648,7 @@ fn logical_extent_of(output: &DisplayOutput, cfg: &OutputConfig) -> (i32, i32) {
 /// than a user-facing display port. The compositor's writeback connector
 /// (`card0-Writeback-1`) and any `Virtual`/`None` connectors are not physical
 /// outputs a user plugs a monitor into, so they must not appear in the
-/// arrangement list.
+/// placement list.
 #[cfg(test)]
 fn is_virtual_connector(conn: &str) -> bool {
     let lower = conn.to_ascii_lowercase();
@@ -891,7 +891,7 @@ pub struct DisplayModel {
     brightness_result_rx: Option<crate::channel::Receiver<Result<f32, String>>>,
     pending_brightness: Option<f32>,
     notice: Option<String>,
-    arrangement_drag: LocalState<super::display_arrangement::ArrangementGesture>,
+    placement_drag: LocalState<super::display_placement::PlacementGesture>,
     selected: LocalState<String>,
     selected_seen: u64,
     identify_window: Option<(Instant, Instant)>,
@@ -990,9 +990,7 @@ impl DisplayModel {
             brightness_result_rx: Some(result_rx),
             pending_brightness: None,
             notice: None,
-            arrangement_drag: LocalState::new(
-                super::display_arrangement::ArrangementGesture::default(),
-            ),
+            placement_drag: LocalState::new(super::display_placement::PlacementGesture::default()),
             selected: LocalState::new(String::new()),
             selected_seen: 0,
             identify_window: None,
@@ -1049,7 +1047,7 @@ impl DisplayModel {
     }
 
     fn stage_sample(&mut self, sample: crate::scenarios::DisplaysSample) {
-        use super::display_arrangement::{ArrangementGesture, placement::Placement};
+        use super::display_placement::{PlacementGesture, placement::Placement};
         use crate::scenarios::DisplaysSample;
         self.output_config.outputs.insert(
             "eDP-1".into(),
@@ -1077,7 +1075,7 @@ impl DisplayModel {
                 // Held under the panel, its centre a few pixels off the
                 // panel's: it snaps there, and the guides say so.
                 self.selected.set(SAMPLE_MONITOR.into());
-                self.arrangement_drag.set(ArrangementGesture::held(
+                self.placement_drag.set(PlacementGesture::held(
                     SAMPLE_MONITOR,
                     Placement::new(-310, 1092, 2560, 1440),
                 ));
@@ -1123,9 +1121,7 @@ impl DisplayModel {
             brightness_result_rx: None,
             pending_brightness: None,
             notice: None,
-            arrangement_drag: LocalState::new(
-                super::display_arrangement::ArrangementGesture::default(),
-            ),
+            placement_drag: LocalState::new(super::display_placement::PlacementGesture::default()),
             selected: LocalState::new(String::new()),
             selected_seen: 0,
             identify_window: None,
@@ -1208,7 +1204,7 @@ impl DisplayModel {
         settings_store::display_tools::TrustedDisplayTools::load().tools
     }
 
-    /// The outputs the arrangement card lists as rows: only the connected
+    /// The outputs the placement card lists as rows: only the connected
     /// ones. Disconnected physical ports are unused hardware, not displays —
     /// enumerating each one (a laptop's GPU can expose a dozen idle DP
     /// connectors) is noise, so they are summarised in a caption instead.
@@ -1855,7 +1851,7 @@ impl DisplayModel {
     }
 
     /// Stage a change of `display`: `edit` changes its entry of the staged
-    /// arrangement, which is then made consistent (one primary display,
+    /// placement, which is then made consistent (one primary display,
     /// mirrored pairs on a shared mode) and checked against what the
     /// displays can do. Nothing reaches the compositor until it is applied.
     fn stage(
@@ -2097,11 +2093,11 @@ impl DisplayModel {
 
     /// The canvas of this device's displays and, beside them where the person's layout places
     /// them, their other devices' screens.
-    fn arrangement_canvas(
+    fn placement_canvas(
         &self,
         dispatcher: &ui::framework::Dispatcher<Settings>,
         connected: &[&DisplayOutput],
-    ) -> super::display_arrangement::DisplayArrangement {
+    ) -> super::display_placement::DisplayPlacement {
         let mut displays = self.arranged_displays(connected);
         let ((dx, dy), mut moves) = self.join_other_screens(dispatcher, &mut displays);
         moves.extend(
@@ -2124,10 +2120,10 @@ impl DisplayModel {
                     .map(|binding| (display.connector.clone(), binding))
                 }),
         );
-        super::display_arrangement::DisplayArrangement::new(
+        super::display_placement::DisplayPlacement::new(
             displays,
             moves,
-            self.arrangement_drag.clone(),
+            self.placement_drag.clone(),
         )
         .with_selection(self.selected.clone())
         .identifying(self.identify_window)
@@ -2147,14 +2143,14 @@ impl DisplayModel {
         }))
     }
 
-    /// The connected outputs as the arrangement canvas draws them: staged
+    /// The connected outputs as the placement canvas draws them: staged
     /// layout first, committed layout otherwise, numbered the way the
     /// compositor numbers them for Identify.
     fn arranged_displays(
         &self,
         connected: &[&DisplayOutput],
-    ) -> Vec<super::display_arrangement::ArrangedDisplay> {
-        use super::display_arrangement::{ArrangedDisplay, placement::Placement};
+    ) -> Vec<super::display_placement::PlacedDisplay> {
+        use super::display_placement::{PlacedDisplay, placement::Placement};
 
         let config = self
             .pending_candidate
@@ -2162,7 +2158,7 @@ impl DisplayModel {
             .unwrap_or(&self.output_config);
         let numbers = Self::display_numbers(connected);
         let mut next_free_x = 0_i32;
-        let mut placed: Vec<ArrangedDisplay> = Vec::new();
+        let mut placed: Vec<PlacedDisplay> = Vec::new();
         for (index, output) in connected.iter().enumerate() {
             let entry = config.outputs.get(&output.connector);
             let resolved = entry.cloned().unwrap_or_else(|| output.unconfigured());
@@ -2180,7 +2176,7 @@ impl DisplayModel {
                 (next_free_x, 0)
             };
             next_free_x = next_free_x.max(x.saturating_add(width));
-            placed.push(ArrangedDisplay {
+            placed.push(PlacedDisplay {
                 movement_group: None,
                 shared: None,
                 connector: output.connector.clone(),

@@ -163,7 +163,7 @@ fn prepared() -> (
     ProbeHost,
     FrameHarness,
     Observations,
-    crate::record::RecordCheckout,
+    crate::record::DocumentCheckout,
 ) {
     let host = ProbeHost::new();
     let definition = definition(factory);

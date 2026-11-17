@@ -377,7 +377,7 @@ class WrapperHandedProgramTests(unittest.TestCase):
     # Package whose shards run the wrapper -> the program they need and the build a run handed
     # none makes.
     PROGRAMS = {
-        "tilo-agent-participant": (
+        "tilo-agent-session": (
             "tilo-video-render",
             "build --locked -p tilo-video-render --bin tilo-video-render",
         ),
@@ -444,7 +444,7 @@ class WrapperHandedProgramTests(unittest.TestCase):
                 self.assertEqual(ran, [self.RUN], "the run, and no build")
 
     def test_a_handed_render_helper_is_named_to_the_run(self):
-        result, _, named, _, paths = self.run_wrapper("tilo-agent-participant",
+        result, _, named, _, paths = self.run_wrapper("tilo-agent-session",
                                                      handed=("tilo-video-render",))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(named, [paths["tilo-video-render"]])

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use tilo_document::RichText;
 use tilo_resource::{
-    self, Atom, Bytes, Collection, Id, JsonSchema, Model, NonBlank, Origin, Refusal, Set,
+    self, Atom, Bytes, Collection, Id, JsonSchema, MemberId, Model, NonBlank, Origin, Refusal, Set,
 };
 
 use crate::model::goal::Area;
@@ -152,7 +152,7 @@ pub struct Attachment {
     pub bytes: Bytes,
     /// Who attached it.
     #[model(readonly)]
-    pub author: String,
+    pub author: Option<MemberId>,
     /// The name its author acted under, when software attached it.
     #[model(readonly)]
     pub author_name: String,
@@ -258,7 +258,7 @@ pub enum MessageKind {
 pub struct Message {
     /// Who wrote it: a person, or an agent.
     #[model(readonly)]
-    pub author: String,
+    pub author: Option<MemberId>,
     /// The name its author acted under, when software wrote it: an
     /// agent's name, shown where the workspace no longer names the agent.
     #[model(readonly)]
@@ -392,7 +392,7 @@ pub struct Issue {
     pub comments: Collection<Message>,
     /// Author
     #[model(readonly)]
-    pub author: String,
+    pub author: Option<MemberId>,
     /// The name its author acted under, when software wrote it.
     #[model(readonly)]
     pub author_name: String,
@@ -461,12 +461,14 @@ impl Issue {
             .map(|assignee| assignee.0.as_str())
     }
 
-    /// The person the issue is assigned to.
+    /// The member the issue is assigned to: a person or an agent.
     #[must_use]
-    pub fn assigned_person(&self) -> Option<&str> {
-        self.assignee
-            .as_ref()
-            .and_then(|assignee| assignee.0.strip_prefix(PERSON_PREFIX))
+    pub fn assigned_member(&self) -> Option<MemberId> {
+        let assignee = &self.assignee.as_ref()?.0;
+        assignee
+            .strip_prefix(PERSON_PREFIX)
+            .map(MemberId::person)
+            .or_else(|| assignee.strip_prefix(AGENT_PREFIX).map(MemberId::agent))
     }
 
     /// The name of someone outside the workspace the issue is assigned to,
@@ -476,14 +478,6 @@ impl Issue {
         self.assignee
             .as_ref()
             .and_then(|assignee| assignee.0.strip_prefix(OUTSIDE_PREFIX))
-    }
-
-    /// Who the issue shows as its author: its original author when it was
-    /// moved here from elsewhere, else the name its author acted under, else
-    /// its author's id for a view to name.
-    #[must_use]
-    pub fn shown_author(&self) -> &str {
-        shown_author(&self.author, &self.author_name, self.origin.as_ref())
     }
 
     /// When the issue shows it was written: when it was written where it
@@ -498,12 +492,6 @@ impl Issue {
 }
 
 impl Message {
-    /// Who the message shows as its author ([`Issue::shown_author`]).
-    #[must_use]
-    pub fn shown_author(&self) -> &str {
-        shown_author(&self.author, &self.author_name, self.origin.as_ref())
-    }
-
     /// When the message shows it was written ([`Issue::shown_created_ms`]).
     #[must_use]
     pub fn shown_at_ms(&self) -> i64 {
@@ -512,13 +500,6 @@ impl Message {
             .and_then(|origin| origin.created_ms)
             .unwrap_or(self.at_ms)
     }
-}
-
-fn shown_author<'a>(author: &'a str, name: &'a str, origin: Option<&'a Origin>) -> &'a str {
-    if let Some(origin) = origin {
-        return &origin.author;
-    }
-    if name.trim().is_empty() { author } else { name }
 }
 
 const PERSON_PREFIX: &str = "person:";
@@ -578,96 +559,5 @@ pub fn agent_assignee(id: &str) -> Atom {
         Atom(id.to_owned())
     } else {
         Atom(format!("{AGENT_PREFIX}{id}"))
-    }
-}
-
-/// A task the workspace kept before the tracker, as the import reads it.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct Imported {
-    /// The workspace task's id: the issue's id derives from it.
-    pub task: String,
-    pub title: String,
-    /// The instruction the task was given, as the issue's description.
-    #[serde(default)]
-    pub instruction: String,
-    pub status: Status,
-    /// `agent:<id>` for an agent's task.
-    #[serde(default)]
-    pub assignee: Option<String>,
-    /// Who created it.
-    #[serde(default)]
-    pub author: String,
-    #[serde(default)]
-    pub created_ms: i64,
-    /// Its conversation, oldest first.
-    #[serde(default)]
-    pub messages: Vec<ImportedMessage>,
-}
-
-/// One turn of an imported task's conversation.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct ImportedMessage {
-    pub author: String,
-    #[serde(default)]
-    pub by_agent: bool,
-    #[serde(default)]
-    pub at_ms: i64,
-    pub text: String,
-}
-
-impl Imported {
-    /// The id the imported issue is kept under: the same on every device
-    /// that imports the task, so two imports are one issue.
-    #[must_use]
-    pub fn issue_id(&self) -> Id {
-        Id::from_raw(format!("workspace-task-{}", self.task))
-    }
-
-    /// The issue it becomes, numbered `number`.
-    #[must_use]
-    pub fn issue(&self, number: u64) -> Issue {
-        let mut comments = Collection::new();
-        for (index, message) in self.messages.iter().enumerate() {
-            comments.push(
-                Id::from_raw(format!("{}-{index}", self.issue_id())),
-                Message {
-                    author: message.author.clone(),
-                    author_name: String::new(),
-                    by_agent: message.by_agent,
-                    at_ms: message.at_ms,
-                    text: message.text.clone(),
-                    kind: if message.by_agent {
-                        MessageKind::FromRun
-                    } else {
-                        MessageKind::Comment
-                    },
-                    run: 0,
-                    lookup: String::new(),
-                    step: String::new(),
-                    incorporated: true,
-                    origin: None,
-                },
-            );
-        }
-        let title: String = self.title.trim().chars().take(MAX_TITLE_CHARS).collect();
-        Issue {
-            number,
-            title: if title.is_empty() {
-                "Task".to_owned()
-            } else {
-                title
-            },
-            body: RichText::from_markdown(self.instruction.trim()),
-            status: self.status,
-            assignee: self
-                .assignee
-                .as_deref()
-                .filter(|assignee| assignee_parts(assignee).is_some())
-                .map(|assignee| Atom(assignee.to_owned())),
-            author: self.author.clone(),
-            created_ms: self.created_ms,
-            comments,
-            ..Issue::default()
-        }
     }
 }

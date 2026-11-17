@@ -29,7 +29,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
-use ui::record::{RecordCheckout, RecordOwners, RecordStore};
+use ui::record::{DocumentCheckout, RecordOwners, RecordStore};
 use ui::state::State;
 use ui::widget::TileHost;
 
@@ -117,7 +117,7 @@ pub struct Demo {
     )]
     pub handle: DesktopHandle,
     /// Each window's record, as the store the app reads it through holds it.
-    records: Vec<(&'static str, RecordCheckout, RecordStore)>,
+    records: Vec<(&'static str, DocumentCheckout, RecordStore)>,
     /// The note's tab: the window a person types into.
     note_tab: TabId,
     /// A window woke since the host last ran the frame a wake asks for.

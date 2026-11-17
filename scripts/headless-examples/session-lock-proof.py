@@ -35,7 +35,7 @@ import time
 REPO = pathlib.Path(__file__).resolve().parents[2]
 # The one place that picks a session's private runtime directory.
 SESSION = REPO / "dist" / "dev" / "nested-session.sh"
-# The nightly step points this at the binary Cargo built for the run.
+# tools/ci/session-proofs.sh points this at the session build the run made.
 SHELL = pathlib.Path(os.environ.get("TILO_SHELL_BINARY", REPO / "target" / "debug" / "tilo-session"))
 PASSWORD = "correct horse battery staple"
 WRONG = "not the person's password"

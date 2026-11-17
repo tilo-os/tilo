@@ -218,7 +218,7 @@ impl PendingRemote {
 /// A route an owner holds that the transport is not yet joined to, and the kind its record holds.
 pub(crate) struct RouteJoin {
     pub(crate) route: RouteSpec,
-    pub(crate) record_kind: crate::record::RecordKind,
+    pub(crate) record_kind: crate::record::ResourceType,
 }
 
 pub(crate) struct OwnerRoute {
@@ -241,7 +241,7 @@ pub(crate) struct OwnerRoute {
 }
 struct TreeRecord {
     store: crate::record::RecordStore,
-    checkout: crate::record::RecordCheckout,
+    checkout: crate::record::DocumentCheckout,
     lifetime: std::rc::Rc<super::owner::RecordOwnerLifetime>,
 }
 
@@ -259,7 +259,7 @@ pub(crate) struct OwnerDocumentRoutes {
     /// Why local changes on the primary or workspace-index route are not reaching peers.
     pub(crate) outbound: Option<String>,
     retired: HashSet<RouteSpec>,
-    /// The records held as part of a live owner's tree ([`RecordId::tree`]) that no view owns: each
+    /// The records held as part of a live owner's tree ([`DocumentId::tree`]) that no view owns: each
     /// keeps its route while its store has it open.
     tree: Vec<TreeRecord>,
     #[cfg(test)]

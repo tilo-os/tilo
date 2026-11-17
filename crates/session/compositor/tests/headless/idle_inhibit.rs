@@ -37,16 +37,17 @@ impl WindowPolicy for Parkable {
         &mut self,
         windows: &[(WindowInfo, Rectangle<i32, Logical>)],
         _: &[Rectangle<i32, Logical>],
-    ) -> Option<Vec<Arrangement>> {
+    ) -> Option<Vec<WindowPlacement>> {
         let x = if self.parked.get() { PARKED } else { 0 };
         Some(
             windows
                 .iter()
-                .map(|(info, _)| Arrangement {
+                .map(|(info, _)| WindowPlacement {
                     id: info.id,
                     location: Point::from((x, 0)),
                     size: None,
                     clip: None,
+                    fullscreen: None,
                 })
                 .collect(),
         )

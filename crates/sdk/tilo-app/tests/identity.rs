@@ -81,7 +81,7 @@ impl ResourceApp for BoardApp {
     }
 
     fn view(cx: &mut ViewCx<Board>) -> Element {
-        let me = cx.me().map(str::to_owned);
+        let me = cx.me().map(|me| me.id().to_owned());
         let signed_in = format!("Signed in as {}", me.as_deref().unwrap_or("nobody"));
         Box::new(
             Column::new()
@@ -102,7 +102,11 @@ impl ResourceApp for BoardApp {
     }
 
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Board>> {
-        assert_eq!(cx.me(), "test-author", "the creator seeds the record");
+        assert_eq!(
+            cx.me(),
+            &MemberId::person("test-author"),
+            "the creator seeds the record"
+        );
         vec![Board::CLAIM.invoke()]
     }
 }
@@ -259,7 +263,7 @@ impl<R: Resource<Action = LevelAction>> ResourceSurface<R> for LevelSlider<R> {
     fn present(&mut self, _: &Rc<R::State>) {}
 
     fn attach(&mut self, cx: SurfaceCx<R>) {
-        SURFACE_ME.with(|me| *me.borrow_mut() = cx.me().map(str::to_owned));
+        SURFACE_ME.with(|me| *me.borrow_mut() = cx.me().map(|me| me.id().to_owned()));
         self.dispatch = Some(cx.dispatcher());
     }
 }
@@ -324,7 +328,7 @@ tilo_test_env::scenario! {
         assert_eq!(resource.label, "Studio mixer");
         assert_ne!(resource.label, <Board as Resource>::LABEL);
         let invoker = context.invoker.unwrap();
-        assert_eq!(invoker.acting.by.key(), "test-author");
+        assert_eq!(invoker.acting.by, MemberId::person("test-author").into());
 
         // A past version is read by nobody in particular.
         let first = app.versions().first().unwrap().hash;
@@ -346,7 +350,10 @@ tilo_test_env::scenario! {
             .find_map(|version| version.context)
             .unwrap();
         assert_eq!(seed.change, tilo_actions::ChangeKind::External);
-        assert_eq!(seed.invoker.unwrap().acting.by.key(), "test-author");
+        assert_eq!(
+            seed.invoker.unwrap().acting.by,
+            MemberId::person("test-author").into()
+        );
 
         // Neither Ctrl+Z nor the `undo` action takes the seed back.
         assert!(!app.undo());

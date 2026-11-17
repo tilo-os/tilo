@@ -50,6 +50,7 @@ host-window-minimize = Minimieren
 host-window-maximize = Maximieren
 host-window-restore = Wiederherstellen
 host-window-snap = Zurück in den Streifen
+host-window-exit-fullscreen = Vollbild beenden
 host-window-collapse = Einklappen
 host-window-expand = Ausklappen
 host-window-close = Schließen
@@ -761,12 +762,12 @@ host-native-history-unconfirmed = Die Seite hat ihr Rückgängig nicht bestätig
 host-native-page-history-scope = Rückgängig und Wiederholen wirken auf diese Seite. Deine letzte Änderung kann in einem anderen Feld liegen.
 
 # Shared native screen topology canvas
-display-arrangement-name = Bildschirmanordnung
-display-arrangement-description = Drück auf einen Bildschirm, um ihn auszuwählen, und zieh ihn neben einen anderen, um ihn dort zu platzieren. Per Tastatur wählt die Bildschirmauswahl einen aus, und die Pfeiltasten verschieben ihn.
-display-arrangement-empty = Keine Bildschirme zum Anordnen
-display-arrangement-item = Bildschirm { $number }: { $name }
-display-arrangement-item-primary = Bildschirm { $number }: { $name }, Hauptbildschirm
-display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
+display-placement-name = Bildschirmanordnung
+display-placement-description = Drück auf einen Bildschirm, um ihn auszuwählen, und zieh ihn neben einen anderen, um ihn dort zu platzieren. Per Tastatur wählt die Bildschirmauswahl einen aus, und die Pfeiltasten verschieben ihn.
+display-placement-empty = Keine Bildschirme zum Anordnen
+display-placement-item = Bildschirm { $number }: { $name }
+display-placement-item-primary = Bildschirm { $number }: { $name }, Hauptbildschirm
+display-placement-item-position = { $width } × { $height } bei { $x }, { $y }
 
 
 app-activate-window = Dieses Fenster anzeigen
@@ -792,11 +793,11 @@ widget-documents-in-workspace = In diesem Arbeitsbereich
 # Shown instead of a window's document while it cannot be opened.
 record-unavailable-title = Dieses Dokument kann nicht geöffnet werden
 record-unavailable-hint = Es ist auf diesem Gerät gerade nicht verfügbar. Vielleicht ist es noch unterwegs, oder es wurde verschoben oder gelöscht.
-display-arrangement-offline = Offline
-display-arrangement-apart = Abseits
-display-arrangement-offline-apart = Offline, abseits
-display-arrangement-item-status = { $position }; { $status }
-display-arrangement-caption-status = { $status }: { $name }
+display-placement-offline = Offline
+display-placement-apart = Abseits
+display-placement-offline-apart = Offline, abseits
+display-placement-item-status = { $position }; { $status }
+display-placement-caption-status = { $status }: { $name }
 
 # Suche: die Zeile, die den Rest einer gekürzten Gruppe zeigt
 search-show-all = Alle { $count } zeigen

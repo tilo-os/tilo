@@ -3432,6 +3432,22 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "open-link",
+    "resource_kind": "canvas.artwork",
+    "label": "Open link",
+    "description": "Show what a link names, in the app that claims its scheme.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "link",
+        "ty": "text",
+        "required": true,
+        "description": "The link to show, of a scheme the app claims (geo:52.5,13.4)"
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "open-picture",
     "resource_kind": "canvas.artwork",
     "label": "Open picture",
@@ -4390,8 +4406,8 @@
       },
       {
         "name": "by",
-        "ty": "text",
-        "description": "Exact author id from history, for steps outside a run",
+        "ty": "object",
+        "description": "The actor's `by` of a history entry, for steps outside a run",
         "nullable": true
       },
       {

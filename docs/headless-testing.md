@@ -64,7 +64,7 @@ mkdir -p "$XDG_RUNTIME_DIR"
 target/debug/tilo-session --backend headless &
 ```
 
-The session's own flags, as `tilo-session --help`'s header documents them: `--backend drm|headless|nested`, `--size WxH`, `--output [NAME=]WxH[@X][,][+X,Y]` (repeatable, for a multi-output arrangement), `--scale S` or `--panel-mm WxH`, `--connector NAME`, `--shell screen`, `--session-bus ADDRESS`, `--system-bus ADDRESS`, `--no-x11`, `--test-control PATH`, `--admin-control PATH`, `--headless-owner-control`, `--admit-repl PATH`, `--seed-apps`, and `-- COMMAND…` to run a program under it (the session then lives as long as that command).
+The session's own flags, as `tilo-session --help`'s header documents them: `--backend drm|headless|nested`, `--size WxH`, `--output [NAME=]WxH[@X][,][+X,Y]` (repeatable, for a multi-output layout), `--scale S` or `--panel-mm WxH`, `--connector NAME`, `--shell screen`, `--session-bus ADDRESS`, `--system-bus ADDRESS`, `--no-x11`, `--test-control PATH`, `--admin-control PATH`, `--headless-owner-control`, `--admit-repl PATH`, `--seed-apps`, and `-- COMMAND…` to run a program under it (the session then lives as long as that command).
 
 `--test-control` and `--seed-apps` are honoured by development builds only; a release build serves the control socket only when built with `--features dev-overrides`, which the dev image's session carries. Every harness here is a development build, and says so when it is not.
 
@@ -268,8 +268,8 @@ Read the ids the app publishes (`apps/tl/<app>/app.ids`) rather than its words; 
 - `reaper.py` — takes a session down, process group and all
 - `list-targets.py`, `click-and-snapshot.py`, `keyboard-flow.py`, `drag-demo.py`, `full-loop.py` — one op each
 - `first-frame.py`, `startup-frame-timeline.py` — what a session's first frame costs
-- `session-e2e.py`, `canvas-e2e.py`, `tilolang-e2e.py`, `files-clipboard-e2e.py` — whole flows, each on a session of its own
-- `agent-sessions-proof.py`, `session-lock-proof.py` — the proofs `tools/ci/session-proofs.sh` runs
+- `session-e2e.py`, `canvas-e2e.py`, `files-clipboard-e2e.py` — whole flows, each on a session of its own
+- `tilolang-e2e.py`, `hosted-names-proof.py`, `agent-sessions-proof.py`, `session-lock-proof.py` — the proofs `tools/ci/session-proofs.sh` runs, as the t checks `e2e/tilolang`, `e2e/two-people`, `e2e/agent-sessions` and `e2e/session-lock`
 - `notes-persist-proof.py`, `notes-caret-proof.py`, `shell-restore-proof.py`, `audio-absent-proof.py` — proofs that need the tree's apps built (the restore proof checks that a session comes back to the layout it had)
 
 `scripts/headless-examples/README.md` says what each proof asserts.

@@ -10,7 +10,7 @@ fn resource(profile: &str, workspace: &str) -> HistoryResource {
         profile,
         workspace,
         "dev.tilo.history-test",
-        RecordId::parse("uuid:00000000-0000-0000-0000-000000000001").expect("record id"),
+        DocumentId::parse("uuid:00000000-0000-0000-0000-000000000001").expect("record id"),
     )
 }
 
@@ -245,13 +245,13 @@ tilo_test_env::scenario! {
                 "profile-a",
                 "workspace-a",
                 "dev.tilo.other-app",
-                RecordId::parse("uuid:00000000-0000-0000-0000-000000000001").unwrap(),
+                DocumentId::parse("uuid:00000000-0000-0000-0000-000000000001").unwrap(),
             ),
             HistoryResource::new(
                 "profile-a",
                 "workspace-a",
                 "dev.tilo.history-test",
-                RecordId::parse("uuid:00000000-0000-0000-0000-000000000002").unwrap(),
+                DocumentId::parse("uuid:00000000-0000-0000-0000-000000000002").unwrap(),
             ),
         ] {
             let mut other = HistoryController::new(mismatched, &doc).unwrap();

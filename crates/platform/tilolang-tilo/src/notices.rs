@@ -188,7 +188,7 @@ fn held_notice(host: &Host, id: &str) -> Option<Held> {
     let at = ResourceRef::root(id.to_owned(), NOTICE_TYPE.to_owned());
     let runtime = host.runtime();
     let to = match runtime.read(&at, NOTICE_TO).ok()? {
-        Value::Principal(person) => person.0,
+        Value::Actor(person) => person.member_id()?.person_id()?.to_owned(),
         _ => return None,
     };
     let text = |field: &str| match runtime.read(&at, field) {

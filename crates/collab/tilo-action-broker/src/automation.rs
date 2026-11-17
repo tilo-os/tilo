@@ -30,16 +30,18 @@ use settings_store::hardware::{ActionChord, ActionChordTarget, KeyChord, Shortcu
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::context::ActionContext;
 use tilo_actions::contract::{ActionContract, ActionKind, ResultSpec, RiskLevel};
-use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
+use tilo_actions::outcome::{
+    ActionFailure, ActionOutput, InvocationId as ActionInvocationId, InvocationUpdate,
+};
 use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ParamType};
 use tilo_actions::remote::workspace_provider;
 use tilo_actions::remote::{Confirmation, Pending, pending};
 use tilo_actions::{ExecutionLocus, OperationKind};
 use tilo_automation::{
     ActionCatalog, AskRequest, Binding, ConfirmationRequest, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE,
-    RunHooks, RunId, RunMode, RunOutcome, RunReport, RunTrigger, SHORTCUT_RESOURCE_KIND,
-    SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Shortcut, StepPath, StopWatch, TriggerSpec,
-    shortcut_id_of, shortcut_resource_id,
+    InvocationHooks, InvocationId, InvocationMode, InvocationOutcome, InvocationReport,
+    InvocationTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule,
+    Shortcut, StepPath, StopWatch, TriggerSpec, shortcut_id_of, shortcut_resource_id,
 };
 use tilo_desktop_model::Workspace;
 
@@ -559,8 +561,8 @@ pub fn decode_library(action: &str, argument: Option<&str>) -> Result<LibraryOpe
 pub struct SaveContext<'a> {
     /// What the saving person is offered now.
     pub catalog: &'a ActionCatalog,
-    /// The saving person's policy id; recorded as the shortcut's saver.
-    pub saver: &'a str,
+    /// Who saves it; a person is recorded as the shortcut's saver.
+    pub saver: &'a tilo_action_policy::MemberId,
     /// The chords already taken on this device.
     pub keymap: &'a ShortcutConfig,
     /// What the desktop calls a fixed shortcut, in the person's language.
@@ -627,7 +629,7 @@ pub fn plan_library(
         LibraryOperation::Update(shortcut) => (shortcut, true),
     };
     let mut shortcut = shortcut;
-    shortcut.saved_by = Some(context.saver.to_string());
+    shortcut.saved_by = context.saver.person_id().map(str::to_owned);
     // The device that stores it signs it; whatever proof came in is not its.
     shortcut.saved_proof = None;
     let exists = saved.iter().any(|other| other.id == shortcut.id);
@@ -677,9 +679,9 @@ pub fn library_context(descriptor: &ActionDescriptor) -> ActionContext {
 /// A broker's shortcut runs that are not over: the steps waiting on their
 /// person, and the runs going so one can be stopped between two steps.
 #[derive(Clone, Default)]
-pub struct RunLedger {
+pub struct OpenInvocations {
     pub prompts: StepPrompts,
-    pub running: RunningRuns,
+    pub running: RunningInvocations,
 }
 
 /// The runs this broker has going, by the workspace and the shortcut each runs.
@@ -689,7 +691,7 @@ pub struct RunLedger {
 /// that happened, and the step of it to go on from.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Continued {
-    pub report: RunReport,
+    pub report: InvocationReport,
     pub from: StepPath,
 }
 
@@ -697,57 +699,59 @@ pub struct Continued {
 /// would invoke something. What a stopped run already did stands, and is
 /// recorded and undone like a completed run's.
 #[derive(Clone, Default)]
-pub struct RunningRuns {
-    running: std::sync::Arc<Mutex<Vec<RunningRun>>>,
+pub struct RunningInvocations {
+    running: std::sync::Arc<Mutex<Vec<RunningInvocation>>>,
 }
 
 /// One run going, as a stop names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RunningRun {
+pub struct RunningInvocation {
     pub workspace: String,
     pub shortcut: String,
     /// What the shortcut is called, for a person reading the answer.
     pub name: String,
-    pub run: RunId,
+    pub invocation: InvocationId,
     /// The step the run has reached, as it last said where it was.
     pub at: Option<String>,
     /// Why it is being stopped, once someone has.
     pub stopped: Option<String>,
 }
 
-impl RunningRuns {
+impl RunningInvocations {
     /// Note a run as going, before its first step.
-    pub fn register(&self, run: RunningRun) {
+    pub fn register(&self, invocation: RunningInvocation) {
         if let Ok(mut running) = self.running.lock() {
-            running.retain(|other| other.run != run.run);
-            running.push(run);
+            running.retain(|other| other.invocation != invocation.invocation);
+            running.push(invocation);
         }
     }
 
     /// Note a run as over.
-    pub fn leave(&self, run: RunId) {
+    pub fn leave(&self, invocation: InvocationId) {
         if let Ok(mut running) = self.running.lock() {
-            running.retain(|other| other.run != run);
+            running.retain(|other| other.invocation != invocation);
         }
     }
 
     /// Note where run `run` has reached. A stop only lands while the run is
     /// between two answers, so the last place it named is where it ends.
-    fn moved(&self, run: RunId, at: &str) {
+    fn moved(&self, invocation: InvocationId, at: &str) {
         if let Ok(mut running) = self.running.lock()
-            && let Some(running) = running.iter_mut().find(|other| other.run == run)
+            && let Some(running) = running
+                .iter_mut()
+                .find(|other| other.invocation == invocation)
         {
             running.at = Some(at.to_owned());
         }
     }
 
     /// Whether run `run` has been told to stop, and why.
-    fn stopped(&self, run: RunId) -> Option<String> {
+    fn stopped(&self, invocation: InvocationId) -> Option<String> {
         self.running
             .lock()
             .ok()?
             .iter()
-            .find(|other| other.run == run)?
+            .find(|other| other.invocation == invocation)?
             .stopped
             .clone()
     }
@@ -755,37 +759,42 @@ impl RunningRuns {
     /// Stop the runs `request` names, in `workspace`. Returns those it stopped;
     /// a run that is not going is not an error, since stopping one that has
     /// just finished is what someone asking for it wanted anyway.
-    pub fn stop(&self, workspace: &str, request: &StopRequest, reason: &str) -> Vec<RunningRun> {
+    pub fn stop(
+        &self,
+        workspace: &str,
+        request: &StopRequest,
+        reason: &str,
+    ) -> Vec<RunningInvocation> {
         let Some(mut running) = self.running.lock().ok() else {
             return Vec::new();
         };
-        let named = |run: &RunningRun| {
-            run.workspace == workspace
+        let named = |invocation: &RunningInvocation| {
+            invocation.workspace == workspace
                 && match request {
-                    StopRequest::Shortcut(id) => run.shortcut == *id,
+                    StopRequest::Shortcut(id) => invocation.shortcut == *id,
                     StopRequest::All => true,
                 }
         };
         // Only a run still going is stopped; one already told to stop is
         // left to end, and asking again names nothing new.
         let mut stopping = Vec::new();
-        for run in running.iter_mut().filter(|run| named(run)) {
-            if run.stopped.is_none() {
-                run.stopped = Some(reason.to_owned());
-                stopping.push(run.clone());
+        for invocation in running.iter_mut().filter(|invocation| named(invocation)) {
+            if invocation.stopped.is_none() {
+                invocation.stopped = Some(reason.to_owned());
+                stopping.push(invocation.clone());
             }
         }
         stopping
     }
 
     /// Every run going in `workspace`.
-    pub fn going(&self, workspace: &str) -> Vec<RunningRun> {
+    pub fn going(&self, workspace: &str) -> Vec<RunningInvocation> {
         self.running
             .lock()
             .map(|running| {
                 running
                     .iter()
-                    .filter(|run| run.workspace == workspace)
+                    .filter(|invocation| invocation.workspace == workspace)
                     .cloned()
                     .collect()
             })
@@ -812,9 +821,11 @@ impl RunningRuns {
         };
         let mut above: Vec<String> = running
             .iter()
-            .filter(|run| run.workspace == workspace)
-            .filter(|run| parent.is_some_and(|parent| parent == run.run.0.to_string()))
-            .map(|run| run.shortcut.clone())
+            .filter(|invocation| invocation.workspace == workspace)
+            .filter(|invocation| {
+                parent.is_some_and(|parent| parent == invocation.invocation.0.to_string())
+            })
+            .map(|invocation| invocation.shortcut.clone())
             .collect();
         above.push(own.to_owned());
         above
@@ -824,14 +835,14 @@ impl RunningRuns {
 /// What stopping says it stopped, for whoever asked: one entry per run it
 /// reached, with where each had got to.
 #[must_use]
-pub fn stopped_output(stopped: &[RunningRun]) -> ActionOutput {
+pub fn stopped_output(stopped: &[RunningInvocation]) -> ActionOutput {
     let runs: Vec<Value> = stopped
         .iter()
-        .map(|run| {
+        .map(|invocation| {
             serde_json::json!({
-                "shortcut": run.shortcut,
-                "name": run.name,
-                "reached": run.at,
+                "shortcut": invocation.shortcut,
+                "name": invocation.name,
+                "reached": invocation.at,
             })
         })
         .collect();
@@ -849,20 +860,20 @@ pub fn stopped_output(stopped: &[RunningRun]) -> ActionOutput {
 /// unattended, so a step that needs confirmation or asks a question stops
 /// the run with a failure that says so rather than guessing.
 #[must_use]
-pub fn run_mode(confirmation: Option<&Confirmation>) -> RunMode {
+pub fn run_mode(confirmation: Option<&Confirmation>) -> InvocationMode {
     if confirmation.is_some() {
-        RunMode::Interactive
+        InvocationMode::Interactive
     } else {
-        RunMode::Unattended
+        InvocationMode::Unattended
     }
 }
 
 /// How one run starts.
 #[derive(Clone, Debug)]
-pub struct RunStart {
-    pub run: RunId,
-    pub trigger: RunTrigger,
-    pub mode: RunMode,
+pub struct InvocationStart {
+    pub invocation: InvocationId,
+    pub trigger: InvocationTrigger,
+    pub mode: InvocationMode,
     /// Values for the shortcut's inputs.
     pub inputs: Map<String, Value>,
     /// The work unit this run belongs to when something else asked for it:
@@ -872,14 +883,14 @@ pub struct RunStart {
     pub parent: Option<tilo_actions::context::WorkGroup>,
 }
 
-/// [`RunHooks`] for a run started through the API.
+/// [`InvocationHooks`] for a run started through the API.
 pub struct ApiHooks {
     confirmation: Option<Confirmation>,
     /// The runtime the run's poll fallback waits on.
     runtime: tokio::runtime::Handle,
     /// The runs going, so one of them can be stopped from elsewhere.
-    runs: RunningRuns,
-    run: RunId,
+    invocations: RunningInvocations,
+    invocation: InvocationId,
 }
 
 impl ApiHooks {
@@ -887,19 +898,19 @@ impl ApiHooks {
     pub fn new(
         confirmation: Option<Confirmation>,
         runtime: tokio::runtime::Handle,
-        runs: RunningRuns,
-        run: RunId,
+        invocations: RunningInvocations,
+        invocation: InvocationId,
     ) -> Self {
         Self {
             confirmation,
             runtime,
-            runs,
-            run,
+            invocations,
+            invocation,
         }
     }
 }
 
-impl RunHooks for ApiHooks {
+impl InvocationHooks for ApiHooks {
     fn confirm(&self, _request: ConfirmationRequest) -> Pending<Option<Confirmation>> {
         Pending::ready(self.confirmation.clone())
     }
@@ -910,13 +921,13 @@ impl RunHooks for ApiHooks {
         Pending::ready(None)
     }
 
-    fn settle(&self, _invocation: InvocationId) -> Pending<()> {
+    fn settle(&self, _invocation: ActionInvocationId) -> Pending<()> {
         settle_later(&self.runtime)
     }
 
     fn stopped(&self, what: StopWatch<'_>) -> Pending<Result<(), String>> {
-        self.runs.moved(self.run, what.path.as_str());
-        Pending::ready(match self.runs.stopped(self.run) {
+        self.invocations.moved(self.invocation, what.path.as_str());
+        Pending::ready(match self.invocations.stopped(self.invocation) {
             Some(reason) => Err(reason),
             None => Ok(()),
         })
@@ -994,7 +1005,7 @@ impl StepPrompts {
     }
 }
 
-/// [`RunHooks`] for a run the person is present at: every confirmation and
+/// [`InvocationHooks`] for a run the person is present at: every confirmation and
 /// question waits in [`StepPrompts`] until the compositor's sheet answers.
 pub struct SheetHooks {
     prompts: StepPrompts,
@@ -1002,8 +1013,8 @@ pub struct SheetHooks {
     /// The runtime the run's poll fallback waits on.
     runtime: tokio::runtime::Handle,
     /// The runs going, so one of them can be stopped from elsewhere.
-    runs: RunningRuns,
-    run: RunId,
+    invocations: RunningInvocations,
+    invocation: InvocationId,
 }
 
 impl SheetHooks {
@@ -1012,15 +1023,15 @@ impl SheetHooks {
         prompts: StepPrompts,
         shortcut: impl Into<String>,
         runtime: tokio::runtime::Handle,
-        runs: RunningRuns,
-        run: RunId,
+        invocations: RunningInvocations,
+        invocation: InvocationId,
     ) -> Self {
         Self {
             prompts,
             shortcut: shortcut.into(),
             runtime,
-            runs,
-            run,
+            invocations,
+            invocation,
         }
     }
 
@@ -1035,7 +1046,7 @@ impl SheetHooks {
     }
 }
 
-impl RunHooks for SheetHooks {
+impl InvocationHooks for SheetHooks {
     fn confirm(&self, request: ConfirmationRequest) -> Pending<Option<Confirmation>> {
         self.ask_person(StepPrompt::Confirm(Box::new(request)))
             .map(|answer| match answer {
@@ -1053,21 +1064,21 @@ impl RunHooks for SheetHooks {
     }
 
     fn stopped(&self, what: StopWatch<'_>) -> Pending<Result<(), String>> {
-        self.runs.moved(self.run, what.path.as_str());
-        Pending::ready(match self.runs.stopped(self.run) {
+        self.invocations.moved(self.invocation, what.path.as_str());
+        Pending::ready(match self.invocations.stopped(self.invocation) {
             Some(reason) => Err(reason),
             None => Ok(()),
         })
     }
 
-    fn settle(&self, _invocation: InvocationId) -> Pending<()> {
+    fn settle(&self, _invocation: ActionInvocationId) -> Pending<()> {
         settle_later(&self.runtime)
     }
 }
 
 /// The terminal update the API reports for a finished run.
 #[must_use]
-pub fn completion(invocation: InvocationId, report: &RunReport) -> InvocationUpdate {
+pub fn completion(invocation: ActionInvocationId, report: &InvocationReport) -> InvocationUpdate {
     match &report.outcome {
         // A stopped run did not fail: it ends where it was told to. What it
         // had already done is recorded and can be undone as one step, so it
@@ -1075,14 +1086,16 @@ pub fn completion(invocation: InvocationId, report: &RunReport) -> InvocationUpd
         // A run that finished degraded still succeeded: the steps that
         // fell short are recorded in the report, and carry the recovery the
         // shortcut asked for, so nobody mistakes it for an untouched run.
-        RunOutcome::Completed | RunOutcome::Cancelled { .. } => InvocationUpdate::Succeeded {
-            invocation,
-            output: ActionOutput {
-                value: report.reported_value(),
-                resources: Vec::new(),
-            },
-        },
-        RunOutcome::Failed { path, failure } => InvocationUpdate::Failed {
+        InvocationOutcome::Completed | InvocationOutcome::Cancelled { .. } => {
+            InvocationUpdate::Succeeded {
+                invocation,
+                output: ActionOutput {
+                    value: report.reported_value(),
+                    resources: Vec::new(),
+                },
+            }
+        }
+        InvocationOutcome::Failed { path, failure } => InvocationUpdate::Failed {
             invocation,
             error: ActionFailure {
                 code: "shortcut_step_failed".into(),
@@ -1096,42 +1109,42 @@ pub fn completion(invocation: InvocationId, report: &RunReport) -> InvocationUpd
 
 /// One run the API finished, waiting to be recorded in history.
 #[derive(Clone, Debug)]
-pub struct FinishedShortcutRun {
+pub struct FinishedInvocation {
     /// The workspace the shortcut is saved in.
     pub workspace: String,
     pub shortcut: Shortcut,
-    /// Policy id of the person or agent who invoked it.
-    pub invoker: String,
-    pub report: RunReport,
+    /// The person or agent who invoked it.
+    pub invoker: tilo_action_policy::MemberId,
+    pub report: InvocationReport,
 }
 
 /// The shortcut runs the broker holds while they go and once they end: a run going (and the
 /// steps waiting on its person) is stopped through here, and an ended one waits here until history
 /// takes it.
 #[derive(Default)]
-pub struct EndedRuns {
-    pub shortcuts: ShortcutRuns,
-    pub running: RunLedger,
+pub struct BrokerInvocations {
+    pub finished: FinishedInvocations,
+    pub open: OpenInvocations,
 }
 
 /// Runs the broker finished, until the history recorder takes them.
 #[derive(Default)]
-pub struct ShortcutRuns {
-    finished: Mutex<VecDeque<FinishedShortcutRun>>,
+pub struct FinishedInvocations {
+    finished: Mutex<VecDeque<FinishedInvocation>>,
     /// The same runs, kept by id after they were taken, newest last.
-    kept: Mutex<VecDeque<FinishedShortcutRun>>,
+    kept: Mutex<VecDeque<FinishedInvocation>>,
 }
 
-impl ShortcutRuns {
-    pub fn push(&self, run: FinishedShortcutRun) {
+impl FinishedInvocations {
+    pub fn push(&self, invocation: FinishedInvocation) {
         if let Ok(mut kept) = self.kept.lock() {
-            kept.push_back(run.clone());
+            kept.push_back(invocation.clone());
             while kept.len() > MAX_FINISHED_RUNS {
                 kept.pop_front();
             }
         }
         if let Ok(mut finished) = self.finished.lock() {
-            finished.push_back(run);
+            finished.push_back(invocation);
             while finished.len() > MAX_FINISHED_RUNS {
                 finished.pop_front();
             }
@@ -1140,13 +1153,15 @@ impl ShortcutRuns {
 
     /// The run `run` produced of `shortcut`, when it is one this broker kept.
     #[must_use]
-    pub fn report(&self, run: RunId, shortcut: &str) -> Option<RunReport> {
+    pub fn report(&self, invocation: InvocationId, shortcut: &str) -> Option<InvocationReport> {
         self.kept
             .lock()
             .ok()?
             .iter()
             .rev()
-            .find(|finished| finished.report.run == run && finished.shortcut.id == shortcut)
+            .find(|finished| {
+                finished.report.invocation == invocation && finished.shortcut.id == shortcut
+            })
             .map(|finished| finished.report.clone())
     }
 
@@ -1158,7 +1173,7 @@ impl ShortcutRuns {
     }
 
     /// Every finished run not taken yet, oldest first.
-    pub fn take(&self) -> Vec<FinishedShortcutRun> {
+    pub fn take(&self) -> Vec<FinishedInvocation> {
         self.finished
             .lock()
             .map(|mut finished| finished.drain(..).collect())
@@ -1247,7 +1262,7 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
 pub fn readable_folder(
     workspace: &Workspace,
     capability: &str,
-    saver: &str,
+    saver: &tilo_action_policy::MemberId,
 ) -> Result<std::path::PathBuf, String> {
     let granted = workspace
         .sandbox
@@ -1257,9 +1272,12 @@ pub fn readable_folder(
     let collab_types::Scope::FsPath(path) = &granted.scope else {
         return Err(format!("capability `{capability}` does not share a folder"));
     };
-    if workspace.role_of(saver).is_none() || workspace.is_blocked(saver) {
+    let Some(saver) = saver
+        .person_id()
+        .filter(|saver| workspace.role_of(saver).is_some() && !workspace.is_blocked(saver))
+    else {
         return Err("the saver is not a member of the workspace".into());
-    }
+    };
     let acting = tilo_action_policy::Acting::person(saver);
     if workspace.sandbox_decide_as_at(
         &acting,
@@ -1435,12 +1453,12 @@ mod tests {
         }
     }
 
-    fn going(workspace: &str, shortcut: &str, name: &str) -> RunningRun {
-        RunningRun {
+    fn going(workspace: &str, shortcut: &str, name: &str) -> RunningInvocation {
+        RunningInvocation {
             workspace: workspace.into(),
             shortcut: shortcut.into(),
             name: name.into(),
-            run: RunId::new(),
+            invocation: InvocationId::new(),
             at: None,
             stopped: None,
         }
@@ -1451,46 +1469,46 @@ mod tests {
 
         phase stopping_names_one_shortcuts_runs_or_every_run_going_in_the_workspace;
         {
-            let runs = RunningRuns::default();
+            let runs = RunningInvocations::default();
             let tidy = going("office", "tidy", "Tidy");
             let sweep = going("office", "sweep", "Sweep");
             let elsewhere = going("study", "tidy", "Tidy");
             for run in [&tidy, &sweep, &elsewhere] {
                 runs.register(run.clone());
             }
-            runs.moved(tidy.run, "1");
+            runs.moved(tidy.invocation, "1");
             let stopped = runs.stop("office", &StopRequest::Shortcut("tidy".into()), "asked");
             assert_eq!(stopped.len(), 1);
             assert_eq!(stopped[0].shortcut, "tidy");
             assert_eq!(stopped[0].at.as_deref(), Some("1"));
             // The other workspace's run of the same shortcut is somebody else's.
-            assert!(runs.stopped(elsewhere.run).is_none());
-            assert!(runs.stopped(sweep.run).is_none());
+            assert!(runs.stopped(elsewhere.invocation).is_none());
+            assert!(runs.stopped(sweep.invocation).is_none());
 
             // Stopping everything names what is still going, not the run already
             // told to stop.
             let all = runs.stop("office", &StopRequest::All, "asked");
             assert_eq!(all.len(), 1);
             assert_eq!(all[0].shortcut, "sweep");
-            assert!(runs.stopped(sweep.run).is_some());
-            assert!(runs.stopped(tidy.run).is_some());
+            assert!(runs.stopped(sweep.invocation).is_some());
+            assert!(runs.stopped(tidy.invocation).is_some());
             // Asking again stops nothing new: a run is told once.
             assert!(
                 runs.stop("office", &StopRequest::All, "asked again")
                     .is_empty()
             );
             assert_eq!(runs.going("office").len(), 2);
-            runs.leave(tidy.run);
+            runs.leave(tidy.invocation);
             assert_eq!(runs.going("office").len(), 1);
         }
 
         phase a_run_is_told_the_shortcuts_going_above_it_and_the_ones_beside_it_are_not;
         {
-            let runs = RunningRuns::default();
+            let runs = RunningInvocations::default();
             // `outer` is going on its own group, as a run with nothing above it
             // does; the run its step calls is stamped with that group.
             let outer = going("office", "outer", "Outer");
-            let group = outer.run.0.to_string();
+            let group = outer.invocation.0.to_string();
             runs.register(outer.clone());
             // The call inside it: its own id is running, and so is `outer`'s.
             assert_eq!(
@@ -1509,16 +1527,16 @@ mod tests {
             assert_eq!(runs.above("office", Some("elsewhere"), "beside"), ["beside"]);
             // Once the outer run is over, a run its group names has nothing
             // above it.
-            runs.leave(outer.run);
+            runs.leave(outer.invocation);
             assert_eq!(runs.above("office", Some(&group), "inner"), ["inner"]);
         }
 
         phase a_stop_says_which_runs_it_reached_and_where_each_had_got_to;
         {
-            let runs = RunningRuns::default();
+            let runs = RunningInvocations::default();
             let tidy = going("office", "tidy", "Tidy");
             runs.register(tidy.clone());
-            runs.moved(tidy.run, "then.2");
+            runs.moved(tidy.invocation, "then.2");
             let output = stopped_output(&runs.stop("office", &StopRequest::All, "asked"));
             assert_eq!(
                 output.value,

@@ -24,6 +24,10 @@ pub enum CommitOperation {
         app: String,
         record: String,
         envelope: Box<collab_types::SignedOp>,
+        /// The member's own record `record` is, when it is one: the write
+        /// carries it on the wire.
+        #[serde(default)]
+        own: Option<collab_types::OwnRecord>,
     },
     /// Only the broker's redacted `WorkspaceEffectReceipt` encoding belongs here.
     /// Private arguments, results and error messages never cross this boundary.
@@ -185,6 +189,7 @@ impl OwnerCommitRequest {
                 app,
                 record,
                 envelope,
+                ..
             } => {
                 collab_types::validate_whole_document_payload_route(
                     app,
@@ -338,11 +343,13 @@ impl OwnerCommitReceipt {
                 app,
                 record,
                 envelope,
+                ..
             },
             CommitOperation::Document {
                 app: taken_app,
                 record: taken_record,
                 envelope: taken,
+                ..
             },
         ) = (&asked.operation, &committed.operation)
         else {

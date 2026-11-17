@@ -17,7 +17,7 @@ pub struct DisplayRect {
 }
 
 impl DisplayRect {
-    /// Logical geometry shared with the Displays arrangement control.
+    /// Logical geometry shared with the Displays placement control.
     /// Malformed or overflowing screen bounds are never crossing targets.
     pub fn logical_placement(self) -> Option<settings_store::display_placement::Placement> {
         let width = i32::try_from(self.width).ok()?;

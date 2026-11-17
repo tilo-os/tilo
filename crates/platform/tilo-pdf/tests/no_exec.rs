@@ -1,7 +1,7 @@
 //! A process that confined itself to a policy refusing `exec` cannot start the
 //! helper: [`Engine::new`] must choose the portable engine there.
 //!
-//! An app worker (`tilo-agent-participant`) confines itself this way and then
+//! An app worker (`tilo-agent-session`) confines itself this way and then
 //! runs the PDF viewer's own code.
 
 #![cfg(unix)]

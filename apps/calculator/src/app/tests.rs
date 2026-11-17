@@ -116,7 +116,7 @@ fn chosen_view() -> Option<String> {
 fn attach_bar(app: &mut CalculatorApp) {
     app.dispatch = Some(ui::framework::Dispatcher::detached(
         "so.tilo.calculator",
-        "test-author",
+        &ui::tilo_resource::MemberId::person("test-author"),
     ));
     app.bar = app.window_bar();
     if let Some(bar) = &app.bar {

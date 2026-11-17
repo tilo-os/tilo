@@ -24,7 +24,7 @@ use std::sync::mpsc::{self, Receiver};
 use automerge::{AutoCommit, ChangeHash};
 use ui::application::NativeProfile;
 use ui::record::transfer::{self, Durability, Origin, Retirement, TransferError};
-use ui::record::{RecordCheckout, RecordId, RecordOpenError};
+use ui::record::{DocumentCheckout, DocumentId, RecordOpenError};
 
 /// Why a step of a move could not be taken.
 #[derive(Debug)]
@@ -74,7 +74,7 @@ pub(crate) struct Arrived {
     pub(crate) origin: Origin,
     /// The record it arrived as: a record of the destination, sharing the whole history of the one
     /// it left.
-    pub(crate) target: RecordCheckout,
+    pub(crate) target: DocumentCheckout,
 }
 
 /// Read the record `id` that the window at `instance` shows in `source` , and make it a record of
@@ -83,7 +83,7 @@ pub(crate) struct Arrived {
 pub(crate) fn take(
     source: &Profile,
     destination: &Profile,
-    id: &RecordId,
+    id: &DocumentId,
     instance: u64,
 ) -> Result<Arrived, Fault> {
     let from = source.open()?;
@@ -99,7 +99,7 @@ pub(crate) fn take(
         &origin,
         from.workspace_id(),
         to.workspace_id(),
-        &RecordId::minted(),
+        &DocumentId::minted(),
     )
     .map_err(Fault::Transfer)?;
     let (target, landing) = transfer::install(
@@ -171,7 +171,7 @@ pub(crate) enum Merged {
 /// Merge every change `source` holds that `target` lacks in `destination` .
 pub(crate) fn merge(
     destination: &Profile,
-    target: &RecordCheckout,
+    target: &DocumentCheckout,
     source: &AutoCommit,
 ) -> Result<Merged, Fault> {
     let to = destination.open()?;

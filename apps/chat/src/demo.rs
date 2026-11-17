@@ -598,7 +598,7 @@ impl Default for Workspace {
             chat: ui::tilo_resource::Doc::new(),
             parts: ui::framework::Chain::detached(
                 <crate::ChatShell as ui::framework::ResourceApp>::ID,
-                crate::model::ME,
+                &ui::tilo_resource::MemberId::person(crate::model::ME),
                 move || std::rc::Rc::clone(&read.borrow()),
             ),
             base,

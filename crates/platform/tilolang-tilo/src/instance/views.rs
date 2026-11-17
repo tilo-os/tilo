@@ -160,7 +160,7 @@ impl Instance {
         let Some(host) = self.host() else {
             return;
         };
-        let person = host.viewer().0.clone();
+        let person = host.viewer().clone();
         if let Err(error) = host.runtime().mark_seen(&person, target) {
             tracing::warn!(%error, "what a window showed could not be marked seen");
             self.notice(Words::phrase("tilolang-seen-failed"), ui::NoticeKind::Error);

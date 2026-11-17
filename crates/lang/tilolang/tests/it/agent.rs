@@ -52,7 +52,7 @@ tilo_test_env::scenario! {
             ["E014"]
         );
         assert_eq!(
-            codes_with("fn who() -> Principal { return me }", &visible,),
+            codes_with("fn who() -> Actor { return me }", &visible,),
             ["E014"]
         );
     }
@@ -70,7 +70,7 @@ tilo_test_env::scenario! {
                    agent.print(hits, fields: [.text])\n\
                    return agent.describe(n)\n\
                }\n\
-               action mine() -> Principal {\n\
+               action mine() -> Actor {\n\
                    return agent.me\n\
                }\n";
         let compiled = compile_with(src, &visible).unwrap_or_else(|d| panic!("{d:#?}"));

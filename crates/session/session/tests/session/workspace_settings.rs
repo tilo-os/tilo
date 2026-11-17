@@ -694,7 +694,7 @@ fn chat_emoji(session: &Session, workspace: &str) -> Option<Vec<String>> {
     let stored = session.stored_record(
         tilo_app::tilo_workspace_emoji::OWNER,
         workspace,
-        &collab_types::workspace_record_id(tilo_app::tilo_workspace_emoji::KIND),
+        &collab_types::workspace_document_id(tilo_app::tilo_workspace_emoji::KIND),
     )?;
     // A window appends to the record as it changes it, and this read may land on a tail it has not
     // finished writing: what came before it is the record as the last finished write left it, which
@@ -951,7 +951,7 @@ fn chat_agents(session: &Session, workspace: &str) -> Option<Vec<StoredAgent>> {
     let stored = session.stored_record(
         tilo_app::tilo_workspace_agent::OWNER,
         workspace,
-        &collab_types::workspace_record_id(tilo_app::tilo_workspace_agent::KIND),
+        &collab_types::workspace_document_id(tilo_app::tilo_workspace_agent::KIND),
     )?;
     let options = automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore);
     let doc = automerge::AutoCommit::load_with_options(&stored, options).ok()?;

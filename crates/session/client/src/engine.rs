@@ -228,7 +228,7 @@ pub struct Engine {
     held: HeldWrites,
     /// Keys of workspaces whose group this device takes no part in, handed to it by their host
     /// ([`Self::hand_keys`]): a sealed record they open reads with them.
-    handed: std::sync::Mutex<RouteKeys>,
+    handed: Arc<std::sync::Mutex<RouteKeys>>,
     /// The keys each record's channel last gave this device: they seal and open while the channel
     /// asks for access again.
     group_keys: std::sync::Mutex<RouteKeys>,
@@ -332,8 +332,40 @@ impl std::fmt::Debug for Engine {
 
 /// This device's channel keys, as its owner compacts the sealed histories of its records with
 /// them wherever it writes, linked or not
-/// ([`NativeWorkspaceOwner::keep_sealed_histories`]).
-pub struct HistoryKeys(pub KeyProvider);
+/// ([`NativeWorkspaceOwner::keep_sealed_histories`]): those the workspace's host handed it
+/// ([`Engine::hand_keys`]), else its own channels'. A device that takes no part in a workspace's
+/// group (the host's own actions, which act as the host device) writes with the keys it was
+/// handed, so it compacts with them too: its records' histories fill with its writes, and a full
+/// one takes no write until it is compacted.
+pub struct HistoryKeys {
+    keys: KeyProvider,
+    handed: Arc<std::sync::Mutex<RouteKeys>>,
+}
+
+impl HistoryKeys {
+    /// The keys of `keys`' channels alone: a device whose host hands it none.
+    #[must_use]
+    pub fn new(keys: KeyProvider) -> Self {
+        Self {
+            keys,
+            handed: Arc::default(),
+        }
+    }
+
+    fn handed(&self, workspace: WorkspaceId) -> Option<tilo_workspace_keys::HistoryKeys> {
+        self.handed
+            .lock_recover()
+            .get(&workspace)
+            .cloned()
+            .map(tilo_workspace_keys::HistoryKeys::from)
+    }
+
+    fn service(&self) -> Result<tilo_workspace_keys::SharedKeys, String> {
+        self.keys
+            .get()
+            .ok_or_else(|| "this device's channel service is not running".to_owned())
+    }
+}
 
 impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
     fn open(
@@ -341,10 +373,10 @@ impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
         workspace: WorkspaceId,
         write: &collab_types::SignedOp,
     ) -> Result<Vec<u8>, String> {
-        self.0
-            .get()
-            .ok_or("this device's channel service is not running")?
-            .open_history_write(workspace, write)
+        match self.handed(workspace) {
+            Some(handed) => handed.open(write),
+            None => self.service()?.open_history_write(workspace, write),
+        }
     }
 
     fn seal_checkpoint(
@@ -354,10 +386,12 @@ impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
         record: &str,
         snapshot: &[u8],
     ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
-        self.0
-            .get()
-            .ok_or("this device's channel service is not running")?
-            .seal_checkpoint(workspace, app, record, snapshot)
+        match self.handed(workspace) {
+            Some(handed) => handed.seal_checkpoint(app, record, snapshot),
+            None => self
+                .service()?
+                .seal_checkpoint(workspace, app, record, snapshot),
+        }
     }
 
     fn renew(
@@ -365,10 +399,10 @@ impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
         workspace: WorkspaceId,
         write: &collab_types::SignedOp,
     ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
-        self.0
-            .get()
-            .ok_or("this device's channel service is not running")?
-            .renew_sealed(workspace, write)
+        match self.handed(workspace) {
+            Some(handed) => handed.renew(write),
+            None => self.service()?.renew_sealed(workspace, write),
+        }
     }
 }
 
@@ -383,7 +417,11 @@ impl Engine {
         custody: Arc<dyn Custody>,
     ) -> Self {
         let keys = KeyProvider::default();
-        owner.keep_sealed_histories(Arc::new(HistoryKeys(keys.clone())));
+        let handed = Arc::<std::sync::Mutex<RouteKeys>>::default();
+        owner.keep_sealed_histories(Arc::new(HistoryKeys {
+            keys: keys.clone(),
+            handed: Arc::clone(&handed),
+        }));
         Self {
             owner,
             shown,
@@ -396,7 +434,7 @@ impl Engine {
             #[cfg(not(target_arch = "wasm32"))]
             directed: None,
             arrivals: Arc::new(crate::arrivals::Arrivals::default()),
-            handed: std::sync::Mutex::default(),
+            handed,
             group_keys: std::sync::Mutex::default(),
             held: HeldWrites::default(),
             kept: std::sync::Mutex::default(),
@@ -925,6 +963,22 @@ impl Engine {
             })
     }
 
+    /// The member's own record `app`'s `record` in `workspace` is, as the writes of it this
+    /// device holds name it.
+    #[must_use]
+    pub fn own_record(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> Option<collab_types::OwnRecord> {
+        let workspace = WorkspaceId::parse(workspace)?;
+        self.owner
+            .with_current(workspace, |view| Ok(view.peer().own_record(app, record)))
+            .ok()
+            .flatten()
+    }
+
     /// Whether `workspace` holds `app`'s `record` here now: what a read of it opens, or a record
     /// this device holds nothing of that may still be on its way.
     #[must_use]
@@ -1166,6 +1220,7 @@ impl Engine {
                     app: app.to_owned(),
                     record: record.to_owned(),
                     envelope: Box::new(op),
+                    own: view.peer().own_write(app, record, &device),
                 },
             }])
         };
@@ -1176,7 +1231,7 @@ impl Engine {
             .pop()
             .ok_or("the write was not committed")?;
         self.schedule_publication(workspace);
-        let tilo_peer_state::owner_commit::CommitOperation::Document { envelope, .. } =
+        let tilo_peer_state::owner_commit::CommitOperation::Document { envelope, own, .. } =
             committed.0.operation
         else {
             return Err("a record's write is not a document write".to_owned());
@@ -1189,6 +1244,7 @@ impl Engine {
             author: author.ok_or("the write was not made")?,
             replayed: false,
             envelope: *envelope,
+            own,
         })
     }
 

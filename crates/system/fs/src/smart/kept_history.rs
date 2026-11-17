@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use fs_protocol::FileRecordId;
+use fs_protocol::FileDocumentId;
 use tilo_lock::MutexRecover as _;
 use uuid::Uuid;
 
@@ -86,8 +86,8 @@ fn unix_seconds(at: SystemTime) -> u64 {
 /// The file's bytes for `pairs` as of `now`: the freshest [`MAX_PAIRS`]
 /// pairs no older than [`MAX_AGE`].
 #[must_use]
-pub fn encode(pairs: &[PairRecord<FileRecordId>], now: SystemTime) -> Vec<u8> {
-    let mut kept: Vec<&PairRecord<FileRecordId>> = pairs
+pub fn encode(pairs: &[PairRecord<FileDocumentId>], now: SystemTime) -> Vec<u8> {
+    let mut kept: Vec<&PairRecord<FileDocumentId>> = pairs
         .iter()
         .filter(|pair| pair.age <= MAX_AGE && pair.a != pair.b && pair.occasions > 0)
         .collect();
@@ -116,7 +116,7 @@ pub fn encode(pairs: &[PairRecord<FileRecordId>], now: SystemTime) -> Vec<u8> {
 /// The pairs in a kept file as of `now`, or why the whole file is refused.
 /// Pairs older than [`MAX_AGE`] are dropped; a pair stamped in the future
 /// (the clock moved back) counts as just seen.
-pub fn decode(bytes: &[u8], now: SystemTime) -> Result<Vec<PairRecord<FileRecordId>>, Corrupt> {
+pub fn decode(bytes: &[u8], now: SystemTime) -> Result<Vec<PairRecord<FileDocumentId>>, Corrupt> {
     let (body, checksum) = bytes
         .split_at_checked(bytes.len().saturating_sub(CHECKSUM_BYTES))
         .filter(|(body, _)| body.len() >= HEADER_BYTES)
@@ -143,9 +143,9 @@ pub fn decode(bytes: &[u8], now: SystemTime) -> Result<Vec<PairRecord<FileRecord
     let mut pairs = Vec::with_capacity(count);
     for entry in entries.chunks_exact(ENTRY_BYTES) {
         let field = |range: std::ops::Range<usize>| entry.get(range).ok_or(Corrupt::BadEntry);
-        let id = |range| -> Result<FileRecordId, Corrupt> {
+        let id = |range| -> Result<FileDocumentId, Corrupt> {
             let bytes: [u8; 16] = field(range)?.try_into().map_err(|_| Corrupt::BadEntry)?;
-            Ok(FileRecordId(Uuid::from_bytes(bytes)))
+            Ok(FileDocumentId(Uuid::from_bytes(bytes)))
         };
         let (a, b) = (id(0..16)?, id(16..32)?);
         let occasions =
@@ -304,11 +304,11 @@ impl KeptHistory {
         };
         let resolved: Vec<PairRecord<u64>> = {
             let mut namespace = self.namespace.lock_recover();
-            let mut inodes: HashMap<FileRecordId, Option<u64>> = HashMap::new();
-            let mut ino = |record: FileRecordId| {
+            let mut inodes: HashMap<FileDocumentId, Option<u64>> = HashMap::new();
+            let mut ino = |record: FileDocumentId| {
                 *inodes
                     .entry(record)
-                    .or_insert_with(|| namespace.ensure_ino_for_record_id(record))
+                    .or_insert_with(|| namespace.ensure_ino_for_document_id(record))
             };
             pairs
                 .into_iter()
@@ -352,13 +352,13 @@ impl KeptHistory {
         if revision == written {
             return Ok(false);
         }
-        let records: Vec<PairRecord<FileRecordId>> = {
+        let records: Vec<PairRecord<FileDocumentId>> = {
             let namespace = self.namespace.lock_recover();
-            let mut records: HashMap<u64, Option<FileRecordId>> = HashMap::new();
+            let mut records: HashMap<u64, Option<FileDocumentId>> = HashMap::new();
             let mut record = |ino: u64| {
                 *records
                     .entry(ino)
-                    .or_insert_with(|| namespace.record_id_for(ino))
+                    .or_insert_with(|| namespace.document_id_for(ino))
             };
             pairs
                 .into_iter()
@@ -501,11 +501,11 @@ mod tests {
 
     use super::*;
 
-    fn record(n: u128) -> FileRecordId {
-        FileRecordId(Uuid::from_u128(n))
+    fn record(n: u128) -> FileDocumentId {
+        FileDocumentId(Uuid::from_u128(n))
     }
 
-    fn pair(a: u128, b: u128, occasions: u32, age_secs: u64) -> PairRecord<FileRecordId> {
+    fn pair(a: u128, b: u128, occasions: u32, age_secs: u64) -> PairRecord<FileDocumentId> {
         PairRecord {
             a: record(a),
             b: record(b),

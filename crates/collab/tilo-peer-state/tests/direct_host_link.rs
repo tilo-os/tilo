@@ -119,6 +119,7 @@ fn sealed_at(
         cluster_id: WORKSPACE.into(),
         record_id: RECORD.into(),
         envelope: Box::new(op),
+        own: None,
     }
 }
 
@@ -539,6 +540,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
                 app: APP.into(),
                 record: RECORD.into(),
                 envelope,
+                own: None,
             },
         },
         now,
@@ -1508,6 +1510,7 @@ pub(crate) fn commit_record_at(
                     app: APP.into(),
                     record: RECORD.into(),
                     envelope,
+                    own: None,
                 },
             },
             when,

@@ -37,14 +37,14 @@ const GONE: &str = "so.tilo.gone";
 /// What a test names a strip it renames.
 const RENAMED: &str = "Sketches";
 
-/// A device seated in a test's home: where it keeps its state, and the salt it numbers what it
+/// A device in a test's home: where it keeps its state, and the salt it numbers what it
 /// makes in.
-struct Seat {
+struct Device {
     state: PathBuf,
     salt: u16,
 }
 
-impl Seat {
+impl Device {
     /// The device of `home`, holding its workspaces.
     fn in_home(home: &mut tilo_test_env::TestHome) -> Self {
         let state = crate::common::device_in(home);
@@ -57,14 +57,14 @@ impl Seat {
     /// The device of `home` with `tree` left as the layout its session ended with
     /// ([`save_layout`]), and the ids that layout gave `tree`'s workspaces. The salt is read from
     /// the session that leaves the layout: a device's salt is its key's, so every session of the
-    /// seat numbers in the same one, and none is started only to ask it.
+    /// device numbers in the same one, and none is started only to ask it.
     ///
     /// That session is the device's first: it founds the device's own workspace while the layout
     /// is laid into it. [`save_layout`] waits for the layout's record, which holds the strips,
     /// groups and windows a restart brings back, so a test that reads those may start here. The
     /// person's view of the workspace (a group's width, the maximized group, what is in front) is
     /// a record of its own that the session writes once it holds the workspace's keys, and no
-    /// wait here covers it: a test that reads the view seats the device first
+    /// wait here covers it: a test that reads the view starts the device first
     /// ([`Self::in_home`]) and saves the layout in the session after, where the keys are held
     /// from the start.
     fn with_layout(home: &mut tilo_test_env::TestHome, tree: &Layout) -> (Self, Vec<WorkspaceId>) {
@@ -405,12 +405,12 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     // The widths, the maximized group and what is in front are the person's own view of the
     // workspace, a record beside the layout's: the session that leaves them is the one after the
-    // device's first, which founded the workspace ([`Seat::with_layout`] says why).
-    let seat = Seat::in_home(&mut home);
-    let (_, workspace_ids) = save_layout(&seat.state, &wide_shell());
+    // device's first, which founded the workspace ([`Device::with_layout`] says why).
+    let device = Device::in_home(&mut home);
+    let (_, workspace_ids) = save_layout(&device.state, &wide_shell());
 
     // Nothing is asked of any app: this is the shape of the layout coming back.
-    let mut session = session_keeping(&seat.state, None);
+    let mut session = session_keeping(&device.state, None);
     laid_out(&mut session);
 
     let (workspaces, names, widths, maximized, front, strip_in_front) =
@@ -436,14 +436,14 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
     assert_eq!(names, ["Writing", "Reference"], "the strips, in order");
     assert_eq!(widths, [480, 333], "each group kept the width it had");
     assert!(maximized, "so did the group the person maximized");
-    assert_eq!(strip_in_front, Some(StripId(seat.id(1))));
+    assert_eq!(strip_in_front, Some(StripId(device.id(1))));
     assert_eq!(
         front,
-        Some(seat.id(101)),
+        Some(device.id(101)),
         "the window that was in front is in front again"
     );
     assert_eq!(
-        tile_of(&session, seat.id(101)),
+        tile_of(&session, device.id(101)),
         Some(TileContent::LocalApp {
             app_id: PROBE.into(),
             label: "Build".into(),
@@ -459,9 +459,9 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
 fn a_restart_brings_back_the_shell_the_session_kept() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
-    let seat = Seat::in_home(&mut home);
-    let state = seat.state.clone();
-    save_layout(&seat.state, &wide_shell());
+    let device = Device::in_home(&mut home);
+    let state = device.state.clone();
+    save_layout(&device.state, &wide_shell());
 
     let kept = {
         let mut session = session_keeping(&state, None);
@@ -496,17 +496,17 @@ fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
-    let (seat, _) = Seat::with_layout(&mut home, &one_window(PROBE, "Probe"));
+    let (device, _) = Device::with_layout(&mut home, &one_window(PROBE, "Probe"));
 
     let mut session = session_keeping(
-        &seat.state,
+        &device.state,
         Some(apps_at(&home, Some(launcher.path().to_owned()))),
     );
     laid_out(&mut session);
     let before = tabs(&session);
     assert_eq!(
         before,
-        [(seat.id(100), seat.id(10))],
+        [(device.id(100), device.id(10))],
         "the layout as it was left"
     );
 
@@ -520,7 +520,7 @@ fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
         .expect("the window maps");
     until(&mut session, "the window is in its tab", |session| {
         matches!(
-            tile_of(session, seat.id(100)),
+            tile_of(session, device.id(100)),
             Some(TileContent::Foreign { surface_id: 11, .. })
         )
     });
@@ -557,10 +557,10 @@ fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
         ),
     )
     .unwrap();
-    let (seat, _) = Seat::with_layout(&mut home, &one_window(PROBE, "Probe"));
+    let (device, _) = Device::with_layout(&mut home, &one_window(PROBE, "Probe"));
 
     let mut session = session_keeping(
-        &seat.state,
+        &device.state,
         Some(apps_at(&home, Some(launcher.path().to_owned()))),
     );
     until(&mut session, "the app is asked for its window", |_| {
@@ -571,7 +571,7 @@ fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
         fs::read_to_string(&instances)
             .expect("the launcher recorded its start")
             .trim(),
-        seat.id(100).to_string(),
+        device.id(100).to_string(),
         "the app is told the tab its window takes"
     );
 }
@@ -597,7 +597,7 @@ fn a_window_opened_on_content_is_told_the_tab_it_lands_in() {
         ),
     )
     .unwrap();
-    let state = Seat::in_home(&mut home).state;
+    let state = Device::in_home(&mut home).state;
 
     let apps = apps_at(&home, Some(launcher.path().to_owned()));
     let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
@@ -658,7 +658,7 @@ fn a_window_the_person_opened_opens_again_after_a_restart() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
-    let state = Seat::in_home(&mut home).state;
+    let state = Device::in_home(&mut home).state;
 
     // The person opens the app from the layout, the compositor maps its window into the tab it made,
     // and the session stops with that window open.
@@ -730,8 +730,8 @@ fn a_launch_before_the_restore_asks_starts_the_app_into_the_saved_tab() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
-    let (seat, _) = Seat::with_layout(&mut home, &one_window(PROBE, "Probe"));
-    let state = seat.state.clone();
+    let (device, _) = Device::with_layout(&mut home, &one_window(PROBE, "Probe"));
+    let state = device.state.clone();
 
     // The session starts on the shell, and the person — or an action reaching the app from somewhere
     // else — opens it before the restore has asked for its saved window: that launch starts the
@@ -763,13 +763,13 @@ fn a_launch_before_the_restore_asks_starts_the_app_into_the_saved_tab() {
         .expect("the window maps");
     until(&mut session, "the window takes the saved tab", |session| {
         matches!(
-            tile_of(session, seat.id(100)),
+            tile_of(session, device.id(100)),
             Some(TileContent::Foreign { surface_id: 11, .. })
         )
     });
     assert_eq!(
         tabs(&session),
-        [(seat.id(100), seat.id(10))],
+        [(device.id(100), device.id(10))],
         "one tab, not two"
     );
 }
@@ -780,8 +780,8 @@ fn a_launch_while_the_saved_window_is_coming_does_not_start_the_app_again() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
-    let (seat, _) = Seat::with_layout(&mut home, &one_window(PROBE, "Probe"));
-    let state = seat.state.clone();
+    let (device, _) = Device::with_layout(&mut home, &one_window(PROBE, "Probe"));
+    let state = device.state.clone();
 
     // The restore asks for the saved window first, and the same app is asked for again while its
     // window is coming: a record names the process that already has the app's records, so no second
@@ -810,13 +810,13 @@ fn a_launch_while_the_saved_window_is_coming_does_not_start_the_app_again() {
         .expect("the window maps");
     until(&mut session, "the window takes the saved tab", |session| {
         matches!(
-            tile_of(session, seat.id(100)),
+            tile_of(session, device.id(100)),
             Some(TileContent::Foreign { surface_id: 11, .. })
         )
     });
     assert_eq!(
         tabs(&session),
-        [(seat.id(100), seat.id(10))],
+        [(device.id(100), device.id(10))],
         "one tab, not two"
     );
 }
@@ -825,14 +825,14 @@ fn a_launch_while_the_saved_window_is_coming_does_not_start_the_app_again() {
 fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
-    let seat = Seat::in_home(&mut home);
-    save_layout(&seat.state, &one_window(GONE, "Gone"));
+    let device = Device::in_home(&mut home);
+    save_layout(&device.state, &one_window(GONE, "Gone"));
 
-    let mut session = session_keeping(&seat.state, Some(apps_at(&home, None)));
+    let mut session = session_keeping(&device.state, Some(apps_at(&home, None)));
     until(&mut session, "the tab says why it is empty", |session| {
-        note_of(session, seat.id(100)).is_some_and(|note| !note.is_empty())
+        note_of(session, device.id(100)).is_some_and(|note| !note.is_empty())
     });
-    let note = note_of(&session, seat.id(100)).expect("the tab holds the app it was");
+    let note = note_of(&session, device.id(100)).expect("the tab holds the app it was");
     assert!(
         note.contains("Gone"),
         "the tab names the app it holds: {note}"
@@ -854,7 +854,7 @@ fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
     );
     assert_eq!(
         tabs(&session),
-        [(seat.id(100), seat.id(10))],
+        [(device.id(100), device.id(10))],
         "nothing else on the layout changed"
     );
 
@@ -935,8 +935,8 @@ fn a_window_moved_to_another_workspace_runs_its_app_there() {
     let arguments = home.home().join("arguments");
     installed_probe_package(&mut home);
     let launcher = recording_launcher(&home, &started, &arguments);
-    let (seat, workspace_ids) = Seat::with_layout(&mut home, &two_workspaces());
-    let state = seat.state;
+    let (device, workspace_ids) = Device::with_layout(&mut home, &two_workspaces());
+    let state = device.state;
 
     let apps = apps_at(&home, Some(launcher.path().to_owned()));
     let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
@@ -998,9 +998,9 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
     let arguments = home.home().join("arguments");
     installed_probe_package(&mut home);
     let launcher = recording_launcher(&home, &started, &arguments);
-    let seat = Seat::in_home(&mut home);
+    let device = Device::in_home(&mut home);
     let apps = apps_at(&home, Some(launcher.path().to_owned()));
-    let mut session = session_keeping(&seat.state, Some(Rc::clone(&apps)));
+    let mut session = session_keeping(&device.state, Some(Rc::clone(&apps)));
     session.step(Duration::from_millis(1)).expect("step");
     // Someone else is in the workspace the person moves the window to: it is another person's, and
     // this device holds no governance of it.

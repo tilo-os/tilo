@@ -633,11 +633,11 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         };
         assert_eq!(backend.shell_name, "ush");
         assert_eq!(
-            backend.runs.as_deref(),
+            backend.commands.as_deref(),
             request["runs"].as_str(),
             "the session marks its runs with the key the request named"
         );
-        assert!(backend.runs.is_some());
+        assert!(backend.commands.is_some());
     }
 
     {
@@ -1644,7 +1644,7 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
     };
     assert!(
         matches!(
-            app.effect_by("agent:paste-test", &paste),
+            app.effect_by(&ui::tilo_resource::MemberId::agent("paste-test"), &paste),
             Err(ui::tilo_actions::ApiError::ConfirmationRequired)
         ),
         "an agent's paste waits for confirmation"

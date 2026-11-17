@@ -152,7 +152,7 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
         }
     }
 
-    fn measured_long_labels_and_large_text_change_arrangement_without_breakpoints() {
+    fn measured_long_labels_and_large_text_change_layout_without_breakpoints() {
         let theme = Theme::dark();
         let mut short = Field::new("Name", TextInput::local());
         let mut long = Field::new(
@@ -221,7 +221,7 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
 
     wide_fields_align_controls_beside_measured_labels();
     narrow_and_large_type_stack_long_labels_and_scroll_to_actions();
-    measured_long_labels_and_large_text_change_arrangement_without_breakpoints();
+    measured_long_labels_and_large_text_change_layout_without_breakpoints();
     wide_label_aligns_to_first_control_even_with_long_help_and_validation();
     fixed_control_needs_do_not_inherit_an_expandable_entry_minimum();
 }

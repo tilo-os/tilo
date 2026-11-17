@@ -22,6 +22,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::ids::Actor;
 use crate::value::Value;
 
 /// One slot of view state.
@@ -30,7 +31,7 @@ pub struct StateKey {
     pub window: String,
     /// The person the slot is one of: the person looking, for a declared state; the person a
     /// mark is of, for the runtime's own; `None` for a slot that is no one's.
-    pub principal: Option<String>,
+    pub actor: Option<Actor>,
     /// The id of the `state` declaration, or what the runtime keeps in its own.
     pub state: String,
     /// Whether a view declares it, and the person's record keeps it, or the platform reads it.
@@ -39,14 +40,10 @@ pub struct StateKey {
 
 impl StateKey {
     /// The slot of the `state` declaration `state` in `person`'s window.
-    pub fn view(
-        window: impl Into<String>,
-        person: impl Into<String>,
-        state: impl Into<String>,
-    ) -> Self {
+    pub fn view(window: impl Into<String>, person: Actor, state: impl Into<String>) -> Self {
         Self {
             window: window.into(),
-            principal: Some(person.into()),
+            actor: Some(person),
             state: state.into(),
             declared: true,
         }
@@ -56,12 +53,12 @@ impl StateKey {
     /// moves when something views read of the host moves.
     pub fn runtime(
         window: impl Into<String>,
-        principal: Option<String>,
+        actor: Option<Actor>,
         state: impl Into<String>,
     ) -> Self {
         Self {
             window: window.into(),
-            principal,
+            actor,
             state: state.into(),
             declared: false,
         }
@@ -164,7 +161,7 @@ mod tests {
     use super::*;
 
     fn view(state: &str) -> StateKey {
-        StateKey::view("tasks", "ada", state)
+        StateKey::view("tasks", crate::ids::MemberId::person("ada").into(), state)
     }
 
     tilo_test_env::scenario! {

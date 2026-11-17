@@ -36,7 +36,7 @@ pub mod disk_unlock;
 #[cfg(feature = "tilo-os")]
 pub mod display;
 #[cfg(feature = "tilo-os")]
-pub mod display_arrangement;
+pub mod display_placement;
 #[cfg(feature = "tilo-os")]
 pub mod drives;
 pub mod keyboard_shortcuts;

@@ -98,7 +98,7 @@ fn owner_revision_ignores_effect_updates_but_not_ownership() {
         .effect_receipts
         .push(tilo_desktop_model::WorkspaceEffectReceipt::recorded(
             tilo_actions::InvocationId::new(),
-            "owner",
+            &tilo_actions::MemberId::person("owner"),
             tilo_actions::ActionContext::default(),
             tilo_actions::EffectReceiptStatus::Succeeded,
             2,

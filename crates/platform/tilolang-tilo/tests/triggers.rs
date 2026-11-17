@@ -10,7 +10,7 @@ use automerge::AutoCommit;
 use tilo_render_protocol::patch::local::pair;
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::value::{ResourceRef, Value};
-use tilolang_runtime::{InvokeOutcome, Principal};
+use tilolang_runtime::{Actor, InvokeOutcome};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
@@ -220,7 +220,10 @@ fn run(replica: &mut Replica, name: &str, args: Vec<Value>) {
     let done = replica
         .host
         .runtime()
-        .invoke_action(&Principal::new(&replica.name), (id.as_str(), args))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&replica.name)),
+            (id.as_str(), args),
+        )
         .unwrap();
     assert!(matches!(done, InvokeOutcome::Done(_)), "{name}: {done:?}");
     replica.commit();
@@ -334,7 +337,7 @@ tilo_test_env::scenario! {
         let done = ada.host.take_committed();
         assert_eq!(done.len(), 1, "one change: {done:#?}");
         // The app acting by itself, not the person at the window.
-        assert_eq!(done[0].action.authorship.invoker, "trigger:t.trig");
+        assert_eq!(done[0].action.invoker(), tilolang_tilo::runtime::Actor::App("t.trig".into()));
         for change in done {
             ada.apply(&change.action);
         }
@@ -356,15 +359,15 @@ tilo_test_env::scenario! {
         origin.host().expect("the window opened").wait_index();
         origin.sync(Some(&doc));
         origin.sync(Some(&doc));
-        let ran: Vec<String> = origin
+        let ran: Vec<_> = origin
             .host()
             .unwrap()
             .take_committed()
             .into_iter()
-            .map(|done| done.action.authorship.invoker)
-            .filter(|invoker| invoker.starts_with("trigger:"))
+            .map(|done| done.action.invoker())
+            .filter(|invoker| invoker.app().is_some())
             .collect();
-        assert_eq!(ran, vec!["trigger:t.trig".to_owned()]);
+        assert_eq!(ran, vec![tilolang_tilo::runtime::Actor::App("t.trig".into())]);
 
         let (mut reader, doc) = window(noon, false);
         reader.sync(Some(&doc));
@@ -377,7 +380,7 @@ tilo_test_env::scenario! {
                 .unwrap()
                 .take_committed()
                 .iter()
-                .all(|done| !done.action.authorship.invoker.starts_with("trigger:")),
+                .all(|done| done.action.invoker().app().is_none()),
             "a replica that does not govern the workspace runs none"
         );
     }
@@ -532,8 +535,8 @@ impl Platform for Trig {
 struct Alone;
 
 impl NameHost for Alone {
-    fn name(&self, who: &Principal) -> String {
-        who.0.clone()
+    fn name(&self, who: &Actor) -> String {
+        who.id().to_owned()
     }
 }
 

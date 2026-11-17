@@ -236,7 +236,7 @@ note record is the source of truth and the file is its projection.** The
 file's node in the tree names the record it projects and what the two last
 read as (`Namespace::set_projection`), and the workspace's host keeps them in
 step. It holds both records and runs app actions
-(`agent-participant/src/workspace_actions/notes_folder.rs`), and every write
+(`agent-session/src/workspace_actions/notes_folder.rs`), and every write
 to either record starts a pass.
 
 - A note made or changed in Notes is written into its file as the host's own

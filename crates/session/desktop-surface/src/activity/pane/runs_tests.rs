@@ -141,16 +141,16 @@ struct Fixture {
     tree: WorkspaceTree,
     pane: WorkspaceActivityPane,
     doc: AutoCommit,
-    checkout: ui::RecordCheckout,
+    checkout: ui::DocumentCheckout,
 }
 
 impl Fixture {
     fn new() -> Self {
         let tree = WorkspaceTree::bootstrap_demo();
         let workspace = tree.desktop.active_workspace().expect("workspace").id();
-        let record = ui::RecordId::for_tab(7);
+        let record = ui::DocumentId::for_tab(7);
         let checkout =
-            ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("terminal.session"));
+            ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("terminal.session"));
         let mut doc = AutoCommit::new();
         ui::record::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
         doc.commit();
@@ -499,7 +499,7 @@ tilo_test_env::scenario! {
         const RUN: &str =
             "so.tilo.session/agent-session/243b7256ef6c400fa43d111a4988b8ca@ad46de5895801c1c";
         // The person names a session-kept record as the app's own record of the workspace.
-        let primary = ui::RecordId::package_primary().as_str().to_owned();
+        let primary = ui::DocumentId::package_primary().as_str().to_owned();
 
         let tree = WorkspaceTree::bootstrap_demo();
         let host = Rc::new(Host::default());
@@ -535,7 +535,7 @@ tilo_test_env::scenario! {
             &mut tree,
             vec![DetachedRecordHistory {
                 app: NOTES.to_owned(),
-                checkout: ui::RecordCheckout::package_primary(ui::RecordKind::new(NOTES_KIND)),
+                checkout: ui::DocumentCheckout::package_primary(ui::ResourceType::new(NOTES_KIND)),
                 document: Some(doc),
             }],
         );
@@ -585,7 +585,7 @@ struct Connection {
     pane: WorkspaceActivityPane,
     host: Rc<Host>,
     /// Each record: its app, its checkout, and its document as its app last wrote it.
-    open: Vec<(String, ui::RecordCheckout, AutoCommit)>,
+    open: Vec<(String, ui::DocumentCheckout, AutoCommit)>,
     /// The records whose document this device does not hold right now.
     closed: Vec<String>,
 }
@@ -602,8 +602,8 @@ impl Connection {
         pane.view = ActivityView::Explore;
         let mut open = Vec::new();
         for (index, file) in files.iter().enumerate() {
-            let record = ui::RecordId::for_file(file);
-            let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("note"));
+            let record = ui::DocumentId::for_file(file);
+            let checkout = ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("note"));
             let mut doc = AutoCommit::new();
             ui::record::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
             doc.commit();
@@ -636,7 +636,7 @@ impl Connection {
 
     /// The record id `file` names, as the history lists its changes.
     fn record(file: &str) -> String {
-        ui::RecordId::for_file(file).to_string()
+        ui::DocumentId::for_file(file).to_string()
     }
 
     /// The session's record, with the command line the agent asked it to run as one of its changes.
@@ -647,9 +647,9 @@ impl Connection {
             .active_workspace()
             .expect("workspace")
             .id();
-        let record = ui::RecordId::for_tab(3);
+        let record = ui::DocumentId::for_tab(3);
         let checkout =
-            ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("terminal.session"));
+            ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("terminal.session"));
         let mut doc = AutoCommit::new();
         ui::record::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
         doc.commit();

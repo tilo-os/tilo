@@ -18,7 +18,7 @@ pub const MAX_LAYOUT_APP_BYTES: usize = 48;
 /// A window's edges are in this many parts of the screen's width or height.
 pub const LAYOUT_UNITS: u16 = 10_000;
 
-/// The windows on a member's screen, in their own arrangement.
+/// The windows on a member's screen, in their own layout.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LiveLayout {

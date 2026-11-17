@@ -21,8 +21,6 @@ from tilo import Resource, Run
 
 __all__ = [
     "Area",
-    "Imported",
-    "ImportedMessage",
     "Issue",
     "Kind",
     "Link",
@@ -48,7 +46,6 @@ __all__ = [
     "LinkNoteArgs",
     "DeleteArgs",
     "PlanArgs",
-    "ImportArgs",
 ]
 
 class Area(TypedDict):
@@ -56,22 +53,6 @@ class Area(TypedDict):
     app: str
     kind: str
     label: str
-
-class Imported(TypedDict):
-    task: str
-    title: str
-    instruction: str
-    status: Status
-    assignee: str | None
-    author: str
-    created_ms: int
-    messages: list[ImportedMessage]
-
-class ImportedMessage(TypedDict):
-    author: str
-    by_agent: bool
-    at_ms: int
-    text: str
 
 class Issue(TypedDict):
     number: int
@@ -86,7 +67,7 @@ class Issue(TypedDict):
     due_ms: int | None
     priority: int | None
     comments: list[Message]
-    author: str
+    author: str | None
     created_ms: int
     url: str | None
 
@@ -100,7 +81,7 @@ class Link(TypedDict):
     record: str | None
 
 class Message(TypedDict):
-    author: str
+    author: str | None
     by_agent: bool
     at_ms: int
     text: str
@@ -231,24 +212,15 @@ PlanArgs = TypedDict("PlanArgs", {
 })
 """The arguments of `plan`."""
 
-ImportArgs = TypedDict("ImportArgs", {
-    "tasks": "list[Imported]",
-})
-"""The arguments of `import`."""
-
 class Tracker(Resource):
     """Tasks — `tasks.tracker`."""
-    __surface__ = "so.tilo.tasks@08d0fa20785e982a"
+    __surface__ = "so.tilo.tasks@7e65343905e59068"
     issues: list[Issue]
     areas: list[TrackerArea]
     @property
     def numbers(self) -> int:
         """Read only."""
         return self.fields["numbers"]
-    @property
-    def imported(self) -> list[str]:
-        """Read only."""
-        return self.fields["imported"]
 
     def create(self,
         *,
@@ -499,14 +471,6 @@ class Tracker(Resource):
     def plan_many(self, items: list[PlanArgs]) -> list[dict[str, Any]]:
         """Runs `plan` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("plan", items)
-
-    def import_(self, *, tasks: list[Imported]) -> Run | None:
-        """Runs the app's action."""
-        return self.action("import", tasks=tasks)
-
-    def import_many(self, items: list[ImportArgs]) -> list[dict[str, Any]]:
-        """Runs `import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
-        return self.many("import", items)
 
     def new_project(self) -> None:
         """Runs the app's action."""

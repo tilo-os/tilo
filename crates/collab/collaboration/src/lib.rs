@@ -469,7 +469,7 @@ pub enum CollabRequest {
     Hello {
         app_id: String,
         cluster_id: Uuid,
-        /// Which **record** ([`collab_types::record`]) this connection carries, when
+        /// Which **record** ([`collab_types::document`]) this connection carries, when
         /// adopted. The broker delivers payloads only to connections
         /// announcing the same record, so two people editing different
         /// files in one workspace don't merge each other's state; `None` means
@@ -705,14 +705,6 @@ impl runtime_collab::event::EndpointCustody for SdkCustody {
 /// session's brokers share.
 pub type CollabEvent = runtime_collab::event::CollabEvent<SdkCustody>;
 
-/// Explicit correlation supplied by owner-backed membership, never decoded
-/// from a participant label or an actor-id prefix.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CertifiedAgentIdentity {
-    pub participant_id: String,
-    pub agent_key: String,
-}
-
 /// The colour a roster row's packed `0x00RRGGBB` names: the presence
 /// hue nearest it, `None` for `0` or a grey.
 #[must_use]
@@ -944,7 +936,7 @@ impl CollaborationManager {
     #[cfg(not(feature = "broker-transport"))]
     pub fn switch_native_record(
         &mut self,
-        _checkout: &collab_types::record::RecordCheckout,
+        _checkout: &collab_types::document::DocumentCheckout,
     ) -> Result<(), String> {
         Err("native document routes need the broker transport".into())
     }
@@ -961,7 +953,7 @@ impl CollaborationManager {
     /// Join through the existing worker; never take the inherited RPC fd twice.
     pub fn prepare_native_record(
         &mut self,
-        checkout: &collab_types::record::RecordCheckout,
+        checkout: &collab_types::document::DocumentCheckout,
     ) -> Option<CommittedDocument> {
         let primary = self.primary_route.accepted.as_ref()?;
         let route = RouteSpec::record(
@@ -998,7 +990,7 @@ impl CollaborationManager {
     /// don't get handed each other's state. A process with several records
     /// open holds several managers; `tilo_ui::App` swaps its manager on checkout
     /// change.
-    pub fn for_record(checkout: &collab_types::record::RecordCheckout) -> Self {
+    pub fn for_record(checkout: &collab_types::document::DocumentCheckout) -> Self {
         Self::new_scoped(
             Some(checkout.id.as_str().to_string()),
             Some(checkout.kind.as_str().to_string()),
@@ -1146,7 +1138,7 @@ impl CollaborationManager {
     /// route arrives as the last one would have ([`Self::poll`]).
     pub fn retarget_join(
         &mut self,
-        checkout: &collab_types::record::RecordCheckout,
+        checkout: &collab_types::document::DocumentCheckout,
     ) -> Result<(), String> {
         let pending = self
             .requested_primary_route()
@@ -1408,7 +1400,11 @@ impl CollaborationManager {
     /// the join so a host that must create the record when this device
     /// writes first knows what it holds; joining without it would let the
     /// host answer that the app named no kind.
-    pub fn join_route(&mut self, route: RouteSpec, record_kind: collab_types::record::RecordKind) {
+    pub fn join_route(
+        &mut self,
+        route: RouteSpec,
+        record_kind: collab_types::document::ResourceType,
+    ) {
         let _ = self.submit(TransportCommand::Join(route, record_kind));
     }
 
@@ -1626,7 +1622,7 @@ impl CollaborationManager {
             };
             let _ = self.submit(TransportCommand::Join(
                 route,
-                record_kind.unwrap_or_else(|| collab_types::record::RecordKind::new("")),
+                record_kind.unwrap_or_else(|| collab_types::document::ResourceType::new("")),
             ));
             return Err(CollabSendError::Unavailable);
         }
@@ -1660,7 +1656,7 @@ impl CollaborationManager {
     pub fn joined_record_kind(
         &self,
         route: &RouteSpec,
-    ) -> Option<collab_types::record::RecordKind> {
+    ) -> Option<collab_types::document::ResourceType> {
         match &self.backend {
             Backend::Disabled(_) => None,
             Backend::Transport(transport) => transport.joined_record_kind(&route.channel_id()),

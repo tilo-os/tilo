@@ -22,7 +22,7 @@ impl BoundRecordSync {
     pub(super) fn publishes(
         &self,
         records: &crate::RecordStore,
-        checkout: &crate::record::RecordCheckout,
+        checkout: &crate::record::DocumentCheckout,
     ) -> bool {
         self.binding.checkout == *checkout && self.binding.records.same_owner(records)
     }
@@ -121,7 +121,7 @@ impl App {
             let route = route.as_ref()?;
             let unit = collab_types::UnitMutation {
                 app: &route.app_id,
-                record: route.record.as_deref().unwrap_or(""),
+                document_id: route.record.as_deref().unwrap_or(""),
                 mutation,
                 document: Some(document),
             };

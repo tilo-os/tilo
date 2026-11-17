@@ -152,7 +152,7 @@ pub(crate) fn land(readings: &Readings, resource: &str, text: &str) -> bool {
                 land_clipboard(state, copies);
             })
         }
-        QUICK_SETTINGS => parse::<Arrangement>(readings, resource, text, land_arrangement),
+        QUICK_SETTINGS => parse::<Controls>(readings, resource, text, land_controls),
         DEVICES => parse::<crate::hosted::DevicesReading>(readings, resource, text, land_devices),
         NIGHT_LIGHT => parse::<NightLight>(readings, resource, text, land_night_light),
         _ => false,
@@ -295,12 +295,12 @@ fn land_clipboard(state: &mut QuickSettingsState, copies: &[crate::hosted::Clipb
 /// Which controls the panel shows, in the person's order, as the session keeps them: a control
 /// this build does not know stays out of it.
 #[derive(Deserialize)]
-struct Arrangement {
+struct Controls {
     controls: Vec<String>,
 }
 
-fn land_arrangement(state: &mut QuickSettingsState, arrangement: &Arrangement) {
-    state.arrangement.controls = arrangement
+fn land_controls(state: &mut QuickSettingsState, config: &Controls) {
+    state.config.controls = config
         .controls
         .iter()
         .filter_map(|control| crate::faces::control_named(control))

@@ -88,7 +88,7 @@ pub struct ChosenFile {
     /// file it can name: the same file chosen again, even renamed or moved,
     /// has the same identity, so an import can tell it already came in.
     /// `None` where files have no paths (a browser page).
-    pub identity: Option<ui_core::record::RecordId>,
+    pub identity: Option<ui_core::record::DocumentId>,
 }
 
 impl From<PickedContents> for ChosenFile {
@@ -97,7 +97,7 @@ impl From<PickedContents> for ChosenFile {
             identity: picked
                 .location
                 .as_deref()
-                .map(ui_core::record::RecordId::identify_file),
+                .map(ui_core::record::DocumentId::identify_file),
             name: picked.name,
             media_type: picked.media_type,
             bytes: picked.bytes,
@@ -753,9 +753,10 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// reads whose it is here, never from the view.
     pub fn person(&self) -> Option<String> {
         match ui_core::invocation_scope::current_invoker() {
-            Some(invoker) => invoker.acting.is_person().then(|| invoker.acting.by.key()),
-            None => self.env.dispatch.me().map(str::to_owned),
+            Some(invoker) => invoker.acting.by.member_id().cloned(),
+            None => self.env.dispatch.me().cloned(),
         }
+        .and_then(|member| member.person_id().map(str::to_owned))
     }
 
     /// Submit one typed action, as [`Dispatcher::apply`].

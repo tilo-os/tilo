@@ -257,6 +257,21 @@ tilo_test_env::scenario! {
         move_to(&mut b, reload.center().x, reload.center().y);
         dispatch(&mut b, &right);
         assert_eq!(b.take_context_menu(), None, "the app's control keeps it");
+
+        // Two tabs put the slots on a row of their own under the tabs: still the window's bar.
+        let mut b = TabBar::new(
+            "g1",
+            vec![TabDescriptor::new(1, "Web"), TabDescriptor::new(2, "Notes")],
+            1,
+        );
+        b.set_window_controls(true);
+        assert!(b.set_toolbar(1, Some(browser_slots())));
+        lay_out_at_width_with(&mut b, 900.0, &crate::theme::Theme::dark());
+        let location = b.location_rect();
+        assert!(location.y0 >= b.tab_row().y1, "{location:?}");
+        move_to(&mut b, location.center().x, location.center().y);
+        dispatch(&mut b, &right);
+        assert_eq!(b.take_context_menu().map(|(tab, _)| tab), Some(1), "not the workspace's menu");
     }
 
     phase a_windows_only_tab_shows_the_name_a_person_gave_it;

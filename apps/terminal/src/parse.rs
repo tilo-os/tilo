@@ -1,7 +1,7 @@
 //! What a run printed, read as items: the reading every run gets (escape sequences stripped,
 //! `path:line[:column]` locations, URLs), then the tools' own parsers.
 
-use crate::resource::{ItemKind, RunItem};
+use crate::resource::{CommandItem, ItemKind};
 
 pub const MAX_ITEMS: usize = 512;
 const MAX_TEXT: usize = 512;
@@ -21,7 +21,7 @@ pub fn tool_of(command: &str) -> &'static str {
 }
 
 #[must_use]
-pub fn items(command: &str, output: &[u8]) -> Vec<RunItem> {
+pub fn items(command: &str, output: &[u8]) -> Vec<CommandItem> {
     let text = strip_ansi(&String::from_utf8_lossy(output));
     let mut items = match tool_of(command) {
         "cargo" | "rustc" => {
@@ -64,8 +64,8 @@ fn clip(text: &str) -> String {
     }
 }
 
-fn item(kind: ItemKind, text: &str) -> RunItem {
-    RunItem {
+fn item(kind: ItemKind, text: &str) -> CommandItem {
+    CommandItem {
         kind,
         text: clip(text),
         path: None,
@@ -92,7 +92,7 @@ fn location(word: &str) -> Option<(String, u32, Option<u32>)> {
 }
 
 #[must_use]
-pub fn generic(text: &str) -> Vec<RunItem> {
+pub fn generic(text: &str) -> Vec<CommandItem> {
     let mut out = Vec::new();
     for line in text.lines() {
         let lower = line.to_ascii_lowercase();
@@ -127,8 +127,8 @@ pub fn generic(text: &str) -> Vec<RunItem> {
 }
 
 #[must_use]
-pub fn rust_human(text: &str) -> Vec<RunItem> {
-    let mut out: Vec<RunItem> = Vec::new();
+pub fn rust_human(text: &str) -> Vec<CommandItem> {
+    let mut out: Vec<CommandItem> = Vec::new();
     let mut open: Option<usize> = None;
     for line in text.lines() {
         let (kind, rest) = if let Some(rest) = line.strip_prefix("error") {
@@ -174,7 +174,7 @@ pub fn rust_human(text: &str) -> Vec<RunItem> {
 }
 
 #[must_use]
-pub fn rust_json(text: &str) -> Vec<RunItem> {
+pub fn rust_json(text: &str) -> Vec<CommandItem> {
     let mut out = Vec::new();
     for line in text.lines() {
         let line = line.trim();
@@ -235,8 +235,8 @@ pub fn rust_json(text: &str) -> Vec<RunItem> {
 }
 
 #[must_use]
-pub fn libtest(text: &str) -> Vec<RunItem> {
-    let mut out: Vec<RunItem> = Vec::new();
+pub fn libtest(text: &str) -> Vec<CommandItem> {
+    let mut out: Vec<CommandItem> = Vec::new();
     let mut add = |kind: ItemKind, name: &str| {
         if name.is_empty() || name.contains(' ') {
             return;
@@ -287,7 +287,7 @@ pub fn libtest(text: &str) -> Vec<RunItem> {
 }
 
 #[must_use]
-pub fn git_status(text: &str) -> Vec<RunItem> {
+pub fn git_status(text: &str) -> Vec<CommandItem> {
     let mut out = Vec::new();
     let mut untracked = false;
     for line in text.lines() {
@@ -463,7 +463,7 @@ pub enum Shown {
     },
 }
 
-pub fn shown(cwd: &str, items: &[RunItem], position: usize) -> Result<Shown, String> {
+pub fn shown(cwd: &str, items: &[CommandItem], position: usize) -> Result<Shown, String> {
     let item = items
         .get(position)
         .ok_or_else(|| format!("the run has {} items", items.len()))?;

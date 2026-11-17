@@ -18,7 +18,7 @@
 // Prints a JSON report; exits non-zero when the link did not open the same
 // document live for the second person.
 import {mkdirSync, writeFileSync} from 'node:fs';
-import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {launch, nextChange, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, machine} from './waits.mjs';
 
@@ -91,45 +91,39 @@ const person = async (name, {width, height, scale = 1, mobile = false}) => {
   return tab;
 };
 
-/** Wait until `expression` holds in `tab`, or fail saying what. */
+/** Wait until `expression` holds in `tab`, or fail saying what. The page does
+ * the waiting: it reads the expression again on each change it shows. */
 const until = async (tab, expression, what, timeout = stepLimit(4)) => {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    const value = await tab.evaluate(expression).catch(() => false);
-    if (value) return value;
-    if (Date.now() > deadline) {
-      const shown = await tab.evaluate(`JSON.stringify({arrival: document.documentElement.dataset.arrival ?? null,
-        entry: document.documentElement.dataset.entry ?? null,
-        status: document.getElementById('status')?.textContent ?? null,
-        text: (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 300)})`).catch(() => 'unreadable');
-      await failed(`${what} never happened: ${shown}`);
-    }
-    await sleep(250);
-  }
+  const value = await tab.waitFor(expression, {timeout}).catch(() => false);
+  if (value) return value;
+  const shown = await tab.evaluate(`JSON.stringify({arrival: document.documentElement.dataset.arrival ?? null,
+    entry: document.documentElement.dataset.entry ?? null,
+    status: document.getElementById('status')?.textContent ?? null,
+    text: (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 300)})`).catch(() => 'unreadable');
+  await failed(`${what} never happened: ${shown}`);
 };
 
 /** Every name and value in the page's semantic tree, as one text. */
-const shownText = tab => tab.evaluate(`(() => {
-  globalThis.tiloMount?.requestSemantics?.();
+const TREE_TEXT = `(() => {
   const out = [];
   const node = n => { for (const part of [n.name, n.value]) if (part) out.push(part); (n.children || []).forEach(node); };
   const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
   const root = globalThis.tiloMount?.state()?.semantics?.root;
   if (root) walk(root);
   return out.join('\\n');
-})()`).catch(() => '');
+})()`;
+const shownText = tab => tab.evaluate(TREE_TEXT).catch(() => '');
 
-/** Wait until `tab` shows `text`; resolves to how long that took. */
+/** Wait until `tab` shows `text`; resolves to how long that took. The tree the
+ * wait reads is asked for once (the runtime then publishes each change to it),
+ * and the wait itself ends on the page's own changes. */
 const shows = async (tab, text, what, timeout = stepLimit(3), required = true) => {
   const from = Date.now();
-  for (;;) {
-    if ((await shownText(tab)).includes(text)) return Date.now() - from;
-    if (Date.now() - from > timeout) {
-      if (!required) return null;
-      await failed(`${what}: "${text}" never showed`);
-    }
-    await sleep(200);
-  }
+  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  const seen = await tab.waitFor(`(${TREE_TEXT}).includes(${JSON.stringify(text)})`, {timeout}).catch(() => false);
+  if (seen) return Date.now() - from;
+  if (!required) return null;
+  await failed(`${what}: "${text}" never showed`);
 };
 
 const type = async (tab, text) => {
@@ -143,6 +137,8 @@ const type = async (tab, text) => {
 const shoot = async (tab, name) => {
   for (const scheme of ['light', 'dark']) {
     await tab.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value: scheme}]});
+    // The page repaints in the scheme it was handed before the shot: a
+    // repaint of the page's own chrome is no change the desktop tells anyone.
     await sleep(1500);
     const shot = await tab.screenshot();
     if (shot) {
@@ -186,7 +182,8 @@ try {
   // The document's text field: the editor publishes it without a place on
   // screen, so a person's click goes where it draws its first line, under
   // the window's header, as its placeholder shows.
-  await until(ada, `(() => { globalThis.tiloMount?.requestSemantics?.(); return JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? null).includes('MultilineTextInput'); })()`, 'the document’s text field', stepLimit(2));
+  await ada.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  await until(ada, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? null).includes('MultilineTextInput')`, 'the document’s text field', stepLimit(2));
   // What the app offers here and whether each is available now: an editor
   // that takes no keys says why in its own words.
   writeFileSync(`${out}/ada-actions.json`, await ada.evaluate(`JSON.stringify(globalThis.tiloMount?.actions?.() ?? null, null, 1)`).catch(error => String(error)));
@@ -201,6 +198,8 @@ try {
     for (const type of ['mousePressed', 'mouseReleased']) {
       await ada.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', clickCount: 1});
     }
+    // The press focuses the field on the page's next frame, and the keys that
+    // follow are read by whatever holds the focus then.
     await sleep(500);
   };
   // A person writes once the page lets them: the workspace's answer to what
@@ -306,7 +305,9 @@ try {
   if (report.runTarget?.app !== 'so.tilo.console' || report.runTarget?.resource?.id !== run) {
     await failed(`the run link opened ${JSON.stringify(report.runTarget)}`);
   }
-  await sleep(3000);
+  // Until the page shows something more, or a step passes: a run's view opens
+  // as its record arrives, and one that cannot open says so in the same place.
+  await cy.evaluate(nextChange(stepLimit(1))).catch(() => {});
   const said = await cy.evaluate(`document.getElementById('status')?.textContent ?? ''`);
   if (/not there|cannot open/.test(said)) await failed(`the run's view did not open: ${said}`);
   report.runShows = (await shownText(cy)).slice(0, 400);

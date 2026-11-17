@@ -454,7 +454,7 @@ fn sign_collaboration_op(
     // record of the person's this app keeps in their own cluster: never
     // another app's, and never a kind it does not declare.
     let workspace_record =
-        launch_workspace && collab_types::workspace_record(app_id, record_id).is_some();
+        launch_workspace && collab_types::workspace_document(app_id, record_id).is_some();
     if (!bound.keeps_records_of(app_id) && !workspace_record)
         || (!launch_workspace && !bound.keeps_person_record(record_id))
     {
@@ -575,7 +575,7 @@ fn group_keys(
     if (launch_workspace
         && !bound.keeps_records_of(route.app_id)
         && !bound.reads_records_of(route.app_id)
-        && collab_types::workspace_record(route.app_id, route.record_id).is_none())
+        && collab_types::workspace_document(route.app_id, route.record_id).is_none())
         || (!launch_workspace && !bound.keeps_person_record(route.record_id))
     {
         return Response::Denied("group keys requested for a different launch route".into());
@@ -1224,8 +1224,8 @@ params = []
             let workspace = WorkspaceId::new();
             let workspace_id = workspace.to_string();
             let launched = "so.tilo.notes";
-            let owner = collab_types::WORKSPACE_RECORDS[0];
-            let emoji = collab_types::workspace_record_id(owner.kind);
+            let owner = collab_types::WORKSPACE_DOCUMENTS[0];
+            let emoji = collab_types::workspace_document_id(owner.kind);
             let profile = crate::registry::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");

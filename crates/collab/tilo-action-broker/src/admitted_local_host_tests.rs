@@ -911,7 +911,7 @@ async fn certified_local_host_open_list_and_invoke_cost() {
                                 invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(
                                     u128::MAX.saturating_sub(n),
                                 )),
-                                actor: "person".into(),
+                                actor: tilo_actions::MemberId::person("person"),
                                 context,
                                 status: tilo_actions::EffectReceiptStatus::Succeeded,
                                 completed_at: 1,

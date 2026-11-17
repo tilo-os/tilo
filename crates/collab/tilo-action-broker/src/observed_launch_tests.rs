@@ -453,7 +453,7 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                 };
                 assert!(rig.state.invocation_statuses_for_owner(&owner).iter()
                     .any(|(id, _)| *id == launch_id));
-                assert!(rig.state.invocation_statuses("agent:scribe").is_empty(),
+                assert!(rig.state.invocation_statuses(&tilo_actions::MemberId::agent("scribe")).is_empty(),
                     "signed launches never acquire actor-only observation custody");
             }
         })

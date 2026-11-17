@@ -23,6 +23,7 @@
 
 use std::cell::Cell;
 
+use crate::ids::Actor;
 use tilolang::calendar::{DAY, calendar_span, day_text, instant, time_text};
 use tilolang::identifier;
 use tilolang::meta::{EnumMeta, FilterKind, FilterMeta, TypeMeta};
@@ -374,7 +375,7 @@ pub fn resolve(
     ty: &TypeMeta,
     enums: &[EnumMeta],
     clock: &Clock,
-    viewer: Option<&str>,
+    viewer: Option<&Actor>,
 ) -> Result<Resolved, String> {
     let mut all = Vec::new();
     let mut clocked = Vec::new();
@@ -465,7 +466,7 @@ fn term_pred(
     ty: &TypeMeta,
     enums: &[EnumMeta],
     clock: &Clock,
-    viewer: Option<&str>,
+    viewer: Option<&Actor>,
     clocked: &mut Vec<ClockField>,
 ) -> Result<Pred<String>, String> {
     let Some(key) = &term.key else {
@@ -562,17 +563,17 @@ fn one_of(mut each: Vec<Pred<String>>) -> Pred<String> {
 }
 
 /// A person filter's value: `me` is whoever is looking, so a filter that names it reads
-/// differently for each of the people a workspace is shared with; anything else is a member by
+/// differently for each of the people a workspace is shared with; anything else is a person by
 /// their id.
-fn person_lit(value: &str, viewer: Option<&str>) -> Result<Lit, String> {
+fn person_lit(value: &str, viewer: Option<&Actor>) -> Result<Lit, String> {
     let who = if value == "me" {
         viewer
             .ok_or("`me` is only known where someone is looking")?
-            .to_owned()
+            .clone()
     } else {
-        value.to_owned()
+        Actor::Member(crate::ids::MemberId::person(value))
     };
-    Ok(Lit::Principal(who))
+    Ok(Lit::Actor(who))
 }
 
 /// A filter on the time it is asked at ("Today": `due <= today`) reads it now, and reads
@@ -582,7 +583,7 @@ fn predicate_value(
     declared: &Pred<String>,
     value: &str,
     clock: &Clock,
-    viewer: Option<&str>,
+    viewer: Option<&Actor>,
     clocked: &mut Vec<ClockField>,
 ) -> Result<Pred<String>, String> {
     let reads = declared.clock_reads();
@@ -619,7 +620,7 @@ fn filter_pred(
     value: &str,
     enums: &[EnumMeta],
     clock: &Clock,
-    viewer: Option<&str>,
+    viewer: Option<&Actor>,
     clocked: &mut Vec<ClockField>,
 ) -> Result<Pred<String>, String> {
     if f.kind == FilterKind::Predicate {

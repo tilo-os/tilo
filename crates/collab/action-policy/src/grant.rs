@@ -407,6 +407,11 @@ pub struct Context<'a> {
     /// renamed app (`crate::earlier`). `None` reads what this process registered
     /// (`crate::earlier::register`).
     pub earlier: Option<&'a EarlierIds>,
+    /// A member's own record the decision is about, as the write or window that
+    /// names it says: `(record, person)`, the record's id and the person whose
+    /// own it is. Only that person decides anything in it, whatever their role
+    /// or the workspace's grants.
+    pub own: Option<(&'a str, &'a str)>,
 }
 
 impl<'a> Context<'a> {
@@ -416,7 +421,27 @@ impl<'a> Context<'a> {
             now_unix_ms,
             session: None,
             earlier: None,
+            own: None,
         }
+    }
+
+    /// Deciding about `record`, which is `person`'s own record (the hex of
+    /// their user root key).
+    #[must_use]
+    pub const fn with_own_record(mut self, record: &'a str, person: &'a str) -> Self {
+        self.own = Some((record, person));
+        self
+    }
+
+    /// The person whose own record `node` is in, when the decision is about
+    /// one ([`Self::with_own_record`]).
+    #[must_use]
+    pub fn owner_of(&self, node: &TreePath) -> Option<&'a str> {
+        let (record, person) = self.own?;
+        node.segments()
+            .iter()
+            .any(|segment| matches!(segment, crate::Segment::Name(crate::Level::Resource, name) if name == record))
+            .then_some(person)
     }
 
     /// At `now`, Unix seconds.

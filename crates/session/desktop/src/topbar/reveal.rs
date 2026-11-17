@@ -19,8 +19,10 @@
 //! - **While shown it stays** while the pointer is on it, heads for it, or
 //!   something of it is open (its menus, its own keyboard focus); anything
 //!   else hides it.
-//! - **It stands in for the window's own bar**, which a fullscreen window
-//!   does not show: a secondary press on it opens that window's menu.
+//! - **The window's own bar comes with it**, standing under it over the
+//!   window: its name, leaving full screen and closing. The pointer on
+//!   either keeps both; a secondary press on the bar opens that window's
+//!   menu.
 //!
 //! A press in the band while the bar hides belongs to the window under it
 //! and cancels the reveal until the pointer leaves the edge. The person's
@@ -80,12 +82,12 @@ struct BarReveal {
     linger: Option<Instant>,
     /// The pointer's last sample was on the bar.
     on_bar: bool,
-    /// When a window entered full screen here, while one is: what the hint saying how to leave it
-    /// follows.
-    entered: Option<Instant>,
     /// The display's whole rectangle and where the bar stands on it.
     display: Rect,
     bar: Rect,
+    /// Where the covering window's own bar stands under this one while it shows: the pointer on it
+    /// keeps this bar too.
+    below: Option<Rect>,
 }
 
 impl BarReveal {
@@ -110,7 +112,6 @@ impl BarReveal {
         }
         self.fullscreen = fullscreen;
         self.forget();
-        self.entered = fullscreen.then_some(now);
         if fullscreen {
             self.show_for_idle(now);
         }
@@ -136,7 +137,9 @@ impl BarReveal {
         }
         // The whole strip is the bar: on it, a shown bar stays however fast the pointer crosses it
         // (from the clock to the status, say).
-        if self.edge.shown() && self.bar.contains(p) {
+        if self.edge.shown()
+            && (self.bar.contains(p) || self.below.is_some_and(|below| below.contains(p)))
+        {
             self.on_bar = true;
             return false;
         }
@@ -317,6 +320,14 @@ impl Reveals {
         }
     }
 
+    /// Where the covering window's own bar stands under the bar on the display in use while that
+    /// shows, if it does: the pointer on it keeps the bar as the pointer on the bar does.
+    pub fn set_below(&mut self, below: Option<Rect>) {
+        if let Some((_, bar)) = self.bars.iter_mut().find(|(key, _)| key.is_none()) {
+            bar.below = below;
+        }
+    }
+
     /// What the bar on `display` is now, given whether something of it holds it open.
     pub fn presence(&self, display: Option<u32>, held_open: bool) -> TopBarPresence {
         let Some((_, bar)) = self.bars.iter().find(|(key, _)| *key == display) else {
@@ -338,22 +349,6 @@ impl Reveals {
         self.bars
             .iter()
             .any(|(key, bar)| *key == display && bar.fullscreen)
-    }
-
-    /// Whether the bar on `display` shows.
-    pub fn shown(&self, display: Option<u32>) -> bool {
-        self.bars
-            .iter()
-            .any(|(key, bar)| *key == display && bar.shown())
-    }
-
-    /// The display a window took full screen most recently, and when, while one has: what the hint
-    /// saying how to leave it follows.
-    pub fn entered(&self) -> Option<(Rect, Instant)> {
-        self.bars
-            .iter()
-            .filter_map(|(_, bar)| bar.entered.map(|at| (bar.display, at)))
-            .max_by_key(|(_, at)| *at)
     }
 
     /// A pointer sample at `p` . Returns whether a bar's presence may have changed.

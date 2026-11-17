@@ -316,8 +316,8 @@ pub struct Annotation {
     /// Colour
     pub color: HighlightColor,
     /// Who made it.
-    #[model(readonly)]
-    pub author: String,
+    #[model(readonly, default = Author::default())]
+    pub author: Author,
     /// The engine character range `[start, end)` text markup covers.
     #[model(readonly)]
     pub chars: Option<[u32; 2]>,
@@ -345,18 +345,13 @@ impl tilo_resource::Identified for Annotation {
 }
 
 impl Annotation {
-    pub fn new(
-        page: usize,
-        kind: AnnoKind,
-        color: HighlightColor,
-        author: impl Into<String>,
-    ) -> Self {
+    pub fn new(page: usize, kind: AnnoKind, color: HighlightColor, author: Author) -> Self {
         Self {
             id: new_id(),
             page,
             kind,
             color,
-            author: author.into(),
+            author,
             ..Self::default()
         }
     }
@@ -875,7 +870,7 @@ mod tests {
                     quads: vec![PtRect::new(100.0, 200.0, 50.0, 12.0)],
                 },
                 HighlightColor::Blue,
-                "Ada",
+                Author::named("Ada"),
             );
             let user = map.annotation_to_user(&a);
             assert_eq!(user.space, GeomSpace::User);

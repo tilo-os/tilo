@@ -8,9 +8,7 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::members::Member;
-    use tilolang_runtime::{
-        AmStore, Principal, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
-    };
+    use tilolang_runtime::{Actor, AmStore, ResourceRef, Runtime, SimpleAuthority, UiNode, Value};
 
     const NOW: &str = "2026-10-27T10:00:00Z";
 
@@ -22,7 +20,7 @@ type Task {
     due: Option<Date> = .none
     project: Option<Project> = .none
     /// Who is doing it.
-    assignee: Option<Principal> = .none
+    assignee: Option<Actor> = .none
 
     search {
         filter "Inbox" = project == .none and due == .none and not done (icon: .inbox)
@@ -57,7 +55,7 @@ action finish(t: Task) {
     t.done = true
 }
 
-action assign(t: Task, who: Principal) {
+action assign(t: Task, who: Actor) {
     t.assignee = .some(who)
 }
 
@@ -130,11 +128,11 @@ view sidebar(b: Board) {
         }
 
         /// Gives the task titled `title` to `who`.
-        fn assign(&self, title: &str, who: &Principal) {
+        fn assign(&self, title: &str, who: &Actor) {
             let task = self.item(title);
             self.run(
                 "assign",
-                vec![Value::resource(&task), Value::Principal(who.clone())],
+                vec![Value::resource(&task), Value::Actor(who.clone())],
             );
         }
 
@@ -165,7 +163,7 @@ view sidebar(b: Board) {
         }
 
         /// The titles `q` holds, as `who` sees them.
-        fn titles_by(&self, who: &Principal, q: &str) -> Vec<String> {
+        fn titles_by(&self, who: &Actor, q: &str) -> Vec<String> {
             let view = self
                 .rt
                 .open_view(
@@ -200,7 +198,7 @@ view sidebar(b: Board) {
         }
 
         /// The sidebar opened with `who` looking.
-        fn sidebar_by(&self, who: &Principal) -> tilolang_runtime::ViewInstance {
+        fn sidebar_by(&self, who: &Actor) -> tilolang_runtime::ViewInstance {
             self.rt
                 .open_view(
                     who,
@@ -211,7 +209,7 @@ view sidebar(b: Board) {
         }
 
         /// The places the sidebar offers `who`.
-        fn places_of_by(&self, who: &Principal) -> Vec<(String, Option<i64>)> {
+        fn places_of_by(&self, who: &Actor) -> Vec<(String, Option<i64>)> {
             let view = self.sidebar_by(who);
             nav_items(view.tree())
                 .into_iter()
@@ -272,7 +270,7 @@ view sidebar(b: Board) {
             ],
             None,
         );
-        let ben = Principal::new("ben");
+        let ben = person("ben");
         t.assign("later", &me());
         t.assign("today", &ben);
         assert_eq!(

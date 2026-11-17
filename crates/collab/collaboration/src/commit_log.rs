@@ -144,7 +144,7 @@ mod tests {
         let mutation = collab_types::DocumentMutation::Incremental(doc.save());
         let units = [UnitMutation {
             app: "tasks",
-            record: "board",
+            document_id: "board",
             mutation: &mutation,
             document: None,
         }];

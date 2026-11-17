@@ -1,4 +1,4 @@
-//! The window channel: where the shell opens another window of an app that is
+//! The window link: where the shell opens another window of an app that is
 //! already running.
 //!
 //! Also the one switch a launch hands a window it opens: [`VISITOR_WINDOW_FLAG`].
@@ -12,9 +12,9 @@
 //!
 //! A message is one `SOCK_SEQPACKET` packet in the framing of `jobs`: the
 //! verb [`OPEN_VERB`] and the request (the toolkit's
-//! `ui::window_channel::WindowRequest`, JSON), with the descriptors the request
+//! `ui::window_link::WindowRequest`, JSON), with the descriptors the request
 //! names. Only the Linux shell opens windows this way; elsewhere there is no
-//! channel and every call says so.
+//! link and every call says so.
 
 pub const VISITOR_WINDOW_FLAG: &str = "--visitor";
 
@@ -26,8 +26,8 @@ pub const CHILD_FD: i32 = 36;
 
 pub const OPEN_VERB: &[u8] = b"open";
 
-/// The verb an app says on its channel once it reads it: it opens the windows
-/// the shell asks for. An app built before the channel never says it, and the
+/// The verb an app says on its link once it reads it: it opens the windows
+/// the shell asks for. An app built before the link never says it, and the
 /// shell starts a process of its own for each of its windows, as before:
 /// the shell and the apps are updated apart.
 pub const SERVES_VERB: &[u8] = b"serves";
@@ -44,7 +44,7 @@ pub enum Message {
 
 #[cfg(unix)]
 pub type Descriptor = std::os::fd::OwnedFd;
-/// There are no window channels where there are no descriptors. Nothing can
+/// There are no window links where there are no descriptors. Nothing can
 /// own a value of this type, so copying one owns nothing either.
 #[cfg(not(unix))]
 #[derive(Clone, Copy, Debug)]
@@ -69,7 +69,7 @@ fn unsupported() -> io::Error {
 }
 
 #[must_use]
-pub fn take_channel() -> Option<Descriptor> {
+pub fn take_link() -> Option<Descriptor> {
     #[cfg(target_os = "linux")]
     {
         static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -78,7 +78,7 @@ pub fn take_channel() -> Option<Descriptor> {
             return None;
         }
         // SAFETY: the launcher handed this descriptor to the process for the
-        // channel alone, and the flag above lets it be owned exactly once.
+        // link alone, and the flag above lets it be owned exactly once.
         Some(unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) })
     }
     #[cfg(not(target_os = "linux"))]
@@ -100,54 +100,54 @@ pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
     Err(unsupported())
 }
 
-/// Send the request `request` (encoded) on `channel` with `fds`.
+/// Send the request `request` (encoded) on `link` with `fds`.
 ///
 /// # Errors
 ///
 /// The socket's error, a request that contains a NUL byte, or
 /// [`io::ErrorKind::Unsupported`] off Linux.
-pub fn send_open(channel: &Descriptor, request: &[u8], fds: &[&Descriptor]) -> io::Result<()> {
+pub fn send_open(link: &Descriptor, request: &[u8], fds: &[&Descriptor]) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
         let fds: Vec<_> = fds.iter().map(|fd| fd.as_fd()).collect();
-        crate::message::send(channel.as_fd(), &[OPEN_VERB, request], &fds)
+        crate::message::send(link.as_fd(), &[OPEN_VERB, request], &fds)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (channel, request, fds);
+        let _ = (link, request, fds);
         Err(unsupported())
     }
 }
 
-/// Close `channel` for good, both ways: whatever the other end sends from now on fails at once
+/// Close `link` for good, both ways: whatever the other end sends from now on fails at once
 /// instead of waiting unread in a process that no longer opens windows.
-pub fn close_channel(channel: &Descriptor) -> io::Result<()> {
+pub fn close_link(link: &Descriptor) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
-        Ok(rustix::net::shutdown(channel, rustix::net::Shutdown::Both)?)
+        Ok(rustix::net::shutdown(link, rustix::net::Shutdown::Both)?)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = channel;
+        let _ = link;
         Err(unsupported())
     }
 }
 
-pub fn send_serves(channel: &Descriptor) -> io::Result<()> {
+pub fn send_serves(link: &Descriptor) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
-        crate::message::send(channel.as_fd(), &[SERVES_VERB], &[])
+        crate::message::send(link.as_fd(), &[SERVES_VERB], &[])
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = channel;
+        let _ = link;
         Err(unsupported())
     }
 }
 
-pub fn take_serves(channel: &Descriptor) -> io::Result<bool> {
+pub fn take_serves(link: &Descriptor) -> io::Result<bool> {
     #[cfg(target_os = "linux")]
     {
         use rustix::net::{RecvAncillaryBuffer, RecvFlags, recvmsg};
@@ -157,7 +157,7 @@ pub fn take_serves(channel: &Descriptor) -> io::Result<bool> {
             let mut space = [std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(3))];
             let mut control = RecvAncillaryBuffer::new(&mut space);
             match recvmsg(
-                channel,
+                link,
                 &mut [io::IoSliceMut::new(&mut buffer)],
                 &mut control,
                 RecvFlags::DONTWAIT | RecvFlags::CMSG_CLOEXEC,
@@ -174,17 +174,17 @@ pub fn take_serves(channel: &Descriptor) -> io::Result<bool> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = channel;
+        let _ = link;
         Err(unsupported())
     }
 }
 
-pub fn has_message(channel: &Descriptor) -> io::Result<bool> {
+pub fn has_message(link: &Descriptor) -> io::Result<bool> {
     #[cfg(target_os = "linux")]
     {
         let mut buffer = [0_u8; 1];
         match rustix::net::recv(
-            channel,
+            link,
             &mut buffer,
             rustix::net::RecvFlags::PEEK | rustix::net::RecvFlags::DONTWAIT,
         ) {
@@ -195,36 +195,36 @@ pub fn has_message(channel: &Descriptor) -> io::Result<bool> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = channel;
+        let _ = link;
         Err(unsupported())
     }
 }
 
-pub fn send_patch(channel: &Descriptor, instance: u64, patch: &Descriptor) -> io::Result<()> {
+pub fn send_patch(link: &Descriptor, instance: u64, patch: &Descriptor) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
         let instance = instance.to_string();
         crate::message::send(
-            channel.as_fd(),
+            link.as_fd(),
             &[PATCH_VERB, instance.as_bytes()],
             &[patch.as_fd()],
         )
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (channel, instance, patch);
+        let _ = (link, instance, patch);
         Err(unsupported())
     }
 }
 
-pub fn receive_message(channel: &Descriptor) -> io::Result<Option<Message>> {
+pub fn receive_message(link: &Descriptor) -> io::Result<Option<Message>> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
         let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_owned());
         let mut buffer = vec![0_u8; MAX_MESSAGE];
-        let Some((length, fds)) = crate::message::receive(channel.as_fd(), &mut buffer)? else {
+        let Some((length, fds)) = crate::message::receive(link.as_fd(), &mut buffer)? else {
             return Ok(None);
         };
         let message = buffer.get(..length).unwrap_or_default();
@@ -240,23 +240,23 @@ pub fn receive_message(channel: &Descriptor) -> io::Result<Option<Message>> {
                 Ok(Some(Message::Patch(instance, patch)))
             }
             _ => Err(invalid(
-                "the window channel carried something other than a window request",
+                "the window link carried something other than a window request",
             )),
         }
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = channel;
+        let _ = link;
         Err(unsupported())
     }
 }
 
-pub fn receive_open(channel: &Descriptor) -> io::Result<Option<(Vec<u8>, Vec<Descriptor>)>> {
+pub fn receive_open(link: &Descriptor) -> io::Result<Option<(Vec<u8>, Vec<Descriptor>)>> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
         let mut buffer = vec![0_u8; MAX_MESSAGE];
-        let Some((length, fds)) = crate::message::receive(channel.as_fd(), &mut buffer)? else {
+        let Some((length, fds)) = crate::message::receive(link.as_fd(), &mut buffer)? else {
             return Ok(None);
         };
         let message = buffer.get(..length).unwrap_or_default();
@@ -264,13 +264,13 @@ pub fn receive_open(channel: &Descriptor) -> io::Result<Option<(Vec<u8>, Vec<Des
             [verb, request] if *verb == OPEN_VERB => Ok(Some((request.to_vec(), fds))),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "the window channel carried something other than a window request",
+                "the window link carried something other than a window request",
             )),
         }
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = channel;
+        let _ = link;
         Err(unsupported())
     }
 }
@@ -281,9 +281,9 @@ mod tests {
     use std::io::Write as _;
 
     tilo_test_env::scenario! {
-        fn the_window_channel;
+        fn the_window_link;
 
-        phase a_request_crosses_the_channel_with_its_descriptors;
+        phase a_request_crosses_the_link_with_its_descriptors;
         {
             let (shell, app) = pair().unwrap();
             let (mut ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -299,15 +299,15 @@ mod tests {
             std::io::Read::read_exact(&mut received, &mut byte).unwrap();
             assert_eq!(&byte, b"x");
             drop(shell);
-            assert!(receive_open(&app).unwrap().is_none(), "closed channel ends");
+            assert!(receive_open(&app).unwrap().is_none(), "closed link ends");
         }
 
-        phase an_app_that_reads_its_channel_says_so_and_an_older_one_never_does;
+        phase an_app_that_reads_its_link_says_so_and_an_older_one_never_does;
         {
             let (shell, app) = pair().unwrap();
             assert!(
                 !take_serves(&shell).unwrap(),
-                "an app built before the channel says nothing"
+                "an app built before the link says nothing"
             );
             send_serves(&app).unwrap();
             assert!(take_serves(&shell).unwrap());

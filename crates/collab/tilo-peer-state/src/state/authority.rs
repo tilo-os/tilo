@@ -125,6 +125,45 @@ impl StatePeer {
                 .is_some_and(|cert| cert.user_public_key == self.core.owner)
     }
 
+    /// The member's own record `app`'s `record` is, as a write of it or the
+    /// app keeping it said ([`Self::keep_own_record`]); `None` for a record
+    /// of the workspace.
+    #[must_use]
+    pub fn own_record(&self, app: &str, record: &str) -> Option<collab_types::OwnRecord> {
+        self.core.own_of(app, record)
+    }
+
+    /// [`Self::own_record`] for a write the device `author` signs: also the
+    /// author's person's own record of a kind the app's manifest declares each
+    /// member's own ([`collab_types::OwnRecord::recognise`]).
+    #[must_use]
+    pub fn own_write(
+        &self,
+        app: &str,
+        record: &str,
+        author: &[u8; 32],
+    ) -> Option<collab_types::OwnRecord> {
+        self.core.own_write(app, record, author)
+    }
+
+    /// The person (user root key) of every member's own record this replica
+    /// knows, by app and record.
+    #[must_use]
+    pub fn own_records(&self) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
+        self.core
+            .own
+            .iter()
+            .map(|(route, own)| ((route.app.clone(), route.record.clone()), own.owner))
+            .collect()
+    }
+
+    /// Keep `app`'s record `own` names as that member's own record: every
+    /// write of it this replica signs carries its kind and person
+    /// ([`neighbour_wire::NeighbourMsg::AppDocument`]'s `own`).
+    pub fn keep_own_record(&mut self, app: &str, own: &collab_types::OwnRecord) {
+        self.core.learn_own(app, &own.record_id(), Some(own));
+    }
+
     /// Verified public identity metadata; never includes signing keys.
     pub fn certificates(&self) -> Vec<DeviceCert> {
         self.core
@@ -422,11 +461,12 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<(), String> {
         let member = self.membership(device, now)?;
+        let own = self.core.own_write(app, record, &device);
         if backend::access::document_read(
             &member.authority(),
             &self.core.workspace,
-            app,
-            record,
+            (app, record),
+            own.as_ref(),
             now,
         ) {
             Ok(())
@@ -571,8 +611,19 @@ impl StatePeer {
             Some(document) => Some(held_units(&document.doc, envelope)),
             None => enforced.then(AutoCommit::new),
         };
-        let allows =
-            |node: &TreePath, kind: ActionKind| member.allows(node, kind, authorization_time);
+        // A member's own record is decided as its person's: they do anything in
+        // it whatever their role, and nobody else anything.
+        let person = self
+            .core
+            .own_write(app_id, record, source)
+            .map(|own| own.person());
+        let mut cx = tilo_action_policy::Context::at_time(authorization_time);
+        if let Some(person) = &person {
+            cx = cx.with_own_record(record, person);
+        }
+        let allows = |node: &TreePath, kind: ActionKind| {
+            member.answer(node, kind, &cx) == tilo_action_policy::Answer::Allow
+        };
         let decided = collab_types::decide_op_pinned(
             envelope,
             &collab_types::Record {

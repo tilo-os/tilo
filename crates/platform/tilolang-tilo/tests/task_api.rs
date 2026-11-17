@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
-use tilolang_runtime::Principal;
+use tilolang_runtime::Actor;
 use tilolang_runtime::reads::ReadRequest;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
@@ -48,7 +48,12 @@ impl Apps {
         let mut bundles = Vec::new();
         for group in groups {
             let doc = AutoCommit::new();
-            let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
+            let host = Host::new(
+                &doc,
+                Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+                || None,
+            )
+            .unwrap();
             for (source, ids) in *group {
                 let lock = tilolang::IdsLock::parse(ids).unwrap();
                 let compiled = tilolang::compile_package(source, &lock, &metas).unwrap();
@@ -293,7 +298,7 @@ impl TaskApi for Apps {
 /// The task as the broker delivers its invocations: an agent acting for ada.
 fn task_caller() -> tilolang_tilo::publish::Caller {
     tilolang_tilo::publish::Caller {
-        actor: "task-1".to_owned(),
+        actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1").into(),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
     }

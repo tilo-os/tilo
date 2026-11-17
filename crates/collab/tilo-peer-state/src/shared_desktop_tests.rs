@@ -204,6 +204,7 @@ fn write_of(
         cluster_id: WORKSPACE.into(),
         record_id: record.into(),
         envelope: Box::new(envelope),
+        own: None,
     }
 }
 

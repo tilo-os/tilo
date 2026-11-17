@@ -15,7 +15,7 @@
 //! per-window records are only read; they stay on disk as they were, so the
 //! migration can be undone by hand.
 //!
-//! Why a copy and not [`RecordCheckout::formerly`](ui::record::RecordCheckout::formerly):
+//! Why a copy and not [`DocumentCheckout::formerly`](ui::record::DocumentCheckout::formerly):
 //! a former identity hands the new record *one* earlier document, history
 //! and all, and claims it so no other successor gets it. A workspace usually has
 //! several window notebooks with notes (each window someone wrote in), and
@@ -42,7 +42,7 @@ use crate::notebook::{self, Notebook};
 /// notebook is left out and logged; so is a picture whose bytes are not
 /// here, which is then missing from its notes as it was in the old window.
 pub fn adoption(
-    records: &[(ui::record::RecordId, ui::tilo_resource::Doc)],
+    records: &[(ui::record::DocumentId, ui::tilo_resource::Doc)],
     content: Option<&tilo_content::ContentStore>,
 ) -> Vec<Invoke<Notebook>> {
     let mut seed = Vec::new();

@@ -124,11 +124,9 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
             assert!(editor.blocks()[0].line.is_focused());
             assert_eq!(editor.blocks()[0].line.cursor_pos(), expected);
             assert!(
-                editor.blocks()[0]
-                    .line
-                    .author_runs()
-                    .iter()
-                    .any(|(_, _, author)| author == &f.author.key())
+                editor.blocks()[0].line.author_runs().iter().any(
+                    |(_, _, author)| *author == ui::tilo_resource::text::author_mark(&f.author)
+                )
             );
         }
         for focus in ["None", "Sidebar", "Title", "Editor"] {
@@ -187,7 +185,7 @@ fn payload(
 }
 fn saved_view(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
     local: ui::application_view::ApplicationLocalView,
 ) -> ui::application_view::SavedInstanceView {
     let mut component = component(f, 11, existing(checkout));
@@ -204,7 +202,7 @@ fn saved_view(
 }
 fn fingerprint(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
 ) -> (Vec<automerge::ChangeHash>, usize, Vec<u8>, u64) {
     let (heads, pending, bytes) = f
         .records
@@ -216,7 +214,7 @@ fn fingerprint(
 }
 fn stamp_current_runs(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
     page: notes::PageId,
     index: usize,
 ) {
@@ -247,7 +245,9 @@ fn stamp_current_runs(
                         end: body.chars().count(),
                     }],
                     name: tilo_doc::schema::MARK_AUTHOR.to_owned(),
-                    value: Some(tilo_document::action::MarkVal::Str(f.author.key())),
+                    value: Some(tilo_document::action::MarkVal::Str(
+                        ui::tilo_resource::text::author_mark(&f.author),
+                    )),
                     also_clear: Vec::new(),
                 },
             );
@@ -257,7 +257,7 @@ fn stamp_current_runs(
 }
 fn app_from_payload(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
     local: &ui::application_view::ApplicationLocalView,
 ) -> notes::NotesApp {
     use ui::application_view::ApplicationViewState;
@@ -439,7 +439,7 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
             .line
             .author_runs()
             .iter()
-            .any(|(_, _, author)| author == &f.author.key())
+            .any(|(_, _, author)| *author == ui::tilo_resource::text::author_mark(&f.author))
     );
     let component = restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved));
     let mut a = FrameHarness::from_component(component, (1000, 500), runner_inputs()).unwrap();

@@ -399,7 +399,7 @@ fn a_window_opened_beyond_the_visible_strip_stands_on_the_output_at_once() {
     ];
     let mut mapped: Vec<(WindowInfo, LayoutRect)> = Vec::new();
     let mut now = ui::time::now();
-    let on_output = |placed: &tilo_compositor::Arrangement, app: &str, when: &str| {
+    let on_output = |placed: &tilo_compositor::WindowPlacement, app: &str, when: &str| {
         let width = placed.size.unwrap_or_default().0;
         assert!(
             placed.location.x >= 0 && placed.location.x + width <= 1280,

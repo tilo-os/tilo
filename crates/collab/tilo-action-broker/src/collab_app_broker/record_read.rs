@@ -43,6 +43,19 @@ impl AppBrokerState {
         address: &RecordAddress,
     ) -> Result<(), ActionHostError> {
         super::action_host::check_execution(caller)?;
+        // A member's own record is theirs alone, whatever the workspace grants: nobody acting
+        // for another person reads it.
+        if let Some(own) = self
+            .services
+            .committed_documents
+            .as_ref()
+            .and_then(|documents| documents.own_record(workspace, &address.app, &address.record))
+            && reader(caller).map(|(person, _)| person) != Some(own.person().as_str())
+        {
+            return Err(ActionHostError::Refused {
+                reason: RECORD_READ_REFUSED.into(),
+            });
+        }
         let node = collab_types::document_node(workspace, &address.app, &address.record);
         match self.decide_for(caller, workspace, |workspace, actor, now| {
             actor.answer_in(workspace, &node, ActionKind::Read, now) == Answer::Allow

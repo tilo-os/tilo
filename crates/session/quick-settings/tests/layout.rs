@@ -1061,7 +1061,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_section_opens_on_the_controls_from_every_place_the_panel_stands;
-    // A section opens from wherever the panel stands (an accessory's page, the arrangement, the
+    // A section opens from wherever the panel stands (an accessory's page, the controls editor, the
     // clipboard opened to paste) and it opens on the controls: none of those stays over it, and what
     // shows the panel is told the section and nothing of the place it left.
     {
@@ -1071,7 +1071,7 @@ tilo_test_env::scenario! {
             ("an accessory's page", |panel: &mut QuickSettings| {
                 panel.show_accessory("00:11".into());
             }),
-            ("the arrangement", |panel: &mut QuickSettings| {
+            ("the controls editor", |panel: &mut QuickSettings| {
                 panel.edit(true);
             }),
             ("the clipboard opened to paste", QuickSettings::paste),
@@ -1595,7 +1595,7 @@ fn every_tile_is_half_the_page_or_all_of_it_and_the_page_fits_its_room() {
     });
     for kept in 1..=QuickSettingsControl::ALL.len() {
         let controls = QuickSettingsControl::ALL[..kept].to_vec();
-        host.update(|state| state.arrangement.controls.clone_from(&controls));
+        host.update(|state| state.config.controls.clone_from(&controls));
         app.settle();
         let slider = target(&mut app, "qs-brightness-row");
         let tiles: Vec<Rect> = controls

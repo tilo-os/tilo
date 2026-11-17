@@ -139,9 +139,8 @@ pub struct ShellState {
 struct OpenMenu {
     /// The tab whose rows the menu shows.
     tab: TabId,
-    /// Where the person put it, as `x,y` in the shell's coordinates; the window's own corner when
-    /// the verb named none.
-    anchor: Option<(f64, f64)>,
+    /// Where the person pressed, or the window's own corner when the verb named no place.
+    at: Option<(f64, f64)>,
 }
 
 impl ShellState {
@@ -449,17 +448,17 @@ impl ShellService {
             .read(|tree| active_route(tree).map(|ids| ids.tab))
     }
 
-    /// Where the menu of `tab` stands: where the person put it, or the corner of its window as last
-    /// laid out.
-    fn anchor(&self, tab: TabId, named: Option<(f64, f64)>) -> Option<Anchor> {
-        let corner = named.or_else(|| {
-            self.handle
-                .window_rect(tab)
-                .map(|window| (window.x0, window.y0))
-        })?;
+    /// Where the menu stands on the display its surface covers, which draws from its own corner.
+    fn anchor(&self, at: Option<(f64, f64)>) -> Option<Anchor> {
+        let (x, y) = at?;
+        let corner = self
+            .surfaces
+            .overlays
+            .place(Slot::WindowMenu)
+            .map_or(ui::kurbo::Point::ZERO, |standing| standing.room.origin());
         Some(Anchor {
-            x: corner.0,
-            y: corner.1,
+            x: x - corner.x,
+            y: y - corner.y,
         })
     }
 
@@ -502,11 +501,16 @@ impl ShellService {
                 reason: "That window offers nothing".into(),
             });
         }
-        let at = anchor.unwrap_or((0.0, 0.0));
-        self.state.menu = Some(OpenMenu { tab, anchor });
+        // The display holding that point is the one the menu opens on.
+        let at = anchor.or_else(|| {
+            self.handle
+                .window_rect(tab)
+                .map(|window| (window.x0, window.y0))
+        });
+        self.state.menu = Some(OpenMenu { tab, at });
         self.surfaces.overlays.open(
             Slot::WindowMenu,
-            Some(Place::At(ui::kurbo::Point::new(at.0, at.1))),
+            at.map(|(x, y)| Place::At(ui::kurbo::Point::new(x, y))),
         );
         Ok(())
     }
@@ -763,7 +767,7 @@ impl ShellService {
         let tab = open.tab;
         Reading {
             tab: Some(tab.to_string()),
-            anchor: self.anchor(tab, open.anchor),
+            anchor: self.anchor(open.at),
             subject: self
                 .handle
                 .window_subject(tab)

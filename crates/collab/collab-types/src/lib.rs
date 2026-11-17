@@ -53,6 +53,7 @@ pub mod commit;
 pub mod compaction;
 pub mod crypto;
 pub mod direct;
+pub mod document;
 pub mod document_import;
 pub mod document_transfer;
 pub mod handoff;
@@ -62,12 +63,12 @@ pub mod inbound;
 pub mod member;
 pub mod mls_governance;
 pub mod op;
+pub mod own_record;
 pub mod peer;
 pub mod personal;
 pub mod presence;
 pub mod realtime;
 pub mod receipt;
-pub mod record;
 pub mod redaction;
 pub mod role;
 pub mod scope;
@@ -75,14 +76,14 @@ pub mod signer;
 pub mod surface;
 pub mod units;
 pub mod validator;
+pub mod workspace_document;
 pub mod workspace_id;
-pub mod workspace_record;
 
-/// The URI scheme that asks an app to open one of its own records
-/// (`tilo-record:<record id>`): how a launch delivers an invocation to the
-/// view of the record it addresses. Every app accepts it; it names a record
+/// The URI scheme that asks an app to open one of its own documents
+/// (`tilo-document:<document id>`): how a launch delivers an invocation to the
+/// view of the document it addresses. Every app accepts it; it names a document
 /// in the app's own store and grants nothing.
-pub const RECORD_URI_SCHEME: &str = "tilo-record";
+pub const DOCUMENT_URI_SCHEME: &str = "tilo-document";
 
 // Convenience re-exports so downstream callers can do
 // `use collab_types::{SignedOp, Role, OpKind, ArtifactKind, ...}`
@@ -129,6 +130,7 @@ pub use op::{
     live_artifact_id, next_unordered_document_sequence, validate_document_payload_route,
     validate_whole_document_payload_route,
 };
+pub use own_record::{OwnRecord, own_kinds};
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use personal::{
     is_personal_cluster, person_record_id, person_record_kind, personal_cluster,
@@ -143,12 +145,12 @@ pub use redaction::{
     encode_redact_payload, hash_target_op, parse_redact_payload,
 };
 pub use role::{ArtifactKind, OpKind, Role};
-pub use tilo_action_policy::{MemberId, member_record, member_record_id};
+pub use tilo_action_policy::MemberId;
 pub use validator::{
     DEFAULT_WORKSPACE, InboundState, ValidationError, document_node, validate_admitted_inbound_op,
     validate_replayed_inbound_op,
 };
-pub use workspace_id::WorkspaceId;
-pub use workspace_record::{
-    WORKSPACE_RECORDS, WorkspaceRecord, workspace_record, workspace_record_id,
+pub use workspace_document::{
+    WORKSPACE_DOCUMENTS, WorkspaceDocument, workspace_document, workspace_document_id,
 };
+pub use workspace_id::WorkspaceId;

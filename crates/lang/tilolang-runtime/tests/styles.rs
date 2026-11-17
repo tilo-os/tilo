@@ -118,7 +118,7 @@ view timeline(a: shell.Layout) {
     tilo_test_env::scenario! {
         fn a_shell_style_is_drawn_by_the_package_that_declares_it;
 
-        phase a_style_declared_by_another_package_draws_the_arrangement;
+        phase a_style_declared_by_another_package_draws_the_layout;
         {
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
             let shell = shell_app();

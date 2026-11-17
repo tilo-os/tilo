@@ -136,14 +136,14 @@ pub struct Underway {
 }
 
 impl Underway {
-    /// Whether an arrangement must wait.
+    /// Whether a placement must wait.
     #[must_use]
     pub const fn holds(self) -> bool {
         self.gesture || self.typing
     }
 }
 pub use policy::{
-    Arrangement, LayoutPoint, LayoutRect, ResizeEdges, StackPolicy, TouchSample, WindowInfo,
+    LayoutPoint, LayoutRect, ResizeEdges, StackPolicy, TouchSample, WindowInfo, WindowPlacement,
     WindowPolicy, WindowRequest,
 };
 pub use selection::{Selection, TEXT_MIME};
@@ -2028,7 +2028,7 @@ impl Compositor {
         self.data.state.keycode_for_keysym(keysym)
     }
 
-    /// Whether the person is in the middle of something an arrangement must not move under, and
+    /// Whether the person is in the middle of something a placement must not move under, and
     /// why. Shell.md §1's one fixed rule reads it.
     #[must_use]
     pub fn underway(&self) -> Underway {
@@ -2144,6 +2144,16 @@ impl Compositor {
             .collect();
         if self.data.state.covers != covers {
             self.data.state.covers = covers;
+            self.data.state.mark_redraw_all();
+        }
+        let over_window = self
+            .data
+            .state
+            .hosts
+            .iter()
+            .find_map(|host| host.drawn_over_window());
+        if self.data.state.over_window != over_window {
+            self.data.state.over_window = over_window;
             self.data.state.mark_redraw_all();
         }
         // A frame can move windows (a strip panning, a group resizing): the policy places them

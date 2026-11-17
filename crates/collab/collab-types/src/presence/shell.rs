@@ -12,22 +12,22 @@ use serde::{Deserialize, Serialize};
 /// Longest activity line an agent's presence carries.
 pub const MAX_ACTIVITY_BYTES: usize = 96;
 
-/// One window a shell shows: the app and record it draws, its edges, and
+/// One window a shell shows: the app and document it draws, its edges, and
 /// whether it is the one the person works in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ShellWindow {
     /// The app the window shows, as its stable id.
     pub app: String,
-    /// The window's record, as its short digest
+    /// The window's document, as its short digest
     /// ([`LiveRecord::short_digest`](tilo_relay_protocol::live::LiveRecord::short_digest)):
-    /// a receiver knows which of its own windows shows the same record
+    /// a receiver knows which of its own windows shows the same document
     /// without ever seeing the sender's local id.
-    pub record: [u8; 8],
+    pub document: [u8; 8],
     /// The window's edges across the sender's screen, in 1/10000 of
     /// [`ShellPresence::size`], as `[x0, y0, x1, y1]`.
     pub rect: [u16; 4],
-    /// Whether the person works in this window: the record their caret and
+    /// Whether the person works in this window: the document their caret and
     /// selection are in.
     pub focused: bool,
 }
@@ -53,7 +53,7 @@ pub struct ShellReaction {
 }
 
 /// The caret and selection an app shows for the person, as the
-/// record-scoped anchors the app reported.
+/// document-scoped anchors the app reported.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ShellSelection {
@@ -109,14 +109,14 @@ pub struct ShellPresence {
 }
 
 impl ShellPresence {
-    /// The app and record of the window the person works in, if any: what
+    /// The app and document of the window the person works in, if any: what
     /// the people panel names as where they are.
     #[must_use]
     pub fn focus(&self) -> Option<(&str, [u8; 8])> {
         self.windows
             .iter()
             .find(|window| window.focused)
-            .map(|window| (window.app.as_str(), window.record))
+            .map(|window| (window.app.as_str(), window.document))
     }
 }
 
@@ -137,13 +137,13 @@ mod tests {
             windows: vec![
                 ShellWindow {
                     app: "so.tilo.notes".into(),
-                    record: [7; 8],
+                    document: [7; 8],
                     rect: [0, 0, 5000, 5000],
                     focused: false,
                 },
                 ShellWindow {
                     app: "so.tilo.word-processor".into(),
-                    record: [9; 8],
+                    document: [9; 8],
                     rect: [5000, 0, 10000, 10000],
                     focused: true,
                 },

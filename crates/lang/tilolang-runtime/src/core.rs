@@ -63,10 +63,10 @@ pub trait OutsideSink {
     fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery;
 }
 
-/// How a principal is called where a view shows it (`principal.name()`).
+/// How an actor is called where a view shows it (`actor.name()`).
 pub trait NameHost {
     /// The name to show for `who`.
-    fn name(&self, who: &crate::ids::Principal) -> String;
+    fn name(&self, who: &crate::ids::Actor) -> String;
 }
 
 /// How a value a change shows reads as text, where a sentence must carry it rather than a view
@@ -102,7 +102,7 @@ pub struct Core {
     /// The device's files (`Runtime::set_blobs`): the content store a file's bytes are kept in,
     /// and the chooser the person picks with. Until the host sets one, it holds no files.
     pub blobs: RefCell<Option<Box<dyn crate::blob::BlobHost>>>,
-    /// What names principals; the id itself until the host says.
+    /// What names actors; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
     /// (`Runtime::set_shown_host`).
@@ -431,27 +431,27 @@ impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
             Abort, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen,
-            ActUndo, Actions, AgentNamed, ArgAt, BytesLength, CallFn, ChangeView, CollCount,
-            CollCounted, CollEmpty, CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered,
-            CollRelatives, CollRemove, CollWhere, CollWhereWith, CountBy, DayParse, DayPart,
-            DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef, DurationText,
-            EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF,
-            EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged, FileAt, FileFiles,
-            FileOfBytes, FileOfText, FilePart, FileSize, FileText, FileZip, FilterLit, Filters,
-            Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor,
-            FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef,
-            Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop,
-            InvocationPush, Invoke, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse,
-            Keep, Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf,
-            ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse,
-            ListSortByKey, ListSumF, ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew,
-            MapPut, MapPutValue, MapRemove, MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup,
-            Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV, Notify, Now, OfType,
-            Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed,
-            PrincipalRole, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
-            RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF,
-            RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
-            ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed, RichEmpty,
+            ActUndo, Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt,
+            BytesLength, CallFn, ChangeView, CollCount, CollCounted, CollEmpty, CollInsert,
+            CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRelatives, CollRemove, CollWhere,
+            CollWhereWith, CountBy, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday,
+            Delivery, Describe, DescribeRef, DurationText, EditField, EntryParts, EnumGetF,
+            EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart,
+            EventValue, FieldChanged, FileAt, FileFiles, FileOfBytes, FileOfText, FilePart,
+            FileSize, FileText, FileZip, FilterLit, Filters, Find, FirstUnseen, FloatAbs,
+            FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax, FloatMin,
+            FloatRound, FloatRoundTo, FloatToStr, ForeignRef, Grep, GroupBy, IdentPart, IntAbs,
+            IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke, Invoker,
+            IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, Links, ListAvg,
+            ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious,
+            ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI,
+            MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
+            MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf,
+            MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed,
+            Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat,
+            RandomId, RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH,
+            RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI,
+            ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed, RichEmpty,
             RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichTime, RowOpen, RunChanges,
             SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI,
             Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains,
@@ -507,8 +507,8 @@ impl Core {
             | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId
             | ResourceRef => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
-            | OutsideAt | Withdraw | ModelCall | Notify | Invoker | PrincipalEq | PrincipalName
-            | QueueBlock | Now | TimeShift | PrincipalNamed | AgentNamed | InvocationPush
+            | OutsideAt | Withdraw | ModelCall | Notify | Invoker | ActorEq | ActorName
+            | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed | InvocationPush
             | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
             | WebText | BytesLength => self.web_import(imp, a),
@@ -522,7 +522,7 @@ impl Core {
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
             | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
             | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
-            WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
+            WorkspaceMembers | Members | Speakers | ActorKind | ActorRole => {
                 self.members_import(imp, a)
             }
             EditField => self.edit_field(a),

@@ -344,7 +344,7 @@ pub(crate) struct PublishedInvocationRuntime {
 use crate::{
     collaboration::RouteSpec,
     history_mode::HistoryOwner,
-    record::{RecordAdmission, RecordCheckout, RecordId, RecordStore},
+    record::{DocumentCheckout, DocumentId, RecordAdmission, RecordStore},
 };
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
 use std::{
@@ -368,7 +368,7 @@ pub struct InvocationLocusBasis {
     publication: tilo_actions::ActionAddress,
     target: crate::bound_dispatch::BoundActionAddress,
     owner_lifetime: uuid::Uuid,
-    checkout: RecordId,
+    checkout: DocumentId,
     route: RouteSpec,
     heads: Vec<ChangeHash>,
 }
@@ -398,7 +398,7 @@ impl InvocationLocusBasis {
         self.owner_lifetime
     }
     /// Actual local checkout identity, not an inferred wire record ID.
-    pub fn checkout(&self) -> &RecordId {
+    pub fn checkout(&self) -> &DocumentId {
         &self.checkout
     }
     pub fn route(&self) -> &RouteSpec {
@@ -1248,7 +1248,7 @@ impl DocumentAuthorization {
 
 struct LoanIdentity {
     store: RecordStore,
-    record: RecordId,
+    record: DocumentId,
     document: *const AutoCommit,
 }
 thread_local! {
@@ -1264,7 +1264,7 @@ impl Drop for RecordLoan {
 }
 pub(crate) fn with_record_loan<R>(
     store: &RecordStore,
-    record: &RecordId,
+    record: &DocumentId,
     document: &mut AutoCommit,
     callback: impl FnOnce(&mut AutoCommit) -> R,
 ) -> R {
@@ -1280,7 +1280,7 @@ pub(crate) fn with_record_loan<R>(
 }
 fn record_loan_matches(
     store: &RecordStore,
-    checkout: &RecordCheckout,
+    checkout: &DocumentCheckout,
     document: &AutoCommit,
 ) -> bool {
     RECORD_LOANS.with_borrow(|loans| {
@@ -1357,7 +1357,7 @@ pub(crate) fn with_mounted_document<R>(
 /// `app_id`'s local record.
 pub(crate) fn with_loaned_record<R>(
     store: &RecordStore,
-    checkout: &RecordCheckout,
+    checkout: &DocumentCheckout,
     app_id: &str,
     route: Option<RouteSpec>,
     document: &mut AutoCommit,

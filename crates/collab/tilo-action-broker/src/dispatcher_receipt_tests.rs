@@ -229,7 +229,9 @@ async fn an_authenticated_read_is_admitted_with_private_signed_evidence() {
                     device: env.cert.device_public_key,
                     agent: None,
                 },
-                actor_id: person_id_for_root(env.cert.user_public_key),
+                actor_id: tilo_actions::MemberId::person(person_id_for_root(
+                    env.cert.user_public_key,
+                )),
                 app_id: env.route.app_id.clone(),
                 record_id: env.route.record_id.clone(),
                 resource: "workspace:atlas".into(),
@@ -464,7 +466,7 @@ async fn dispatcher_retained_evidence_survives_uncertain_recovery_and_rejects_in
             ] {
                 let mut altered = snapshot.clone();
                 altered["records"][0]["intent"][field] = if field == "actor" {
-                    serde_json::json!("substituted actor")
+                    serde_json::json!({"person": "substituted actor"})
                 } else {
                     serde_json::json!({"substituted": field})
                 };

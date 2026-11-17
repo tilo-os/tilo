@@ -146,6 +146,41 @@ impl PageActor {
         Some(Self(name))
     }
 
+    /// The name the engine keeps `actor` under: a person's root key, `agent:<id>`, `bot:<id>`,
+    /// `automation:<id>` or `app:<id>`.
+    pub fn of(actor: &tilo_actions::Actor) -> Option<Self> {
+        use tilo_actions::{Actor, MemberId};
+        Self::named(&match actor {
+            Actor::Member(MemberId::Person(id)) => id.clone(),
+            Actor::Member(MemberId::Agent(id)) => format!("agent:{id}"),
+            Actor::Member(MemberId::Bot(id)) => format!("bot:{id}"),
+            Actor::Automation(id) => format!("automation:{}", id.as_str()),
+            Actor::App(app) => format!("app:{app}"),
+        })
+    }
+
+    /// The actor the engine lists under `name`, when [`Self::of`] made it without shortening it.
+    pub fn actor_of(name: &str) -> Option<tilo_actions::Actor> {
+        use tilo_actions::{Actor, MemberId};
+        let shortened = name.encode_utf16().count() == MAX_ACTOR_UNITS
+            && name.encode_utf16().nth(ACTOR_HEAD_UNITS) == Some(u16::from(b'~'));
+        if name.is_empty() || shortened {
+            return None;
+        }
+        let nonempty = |id: &str| (!id.is_empty()).then(|| id.to_owned());
+        Some(if let Some(id) = name.strip_prefix("agent:") {
+            Actor::Member(MemberId::Agent(nonempty(id)?))
+        } else if let Some(id) = name.strip_prefix("bot:") {
+            Actor::Member(MemberId::Bot(nonempty(id)?))
+        } else if let Some(id) = name.strip_prefix("automation:") {
+            Actor::automation(nonempty(id)?)
+        } else if let Some(id) = name.strip_prefix("app:") {
+            Actor::App(nonempty(id)?.into())
+        } else {
+            Actor::Member(MemberId::Person(name.to_owned()))
+        })
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

@@ -131,12 +131,12 @@ pub(crate) fn colour_profile(app: &SettingsApp, _: &Follows) -> Option<String> {
     })
 }
 
-pub(crate) fn arrangement(app: &SettingsApp, _: &Follows) -> Option<String> {
+pub(crate) fn placement(app: &SettingsApp, _: &Follows) -> Option<String> {
     let model = area(app)?.read()?;
     let count = model.borrow().connected_outputs().len();
     (count > 0).then(|| {
         crate::i18n::t_args(
-            "display-arrangement-count",
+            "display-placement-count",
             &[("count", i64::try_from(count).unwrap_or(i64::MAX).into())],
         )
     })

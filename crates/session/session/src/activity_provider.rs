@@ -80,10 +80,10 @@ fn arguments_of(
 /// `request` 's caller, as the API knows it: an app reaches the activity as the person using it,
 /// confined to the workspace it runs in.
 fn caller_of(request: &HostStepRequest<'_>) -> Caller {
-    let caller = if request.actor.is_agent() {
-        Caller::local_agent(request.actor.id())
-    } else {
-        Caller::local_person(request.actor.id())
+    let member = request.actor.member();
+    let caller = match member.agent_id() {
+        Some(agent) => Caller::local_agent(agent),
+        None => Caller::local_person(member.id()),
     };
     caller.in_workspace(request.workspace)
 }

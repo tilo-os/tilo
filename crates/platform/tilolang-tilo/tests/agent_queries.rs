@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use std::rc::Rc;
 
 use serde_json::Value as Json;
-use tilolang_runtime::Principal;
+use tilolang_runtime::Actor;
 use tilolang_tilo::task::TaskSession;
 
 use crate::task_api::Apps;
@@ -81,7 +81,10 @@ fn world() -> World {
         other
             .host
             .runtime()
-            .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+            .invoke_action(
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+                (scenario.as_str(), vec![]),
+            )
             .unwrap();
         other.commit();
     }
@@ -98,7 +101,9 @@ impl World {
         self.task.run(
             source,
             true,
-            &tilolang_tilo::runtime::Principal::new("agent:task-1"),
+            &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
+                "task-1",
+            )),
         )
     }
 }
@@ -446,12 +451,16 @@ fn a_task_reads_each_record_anew_for_every_program_and_after_changing_it() {
     printed(&task.run(
         r#"find("standup")"#,
         true,
-        &tilolang_tilo::runtime::Principal::new("agent:task-1"),
+        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
+            "task-1",
+        )),
     ));
     printed(&task.run(
         r#"find("standup")"#,
         true,
-        &tilolang_tilo::runtime::Principal::new("agent:task-1"),
+        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
+            "task-1",
+        )),
     ));
     assert_eq!(
         fetches(),
@@ -463,7 +472,9 @@ fn a_task_reads_each_record_anew_for_every_program_and_after_changing_it() {
     let out = printed(&task.run(
         "let n = notes.new_note(notes.notebook)\nn.title = \"Coffee order\"\nfind(\"coffee\")",
         true,
-        &tilolang_tilo::runtime::Principal::new("agent:task-1"),
+        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
+            "task-1",
+        )),
     ));
     assert!(out.contains("Coffee order"), "{out}");
 }
@@ -479,19 +490,25 @@ fn a_tasks_next_program_reads_what_its_earlier_ones_changed() {
     let out = printed(&task.run(
         "let t = tasks.new_task(tasks.tasks, title: \"Check the launch video\")",
         true,
-        &tilolang_tilo::runtime::Principal::new("agent:task-1"),
+        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
+            "task-1",
+        )),
     ));
     assert!(!out.contains("error"), "{out}");
     let found = printed(&task.run(
         "grep(/launch/, in: tasks)",
         true,
-        &tilolang_tilo::runtime::Principal::new("agent:task-1"),
+        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
+            "task-1",
+        )),
     ));
     assert!(found.contains("Check the launch video"), "{found}");
     let found = printed(&task.run(
         "find(Task)",
         true,
-        &tilolang_tilo::runtime::Principal::new("agent:task-1"),
+        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
+            "task-1",
+        )),
     ));
     assert!(found.contains("Check the launch video"), "{found}");
 }
@@ -512,7 +529,10 @@ fn what_changed_in_the_notes_this_week_is_found_by_when_each_last_changed() {
         notes
             .host
             .runtime()
-            .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+            .invoke_action(
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+                (scenario.as_str(), vec![]),
+            )
             .unwrap();
         notes.commit();
     }
@@ -522,7 +542,9 @@ fn what_changed_in_the_notes_this_week_is_found_by_when_each_last_changed() {
         task.run(
             source,
             true,
-            &tilolang_tilo::runtime::Principal::new("agent:task-1"),
+            &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
+                "task-1",
+            )),
         )
     };
     // Groceries changes now; every other note was written in October.

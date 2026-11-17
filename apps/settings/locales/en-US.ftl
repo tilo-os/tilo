@@ -59,7 +59,7 @@ display-scale = Scale
 display-mirroring = Mirroring
 display-colour-profile = Colour profile
 display-colour-profile-empty = System default
-display-arrangement-count = { $count ->
+display-placement-count = { $count ->
     [one] One display
    *[other] { $count } displays
 }
@@ -299,13 +299,13 @@ speakers-discard = Discard
 speakers-apply = Apply
 speakers-revert = Revert
 speakers-try-again = Try again
-speakers-arrangement = Arrangement
-speakers-arrangement-stereo = Stereo pair
-speakers-arrangement-surround = Surround
-speakers-arrangement-room = Around the room
-speakers-arrangement-stereo-description = Two speakers play left and right
-speakers-arrangement-surround-description = Three to six speakers in named positions
-speakers-arrangement-room-description = Speakers placed anywhere around you
+speakers-placement = Placement
+speakers-placement-stereo = Stereo pair
+speakers-placement-surround = Surround
+speakers-placement-room = Around the room
+speakers-placement-stereo-description = Two speakers play left and right
+speakers-placement-surround-description = Three to six speakers in named positions
+speakers-placement-room-description = Speakers placed anywhere around you
 speakers-choose-title = Choose speakers
 speakers-no-outputs = No speakers are available. Turn on Media in Sync between devices on each device you want to use.
 speakers-output-this-device = This device
@@ -2105,8 +2105,8 @@ accounts-sync-none = No synchronization status is available yet.
 
 display-caption-port = Connect another display to an available port to arrange it here.
 display-caption-second = Connect another display to extend your workspace.
-display-caption-switch = Drag displays to match their physical arrangement.
-display-card-title = Display arrangement
+display-caption-switch = Drag displays to match their physical layout.
+display-card-title = Display layout
 mesh-audit-change = Change
 notif-app-verified = App identity
 notif-delivery = Delivery
@@ -2341,12 +2341,12 @@ settings-disk-unlock-bad-request = That request names no usable disk or network.
 settings-disk-unlock-too-many = The disk unlock answer lists more disks than this computer can have.
 settings-disk-unlock-malformed = The disk unlock answer could not be read: { $error }
 
-# Shared display arrangement, independent of device input permission.
+# Shared display layout, independent of device input permission.
 display-shared-read-only = Shared display inspection is read-only.
 display-shared-unavailable = That display is no longer observed.
-display-shared-stale = The arrangement changed. Refresh this display and try again.
-display-shared-save-failed = The arrangement could not be saved: { $error }
-display-shared-saved = Shared display arrangement saved.
+display-shared-stale = The layout changed. Refresh this display and try again.
+display-shared-save-failed = The layout could not be saved: { $error }
+display-shared-saved = Shared display layout saved.
 display-shared-auto-input = Let your other devices use this screen
 display-shared-auto-description = Your other devices can use this device's screen with their keyboard and mouse: their pointer crosses over at the edge where your display layout places them.
 

@@ -107,7 +107,7 @@ pub(super) fn registration() -> HistoryRegistration {
                 "fixture",
                 "lifetime-1",
                 DEFINITION.app_id,
-                crate::RecordId::for_tab(777),
+                crate::DocumentId::for_tab(777),
             ),
         }],
     )

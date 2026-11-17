@@ -1,6 +1,7 @@
 //! Links an agent hands a person: `tilo_link` answers the link to what a path
-//! names, and a call that changed a record answers that record's link beside
-//! its result. Each is the resource's own `share-link`, minted where the record
+//! names, and a call that changed something answers the link that opens what
+//! it made or changed (the resources its answer names after `->`), else its
+//! record's. Each is the resource's own `share-link`, minted where the record
 //! is served, under the web entry its host announces: the link a person copies
 //! in the app. It carries no secret, so it opens only for the workspace's
 //! members; anyone else meets the workspace's admission.
@@ -63,6 +64,19 @@ pub(super) fn put(typed: &mut Value, link: Option<String>) {
     if let (Some(fields), Some(url)) = (typed.as_object_mut(), link) {
         fields.insert("link".into(), json!(url));
     }
+}
+
+/// The resources an invocation's answer says it made or changed, in the
+/// order it names them: the `-> <resource>` lines under its result.
+fn named(value: &Value) -> Vec<&str> {
+    value
+        .pointer("/update/output/resources")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|resource| !resource.is_empty())
+        .collect()
 }
 
 /// The links of the steps of a batch, each once, in the order first made.
@@ -170,10 +184,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self.changed_link(provider).await
     }
 
-    /// The link an action that ran on `provider` answers: a change to a
-    /// record answers the link that shows it to a person, once it finished
-    /// (`tilo_status` answers it for one still running); a read changed
-    /// nothing to show.
+    /// The link an action that ran on `provider` answers: a change answers
+    /// the link that opens what it made or changed to a person, once it
+    /// finished (`tilo_status` answers it for one still running); a read
+    /// changed nothing to show.
     pub(super) async fn invoked_link(
         &self,
         asked: Option<&str>,
@@ -185,7 +199,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             return None;
         }
         if succeeded(value) {
-            return self.changed_link(provider).await;
+            return self.changed_link_naming(provider, &named(value)).await;
         }
         self.note_changing(asked, value, provider);
         None
@@ -198,8 +212,27 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// serves by its provider (`record:<app>:<record>`) is one: a window of a
     /// person's desktop is not a record a link names.
     pub(super) async fn changed_link(&self, provider: &str) -> Option<String> {
-        tilo_actions::remote::record_parts(provider)?;
+        self.changed_link_naming(provider, &[]).await
+    }
+
+    /// The link a change answers: the own `share-link` of the first of
+    /// `named` (the resources its answer says it made or changed, as
+    /// `-> <resource>` lines name them) that offers one, which opens that
+    /// resource; else the record's own link. The record's window is shown on
+    /// the person's layout either way ([`Self::show`]).
+    pub(super) async fn changed_link_naming(
+        &self,
+        provider: &str,
+        named: &[&str],
+    ) -> Option<String> {
+        let (app, _) = tilo_actions::remote::record_parts(provider)?;
+        let app = app.to_owned();
         self.show(provider, "").await;
+        for resource in named {
+            if let Some(url) = self.own_link(&app, provider, resource).await {
+                return Some(url);
+            }
+        }
         match self.record_link(provider, serde_json::Map::new()).await {
             Ok(url) => Some(url),
             Err(error) => {
@@ -209,19 +242,48 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
     }
 
+    /// The link `resource` of the app `app_id` offers of its own on
+    /// `provider`: its `share-link`, present when it declares a view (an item
+    /// the app opens does, which the answer's `->` names). `None` when it
+    /// offers none, so the caller answers the record's link instead.
+    async fn own_link(&self, app_id: &str, provider: &str, resource: &str) -> Option<String> {
+        if resource.is_empty() {
+            return None;
+        }
+        let mut levels = Levels::new();
+        let found = self
+            .by_address(app_id, provider, resource, &mut levels)
+            .await
+            .ok()??;
+        let own = found
+            .actions
+            .iter()
+            .find(|action| action.address.action == SHARE_LINK_ACTION)?
+            .address
+            .resource
+            .clone();
+        match self.mint_link(provider, own, serde_json::Map::new()).await {
+            Ok(url) => Some(url),
+            Err(error) => {
+                tracing::debug!(%error, %resource, "mcp: a changed resource answered no link");
+                None
+            }
+        }
+    }
+
     /// Show the record `provider` names as a window on the person's layout, as a collaborator's
-    /// open does: its app's `open` on it, asked of the host as a step of this call's run. The host
-    /// leaves a record a window already shows where the people put it. A provider that is no
-    /// record (a window of a device) names the app `app_id`'s own record; an empty `app_id` then
-    /// names nothing. Whether it showed is no matter to the call: a record the host cannot show is
-    /// still what the agent changed.
+    /// open does: its app's `open` on it, a call of this call's step, so one run lists the write
+    /// and the window it showed. The host leaves a record a window already shows where the people
+    /// put it. A provider that is no record (a window of a device) names the app `app_id`'s own
+    /// record; an empty `app_id` then names nothing. Whether it showed is no matter to the call,
+    /// which answers once the host took the open and never waits for the window: a record the host
+    /// cannot show is still what the agent changed, and each page watching shows the change in its
+    /// own way.
     pub(super) async fn show(&self, provider: &str, app_id: &str) {
         use tilo_actions::remote::{
             APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, InvokeArgument, InvokeRequest,
-            ReceiptStatus, application_action_target, application_record_target,
+            application_action_target, application_record_target,
         };
-        /// Longest a call waits for the host to show the window before it answers.
-        const SHOWING: std::time::Duration = std::time::Duration::from_secs(5);
         let (app, record) = match tilo_actions::remote::record_parts(provider) {
             Some((app, record)) => (app, record),
             None if !app_id.is_empty() => (app_id, ""),
@@ -244,10 +306,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             invocation,
             target,
             argument: InvokeArgument::None,
-            // The run it is a step of names the window; showing it is no step of the run's
-            // own to take back.
+            // A call of this call's step, so one run lists what the call changed and the window
+            // it showed. The open takes no step of its own: what it writes is the window's place,
+            // which the run's undo leaves alone.
             context: self.context().map(|context| tilo_actions::ActionContext {
                 group: context.group,
+                gesture: context.gesture,
                 ..tilo_actions::ActionContext::default()
             }),
             confirmation: None,
@@ -257,14 +321,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             appearance: None,
         };
         let shown = match self.host().invoke(&self.caller(), request).await {
-            Some(Ok(receipt)) if matches!(receipt.status, ReceiptStatus::Accepted) => {
-                self.settled(invocation, SHOWING).await
-            }
-            Some(Ok(receipt)) => Ok(json!(format!("{:?}", receipt.status))),
+            Some(Ok(receipt)) => Ok(receipt.status),
             Some(Err(error)) => Err(error.to_string()),
             None => Err("the host did not answer".to_owned()),
         };
-        tracing::debug!(?shown, provider, app, "mcp: a window shown on the layout");
+        tracing::debug!(
+            ?shown,
+            provider,
+            app,
+            "mcp: a window asked for on the layout"
+        );
     }
 
     /// "Show this window" (`descriptor`, answered `value`) shows it to the person: its record opens
@@ -321,7 +387,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if state != "succeeded" {
             return None;
         }
-        self.changed_link(&provider).await
+        self.changed_link_naming(&provider, &named(value)).await
     }
 
     async fn mint_link(

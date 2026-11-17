@@ -94,7 +94,7 @@ fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
         Ty::Time => FieldType::Time,
         Ty::Duration => FieldType::Duration,
         Ty::Identifier => FieldType::Identifier,
-        Ty::Principal => FieldType::Principal,
+        Ty::Actor => FieldType::Principal,
         Ty::Record(key) => FieldType::Resource(record_kind(key)),
         Ty::Union(keys) => FieldType::Union(
             keys.iter()
@@ -155,7 +155,7 @@ fn schema_of(meta: &Meta, ty: &Ty) -> Json {
         Ty::Time => json!({"type": "string", "format": "date-time"}),
         // An account of some service, as its URI (`mailto:jane@x.com`).
         Ty::Identifier => json!({"type": "string", "format": "uri"}),
-        Ty::Principal => subject_schema(),
+        Ty::Actor => subject_schema(),
         Ty::Record(key) => tilo_actions::picked_resource_schema(&record_kind(key)),
         Ty::Enum(key) => match plain_cases(meta, key) {
             Some(cases) => {
@@ -256,7 +256,7 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
                 .with_labelled_choices(cases),
             None => built.with_schema(schema_of(meta, &Ty::Enum(key.clone()))),
         },
-        Some(Ty::Principal) => built.with_schema(subject_schema()).picking(Pick::Grantee),
+        Some(Ty::Actor) => built.with_schema(subject_schema()).picking(Pick::Grantee),
         // Rich text is given as its text, or encoded whole when it holds more than text
         // (`host::argument_json`).
         Some(Ty::RichText) => built.with_schema(json!({"oneOf": [
@@ -492,6 +492,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
             label: ty.name.clone(),
             version: VERSION,
             person: false,
+            own: false,
             verbs,
             fields,
             types: types.into_types(),
@@ -508,6 +509,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
         label: crate::publish::app_name(words, meta),
         version: VERSION,
         person: false,
+        own: meta.own_records,
         verbs: loose,
         fields: Vec::new(),
         types: types.into_types(),
@@ -538,6 +540,7 @@ pub fn host_surface() -> Surface {
         label: "tilolang".to_owned(),
         version: VERSION,
         person: false,
+        own: false,
         verbs: vec![host_verb(
             COMMIT,
             "Commit a planned action",

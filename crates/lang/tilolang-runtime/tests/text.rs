@@ -57,7 +57,7 @@ mod cases {
             v.edit("in", &Value::text("x")).unwrap();
             let notes = w.rt.history(&n.doc).unwrap();
             let edit = notes.iter().find(|c| c.action == "$edit").unwrap();
-            assert_eq!(edit.invoker, "me");
+            assert_eq!(edit.invoker, Some(person("me")));
             assert_eq!(edit.args, serde_json::json!(["fb", "x"]));
             assert_eq!(edit.chain.len(), 1, "the view's module is in the chain");
         }

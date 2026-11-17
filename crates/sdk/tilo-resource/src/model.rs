@@ -1904,7 +1904,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
 /// written as one JSON string and read back as it was written, with nothing
 /// inside it merging field by field.
 macro_rules! json_scalar {
-    ($ty:path) => {
+    ($ty:path, $field_type:ident) => {
         impl Settable for $ty {}
         impl Model for $ty {
             const SCALAR: bool = true;
@@ -1913,7 +1913,7 @@ macro_rules! json_scalar {
             }
             fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
                 let _ = types;
-                crate::FieldType::Text
+                crate::FieldType::$field_type
             }
             type Paths<R> = crate::Path<R, Self>;
 
@@ -1958,8 +1958,8 @@ macro_rules! json_scalar {
 
 // A capability names who it reaches, and who granted it: the two policy values
 // a stored record holds beside its scope.
-json_scalar!(tilo_action_policy::MemberId);
-json_scalar!(tilo_action_policy::Grantee);
+json_scalar!(tilo_action_policy::MemberId, Principal);
+json_scalar!(tilo_action_policy::Grantee, Text);
 
 /// An app's id is the string it is: written as one, read as one.
 impl Settable for tilo_app_id::AppId {}

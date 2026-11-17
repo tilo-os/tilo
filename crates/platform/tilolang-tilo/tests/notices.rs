@@ -6,7 +6,7 @@ use automerge::AutoCommit;
 use serde_json::{Map, Value as Json, json};
 use tilo_service::{Service, Started};
 use tilo_session_core::notice::{Closed, Notice};
-use tilolang_runtime::{InvokeOutcome, Meta, Principal, Resolution, Value};
+use tilolang_runtime::{Actor, InvokeOutcome, Meta, Resolution, Value};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::records_service::RecordService;
@@ -215,7 +215,10 @@ fn invoke(replica: &mut Replica, meta: &Meta, name: &str, args: Vec<Value>) -> V
     let InvokeOutcome::Done(value) = replica
         .host
         .runtime()
-        .invoke_action(&Principal::new(&replica.name), (id.as_str(), args))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&replica.name)),
+            (id.as_str(), args),
+        )
         .unwrap()
     else {
         panic!("`{name}` runs");
@@ -259,7 +262,9 @@ fn reminded_workspace() -> (Replica, Meta, std::rc::Rc<std::cell::RefCell<String
         "assign",
         vec![
             Value::resource(&task),
-            Value::some(Value::Principal(Principal::new("bo"))),
+            Value::some(Value::Actor(Actor::from(
+                tilolang_tilo::runtime::ids::MemberId::person("bo"),
+            ))),
         ],
     );
     invoke(&mut ada, &meta, "due_today", vec![Value::resource(&task)]);
@@ -327,7 +332,10 @@ fn teller_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
     let InvokeOutcome::Suggested(suggestion) = ada
         .host
         .runtime()
-        .invoke_action(&Principal::new("ada"), (tell.id.as_str(), args.clone()))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (tell.id.as_str(), args.clone()),
+        )
         .unwrap()
     else {
         panic!("sealing the note asks first");
@@ -335,7 +343,12 @@ fn teller_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
     let invocation = ada
         .host
         .runtime()
-        .record_suggestion(&Principal::new("ada"), tell.id.as_str(), args, &suggestion)
+        .record_suggestion(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            tell.id.as_str(),
+            args,
+            &suggestion,
+        )
         .unwrap();
     ada.commit();
     let grace = Replica::standing(
@@ -358,7 +371,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             ada.host
                 .runtime()
-                .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
+                .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
                 .unwrap(),
             "done"
         );
@@ -371,7 +384,7 @@ tilo_test_env::scenario! {
         let answer = |grace: &Replica| {
             grace.host.runtime().resolve_invocation(
                 &invocation,
-                &Principal::new("grace"),
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("grace")),
                 Resolution::Approve,
             )
         };
@@ -667,7 +680,7 @@ fn notices(host: &Host) -> Vec<(String, String, String, String)> {
             let at = tilolang_runtime::ResourceRef::root(id, tilolang::NOTICE_TYPE.to_owned());
             let read = |field| host.runtime().read(&at, field).ok();
             let to = match read(tilolang::NOTICE_TO)? {
-                tilolang_runtime::Value::Principal(person) => person.0,
+                tilolang_runtime::Value::Actor(person) => person.id().to_owned(),
                 _ => return None,
             };
             let tilolang_runtime::Value::Text(title) = read(tilolang::NOTICE_TITLE)? else {

@@ -387,18 +387,6 @@ impl AppActionBroker {
         self.state.hosted_workspaces()
     }
 
-    /// Exact current owner-backed agent identity while the session is live.
-    pub fn certified_agent_identity(
-        &self,
-        workspace: &str,
-        actor: &str,
-    ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
-        self.state
-            .while_live(|state| Ok(state.certified_agent_identity(workspace, actor)))
-            .ok()
-            .flatten()
-    }
-
     /// Retain discovery without extending the owning session's lifetime.
     #[must_use]
     pub fn downgrade(&self) -> WeakAppActionBroker {
@@ -691,8 +679,8 @@ impl AppActionBroker {
     /// Shortcut runs finished since the last call, oldest first, for the
     /// history recorder to record against the documents they changed.
     #[must_use]
-    pub fn take_finished_shortcut_runs(&self) -> Vec<crate::automation::FinishedShortcutRun> {
-        self.state.take_finished_shortcut_runs()
+    pub fn take_finished_invocations(&self) -> Vec<crate::automation::FinishedInvocation> {
+        self.state.take_finished_invocations()
     }
 
     /// Whether a finished shortcut run is waiting to be taken, without
@@ -705,7 +693,10 @@ impl AppActionBroker {
     /// The shortcut runs going in `workspace`: what the workspace says is
     /// running, and what can be stopped.
     #[must_use]
-    pub fn running_shortcut_runs(&self, workspace: &str) -> Vec<crate::automation::RunningRun> {
+    pub fn running_shortcut_runs(
+        &self,
+        workspace: &str,
+    ) -> Vec<crate::automation::RunningInvocation> {
         self.state.running_shortcut_runs(workspace)
     }
 
@@ -717,7 +708,7 @@ impl AppActionBroker {
         workspace: &str,
         request: &crate::automation::StopRequest,
         reason: &str,
-    ) -> Vec<crate::automation::RunningRun> {
+    ) -> Vec<crate::automation::RunningInvocation> {
         self.state.stop_shortcut_runs(workspace, request, reason)
     }
 
@@ -763,18 +754,18 @@ impl AppActionBroker {
         workspace: &str,
         shortcut: &str,
         trigger: &tilo_automation::TriggerSpec,
-        run: tilo_automation::RunId,
+        invocation: tilo_automation::InvocationId,
         inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, tilo_actions::remote::ActionHostError> {
         self.state
-            .start_triggered_shortcut_run(caller, workspace, shortcut, trigger, run, inputs)
+            .start_triggered_shortcut_run(caller, workspace, shortcut, trigger, invocation, inputs)
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn record_completion_for_test(
         &self,
         id: u64,
-        actor: &str,
+        actor: &tilo_action_policy::MemberId,
         update: tilo_actions::InvocationUpdate,
     ) {
         self.state.record_completion_for_test(id, actor, update);
@@ -817,7 +808,10 @@ impl AppActionBroker {
         self.state.surface_changes()
     }
 
-    pub fn statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
+    pub fn statuses(
+        &self,
+        actor: &tilo_action_policy::MemberId,
+    ) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         self.state
             .while_live(|state| Ok(state.invocation_statuses(actor)))
             .unwrap_or_default()
@@ -826,13 +820,13 @@ impl AppActionBroker {
     /// Request cooperative cancellation for an owned invocation, answered
     /// once the request is durable. Blocks the calling thread for that
     /// write, so never call it on the broker's loop.
-    pub fn cancel(&self, id: u64, actor: &str) -> Result<(), String> {
+    pub fn cancel(&self, id: u64, actor: &tilo_action_policy::MemberId) -> Result<(), String> {
         self.state
             .while_live(|state| state.request_cancellation(id, actor))?
             .wait_blocking()
     }
 
-    pub fn can_cancel(&self, id: u64, actor: &str) -> bool {
+    pub fn can_cancel(&self, id: u64, actor: &tilo_action_policy::MemberId) -> bool {
         self.state
             .while_live(|state| Ok(state.can_cancel(id, actor)))
             .unwrap_or(false)
@@ -937,17 +931,6 @@ impl BrokerHandle {
         sink: FanoutSink,
     ) -> Arc<WorkspaceSubscription> {
         self.fanout.subscribe_workspaces(workspaces, sink)
-    }
-
-    /// Exact current owner-backed agent identity for a native participant.
-    pub fn certified_agent_identity(
-        &self,
-        workspace: &str,
-        actor: &str,
-    ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
-        self.fanout
-            .app_broker()?
-            .certified_agent_identity(workspace, actor)
     }
 
     /// The bound collaboration socket.

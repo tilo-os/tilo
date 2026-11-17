@@ -405,7 +405,7 @@ pub enum Cmd {
     /// Say these frames on the presence track of the workspace on the topic.
     Presence(Topic, Vec<collab_types::presence::Presence>),
     /// The host's word for a run it executes, on the workspace on the topic.
-    SayForRun(Topic, tilo_relay_protocol::host_voice::HostWords),
+    SayForSession(Topic, tilo_relay_protocol::host_voice::HostWords),
     /// Microphone frames, said on the plane of the workspace on the topic as this device's voice.
     CallAudio(Topic, Vec<CallFrame>),
     /// Ask for the calls of the workspace on the topic: the answer is a [`VoiceEvent::Calls`].

@@ -1,6 +1,6 @@
 //! One keyboard and pointer for the person's devices standing side by side: the pointer pushed
 //! past the edge of this device's screen toward the screen of another of their devices, as the
-//! shared arrangement places them (Settings → Displays), goes on there, and the keyboard follows
+//! shared placement places them (Settings → Displays), goes on there, and the keyboard follows
 //! it. Pushing back across the edge, or pressing Ctrl+Alt+Escape here, brings both back.
 //!
 //! The input travels as actions on the person's device fabric: the direct, authenticated session
@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
-use settings_store::person_displays::{Arrangement, Layout, PersonDisplays, ResolvedDisplay};
+use settings_store::person_displays::{Layout, PersonDisplays, Placements, ResolvedDisplay};
 use tilo_compositor::clipboard_history::{Pull, Pulled};
 use tilo_compositor::{Compositor, InputEvent, ObservedInput};
 use tilo_desktop_surface::DesktopHandle;
@@ -116,30 +116,30 @@ struct Landing {
 pub(crate) struct SharedInput {
     fabric: SharedLink,
     continuity: Continuity,
-    arranged: Arranged,
+    placed: PlacementWatch,
     state: std::sync::Mutex<State>,
 }
 
-/// The person's arrangement of their screens, as the session's settings watch last read it, and
+/// The person's placement of their screens, as the session's settings watch last read it, and
 /// how many times it changed.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Arranged(std::sync::Arc<std::sync::Mutex<(u64, Arrangement)>>);
+pub(crate) struct PlacementWatch(std::sync::Arc<std::sync::Mutex<(u64, Placements)>>);
 
-impl Arranged {
-    /// The arrangement the settings say now.
+impl PlacementWatch {
+    /// The placement the settings say now.
     pub(crate) fn loaded() -> Self {
         Self(std::sync::Arc::new(std::sync::Mutex::new((
             1,
-            Arrangement::load(),
+            Placements::load(),
         ))))
     }
 
-    /// Take the arrangement from a settings document, as Settings writes it.
+    /// Take the placement from a settings document, as Settings writes it.
     pub(crate) fn read(&self, document: &serde_json::Map<String, Json>) {
-        let arrangement = Arrangement::from_document(document);
+        let placement = Placements::from_document(document);
         let mut kept = self.0.lock_recover();
-        if kept.1 != arrangement {
-            *kept = (kept.0.wrapping_add(1), arrangement);
+        if kept.1 != placement {
+            *kept = (kept.0.wrapping_add(1), placement);
         }
     }
 
@@ -147,7 +147,7 @@ impl Arranged {
         self.0.lock_recover().0
     }
 
-    fn arrangement(&self) -> Arrangement {
+    fn placement(&self) -> Placements {
         self.0.lock_recover().1.clone()
     }
 }
@@ -156,7 +156,7 @@ impl Arranged {
 struct State {
     local: Option<DeviceId>,
     layout: Layout,
-    /// The published generation of the person's displays, and of their arrangement, the layout
+    /// The published generation of the person's displays, and of their placement, the layout
     /// was made from.
     generation: Option<(u64, u64)>,
     locked: bool,
@@ -230,7 +230,7 @@ struct Active {
     device: DeviceId,
     output: String,
     nonce: [u8; 16],
-    /// The pointer in the shared arrangement.
+    /// The pointer in the shared placement.
     shared: (f64, f64),
     keys: BTreeSet<u32>,
     buttons: BTreeSet<u32>,
@@ -238,11 +238,11 @@ struct Active {
 }
 
 impl SharedInput {
-    pub(crate) fn new(fabric: SharedLink, continuity: Continuity, arranged: Arranged) -> Self {
+    pub(crate) fn new(fabric: SharedLink, continuity: Continuity, placed: PlacementWatch) -> Self {
         Self {
             fabric,
             continuity,
-            arranged,
+            placed,
             state: std::sync::Mutex::new(State::default()),
         }
     }
@@ -427,7 +427,7 @@ impl SharedInput {
             .iter()
             .position(|display| display.is(active.device.as_str(), &active.output))
         else {
-            // The screen it was on left the arrangement: control comes back.
+            // The screen it was on left the placement: control comes back.
             self.end(state, active);
             return true;
         };
@@ -626,7 +626,7 @@ impl SharedInput {
             .try_send_personal_fabric_action(device, PersonalFabricAction::InputLeaseAsk);
     }
 
-    /// Ask every other device whose screens stand in the arrangement for a lease, so the pointer
+    /// Ask every other device whose screens stand in the placement for a lease, so the pointer
     /// can go on from the device it entered to the next one.
     fn ask_neighbours(&self, state: &mut State) {
         let devices: BTreeSet<String> = state
@@ -768,7 +768,7 @@ impl SharedInput {
         }
     }
 
-    /// The session's pass: follow the arrangement and the lock, keep the pointer out of sight while
+    /// The session's pass: follow the placement and the lock, keep the pointer out of sight while
     /// it drives another device and bring it back where it returned, and hand the compositor what
     /// the devices driving this one sent. Says where the keyboard and pointer moved since the last
     /// pass, for the clipboard to follow them.
@@ -784,13 +784,13 @@ impl SharedInput {
         let released = self.hand_over(&mut state, compositor, shell);
         let generation = (
             PersonDisplays::published_generation(),
-            self.arranged.generation(),
+            self.placed.generation(),
         );
         if state.generation != Some(generation) {
             state.generation = Some(generation);
-            let arrangement = self.arranged.arrangement();
+            let placement = self.placed.placement();
             state.layout = PersonDisplays::published()
-                .map(|view| view.layout(&arrangement))
+                .map(|view| view.layout(&placement))
                 .unwrap_or_default();
         }
         state.locked = compositor.locked();
@@ -1124,7 +1124,7 @@ impl SharedInput {
     }
 
     /// What a tool reads of it: where this device's pointer is and whether it shows, the device it
-    /// drives, the screens of the arrangement, and what the devices driving this one sent and how
+    /// drives, the screens of the placement, and what the devices driving this one sent and how
     /// long it took.
     pub(crate) fn inspection(&self, pointer: (f64, f64), pointer_shown: bool) -> Json {
         let state = self.state.lock_recover();
@@ -1398,7 +1398,7 @@ mod tests {
         let shared = SharedInput::new(
             std::sync::Arc::clone(&recorded) as SharedLink,
             Continuity::default(),
-            Arranged::default(),
+            PlacementWatch::default(),
         );
         {
             let mut state = shared.state.lock_recover();

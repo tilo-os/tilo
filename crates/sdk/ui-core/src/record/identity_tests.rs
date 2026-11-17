@@ -25,14 +25,14 @@ fn file_identity_follows_the_file_not_its_path_or_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let first = dir.path().join("report.pdf");
         write(&first, b"%PDF-1.7 report");
-        let id = RecordId::identify_file(&first);
+        let id = DocumentId::identify_file(&first);
         assert!(
-            id.file_record().is_some(),
+            id.file_document().is_some(),
             "a local file carries a durable id: {id}"
         );
-        assert_eq!(RecordId::parse(id.as_str()), Some(id.clone()));
+        assert_eq!(DocumentId::parse(id.as_str()), Some(id.clone()));
         assert_eq!(
-            RecordId::identify_file(&first),
+            DocumentId::identify_file(&first),
             id,
             "reading it again is stable"
         );
@@ -40,7 +40,7 @@ fn file_identity_follows_the_file_not_its_path_or_bytes() {
         let renamed = dir.path().join("report-final.pdf");
         std::fs::rename(&first, &renamed).unwrap();
         assert_eq!(
-            RecordId::identify_file(&renamed),
+            DocumentId::identify_file(&renamed),
             id,
             "rename keeps identity"
         );
@@ -49,24 +49,24 @@ fn file_identity_follows_the_file_not_its_path_or_bytes() {
         std::fs::create_dir(&elsewhere).unwrap();
         let moved = elsewhere.join("2026.pdf");
         std::fs::rename(&renamed, &moved).unwrap();
-        assert_eq!(RecordId::identify_file(&moved), id, "move keeps identity");
+        assert_eq!(DocumentId::identify_file(&moved), id, "move keeps identity");
     }
     // phase: a_copy_or_identical_bytes_is_a_different_file
     {
         let dir = tempfile::tempdir().unwrap();
         let original = dir.path().join("a.pdf");
         write(&original, b"%PDF-1.7 same bytes");
-        let id = RecordId::identify_file(&original);
+        let id = DocumentId::identify_file(&original);
 
         let copy = dir.path().join("a copy.pdf");
         std::fs::copy(&original, &copy).unwrap();
-        let copy_id = RecordId::identify_file(&copy);
-        assert!(copy_id.file_record().is_some());
+        let copy_id = DocumentId::identify_file(&copy);
+        assert!(copy_id.file_document().is_some());
         assert_ne!(copy_id, id, "a copy starts its own records");
 
         let twin = dir.path().join("b.pdf");
         write(&twin, b"%PDF-1.7 same bytes");
-        let twin_id = RecordId::identify_file(&twin);
+        let twin_id = DocumentId::identify_file(&twin);
         assert_ne!(twin_id, id, "identical bytes never share an identity");
         assert_ne!(twin_id, copy_id);
     }
@@ -79,7 +79,7 @@ fn file_identity_follows_the_file_not_its_path_or_bytes() {
         write(&file, b"%PDF-1.7 synced");
         let fs_id = uuid::Uuid::new_v4();
         let path = std::ffi::CString::new(file.as_os_str().as_encoded_bytes()).unwrap();
-        let name = std::ffi::CString::new(collab_types::record::RECORD_ID_XATTR).unwrap();
+        let name = std::ffi::CString::new(collab_types::document::DOCUMENT_ID_XATTR).unwrap();
         // SAFETY: NUL-terminated strings and a 16-byte value.
         let rc = unsafe {
             libc::setxattr(
@@ -92,67 +92,70 @@ fn file_identity_follows_the_file_not_its_path_or_bytes() {
         };
         assert_eq!(rc, 0, "{}", std::io::Error::last_os_error());
         assert_eq!(
-            RecordId::identify_file(&file),
-            RecordId::for_file_record(fs_id)
+            DocumentId::identify_file(&file),
+            DocumentId::for_file_document(fs_id)
         );
-        assert_eq!(RecordId::identify_file(&file).file_record(), Some(fs_id));
+        assert_eq!(
+            DocumentId::identify_file(&file).file_document(),
+            Some(fs_id)
+        );
     }
     // phase: a_file_that_cannot_carry_an_id_is_identified_by_path
     {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("not-yet-saved.pdf");
         assert_eq!(
-            RecordId::identify_file(&missing),
-            RecordId::for_file(&missing)
+            DocumentId::identify_file(&missing),
+            DocumentId::for_file(&missing)
         );
         assert!(!missing.exists(), "identifying never creates the file");
         let folder = dir.path().join("folder");
         std::fs::create_dir(&folder).unwrap();
         assert_eq!(
-            RecordId::identify_file(&folder),
-            RecordId::for_file(&folder)
+            DocumentId::identify_file(&folder),
+            DocumentId::for_file(&folder)
         );
     }
     // phase: file_record_ids_are_canonical_and_nest_in_derived_ids
     {
         let raw = uuid::Uuid::new_v4();
-        let id = RecordId::for_file_record(raw);
-        let derived = RecordId::derived("annotations", &id);
-        assert_eq!(RecordId::parse(derived.as_str()), Some(derived.clone()));
+        let id = DocumentId::for_file_document(raw);
+        let derived = DocumentId::derived("annotations", &id);
+        assert_eq!(DocumentId::parse(derived.as_str()), Some(derived.clone()));
         let upper = format!(
-            "file-record:{}",
+            "file-document:{}",
             raw.hyphenated().to_string().to_uppercase()
         );
-        assert!(RecordId::parse(&upper).is_none(), "one spelling per file");
-        assert!(RecordId::parse(&format!("file-record:{}", uuid::Uuid::nil())).is_none());
-        assert!(RecordId::parse("file-record:not-a-uuid").is_none());
+        assert!(DocumentId::parse(&upper).is_none(), "one spelling per file");
+        assert!(DocumentId::parse(&format!("file-document:{}", uuid::Uuid::nil())).is_none());
+        assert!(DocumentId::parse("file-document:not-a-uuid").is_none());
         assert_eq!(id.file_path(), None);
     }
 }
 
-fn markup_checkouts(path: &str, file: &RecordId) -> (RecordCheckout, RecordCheckout) {
-    let by_path = RecordId::for_file(path);
-    let old = RecordCheckout::new(
-        RecordId::derived("annotations", &by_path),
-        RecordKind::new("annotation-set"),
+fn markup_checkouts(path: &str, file: &DocumentId) -> (DocumentCheckout, DocumentCheckout) {
+    let by_path = DocumentId::for_file(path);
+    let old = DocumentCheckout::new(
+        DocumentId::derived("annotations", &by_path),
+        ResourceType::new("annotation-set"),
     )
     .referencing(
-        RecordCheckout::new(by_path.clone(), RecordKind::new("file")),
+        DocumentCheckout::new(by_path.clone(), ResourceType::new("file")),
         "marks-up",
     );
-    let new = RecordCheckout::new(
-        RecordId::derived("annotations", file),
-        RecordKind::new("annotation-set"),
+    let new = DocumentCheckout::new(
+        DocumentId::derived("annotations", file),
+        ResourceType::new("annotation-set"),
     )
     .formerly(old.id.clone())
     .referencing(
-        RecordCheckout::new(file.clone(), RecordKind::new("file")).formerly(by_path),
+        DocumentCheckout::new(file.clone(), ResourceType::new("file")).formerly(by_path),
         "marks-up",
     );
     (old, new)
 }
 
-fn stored_bytes(root: &Path, package: &str, workspace: &str, id: &RecordId) -> Vec<u8> {
+fn stored_bytes(root: &Path, package: &str, workspace: &str, id: &DocumentId) -> Vec<u8> {
     app_state::FsStore::new(root)
         .read(&StorageKey::document(package, workspace, id.storage_key()))
         .unwrap()
@@ -165,15 +168,15 @@ tilo_test_env::scenario! {
 
     phase formerly_is_validated;
     {
-        let id = RecordId::minted();
-        let checkout = RecordCheckout::new(id.clone(), RecordKind::new("note")).formerly(id);
+        let id = DocumentId::minted();
+        let checkout = DocumentCheckout::new(id.clone(), ResourceType::new("note")).formerly(id);
         assert!(
             checkout.formerly.is_empty(),
             "a record is not its own predecessor"
         );
-        let mut many = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let mut many = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         for _ in 0..=MAX_FORMER_IDS {
-            many = many.formerly(RecordId::minted());
+            many = many.formerly(DocumentId::minted());
         }
         assert!(!many.is_valid());
     }
@@ -185,7 +188,7 @@ tilo_test_env::scenario! {
         let package = "so.tilo.migration";
         let workspace = "migration-workspace";
         let path = "/home/ada/papers/draft.pdf";
-        let file = RecordId::for_file_record(uuid::Uuid::new_v4());
+        let file = DocumentId::for_file_document(uuid::Uuid::new_v4());
         let (old, new) = markup_checkouts(path, &file);
 
         {
@@ -195,7 +198,7 @@ tilo_test_env::scenario! {
             store
                 .with(&old.id, |doc| {
                     put_text(doc, "note", "check the proof");
-                    add_reference(doc, &RecordRef::new(RecordId::for_file(path), "marks-up"));
+                    add_reference(doc, &DocumentRef::new(DocumentId::for_file(path), "marks-up"));
                 })
                 .unwrap();
             store.try_flush().unwrap();
@@ -216,7 +219,7 @@ tilo_test_env::scenario! {
                     assert_eq!(former_identities(doc), vec![old.id.clone()]);
                     let refs = references(doc);
                     assert!(
-                        refs.contains(&RecordRef::new(file.clone(), "marks-up")),
+                        refs.contains(&DocumentRef::new(file.clone(), "marks-up")),
                         "{refs:?}"
                     );
                     assert!(
@@ -247,7 +250,7 @@ tilo_test_env::scenario! {
                 assert_eq!(text(doc, "note").as_deref(), Some("check the proof"));
             })
             .unwrap();
-        let other = RecordId::for_file_record(uuid::Uuid::new_v4());
+        let other = DocumentId::for_file_document(uuid::Uuid::new_v4());
         let (_, stranger) = markup_checkouts(path, &other);
         assert!(matches!(
             store.try_open_record(&stranger),
@@ -262,7 +265,7 @@ tilo_test_env::scenario! {
         let package = "so.tilo.migration-launch";
         let workspace = "22222222-2222-4222-8222-222222222222";
         let path = "/home/ada/papers/draft.pdf";
-        let file = RecordId::for_file_record(uuid::Uuid::new_v4());
+        let file = DocumentId::for_file_document(uuid::Uuid::new_v4());
         let (old, new) = markup_checkouts(path, &file);
         {
             let mut set = RecordSet::open_in(Rc::clone(&documents), package, workspace);
@@ -282,7 +285,7 @@ tilo_test_env::scenario! {
             );
             assert_eq!(identity(&state.doc).unwrap().id, new.id);
             assert!(index::holds(&workspace_doc, &file));
-            assert!(!index::holds(&workspace_doc, &RecordId::for_file(path)));
+            assert!(!index::holds(&workspace_doc, &DocumentId::for_file(path)));
             set.flush(&mut state.doc).unwrap();
         }
         let store = RecordStore::new(RecordSet::open_in(
@@ -299,7 +302,7 @@ tilo_test_env::scenario! {
                 );
             })
             .unwrap();
-        let other = RecordId::for_file_record(uuid::Uuid::new_v4());
+        let other = DocumentId::for_file_document(uuid::Uuid::new_v4());
         let (_, stranger) = markup_checkouts(path, &other);
         assert!(matches!(
             store.open_existing_record_checked(&stranger),
@@ -313,7 +316,7 @@ tilo_test_env::scenario! {
         let documents = native(temp.path());
         let package = "so.tilo.migration-existing";
         let workspace = "33333333-3333-4333-8333-333333333333";
-        let file = RecordId::for_file_record(uuid::Uuid::new_v4());
+        let file = DocumentId::for_file_document(uuid::Uuid::new_v4());
         let (old, new) = markup_checkouts("/srv/notes/plan.pdf", &file);
         {
             let store = RecordStore::new(RecordSet::open_in(
@@ -344,11 +347,11 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_record_has_one_route_and_the_custody_key_is_none() {
-    let primary = RecordId::package_primary();
+    let primary = DocumentId::package_primary();
     assert_eq!(primary.route(), "");
-    assert_eq!(RecordId::from_route(""), Some(primary.clone()));
-    assert_eq!(RecordId::from_route(primary.as_str()), None);
-    let window = RecordId::workspace_default();
+    assert_eq!(DocumentId::from_route(""), Some(primary.clone()));
+    assert_eq!(DocumentId::from_route(primary.as_str()), None);
+    let window = DocumentId::workspace_default();
     assert_eq!(window.route(), window.as_str());
-    assert_eq!(RecordId::from_route(window.route()), Some(window));
+    assert_eq!(DocumentId::from_route(window.route()), Some(window));
 }

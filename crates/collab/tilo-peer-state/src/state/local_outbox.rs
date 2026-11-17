@@ -36,6 +36,7 @@ impl StatePeer {
             cluster_id,
             record_id,
             envelope,
+            ..
         } = message
         else {
             return Err("retained local publication requires AppDocument".into());
@@ -285,10 +286,14 @@ impl PeerOutboxMut<'_> {
             renewal.clone(),
             now,
         )?;
+        let own = candidate
+            .core
+            .own_write(&local.route.app, &local.route.record, &selected);
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(&selected),
             app_id: local.route.app,
             cluster_id: candidate.core.workspace.clone(),
+            own,
             record_id: local.route.record,
             envelope: Box::new(renewal),
         };

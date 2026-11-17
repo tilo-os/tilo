@@ -31,8 +31,9 @@ use tilo_actions::remote::{
 use tilo_agent::transform::{self, TransformModel};
 use tilo_automation::{
     AGENT_APP_ID, AGENT_TASK_ACTION, ActionCatalog, AskRequest, Binding, CheckErrorKind,
-    ConfirmationRequest, NoShortcuts, RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest,
-    RunTrigger, Shortcut, Step, StepFailure, StepKind, check, run,
+    ConfirmationRequest, InvocationHooks, InvocationId, InvocationMode, InvocationOutcome,
+    InvocationReport, InvocationRequest, InvocationTrigger, NoShortcuts, Shortcut, Step,
+    StepFailure, StepKind, check, run,
 };
 
 /// Answers from a script, counting how often it was asked.
@@ -212,7 +213,7 @@ impl ActionHost for AgentHost {
 
 struct Unattended;
 
-impl RunHooks for Unattended {
+impl InvocationHooks for Unattended {
     fn confirm(&self, _request: ConfirmationRequest) -> Pending<Option<Confirmation>> {
         Pending::ready(None)
     }
@@ -265,16 +266,20 @@ fn ai_shortcut(prompt: &str, output: Option<Value>, input: Option<Binding>) -> S
     }
 }
 
-fn run_shortcut(host: &AgentHost, shortcut: &Shortcut, inputs: Map<String, Value>) -> RunReport {
+fn run_shortcut(
+    host: &AgentHost,
+    shortcut: &Shortcut,
+    inputs: Map<String, Value>,
+) -> InvocationReport {
     block_on(run(
         host,
         &Unattended,
-        RunRequest {
+        InvocationRequest {
             shortcut,
-            run: RunId::new(),
+            invocation: InvocationId::new(),
             caller: Caller::local_person("ada"),
-            mode: RunMode::Unattended,
-            trigger: RunTrigger::Manual,
+            mode: InvocationMode::Unattended,
+            trigger: InvocationTrigger::Manual,
             inputs,
             caused_by: None,
             parent: None,
@@ -285,10 +290,10 @@ fn run_shortcut(host: &AgentHost, shortcut: &Shortcut, inputs: Map<String, Value
     ))
 }
 
-fn failure(report: &RunReport) -> Option<&StepFailure> {
+fn failure(report: &InvocationReport) -> Option<&StepFailure> {
     match &report.outcome {
-        RunOutcome::Completed | RunOutcome::Cancelled { .. } => None,
-        RunOutcome::Failed { failure, .. } => Some(failure),
+        InvocationOutcome::Completed | InvocationOutcome::Cancelled { .. } => None,
+        InvocationOutcome::Failed { failure, .. } => Some(failure),
     }
 }
 
@@ -305,7 +310,7 @@ fn a_summary_step_succeeds_against_the_published_descriptor() {
     assert_eq!(check(&digest, &host.catalog(), &NoShortcuts), Ok(()));
 
     let report = run_shortcut(&host, &digest, Map::new());
-    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
     assert_eq!(
         report.output,
         Some(json!("Two notes, both about the launch."))
@@ -342,7 +347,7 @@ fn a_task_step_runs_against_the_published_task_descriptor() {
     assert_eq!(check(&tidy, &host.catalog(), &NoShortcuts), Ok(()));
 
     let report = run_shortcut(&host, &tidy, Map::new());
-    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
     assert_eq!(report.output, Some(json!({"tidied": 3})));
     assert_eq!(host.model.asked().len(), 1);
 }
@@ -370,7 +375,7 @@ tilo_test_env::scenario! {
         assert_eq!(check(&extract, &host.catalog(), &NoShortcuts), Ok(()));
 
         let report = run_shortcut(&host, &extract, Map::new());
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert_eq!(
             report.output,
             Some(json!({"due": "Friday", "owner": "Ada"}))
@@ -430,7 +435,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(check(&triage, &host.catalog(), &NoShortcuts), Ok(()));
         let report = run_shortcut(&host, &triage, Map::new());
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert_eq!(report.output, Some(json!("urgent")));
     }
 
@@ -467,7 +472,7 @@ tilo_test_env::scenario! {
         let host = AgentHost::new(&[r#"{"result": "I cannot reach the mailbox."}"#]);
         let tidy = task_shortcut("Tidy the inbox", None);
         let report = run_shortcut(&host, &tidy, Map::new());
-        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert_eq!(report.output, Some(json!("I cannot reach the mailbox.")));
         let asked = host.model.asked();
         assert_eq!(

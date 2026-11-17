@@ -2,7 +2,7 @@
 //! side, showing the same, only the built-in or only the other ones — and how
 //! bright each one is.
 //!
-//! The display key steps through the arrangements ([`DisplayMode::Next`]);
+//! The display key steps through the modes ([`DisplayMode::Next`]);
 //! Settings, the display sheet and a script set one by name. Every display the
 //! session shows is a row of the reading, with how bright it is when this
 //! machine can set that, and the reading names the display the person works
@@ -10,7 +10,7 @@
 //! all read that one reading and invoke these one actions, so what a person
 //! sees of their displays and what changes them are one thing.
 //!
-//! What the arrangements are carried out with is the compositor, which only
+//! What the modes are carried out with is the compositor, which only
 //! the session's loop reaches: those verbs queue a [`SessionCommand`] the loop
 //! takes up on the same pass. Brightness is the machine's own hardware,
 //! reached through [`Backlights`], so it is set here at once and the reading
@@ -39,7 +39,7 @@ use crate::i18n::t;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DisplayMode {
-    /// The one after the current, in [`ARRANGEMENTS`] order.
+    /// The one after the current, in [`MODES`] order.
     Next,
     /// Every display on, side by side: one desktop across them.
     Extend,
@@ -51,24 +51,24 @@ pub enum DisplayMode {
     External,
 }
 
-/// The arrangements, in the order the display key steps through them.
-pub const ARRANGEMENTS: [DisplayMode; 4] = [
+/// The modes, in the order the display key steps through them.
+pub const MODES: [DisplayMode; 4] = [
     DisplayMode::Extend,
     DisplayMode::Mirror,
     DisplayMode::BuiltIn,
     DisplayMode::External,
 ];
 
-/// The names the `set-mode` action takes, in [`ARRANGEMENTS`] order.
+/// The names the `set-mode` action takes, in [`MODES`] order.
 pub const NAMES: [&str; 4] = ["extend", "mirror", "built-in", "external"];
 
 impl DisplayMode {
-    /// The arrangement named `name` ([`NAMES`]).
+    /// The mode named `name` ([`NAMES`]).
     #[must_use]
     pub fn named(name: &str) -> Option<Self> {
         NAMES
             .iter()
-            .zip(ARRANGEMENTS)
+            .zip(MODES)
             .find_map(|(known, mode)| (*known == name).then_some(mode))
     }
 }
@@ -145,7 +145,7 @@ pub(crate) fn placed(outputs: &[OutputInfo]) -> Vec<Placed> {
         .collect()
 }
 
-/// The arrangement `outputs` show now.
+/// The mode `outputs` show now.
 #[must_use]
 pub fn current(outputs: &[OutputInfo]) -> DisplayMode {
     let internal = internal(outputs);
@@ -179,7 +179,7 @@ pub fn arrange(mode: DisplayMode, outputs: &[OutputInfo]) -> Vec<OutputChange> {
     let mode = match mode {
         DisplayMode::Next => {
             let now = current(outputs);
-            ARRANGEMENTS
+            MODES
                 .iter()
                 .cycle()
                 .skip_while(|mode| **mode != now)
@@ -251,12 +251,12 @@ pub fn surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<Reading, DisplaysAction>("displays", "Displays")
 }
 
-/// What the displays resource offers: the arrangements, the display sheet,
+/// What the displays resource offers: the modes, the display sheet,
 /// and every display's brightness.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.session.displays")]
 pub enum DisplaysAction {
-    /// Use the displays together in the next arrangement
+    /// Use the displays together in the next mode
     #[effect(own_device, icon = "monitor")]
     NextMode,
     /// Use the displays together this way
@@ -458,7 +458,7 @@ struct Inner {
     /// The machine's brightness controls; `None` in a session that dims nothing (a test, a window
     /// inside another desktop).
     backlights: Option<Box<dyn Backlights>>,
-    /// Where the arrangements land, for the loop to carry out.
+    /// Where the modes land, for the loop to carry out.
     commands: Rc<RefCell<Vec<SessionCommand>>>,
     /// The displays the compositor shows, as its outputs say now.
     shown: Vec<Shown>,
@@ -535,7 +535,7 @@ impl Inner {
 }
 
 impl Displays {
-    /// The displays over `backlights` , whose arrangements land as `commands` the loop carries out.
+    /// The displays over `backlights` , whose modes land as `commands` the loop carries out.
     #[must_use]
     pub fn new(
         backlights: Option<Box<dyn Backlights>>,
@@ -785,7 +785,7 @@ impl Service for Displays {
     fn resources(&self) -> Vec<ResourceSpec> {
         let mut resource =
             offer::<DisplaysAction>(ResourceSpec::new(RESOURCE, KIND, t("session-displays")));
-        // The arrangements and the sheet keep the words the rest of the desktop names them by.
+        // The modes and the sheet keep the words the rest of the desktop names them by.
         for spec in &mut resource.actions {
             let label = match spec.id.as_str() {
                 "next-mode" => t("session-displays-next"),
@@ -818,7 +818,7 @@ impl Service for Displays {
             }),
             DisplaysAction::SetMode { mode } => {
                 let mode = DisplayMode::named(&mode).ok_or_else(|| {
-                    ApiError::InvalidArguments(format!("`{mode}` is not an arrangement"))
+                    ApiError::InvalidArguments(format!("`{mode}` is not a display mode"))
                 })?;
                 self.command(SessionCommand::Displays { mode });
             }

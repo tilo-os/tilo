@@ -16,7 +16,7 @@ use crate::colls::CollSeen;
 use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::handles::Retained;
-use crate::ids::Principal;
+use crate::ids::Actor;
 use crate::render::{Boundaries, LoopRows, Offer, Rendered, Scoped, Stub, ViewTarget, VirtualRows};
 use crate::space::Space;
 use crate::store::{ANY_FIELD, ChangeSummary, FieldKey, Splice, doc_of};
@@ -485,7 +485,7 @@ pub(crate) struct Live {
     index: Index,
     dirty: BTreeSet<BoundId>,
     pub space: Space,
-    pub viewer: Principal,
+    pub viewer: Actor,
     pub window: String,
     /// Whether rows of lists wait to be shown before they render.
     pub lazy_rows: bool,
@@ -524,7 +524,7 @@ pub(crate) const ROOT: BoundId = 0;
 impl Live {
     pub fn open(
         core: &Rc<Core>,
-        (viewer, window): (Principal, String),
+        (viewer, window): (Actor, String),
         target: ViewTarget,
         args: Vec<Value>,
     ) -> Result<Self, RuntimeError> {
@@ -725,7 +725,7 @@ impl Live {
         let mut reach = Reach::default();
         // What the person looking did in this window, as opposed to anyone else's change:
         // the rows of a list they changed themselves linger ([`crate::live::virtual_rows`]).
-        let mine = change.by.as_deref() == Some(self.viewer.0.as_str());
+        let mine = change.by.as_ref() == Some(&self.viewer);
         if mine {
             for key in &change.fields {
                 if let Some((_, item)) = key.resource.split_once('/') {

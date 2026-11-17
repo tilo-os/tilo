@@ -28,6 +28,10 @@ pub struct RemoteDocument {
     /// (before answering the subscription): old by nature.
     pub replayed: bool,
     pub envelope: SignedOp,
+    /// The member's own record it changes, as the write said
+    /// ([`collab_types::OwnRecord`]): only its person is granted anything in
+    /// it.
+    pub own: Option<collab_types::OwnRecord>,
 }
 
 /// How far an admitted device's live op may be dated from this clock.
@@ -103,6 +107,13 @@ fn deliver_at(
                 state
                     .artifact_records
                     .insert(artifact, document.record_id.clone());
+                if let Some(own) = document
+                    .own
+                    .as_ref()
+                    .filter(|own| own.names(&document.record_id))
+                {
+                    state.artifact_owners.insert(artifact, own.person());
+                }
                 validate_document(
                     &document.envelope,
                     &document.author,
@@ -254,7 +265,8 @@ fn fan_out(
 /// learns the same records as it subscribes
 /// ([`crate::collab_core::BrokerChannels::tree_records_held`]).
 fn announce_record(fanout: &FanoutState, route: &CrdtRoute) {
-    if ui::record::RecordId::parse(&route.record_id).is_none_or(|record| record.tree().is_none()) {
+    if ui::record::DocumentId::parse(&route.record_id).is_none_or(|record| record.tree().is_none())
+    {
         return;
     }
     fanout.fanout_to_route(
@@ -392,6 +404,7 @@ mod tests {
                 author: editor(),
                 replayed,
                 envelope,
+                own: None,
             };
             let channels = Arc::new(Mutex::new(BrokerChannels::default()));
             let fanout = FanoutState::new();
@@ -510,6 +523,7 @@ mod tests {
                         author: editor(),
                         replayed: false,
                         envelope: envelope.clone(),
+                        own: None,
                     },
                     |_| "writer".into(),
                 )
@@ -586,6 +600,7 @@ mod tests {
                     author: editor(),
                     replayed,
                     envelope,
+                    own: None,
                 },
                 |_| "writer".into(),
             );
@@ -620,11 +635,13 @@ mod tests {
     #[test]
     fn a_peer_written_part_is_announced_to_the_apps_open_window() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let part =
-            ui::record::RecordId::derived("messages", &ui::record::RecordId::workspace_default())
-                .part(0)
-                .to_string();
-        let conversation = ui::record::RecordId::for_tab(7).to_string();
+        let part = ui::record::DocumentId::derived(
+            "messages",
+            &ui::record::DocumentId::workspace_default(),
+        )
+        .part(0)
+        .to_string();
+        let conversation = ui::record::DocumentId::for_tab(7).to_string();
         let write = |record: &str, sequence: u64, title: &str| {
             let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
             let mut op = SignedOp::new_unsigned(
@@ -662,6 +679,7 @@ mod tests {
                     author: editor(),
                     replayed: false,
                     envelope,
+                    own: None,
                 },
                 |_| "peer".into(),
             )

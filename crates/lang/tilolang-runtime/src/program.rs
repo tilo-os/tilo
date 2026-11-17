@@ -2,8 +2,8 @@
 //! against every loaded app, runs it as a run the agent wrote, and keeps its top-level `let`s for
 //! the next.
 //!
-//! A program is code by its agent: its module's frames carry the agent's principal identity
-//! (`ModuleHash::principal`), so what it applies is decided as the agent's code, as a block's
+//! A program is code by its agent: its module's frames carry the agent's actor identity
+//! (`ModuleHash::written_by`), so what it applies is decided as the agent's code, as a block's
 //! is. Its output is what it `print`s. Values print as source: a resource as its reference
 //! literal (`@notes.Note:root-1/notes:n2`), so output pastes back into the next program.
 
@@ -13,7 +13,7 @@ use std::rc::Rc;
 use tilolang::{Binding, CompiledProgram, PackageMeta};
 
 use crate::core::{Core, HResult, trap};
-use crate::ids::Principal;
+use crate::ids::Actor;
 use crate::meta::{FieldKind, Ty};
 use crate::query::{Query, find, resolve};
 use crate::run::{RunOutcome, Suggestion};
@@ -98,7 +98,7 @@ impl Session {
     }
 
     /// Compile `source` against every app `runtime` holds and run it as `agent`.
-    pub fn run(&mut self, runtime: &Runtime, agent: &Principal, source: &str) -> ProgramReply {
+    pub fn run(&mut self, runtime: &Runtime, agent: &Actor, source: &str) -> ProgramReply {
         self.run_with(runtime, agent, source, ProgramInputs::default())
     }
 
@@ -107,7 +107,7 @@ impl Session {
     pub fn run_with(
         &mut self,
         runtime: &Runtime,
-        agent: &Principal,
+        agent: &Actor,
         source: &str,
         inputs: ProgramInputs,
     ) -> ProgramReply {
@@ -188,7 +188,7 @@ impl Runtime {
     /// it printed and kept, and how it ended.
     pub fn run_program(
         &self,
-        agent: &Principal,
+        agent: &Actor,
         program: &CompiledProgram,
         bound: impl Fn(&str) -> Option<Value>,
     ) -> (ProgramIo, ProgramOutcome) {
@@ -198,7 +198,7 @@ impl Runtime {
     /// [`Runtime::run_program`] with what the program reads of apps its host does not hold.
     pub fn run_program_with(
         &self,
-        agent: &Principal,
+        agent: &Actor,
         program: &CompiledProgram,
         bound: impl Fn(&str) -> Option<Value>,
         inputs: ProgramInputs,
@@ -426,7 +426,7 @@ impl Core {
             declared,
             &pkg.meta.enums,
             &self.program_clock()?,
-            viewer.as_deref(),
+            viewer.as_ref(),
         )?;
         let Some(pred) = crate::colls::field_reads(&resolved.pred, &info) else {
             return trap(format!(
@@ -576,11 +576,11 @@ impl Core {
                     .map_or_else(|| e.variant.clone(), |v| v.name.clone());
                 format!(".{name}")
             }
-            Value::Principal(p) => self
+            Value::Actor(p) => self
                 .names
                 .borrow()
                 .as_ref()
-                .map_or_else(|| p.0.clone(), |host| host.name(p)),
+                .map_or_else(|| p.id().to_owned(), |host| host.name(p)),
             Value::Error(reason) => format!("error: {reason}"),
             Value::Action(a) => format!("action {}", a.action),
             // Rich text as the one running the program reads it, a line per paragraph.

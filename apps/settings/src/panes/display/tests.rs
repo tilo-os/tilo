@@ -501,7 +501,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_arrangement_numbers_and_sizes_displays_like_identify;
+    phase the_placement_numbers_and_sizes_displays_like_identify;
     {
         let pane = laptop_with_monitor();
         let connected = pane.connected_outputs();
@@ -512,7 +512,7 @@ tilo_test_env::scenario! {
         assert!(panel.primary && !monitor.primary);
         assert_eq!(
             monitor.placement,
-            super::super::display_arrangement::placement::Placement::new(1920, 0, 2560, 1440)
+            super::super::display_placement::placement::Placement::new(1920, 0, 2560, 1440)
         );
     }
 
@@ -1027,7 +1027,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             pane.staged().outputs["eDP-1"].transform,
             OutputTransform::Normal,
-            "revert shows the last known-good arrangement, not the failed plan"
+            "revert shows the last known-good placement, not the failed plan"
         );
     }
 
@@ -1104,7 +1104,7 @@ tilo_test_env::scenario! {
         assert!(pane.trusted_tools().is_empty());
     }
 
-    phase arrangement_scale_and_rotation_apply_at_once_a_mode_asks_first;
+    phase placement_scale_and_rotation_apply_at_once_a_mode_asks_first;
     {
         let _guard = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = laptop_with_monitor();
@@ -1176,8 +1176,8 @@ fn laptop_with_monitor() -> DisplayModel {
 }
 
 #[test]
-fn the_arrangement_draws_mixed_dpi_displays_at_their_logical_size() {
-    use super::super::display_arrangement::placement::{Placement, settle};
+fn the_placement_draws_mixed_dpi_displays_at_their_logical_size() {
+    use super::super::display_placement::placement::{Placement, settle};
     let panel_mode = OutputMode {
         width: 2560,
         height: 1600,
@@ -1227,7 +1227,7 @@ fn peer_displays_are_inspectable_accessible_and_not_an_input_grant() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
     let mut pane = laptop_with_monitor();
     let tiles = |pane: &DisplayModel| {
-        pane.arrangement_canvas(&dispatcher(), &pane.connected_outputs())
+        pane.placement_canvas(&dispatcher(), &pane.connected_outputs())
             .accessibility()
             .unwrap()
             .children
@@ -1313,7 +1313,7 @@ fn laptop_on_displays() -> App {
 
 fn tile(host: &ui::headless::FrameHarness, name: &str) -> ui::vello::kurbo::Rect {
     let node = host
-        .root::<super::super::display_arrangement::DisplayArrangement>()
+        .root::<super::super::display_placement::DisplayPlacement>()
         .accessibility()
         .expect("the canvas describes its tiles");
     let child = node
@@ -1349,7 +1349,7 @@ fn the_canvas_is_the_one_display_selection() {
         Some("HDMI-A-1")
     );
     let connected = pane.connected_outputs();
-    let canvas = pane.arrangement_canvas(&dispatcher(), &connected);
+    let canvas = pane.placement_canvas(&dispatcher(), &connected);
     let tiles = canvas.accessibility().unwrap().children;
     let chosen: Vec<_> = tiles
         .iter()
@@ -1361,7 +1361,7 @@ fn the_canvas_is_the_one_display_selection() {
     drop(connected);
 
     let connected = pane.connected_outputs();
-    let canvas = pane.arrangement_canvas(&dispatcher(), &connected);
+    let canvas = pane.placement_canvas(&dispatcher(), &connected);
     drop(connected);
     let mut host = ui::headless::FrameHarness::for_root(
         ui::State::new(),
@@ -1404,7 +1404,7 @@ fn only_the_selected_displays_settings_show() {
         1,
         "the panel's brightness, once, in its settings"
     );
-    assert!(ids.iter().any(|id| id == "display.arrangement"));
+    assert!(ids.iter().any(|id| id == "display.placement"));
     assert!(
         !ids.iter().any(|id| id == "display.picker"),
         "no second place to choose than the canvas: {ids:?}"
@@ -1490,7 +1490,7 @@ fn choosing_or_dragging_a_display_shows_nothing_on_the_screens() {
     let mut pane = laptop_with_monitor();
     pane.normalize_selection();
     let connected = pane.connected_outputs();
-    let canvas = pane.arrangement_canvas(&dispatcher(), &connected);
+    let canvas = pane.placement_canvas(&dispatcher(), &connected);
     drop(connected);
     let mut host = ui::headless::FrameHarness::for_root(
         ui::State::new(),
@@ -1524,7 +1524,7 @@ fn choosing_or_dragging_a_display_shows_nothing_on_the_screens() {
     );
     assert!(
         settings_store::display_identify::IdentifyRequest::load().is_none(),
-        "touching the arrangement asks for no cards on the displays"
+        "touching the placement asks for no cards on the displays"
     );
     assert!(pane.identify_window.is_none(), "nor accents the tiles");
     // Only Identify does.

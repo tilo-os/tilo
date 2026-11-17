@@ -4,7 +4,7 @@ use taffy::style_helpers::length;
 use taffy::{Size, Style};
 
 use super::arranged::{Arranged, Layout, Resolved, Slot, lead_container, wrapper_style};
-use super::units::{Arrangement, Axis, Direction, Length, arrangement_for};
+use super::units::{Axis, Direction, Length, PaneSplit, pane_split_for};
 use crate::tokens::Rhythm;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,7 +69,7 @@ pub struct SplitLayout {
     collapse: Collapse,
     gap: Rhythm,
     direction: Direction,
-    arrangement: Arrangement,
+    panes: PaneSplit,
     shown: Pane,
     drawer_open: bool,
     navigation: Option<Navigation>,
@@ -77,13 +77,13 @@ pub struct SplitLayout {
 
 impl SplitLayout {
     #[must_use]
-    pub const fn arrangement(&self) -> Arrangement {
-        self.arrangement
+    pub const fn panes(&self) -> PaneSplit {
+        self.panes
     }
 
     #[must_use]
     pub fn collapsed(&self) -> bool {
-        self.arrangement == Arrangement::Collapsed
+        self.panes == PaneSplit::Collapsed
     }
 
     #[must_use]
@@ -139,9 +139,9 @@ impl Layout for SplitLayout {
         lead_container(
             Style {
                 display: taffy::Display::Flex,
-                flex_direction: match self.arrangement {
-                    Arrangement::SideBySide => self.row(),
-                    Arrangement::Collapsed => taffy::FlexDirection::Column,
+                flex_direction: match self.panes {
+                    PaneSplit::SideBySide => self.row(),
+                    PaneSplit::Collapsed => taffy::FlexDirection::Column,
                 },
                 align_items: Some(taffy::AlignItems::Stretch),
                 gap: Size {
@@ -170,7 +170,7 @@ impl Layout for SplitLayout {
             Pane::Primary => self.primary_min,
             Pane::Secondary => self.secondary_min,
         };
-        if self.arrangement == Arrangement::SideBySide {
+        if self.panes == PaneSplit::SideBySide {
             let share = match pane {
                 Pane::Primary => self.ratio,
                 Pane::Secondary => 1.0 - self.ratio,
@@ -190,18 +190,18 @@ impl Layout for SplitLayout {
         true
     }
 
-    /// The arrangement for the width this solve allocated, and the pane a host's navigation
+    /// The layout for the width this solve allocated, and the pane a host's navigation
     /// asks for. Whether the collapse is told to the host waits for [`Self::applied`]: a solve
     /// in a copy of the window's tree (a region measuring the split) is not where it stands.
     fn settle(&mut self, allocated: Size<f32>, resolved: &Resolved) -> bool {
-        let arrangement = arrangement_for(
+        let panes = pane_split_for(
             allocated.width,
             self.primary_min.resolve(resolved.rem),
             self.secondary_min.resolve(resolved.rem),
             resolved.gap(self.gap),
         );
-        let mut changed = arrangement != self.arrangement;
-        self.arrangement = arrangement;
+        let mut changed = panes != self.panes;
+        self.panes = panes;
         if let Some(navigation) = &self.navigation {
             let wanted = navigation.shown();
             changed |= wanted != self.shown;
@@ -212,14 +212,12 @@ impl Layout for SplitLayout {
 
     fn applied(&mut self) {
         if let Some(navigation) = &self.navigation {
-            navigation
-                .collapsed
-                .set(self.arrangement == Arrangement::Collapsed);
+            navigation.collapsed.set(self.panes == PaneSplit::Collapsed);
         }
     }
 
     fn hidden(&self, index: usize) -> bool {
-        if self.arrangement == Arrangement::SideBySide {
+        if self.panes == PaneSplit::SideBySide {
             return false;
         }
         let pane = Self::pane_of(index);
@@ -244,7 +242,7 @@ impl Arranged<SplitLayout> {
             collapse: Collapse::Stack,
             gap: Rhythm::Section,
             direction: Direction::Ltr,
-            arrangement: Arrangement::SideBySide,
+            panes: PaneSplit::SideBySide,
             shown: Pane::Primary,
             drawer_open: false,
             navigation: None,

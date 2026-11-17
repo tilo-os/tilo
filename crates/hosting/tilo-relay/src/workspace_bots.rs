@@ -3,7 +3,7 @@
 //! The host follows the workspace's records through its own copy: each member
 //! write it takes in ([`Workspaces::record_writes`]) wakes the bots that watch
 //! that record, which read the changes after their cursor as record events
-//! ([`tilo_agent_participant::bot::events_since`]). A bot acts through its
+//! ([`tilo_agent_session::bot::events_since`]). A bot acts through its
 //! own confined replica of the record, as the installation for its
 //! installer, and what it changed reaches the workspace as an ordinary change
 //! the governor publishes, so members merge it like anyone's and history
@@ -19,7 +19,7 @@ use collab_types::DocumentMutation;
 use tilo_action_policy::{
     Actor, Answer, Change, Grant, Grantee, KindSet, MemberId, Standing, TreePath, WorkspacePolicy,
 };
-use tilo_agent_participant::{AppCatalogue, Replica, ReplicaActor, Seed};
+use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Judge, ModerationAgent};
 use tilo_relay_session::workspaces::RemoveMemberRequest;
 use tilo_resource::Resource as _;
@@ -174,7 +174,7 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
                     tracing::warn!(%person, %failure, "moderation step failed");
                 }
             }
-            let taken = |error: tilo_agent_participant::AppError| error.to_string();
+            let taken = |error: tilo_agent_session::AppError| error.to_string();
             Ok::<_, String>((
                 replica.take_mutation().map_err(taken)?,
                 replica.take_record_mutations().map_err(taken)?,
@@ -195,7 +195,7 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
     }
 
     /// The parts of the chat's messages the workspace holds, each whole.
-    async fn parts(&self) -> Result<Vec<(ui::record::RecordId, Vec<u8>)>, String> {
+    async fn parts(&self) -> Result<Vec<(ui::record::DocumentId, Vec<u8>)>, String> {
         let mut parts = Vec::new();
         for (app, record) in self
             .workspaces
@@ -203,7 +203,7 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
             .await
             .map_err(|error| error.to_string())?
         {
-            let Some(part) = ui::record::RecordId::parse(&record)
+            let Some(part) = ui::record::DocumentId::parse(&record)
                 .filter(|record| app == CHAT && chat::parts::part_index(record).is_some())
             else {
                 continue;
@@ -264,7 +264,7 @@ fn reports_since(
     let Some(since) = since else {
         return Ok((true, heads));
     };
-    let events = tilo_agent_participant::bot::events_since(
+    let events = tilo_agent_session::bot::events_since(
         workspace,
         "",
         chat::Chat::KIND,
@@ -284,7 +284,7 @@ fn bot_replica(
     workspace: &str,
     installer: &str,
     bytes: Vec<u8>,
-    parts: Vec<(ui::record::RecordId, Vec<u8>)>,
+    parts: Vec<(ui::record::DocumentId, Vec<u8>)>,
 ) -> Result<Replica, String> {
     let bot = Grantee::bot(MODERATION_INSTALLATION);
     let grant = Grant::new(
@@ -311,7 +311,7 @@ fn bot_replica(
             standing,
         },
         Seed::Existing {
-            record: ui::record::RecordId::package_primary(),
+            record: ui::record::DocumentId::package_primary(),
             changes: vec![bytes],
         },
     )
@@ -356,10 +356,10 @@ where
 /// keeps one per workspace (chat), else the workspace's default record, which every
 /// member's first window of the app opens.
 #[must_use]
-pub fn workspace_record(catalogue: &tilo_agent_participant::AppCatalogue, app: &str) -> String {
+pub fn workspace_record(catalogue: &tilo_agent_session::AppCatalogue, app: &str) -> String {
     match catalogue.get(app) {
         Some(definition) if !definition.keeps_workspace_record() => {
-            ui::record::RecordId::workspace_default()
+            ui::record::DocumentId::workspace_default()
                 .as_str()
                 .to_owned()
         }

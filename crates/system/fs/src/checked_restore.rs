@@ -148,7 +148,7 @@ impl QuickFS {
             "tilo.checked-files-review.v1",
             workspace_id,
             self.mount_lifetime,
-            state.record_id,
+            state.document_id,
             &versions,
             &conflicts,
             revision,
@@ -159,7 +159,7 @@ impl QuickFS {
             schema_version: 1,
             workspace_id,
             mount_lifetime: self.mount_lifetime,
-            record_id: state.record_id,
+            document_id: state.document_id,
             frontier: *blake3::hash(&bytes).as_bytes(),
         })
     }
@@ -201,9 +201,9 @@ impl QuickFS {
             return Err(Outcome::PendingWrites);
         }
         Self::restore_kind(&namespace, ino)?;
-        let record_id = namespace.record_id_for(ino).ok_or(Outcome::NotVisible)?;
+        let document_id = namespace.document_id_for(ino).ok_or(Outcome::NotVisible)?;
         let state = namespace
-            .record_history(record_id)
+            .record_history(document_id)
             .ok_or(Outcome::Unavailable)?;
         let revision = namespace
             .observed_content_revision(ino)
@@ -247,7 +247,7 @@ impl QuickFS {
                     },
                 );
             };
-            if namespace.record_id_for(ino) != Some(receipt.record_id) {
+            if namespace.document_id_for(ino) != Some(receipt.document_id) {
                 return Err(Outcome::ReviewRequired);
             }
             Ok(Outcome::Applied { receipt })
@@ -296,7 +296,7 @@ impl QuickFS {
         }
     }
 
-    fn project_checked_availability(&self, record_id: fs_protocol::FileRecordId) {
+    fn project_checked_availability(&self, document_id: fs_protocol::FileDocumentId) {
         let Some(registry) = &self.availability else {
             return;
         };
@@ -306,19 +306,19 @@ impl QuickFS {
         let Ok(mut namespace) = self.namespace.lock() else {
             return;
         };
-        let Some(ino) = namespace.ensure_ino_for_record_id(record_id) else {
+        let Some(ino) = namespace.ensure_ino_for_document_id(document_id) else {
             return;
         };
         let Some(revision) = namespace.observed_content_revision(ino) else {
             return;
         };
         if registry
-            .get(record_id)
+            .get(document_id)
             .is_none_or(|record| record.current_version != Some(revision.version_id))
         {
             let parent = namespace
                 .parent_ino(ino)
-                .and_then(|parent| namespace.record_id_for(parent));
+                .and_then(|parent| namespace.document_id_for(parent));
             let _ = registry.track_current_revision(revision, RecordKind::File, parent, now_ms());
         }
     }
@@ -349,7 +349,7 @@ impl QuickFS {
                 ) {
                     return Err(Outcome::InvalidRequest);
                 }
-                if receipt.record_id != request.review.record_id
+                if receipt.document_id != request.review.document_id
                     || receipt.workspace_id != request.review.workspace_id
                 {
                     return Err(Outcome::ReviewRequired);
@@ -389,7 +389,7 @@ impl QuickFS {
         })?;
         self.restore_workspace()?;
         let actor = *self.history.as_ref().ok_or(Outcome::Unavailable)?;
-        if self.ns().record_id_for(ino) != Some(request.review.record_id) {
+        if self.ns().document_id_for(ino) != Some(request.review.document_id) {
             return Err(Outcome::ReviewRequired);
         }
         // An admitted request answers with its own receipt, whatever the
@@ -399,7 +399,7 @@ impl QuickFS {
             if admitted != request {
                 return Err(Outcome::InvalidRequest);
             }
-            self.project_checked_availability(receipt.record_id);
+            self.project_checked_availability(receipt.document_id);
             return Ok(Step::Settled(Outcome::Applied { receipt }));
         }
         if request.review.mount_lifetime != self.mount_lifetime {
@@ -409,7 +409,7 @@ impl QuickFS {
         let (selected, kind, current_hash) = {
             let namespace = self.ns();
             let selected = namespace
-                .record_version(request.review.record_id, selected_id)
+                .record_version(request.review.document_id, selected_id)
                 .0
                 .ok_or(Outcome::InvalidRequest)?;
             let kind = Self::restore_kind(&namespace, ino)?;
@@ -464,7 +464,7 @@ impl QuickFS {
             let path = namespace.path_for(ino).ok_or(Outcome::NotVisible)?;
             let identity = self.enforcement.as_ref().map(|(_, id)| id);
             access(acl.as_deref(), identity, &path, Access::Write)?;
-            if namespace.record_id_for(ino) != Some(request.review.record_id)
+            if namespace.document_id_for(ino) != Some(request.review.document_id)
                 || Self::restore_kind(&namespace, ino)? != kind
             {
                 return Err(Outcome::ReviewRequired);
@@ -473,7 +473,7 @@ impl QuickFS {
                 return Err(Outcome::PendingWrites);
             }
             let state = namespace
-                .record_history(request.review.record_id)
+                .record_history(request.review.document_id)
                 .ok_or(Outcome::Unavailable)?;
             let prior = namespace
                 .observed_content_revision(ino)
@@ -523,7 +523,7 @@ impl QuickFS {
             );
             let proposed = FileVersionV1 {
                 id: fs_protocol::FileVersionId::new(),
-                record_id: request.review.record_id,
+                document_id: request.review.document_id,
                 parents: state.heads,
                 actor,
                 timestamp_ms: timestamp,
@@ -533,7 +533,7 @@ impl QuickFS {
             };
             let revision = ContentRevisionV1 {
                 schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                record_id: proposed.record_id,
+                document_id: proposed.document_id,
                 version_id: proposed.id,
                 content_hash: proposed.content_hash,
                 byte_len: restored_len,
@@ -544,7 +544,7 @@ impl QuickFS {
                 intent_id: request.intent_id,
                 workspace_id: request.review.workspace_id,
                 mount_lifetime: self.mount_lifetime,
-                record_id: proposed.record_id,
+                document_id: proposed.document_id,
                 selected_version: selected_id,
                 prior_revision: prior,
                 restored_revision: revision,
@@ -574,7 +574,7 @@ impl QuickFS {
             (proposed, receipt, path)
         };
         let (proposed, receipt, path) = committed;
-        self.project_checked_availability(request.review.record_id);
+        self.project_checked_availability(request.review.document_id);
         self.publish();
         self.attribute_version(&proposed, Some(&path));
         Ok(Step::Settled(Outcome::Applied { receipt }))

@@ -37,7 +37,7 @@ use crate::output::AppOutput;
 
 use tilo_lock::MutexRecover as _;
 
-use crate::channels::HeldChannel;
+use crate::links::HeldLink;
 use crate::memory;
 use crate::plan::Planned;
 
@@ -239,16 +239,16 @@ impl Spawner {
             .map(|(started, _)| started)
     }
 
-    /// [`Self::start`] with the window channel `channel` of the app's workspace, which
+    /// [`Self::start`] with the link `link` of the app's workspace, which
     /// the app is handed with its release so it opens the app's later
     /// windows itself.
     ///
     /// The launcher waits at a registration gate until `record` has written
     /// the launch down: an app that connected before its launch was known
-    /// would be refused by the session's services. A launch without a channel
+    /// would be refused by the session's services. A launch without a link
     /// gets no gate, and its command line is its stdin.
     ///
-    /// The channel comes back held for as long as the app runs, so the caller
+    /// The link comes back held for as long as the app runs, so the caller
     /// keeps it until the app ends.
     ///
     /// # Errors
@@ -256,9 +256,9 @@ impl Spawner {
     pub fn start_with(
         &mut self,
         planned: &Planned,
-        mut channel: Option<HeldChannel>,
+        mut link: Option<HeldLink>,
         record: &dyn Fn(u32),
-    ) -> Result<(Started, Option<HeldChannel>), SpawnError> {
+    ) -> Result<(Started, Option<HeldLink>), SpawnError> {
         crate::name_surface(planned);
         let mut command = Command::new(&planned.program);
         command
@@ -294,7 +294,7 @@ impl Spawner {
             None
         });
         let output = Arc::new(AppOutput::new(planned.app.clone(), diagnostics));
-        let gate = match channel {
+        let gate = match link {
             Some(_) => match launcher::registration_gate::install(&mut command) {
                 Ok(gate) => Some(gate),
                 // Without its gate the launch would run unreleased: it starts
@@ -334,11 +334,9 @@ impl Spawner {
         record(started.pid);
         if let Some(gate) = gate {
             // The launch is written down: the app may connect.
-            let served = channel
-                .as_mut()
-                .and_then(|channel| channel.serve(started.pid));
+            let served = link.as_mut().and_then(|link| link.serve(started.pid));
             let released = match &served {
-                Some(theirs) => gate.release_with_window_channel(theirs.as_fd()),
+                Some(theirs) => gate.release_with_window_link(theirs.as_fd()),
                 None => gate.release(),
             };
             if let Err(error) = released {
@@ -378,7 +376,7 @@ impl Spawner {
                 app: planned.app.clone(),
                 reason: format!("no thread to watch it: {error}"),
             })?;
-        Ok((started, channel))
+        Ok((started, link))
     }
 
     /// The apps that ended since the last call, oldest first.

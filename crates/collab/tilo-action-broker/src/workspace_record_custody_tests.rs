@@ -1,5 +1,5 @@
 /// A launch's committed reads of the records every app of its workspace opens
-/// (`collab_types::WORKSPACE_RECORDS`), through the actual channel handle
+/// (`collab_types::WORKSPACE_DOCUMENTS`), through the actual channel handle
 /// and its live launcher custody: any app's window of the workspace reads and
 /// changes them, as the workspace's grants on their owner decide, and nothing
 /// else of their owner's.
@@ -8,8 +8,8 @@ mod workspace_record_custody {
 
     const LAUNCHED: &str = "so.tilo.notes";
 
-    fn emoji() -> &'static collab_types::WorkspaceRecord {
-        collab_types::WORKSPACE_RECORDS
+    fn emoji() -> &'static collab_types::WorkspaceDocument {
+        collab_types::WORKSPACE_DOCUMENTS
             .first()
             .expect("the workspace's emoji")
     }
@@ -85,7 +85,7 @@ mod workspace_record_custody {
                 let (identity, _connection) = admitted(&workspace).await;
                 let (socket, _peer) = tokio::net::UnixStream::pair().unwrap();
                 let cluster = workspace.route.cluster_id.clone();
-                let record = collab_types::workspace_record_id(emoji().kind);
+                let record = collab_types::workspace_document_id(emoji().kind);
 
                 let route = CrdtRoute::record(emoji().app, &cluster, &record);
                 let channel = launched_channel(&workspace, &identity, &route, &socket);
@@ -189,7 +189,7 @@ mod workspace_record_custody {
                 let (identity, _connection) = admitted(&workspace).await;
                 let (socket, _peer) = tokio::net::UnixStream::pair().unwrap();
                 let cluster = workspace.route.cluster_id.clone();
-                let record = collab_types::workspace_record_id(emoji().kind);
+                let record = collab_types::workspace_document_id(emoji().kind);
                 let route = CrdtRoute::record(emoji().app, &cluster, &record);
                 let add = {
                     let mut op = SignedOp::new_unsigned(
@@ -252,7 +252,7 @@ mod workspace_record_custody {
     #[test]
     fn a_workspace_record_route_is_joined_as_its_own_kind() {
         let workspace = tilo_desktop_model::WorkspaceId::new().to_string();
-        let record = collab_types::workspace_record_id(emoji().kind);
+        let record = collab_types::workspace_document_id(emoji().kind);
         let route = CrdtRoute::record(emoji().app, &workspace, &record);
         assert_eq!(
             route_record_kind(&route, None).unwrap().as_deref(),

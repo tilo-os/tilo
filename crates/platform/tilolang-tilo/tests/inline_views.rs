@@ -10,7 +10,7 @@ use automerge::AutoCommit;
 use serde_json::json;
 use tilolang::IdsLock;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
-use tilolang_runtime::{ModuleHash, Principal, ResourceRef, UiNode, Value, ViewInstance};
+use tilolang_runtime::{Actor, ModuleHash, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 /// The callee: an app whose items another app's views show, with a row view of its own.
@@ -43,7 +43,7 @@ view b_row(x: Item) {
 "#;
 
 /// The caller: a view that calls the callee's view by name, and one that composes it from text
-/// as an arrangement names it.
+/// as a layout names it.
 const CALLER: &str = r#"app test.a "A"
 
 use test.b as b
@@ -110,7 +110,12 @@ fn workspace(title: &str) -> Workspace {
 /// The same host before any reading of the callee's item arrived.
 fn unread_workspace() -> Workspace {
     let doc = AutoCommit::new();
-    let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
+    let host = Host::new(
+        &doc,
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
     let shown = tilolang::compile_package(CALLEE, &IdsLock::new(), &[])
         .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
     let shown_hash = host
@@ -166,7 +171,7 @@ impl Workspace {
         self.host
             .runtime()
             .open_view(
-                &Principal::new("ada"),
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 &view_id(&self.caller_meta, "a_canvas"),
                 Vec::new(),
             )

@@ -48,7 +48,7 @@ fn tab(minter: &mut IdMinter, app: &str, label: &str) -> Tab {
 /// `others` more tabs after it.
 fn shell(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
     width: u32,
     others: &[(&str, &str)],
 ) -> FrameHarness {

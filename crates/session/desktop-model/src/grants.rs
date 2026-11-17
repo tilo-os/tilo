@@ -280,7 +280,7 @@ mod tests {
                 id,
                 WorkspaceEffectReceipt::recorded(
                     invocation,
-                    "owner",
+                    &tilo_actions::MemberId::person("owner"),
                     context,
                     EffectReceiptStatus::Succeeded,
                     42,
@@ -314,7 +314,7 @@ mod tests {
                 id,
                 WorkspaceEffectReceipt::redacted(
                     invocation,
-                    "owner",
+                    &tilo_actions::MemberId::person("owner"),
                     ActionContext::default(),
                     EffectReceiptStatus::Succeeded,
                     43,

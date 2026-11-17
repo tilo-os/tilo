@@ -13,6 +13,7 @@
     reason = "app-local arithmetic; see the note above"
 )]
 pub mod actions;
+pub mod commands;
 mod emulator;
 mod graphics;
 pub mod history;
@@ -22,7 +23,6 @@ mod native_editor;
 pub mod parse;
 pub mod preferences;
 pub mod resource;
-pub mod runs;
 #[cfg(feature = "samples")]
 mod scenarios;
 

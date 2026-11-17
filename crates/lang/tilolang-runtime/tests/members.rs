@@ -8,7 +8,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::members::Member;
-    use tilolang_runtime::{AmStore, Principal, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{Actor, AmStore, ResourceRef, Runtime, SimpleAuthority, Value};
 
     const SOURCE: &str = r#"app so.tilo.workspaces "Workspaces"
 
@@ -19,7 +19,7 @@ type Workspace {
 
 type Line {
     text: Text
-    author: Principal
+    author: Actor
 }
 
 default view workspace for Workspace
@@ -28,7 +28,7 @@ action write(r: Workspace, text: Text) {
     r.lines.insert(Line(text: text, author: invoker))
 }
 
-fn kind_of(p: Principal) -> Text {
+fn kind_of(p: Actor) -> Text {
     if p.kind() == .agent { "agent" } else { "person" }
 }
 
@@ -54,16 +54,16 @@ view two(r: Workspace) {
 }
 "#;
 
-    fn ada() -> Principal {
-        Principal::new("ada")
+    fn ada() -> Actor {
+        person("ada")
     }
 
-    fn bo() -> Principal {
-        Principal::new("bo")
+    fn bo() -> Actor {
+        person("bo")
     }
 
-    fn planner() -> Principal {
-        Principal::new("agent:planner")
+    fn planner() -> Actor {
+        agent("planner")
     }
 
     /// Two people and an agent, as a workspace's membership records them.
@@ -99,7 +99,7 @@ view two(r: Workspace) {
             Some(Value::List(items)) => items
                 .iter()
                 .map(|item| match item {
-                    Value::Principal(who) => who.0.clone(),
+                    Value::Actor(who) => who.id().to_owned(),
                     other => panic!("{prop} holds {other:?}"),
                 })
                 .collect(),
@@ -122,12 +122,12 @@ view two(r: Workspace) {
                 [
                     "in ada person owner",
                     "in bo person editor",
-                    "in agent:planner agent no role",
+                    "in planner agent no role",
                 ]
             );
             assert_eq!(
                 texts(&v, "reads "),
-                ["reads ada", "reads bo", "reads agent:planner"],
+                ["reads ada", "reads bo", "reads planner"],
                 "without grants that narrow it, every member reads the workspace's resources"
             );
         }
@@ -138,8 +138,8 @@ view two(r: Workspace) {
             let hidden = private.clone();
             rt.set_members(
                 membership(),
-                Some(Rc::new(move |who: &Principal, r: &ResourceRef| {
-                    *r != hidden || who.0 == "ada"
+                Some(Rc::new(move |who: &Actor, r: &ResourceRef| {
+                    *r != hidden || who.id() == "ada"
                 })),
             );
             let on = |r: &ResourceRef| {
@@ -166,7 +166,7 @@ view two(r: Workspace) {
             rt.set_members(membership(), None);
             v.poll_patches().unwrap();
             assert_eq!(texts(&v, "in ").len(), 3, "a member admitted shows at once");
-            assert_eq!(people(&v, "people"), ["ada", "bo", "agent:planner"]);
+            assert_eq!(people(&v, "people"), ["ada", "bo", "planner"]);
             let mut changed = membership();
             changed.remove(1);
             if let Some(ada) = changed.first_mut() {
@@ -176,7 +176,7 @@ view two(r: Workspace) {
             v.poll_patches().unwrap();
             assert_eq!(
                 texts(&v, "in "),
-                ["in ada person editor", "in agent:planner agent no role"],
+                ["in ada person editor", "in planner agent no role"],
                 "a removal and a role change show at once"
             );
         }
@@ -207,14 +207,14 @@ view two(r: Workspace) {
                     &[
                         "bo".to_owned(),
                         "ada".to_owned(),
-                        "agent:planner".to_owned()
+                        "planner".to_owned()
                     ][..]
                 ),
                 "newest first, each once: {speakers:?}"
             );
             assert_eq!(
                 people(&v, "people"),
-                ["ada", "bo", "agent:planner"],
+                ["ada", "bo", "planner"],
                 "and the members under them"
             );
         }
@@ -239,7 +239,7 @@ view two(r: Workspace) {
                 .unwrap();
             assert_eq!(
                 people(&v, "speakers"),
-                ["agent:planner", "bo"],
+                ["planner", "bo"],
                 "the two newest, though three spoke"
             );
         }

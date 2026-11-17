@@ -14,7 +14,7 @@ use tilo_compositor::gestures::{
     GestureAction, GestureConfig, GestureTracker, SWIPE_THRESHOLD, claims,
 };
 use tilo_compositor::{
-    Arrangement, GestureEvent, LayoutPoint, LayoutRect, TouchSample, WindowInfo, WindowPolicy,
+    GestureEvent, LayoutPoint, LayoutRect, TouchSample, WindowInfo, WindowPlacement, WindowPolicy,
     WindowRequest,
 };
 use tilo_session_core::surface::{HostIme, HostKey, HostLayer, HostTextInput, Scroll, SurfaceHost};
@@ -537,7 +537,7 @@ impl DesktopHost {
     /// The policy that places this desktop's windows where a tilolang shell's wells stand
     /// (`docs/designs/app-language/shell.md` §8.3), in place of the strips': what a session
     /// runs with when the shell draws the whole screen. The windows keep their tabs in this
-    /// desktop, so a place in the person's arrangement names the window's well.
+    /// desktop, so a place in the person's placement names the window's well.
     #[must_use]
     pub fn well_policy(&self) -> crate::WellPolicy {
         crate::WellPolicy::over(Rc::new(self.clone()))
@@ -841,6 +841,17 @@ impl SurfaceHost for DesktopHost {
             .collect()
     }
 
+    fn drawn_over_window(&self) -> Option<(u64, (i32, i32, i32, i32))> {
+        // A window covering its display shows its own bar over itself while the person reaches for
+        // the bar over the display; the desktop draws that bar, under the windows.
+        let desktop = self.desktop.borrow();
+        let origin = desktop.host.placement().origin;
+        desktop
+            .policy
+            .covering_bar()
+            .map(|(window, bar)| (window, placed(bar, origin)))
+    }
+
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
         self.desktop.borrow().host.accepts_pointer(x, y)
     }
@@ -1142,7 +1153,7 @@ impl WindowPolicy for StripPolicy {
         &mut self,
         windows: &[(WindowInfo, LayoutRect)],
         outputs: &[LayoutRect],
-    ) -> Option<Vec<Arrangement>> {
+    ) -> Option<Vec<WindowPlacement>> {
         // A launched window whose tab came with the last layout goes to its own workspace.
         self.desktop.borrow_mut().policy.carry_launched();
         // A window the compositor lists has shown its buffer.
@@ -1190,26 +1201,31 @@ impl WindowPolicy for StripPolicy {
                 .find(|(id, _)| *id == window)
                 .map(|(_, rect)| layout_rect(*rect, origin))
         };
+        // The desktop decides which window covers its display: one that asked for it and was
+        // given it back (the window's own control, its menu, a key) is told so.
+        let covering = desktop.policy.covering_window();
         Some(
             windows
                 .iter()
                 .map(|(window, current)| {
                     if let Some(rect) = of(&placement.shown, window.id) {
-                        return Arrangement {
+                        return WindowPlacement {
                             id: window.id,
                             location: rect.loc,
                             size: Some((rect.size.w, rect.size.h)),
                             clip: of(&placement.clips, window.id),
+                            fullscreen: Some(covering == Some(window.id)),
                         };
                     }
                     let size = (current.size.w, current.size.h);
-                    Arrangement {
+                    WindowPlacement {
                         id: window.id,
                         location: desktop
                             .floating(window.id, size)
                             .unwrap_or_else(|| LayoutPoint::from((OFFSTAGE, 0))),
                         size: None,
                         clip: None,
+                        fullscreen: None,
                     }
                 })
                 .collect(),

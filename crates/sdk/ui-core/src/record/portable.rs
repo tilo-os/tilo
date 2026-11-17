@@ -1,14 +1,14 @@
 //! Cache adapter for the canonical record lifecycle; widget, action and history
 //! ownership remain in the ordinary RecordStore.
 use super::{
-    AutoCommit, Parked, PortableStorage, Rc, RecordCheckout, RecordId, RecordOpenError,
+    AutoCommit, DocumentCheckout, DocumentId, Parked, PortableStorage, Rc, RecordOpenError,
     RecordOpenOutcome, RecordOwners, RecordReservation, RecordSaveStatus, RecordSet, RecordStore,
     Reserved, Transactable, validate_identity,
 };
 // The browser cache has its own key space (with a package-primary slot).
 use crate::portable_storage::StorageKey;
 
-pub(super) fn key(package: &str, workspace: &str, id: &RecordId) -> StorageKey {
+pub(super) fn key(package: &str, workspace: &str, id: &DocumentId) -> StorageKey {
     if id.is_package_primary() {
         return StorageKey::Primary {
             package: package.into(),
@@ -40,7 +40,7 @@ impl RecordOwners {
 impl RecordSet {
     pub(super) fn open_portable(
         &mut self,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
     ) -> Result<RecordOpenOutcome, RecordOpenError> {
         if self.pending.contains_key(&want.id) {
             return Err(RecordOpenError::Busy);
@@ -91,7 +91,7 @@ impl RecordSet {
         );
         Ok(RecordOpenOutcome::Loaded)
     }
-    pub(super) fn offer_portable_record(&mut self, id: &RecordId) -> Result<(), String> {
+    pub(super) fn offer_portable_record(&mut self, id: &DocumentId) -> Result<(), String> {
         let cache = self
             .portable
             .as_ref()
@@ -115,7 +115,7 @@ impl RecordSet {
     /// ([`RecordSet::try_flush_written`]), not a failure.
     pub(super) fn flush_portable(
         &mut self,
-        only: Option<&RecordId>,
+        only: Option<&DocumentId>,
         accepted_is_written: bool,
     ) -> Result<(), String> {
         let cache = self
@@ -160,7 +160,7 @@ impl RecordStore {
     pub(super) fn reserve_portable(
         &self,
         set: &mut RecordSet,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
     ) -> Result<RecordReservation, RecordOpenError> {
         let cache = set
             .portable
@@ -263,7 +263,7 @@ pub(super) fn save_status(
     cache: &PortableStorage,
     package: &str,
     workspace: &str,
-    id: &RecordId,
+    id: &DocumentId,
     doc: &AutoCommit,
 ) -> RecordSaveStatus {
     RecordSaveStatus::of_portable(cache, &key(package, workspace, id), doc)
@@ -271,7 +271,7 @@ pub(super) fn save_status(
 
 #[cfg(test)]
 mod tests {
-    use super::super::RecordKind;
+    use super::super::ResourceType;
     use super::*;
     tilo_test_env::scenario! {
         fn portable_records_are_cached_owned_once_and_written_in_sequence;
@@ -279,7 +279,7 @@ mod tests {
         phase cached_heads_save_status_tracks_current_document_and_durability;
         {
             let cache = PortableStorage::new("profile", "device").unwrap();
-            let id = RecordId::minted();
+            let id = DocumentId::minted();
             let storage_key = key("test", "workspace", &id);
             let mut doc = AutoCommit::new();
             doc.put(automerge::ROOT, "value", 1).unwrap();
@@ -343,7 +343,7 @@ mod tests {
             let store = RecordOwners::portable(cache.clone())
                 .open("so.tilo.test", "workspace")
                 .unwrap();
-            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
             assert!(matches!(
                 store.open_existing_record_checked(&checkout),
                 Err(RecordOpenError::MissingRecord)
@@ -370,7 +370,7 @@ mod tests {
         phase corrupt_hydrated_record_is_retained_and_cannot_be_recreated;
         {
             let cache = PortableStorage::new("profile", "device").unwrap();
-            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
             let key = key("so.tilo.test", "workspace", &checkout.id);
             cache
                 .hydrate(key.clone(), vec![1, 2, 3], Some(vec![42]))
@@ -387,7 +387,7 @@ mod tests {
         phase a_second_page_writing_a_record_never_writes_a_sequence_twice;
         {
             let cache = PortableStorage::new("profile", "device").unwrap();
-            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
             let key = key("so.tilo.test", "workspace", &checkout.id);
             let page = RecordOwners::portable(cache.clone())
                 .open("so.tilo.test", "workspace")
@@ -443,7 +443,7 @@ mod tests {
         // nowhere.
         {
             let cache = PortableStorage::new("profile", "device").unwrap();
-            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
             let store = RecordOwners::portable(cache.clone())
                 .open("so.tilo.test", "workspace")
                 .unwrap();
@@ -525,7 +525,7 @@ mod tests {
             let store = RecordOwners::portable(cache)
                 .open("so.tilo.test", "workspace")
                 .unwrap();
-            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
             let mut reservation = store.reserve_record(&checkout).unwrap();
             assert!(
                 reservation

@@ -244,7 +244,7 @@ tilo_test_env::scenario! {
         let needed = (18.0 + 22.0) * rem + gap(&theme, Rhythm::Section) as f32;
         let mut wide = split();
         solve(&mut wide, &theme, needed + 4.0);
-        assert_eq!(wide.layout().arrangement(), Arrangement::SideBySide);
+        assert_eq!(wide.layout().panes(), PaneSplit::SideBySide);
         let r = rects(&wide);
         assert!(r[1].x0 > r[0].x0 && (r[0].y0 - r[1].y0).abs() < 0.5);
 

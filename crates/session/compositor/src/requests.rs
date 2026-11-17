@@ -87,6 +87,26 @@ fn fullscreen_granted(window: &Window) -> bool {
         .is_some_and(|fullscreen| fullscreen.0.get())
 }
 
+/// The policy gave the display `window` asked for back: it no longer fills it, and its client is
+/// told so. False when it did not hold one.
+pub(crate) fn give_back_display(window: &Window) -> bool {
+    if !fullscreen_granted(window) {
+        return false;
+    }
+    if let Some(fullscreen) = window.user_data().get::<Fullscreen>() {
+        fullscreen.0.set(false);
+    }
+    if let Some(toplevel) = window.toplevel() {
+        toplevel.with_pending_state(|pending| {
+            pending.states.unset(xdg_toplevel::State::Fullscreen);
+        });
+    }
+    if let Some(x11) = window.x11_surface() {
+        let _ = x11.set_fullscreen(false);
+    }
+    true
+}
+
 impl State {
     /// The display `window` fills: the compositor gave it one to fill, and its content covers the
     /// whole of it.

@@ -237,6 +237,28 @@ impl Carets {
         }
     }
 
+    /// Hand each agent's narrated work to the apps of its workspace, as any member's presence reaches
+    /// them: the window showing the record the agent acts in draws its cursor at the control its
+    /// action is bound to. Work naming no app, or no member, shows nowhere.
+    pub(crate) fn narrate(&self, narrated: Vec<(String, tilo_actions::SemanticInteraction)>) {
+        for (workspace, work) in narrated {
+            let Some(app) = work.action.app.as_ref().map(|app| app.id.clone()) else {
+                continue;
+            };
+            let Some(member) = work.actor.members().first().map(|member| (*member).clone()) else {
+                continue;
+            };
+            let key = PresenceKey::resource(&app, &work.resource.id, &work.resource.kind);
+            let event = CollabEvent::RemotePresenceUpdate {
+                member,
+                key,
+                payload: PresencePayload::Interaction(Box::new(work)),
+            };
+            self.fanout
+                .fanout_to_route(&event, 0, &CrdtRoute::cluster(&workspace));
+        }
+    }
+
     /// Hand one person's presence in `workspace` to the apps there, as any member's reaches them.
     fn hand(&self, workspace: &str, user: String, key: PresenceKey, payload: PresencePayload) {
         let event = CollabEvent::RemotePresenceUpdate {

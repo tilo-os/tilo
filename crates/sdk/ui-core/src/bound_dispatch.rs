@@ -29,7 +29,7 @@ pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
 
 use crate::permissions::{MemberId, PermissionContext, SharedPermissions};
 use crate::published::SharedResource;
-use crate::record::{RecordCheckout, RecordOpenError, RecordStore};
+use crate::record::{DocumentCheckout, RecordOpenError, RecordStore};
 use crate::wake::{WakeHandle, WakeScopeGuard};
 use crate::widget::Widget;
 use automerge::{AutoCommit, ChangeHash, ObjId, ROOT, transaction::Transactable};
@@ -3411,7 +3411,7 @@ pub struct CallbackBinding {
     /// Immutable local person supplied at host preparation, not the action author.
     pub(crate) host_person: MemberId,
     pub(crate) records: RecordStore,
-    pub(crate) checkout: RecordCheckout,
+    pub(crate) checkout: DocumentCheckout,
     pub(crate) permissions: SharedPermissions,
     pub(crate) author: MemberId,
     pub(crate) operation_context: Rc<tilo_actions::ActionContext>,
@@ -3429,7 +3429,7 @@ impl crate::collaboration::native_initial::ComponentBinding for CallbackBinding 
     fn app_id(&self) -> &str {
         &self.app_id
     }
-    fn checkout(&self) -> &RecordCheckout {
+    fn checkout(&self) -> &DocumentCheckout {
         &self.checkout
     }
     fn enter(&self) -> Result<CallbackScopeGuard, BoundDispatchError> {
@@ -4364,7 +4364,7 @@ impl Drop for MutationReturn<'_> {
 
 type ActiveRecord = (
     RecordStore,
-    RecordCheckout,
+    DocumentCheckout,
     *const AutoCommit,
     Option<FrameHandle>,
 );
@@ -5031,7 +5031,7 @@ struct BoundNode {
 /// they do not impersonate a canonical component.
 pub(crate) fn restore_record_history(
     store: &RecordStore,
-    checkout: &RecordCheckout,
+    checkout: &DocumentCheckout,
     admitted: &crate::state::owned_restore::ConfirmedRestore<'_>,
     write: crate::state::owned_restore::RestoreWrite<'_>,
 ) -> Result<
@@ -5140,7 +5140,7 @@ mod owned_restore_tests;
 
 pub(crate) fn merge_remote_owned_document(
     store: &RecordStore,
-    checkout: &RecordCheckout,
+    checkout: &DocumentCheckout,
     mutation: &collab_types::DocumentMutation,
 ) -> Result<crate::history_mode::routes::MergedRemote, crate::history_mode::routes::RemoteApplyError>
 {

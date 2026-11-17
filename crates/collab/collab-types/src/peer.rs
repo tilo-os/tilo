@@ -210,7 +210,7 @@ mod tests {
                 size: [1440, 852],
                 windows: vec![crate::presence::ShellWindow {
                     app: "so.tilo.notes".into(),
-                    record: [7; 8],
+                    document: [7; 8],
                     rect: [0, 0, 10000, 10000],
                     focused: true,
                 }],

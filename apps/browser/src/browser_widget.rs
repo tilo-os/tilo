@@ -5899,15 +5899,14 @@ impl BrowserWidget {
     /// action reaches the engine under that principal's name, so a tab
     /// several actors work in tells each what changed since its own last
     /// read and keeps what each did under its name. The name is the admitted
-    /// principal and nothing else ([`ui::webview::PageActor::named`]).
+    /// principal and nothing else ([`ui::webview::PageActor::of`]).
     pub(crate) fn admit_for(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
         invoker: Option<&ui::tilo_actions::ActionInvoker>,
         operation: BrowserOperation,
     ) -> Result<ui::framework::Effected, String> {
-        let actor =
-            invoker.and_then(|invoker| ui::webview::PageActor::named(&invoker.acting.by.key()));
+        let actor = invoker.and_then(|invoker| ui::webview::PageActor::of(&invoker.acting.by));
         self.admitted_to_page(invocation, actor.as_ref(), invoker, &operation);
         if matches!(operation, BrowserOperation::ReadServiceSession) {
             if let Some(pending) = &self.service_forget {

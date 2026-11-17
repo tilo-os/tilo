@@ -19,7 +19,7 @@ use durable_store::{
     Durability, DurableStore, Lease, ReadyWake, Revision, SettleWatch, SharedLease, StorageKey,
     StoreError, Stored, WriteOp,
 };
-use ui::record::RecordCheckout;
+use ui::record::DocumentCheckout;
 
 use super::Store;
 
@@ -27,7 +27,7 @@ use super::Store;
 const MAX_INDEX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// A record a change reached: whose app keeps it, in which workspace, and its route
-/// ([`ui::record::RecordId::route`]); [`storage_key`] is where a reader finds it.
+/// ([`ui::record::DocumentId::route`]); [`storage_key`] is where a reader finds it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Changed {
     pub workspace: String,
@@ -406,7 +406,7 @@ pub fn named_checkouts(
     store: &dyn DurableStore,
     app: &str,
     workspace: &str,
-) -> Option<Vec<(RecordCheckout, Option<String>)>> {
+) -> Option<Vec<(DocumentCheckout, Option<String>)>> {
     let index = index_document(store, app, workspace)?;
     Some(
         ui::record::index::discoverable_references(&index)
@@ -427,7 +427,7 @@ pub fn workspace_records(
     store: &dyn DurableStore,
     app: &str,
     workspace: &str,
-) -> Option<(Vec<RecordCheckout>, Option<AutoCommit>)> {
+) -> Option<(Vec<DocumentCheckout>, Option<AutoCommit>)> {
     let document = index_document(store, app, workspace)?;
     let checkouts = ui::record::index::discoverable_references(&document);
     // Only the changes' messages are read: rebuilding every change would cost the whole log.
@@ -478,7 +478,7 @@ fn index_document(store: &dyn DurableStore, app: &str, workspace: &str) -> Optio
 /// the record id's storage key for any other. `None` for a route that names no record.
 #[must_use]
 pub fn storage_key(app: &str, workspace: &str, record: &str) -> Option<StorageKey> {
-    let id = ui::record::RecordId::from_route(record)?;
+    let id = ui::record::DocumentId::from_route(record)?;
     Some(if id.is_package_primary() {
         StorageKey::workspace_index(app, workspace)
     } else {

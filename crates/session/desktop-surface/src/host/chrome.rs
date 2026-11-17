@@ -191,9 +191,6 @@ pub struct DesktopChromeSnapshot {
     /// rather than at every read.
     pub activities: ui::floating_layer::Pill,
     pub active_exposures: Vec<ActiveExposure>,
-    /// Pages reading this workspace right now. The bar counts them beside the avatars so an
-    /// audience is never invisible.
-    pub watching: u32,
     /// The person at this desktop as everyone here sees them, for the bar's own avatar; `None`
     /// paints none.
     pub own: Option<OwnChip>,
@@ -497,10 +494,6 @@ pub trait ChromeSource {
     fn waved(&self) -> Option<WaveNotice> {
         None
     }
-    /// Pages reading this workspace right now.
-    fn watching(&self) -> u32 {
-        0
-    }
     /// How many unread notifications the app `app` owns, for its icon's badge.
     fn app_badge(&self, _app: &str) -> u32 {
         0
@@ -622,7 +615,6 @@ impl<S: ChromeSource + ?Sized> HostChrome<S> {
         facts.number(u64::from(notices.unread));
         facts.when(notices.quiet);
         facts.when(self.source.may_invite());
-        facts.number(u64::from(self.source.watching()));
         // The person's own name and colour relabel and repaint their chip in the bar.
         facts.words(&own.name);
         facts.words(&own.identity);
@@ -656,7 +648,6 @@ impl<S: ChromeSource + ?Sized> DesktopChromeSource for HostChrome<S> {
             fullscreen: self.source.fullscreen(),
             notification_badge: notices.unread,
             notifications_quiet: notices.quiet,
-            watching: self.source.watching(),
             own: Some(self.source.own_chip()),
             invite: Invite::when(self.source.may_invite()),
             waved: self.source.waved(),

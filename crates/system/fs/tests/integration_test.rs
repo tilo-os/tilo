@@ -2012,7 +2012,7 @@ async fn an_availability_change_reaches_inotify_on_its_directory() {
         let ino = ns
             .create_file(docs_ino, "report.pdf", Some(&missing), 4, 1)
             .unwrap();
-        ns.record_id_for(ino).unwrap()
+        ns.document_id_for(ino).unwrap()
     };
     let task = start_signal(&mount).await;
 
@@ -2082,10 +2082,10 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
         let ino = ns
             .create_file(docs_ino, "film.mkv", Some(&hash), len, 1)
             .unwrap();
-        let record = ns.record_id_for(ino).unwrap();
+        let record = ns.document_id_for(ino).unwrap();
         let revision = fs_protocol::ContentRevisionV1 {
             schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            record_id: record,
+            document_id: record,
             version_id: fs_protocol::FileVersionId::new(),
             content_hash: Some(fs_protocol::ContentHash(*hash.as_bytes())),
             byte_len: len,
@@ -2357,7 +2357,7 @@ async fn a_write_through_the_mount_is_named_for_the_program_that_made_it() {
     let attributions = {
         let mut ns = namespace.lock().unwrap();
         let ino = ns.resolve_path_ino("/notes.md").expect("the saved file");
-        let record = ns.record_id_for(ino).expect("its record");
+        let record = ns.document_id_for(ino).expect("its record");
         ns.version_attributions(record)
     };
     assert!(

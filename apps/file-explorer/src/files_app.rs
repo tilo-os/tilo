@@ -433,7 +433,7 @@ enum FileServices {
 )]
 pub struct FilesState {
     framework_history: ui::history_mode::checked_files::FileHistorySource,
-    framework_history_binding: Option<(PathBuf, fs_protocol::FileRecordId)>,
+    framework_history_binding: Option<(PathBuf, fs_protocol::FileDocumentId)>,
     services: FileServices,
     startup_accounts: Option<Vec<crate::remote_accounts::RemoteAccount>>,
     current_path: PathBuf,
@@ -1707,7 +1707,7 @@ impl FilesState {
     }
 
     fn entry_resource_id(entry: &Entry) -> String {
-        entry.record_id.map_or_else(
+        entry.document_id.map_or_else(
             || crate::search_provider::entry_resource_id(&entry.path),
             |id| crate::search_provider::record_resource_id(uuid::Uuid::from_bytes(id)),
         )
@@ -1730,7 +1730,7 @@ impl FilesState {
             return Vec::new();
         };
         let mut identities = Vec::with_capacity(2);
-        if let Some(record) = entry.record_id {
+        if let Some(record) = entry.document_id {
             identities.push((
                 "files.record".to_string(),
                 crate::search_provider::record_resource_id(uuid::Uuid::from_bytes(record)),
@@ -2451,13 +2451,13 @@ impl FilesState {
     }
 
     fn reveal_record(&mut self, record: &str) -> Result<(), String> {
-        let record_id = uuid::Uuid::parse_str(record)
+        let document_id = uuid::Uuid::parse_str(record)
             .map_err(|_| "invalid collaborative record id".to_string())?;
         let record = self
             .collaborative_search
-            .record(record_id)
+            .record(document_id)
             .ok_or_else(|| "collaborative record is not indexed yet".to_string())?;
-        if crate::model::read_record_id(&record.path) != Some(*record_id.as_bytes()) {
+        if crate::model::read_document_id(&record.path) != Some(*document_id.as_bytes()) {
             return Err("collaborative record is no longer available".into());
         }
         if record.path.parent() != Some(self.current_path.as_path())
@@ -2466,7 +2466,7 @@ impl FilesState {
             self.navigate(parent);
         }
         if let Some(index) = self.entries.iter().position(|entry| {
-            entry.record_id == Some(*record_id.as_bytes()) || entry.path == record.path
+            entry.document_id == Some(*document_id.as_bytes()) || entry.path == record.path
         }) {
             self.selection.select_only(index);
             self.retain_shown_selection();
@@ -3192,13 +3192,13 @@ impl FilesState {
             .selected()
             .into_iter()
             .filter_map(|index| self.entries.get(index))
-            .map(|entry| (entry.record_id, entry.path.clone()))
+            .map(|entry| (entry.document_id, entry.path.clone()))
             .collect::<Vec<_>>();
         let primary = self
             .selection
             .primary()
             .and_then(|index| self.entries.get(index))
-            .map(|entry| (entry.record_id, entry.path.clone()));
+            .map(|entry| (entry.document_id, entry.path.clone()));
         let Ok(mut entries) = listing else {
             // A transient unmount/reconnect must not replace a still-useful
             // view with an error page. Explicit Refresh remains the path that
@@ -3217,7 +3217,7 @@ impl FilesState {
         let matches_key = |entry: &Entry, key: &(Option<[u8; 16]>, PathBuf)| {
             key.0.map_or_else(
                 || entry.path == key.1,
-                |record| entry.record_id == Some(record),
+                |record| entry.document_id == Some(record),
             )
         };
         let selected_indices = entries
@@ -3732,7 +3732,7 @@ impl FilesState {
                     }
                     self.show_collab_panel(CollabPanel {
                         title: t_args("files-properties-title", &[arg("name", entry.name)]),
-                        summary: if entry.record_id.is_some() {
+                        summary: if entry.document_id.is_some() {
                             t("files-properties-collab-summary")
                         } else {
                             t("files-properties-summary")
@@ -3846,12 +3846,12 @@ impl FilesState {
                 true
             }
             FileCommand::ShowInWorkspaceActivity {
-                record_id,
+                document_id,
                 version_id,
             } => {
                 let selected = self.displayed_entries().iter().find_map(|entry| {
                     let history = entry.history.as_ref()?;
-                    if history.record_id.0.to_string() != record_id {
+                    if history.document_id.0.to_string() != document_id {
                         return None;
                     }
                     history
@@ -3887,7 +3887,7 @@ impl FilesState {
                         .unwrap_or("File")
                         .to_string();
                     let context = ui::tilo_actions::ActionContext::for_resource(
-                        record_id.clone(),
+                        document_id.clone(),
                         "files.entry",
                         resource_label.clone(),
                     )
@@ -3915,7 +3915,7 @@ impl FilesState {
                     }
                 });
                 self.host_intent = Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
-                    resource_id: record_id,
+                    resource_id: document_id,
                     version_id: Some(*version_id.0.as_bytes()),
                     entry,
                 });
@@ -5080,7 +5080,7 @@ impl FilesState {
             .primary()
             .and_then(|index| self.displayed_entries().get(index).cloned());
         let selected = entry.and_then(|entry| {
-            let id = entry.history.as_ref()?.record_id;
+            let id = entry.history.as_ref()?.document_id;
             Some((entry.path, id, entry.name))
         });
         let identity = selected
@@ -7504,13 +7504,13 @@ impl EntryIds {
                 .made_of
                 .iter()
                 .zip(entries)
-                .all(|((path, record), entry)| *path == entry.path && *record == entry.record_id);
+                .all(|((path, record), entry)| *path == entry.path && *record == entry.document_id);
         if current {
             return None;
         }
         self.made_of = entries
             .iter()
-            .map(|entry| (entry.path.clone(), entry.record_id))
+            .map(|entry| (entry.path.clone(), entry.document_id))
             .collect();
         self.by_id = entries
             .iter()
@@ -7525,7 +7525,7 @@ impl EntryIds {
         let (path, record) = self.made_of.get(index)?;
         entries
             .get(index)
-            .filter(|entry| entry.path == *path && entry.record_id == *record)
+            .filter(|entry| entry.path == *path && entry.document_id == *record)
     }
 }
 

@@ -1,6 +1,6 @@
 //! Records an app keeps beside its own as a chain of parts: what grows
 //! without end — a chat's messages, a log — kept as numbered records of
-//! another resource type ([`RecordId::part`]) in the workspace the app's record
+//! another resource type ([`DocumentId::part`]) in the workspace the app's record
 //! lives in.
 //!
 //! One record cannot hold everything such an app ever wrote: a record's
@@ -47,7 +47,7 @@
 //!
 //! Where the store's records come from the workspace's hosts — a page's, and a
 //! native app's, which asks its session for them — the chain asks them for its
-//! head as it opens ([`RecordId::chain_head`]): a public workspace sends a
+//! head as it opens ([`DocumentId::chain_head`]): a public workspace sends a
 //! newcomer no part of it until then, and the head they send is held like any
 //! part that arrives. Until they answered, a window that holds no part does
 //! not know which part is the newest, and writes nothing
@@ -63,7 +63,7 @@ use tilo_resource::{Invoke, Reader, Resource};
 use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{ChangeHash, ObjType, ROOT, ReadDoc as _, Value};
 use ui_core::permissions::{LivePermissions, PermissionScope, TreePath};
-use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordStore};
+use ui_core::record::{DocumentCheckout, DocumentId, RecordOpenError, RecordStore, ResourceType};
 
 use super::dispatch::Dispatcher;
 use super::history::{PART_EDIT_TYPE, PartEdit};
@@ -99,20 +99,20 @@ pub enum PartArrival {
 }
 
 /// A resource whose records are the parts of a chain kept beside the app's
-/// own record ([`RecordId::part`]). See the module docs.
+/// own record ([`DocumentId::part`]). See the module docs.
 pub trait Chained: Resource {
     /// The app's own resource: what [`Self::prepare`] reads where an action
     /// is invoked.
     type Base: Resource;
 
     /// The chain the parts belong to: part `n` is `chain().part(n)`.
-    fn chain() -> RecordId;
+    fn chain() -> DocumentId;
 
     /// The chain that belongs beside `base` rather than beside the app's own
     /// record: the messages of one conversation, kept beside its record
-    /// ([`RecordId::of_direct`]). [`Self::chain`] for every chain there is
+    /// ([`DocumentId::of_direct`]). [`Self::chain`] for every chain there is
     /// only one of.
-    fn chain_beside(base: &RecordId) -> RecordId {
+    fn chain_beside(base: &DocumentId) -> DocumentId {
         let _ = base;
         Self::chain()
     }
@@ -200,7 +200,7 @@ impl From<String> for Unopened {
 #[derive(Clone)]
 pub(crate) struct WorkspaceRecords {
     pub(crate) store: RecordStore,
-    pub(crate) me: String,
+    pub(crate) me: tilo_resource::MemberId,
     pub(crate) permissions: Option<LivePermissions>,
     pub(crate) app_id: &'static str,
     pub(crate) app_title: &'static str,
@@ -215,9 +215,9 @@ pub(crate) struct ChainState<P: Chained> {
     workspace: WorkspaceRecords,
     base: Base<P>,
     /// The chain the parts belong to.
-    chain: RecordId,
+    chain: DocumentId,
     id: String,
-    kind: RecordKind,
+    kind: ResourceType,
     parts: RefCell<BTreeMap<u64, Live<P>>>,
     /// Earlier parts asked for ([`Self::hold`]) that are not read here
     /// yet: held from their genesis, or not open at all while the workspace
@@ -236,7 +236,7 @@ pub(crate) struct ChainState<P: Chained> {
     /// kept with the app's records: every window of the app shows them and
     /// applies them in order once the part is here, across a closed window
     /// and a restart.
-    waiting_record: RecordCheckout,
+    waiting_record: DocumentCheckout,
     /// Whether [`Self::waiting_record`] was looked for on this device.
     unsent_looked: Cell<bool>,
     /// What [`Self::waiting_record`] writes into this chain, as a part holding only
@@ -296,7 +296,7 @@ impl<P: Chained> ChainState<P> {
     pub(crate) fn open_at(
         workspace: WorkspaceRecords,
         base: Base<P>,
-        chain: RecordId,
+        chain: DocumentId,
     ) -> Option<Self> {
         let mut doc = ui_core::automerge::AutoCommit::new();
         P::initialize(&mut doc)
@@ -312,7 +312,7 @@ impl<P: Chained> ChainState<P> {
             base,
             chain,
             id,
-            kind: RecordKind::new(P::KIND),
+            kind: ResourceType::new(P::KIND),
             parts: RefCell::default(),
             waiting: RefCell::default(),
             empty,
@@ -339,8 +339,8 @@ impl<P: Chained> ChainState<P> {
         &self.id
     }
 
-    fn checkout(&self, index: u64) -> RecordCheckout {
-        RecordCheckout::new(self.chain.part(index), self.kind.clone())
+    fn checkout(&self, index: u64) -> DocumentCheckout {
+        DocumentCheckout::new(self.chain.part(index), self.kind.clone())
     }
 
     /// The parts held, oldest first.
@@ -366,7 +366,7 @@ impl<P: Chained> ChainState<P> {
 
     /// Whether the workspace may still send this chain's newest part: it has
     /// not said it has no part at all, and opening the chain's head
-    /// ([`RecordId::chain_head`]) found none of it here. That open is what
+    /// ([`DocumentId::chain_head`]) found none of it here. That open is what
     /// asks the store's workspace for the head — a page's hosts, or a native
     /// app's — and it answers `RecordOpenError::Arriving` until the part
     /// arrives, or until the workspace answers it has none
@@ -381,7 +381,7 @@ impl<P: Chained> ChainState<P> {
         matches!(
             self.workspace
                 .store
-                .try_open_record(&RecordCheckout::new(head, self.kind.clone())),
+                .try_open_record(&DocumentCheckout::new(head, self.kind.clone())),
             Err(RecordOpenError::Arriving | RecordOpenError::Busy)
         )
     }
@@ -964,7 +964,7 @@ impl<P: Chained> ChainState<P> {
     /// the same on every device, so two that start it converge.
     fn create(
         &self,
-        checkout: &RecordCheckout,
+        checkout: &DocumentCheckout,
         initialize: impl Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
     ) -> Result<(), String> {
         match self.workspace.store.reserve_record(checkout) {
@@ -1779,7 +1779,7 @@ impl<P: Chained> Chain<P> {
         };
         let undone = self
             .state
-            .apply_history(&edit, &ActionInvoker::person(me))
+            .apply_history(&edit, &ActionInvoker::member(me.clone()))
             .map(drop);
         if let Err(error) = &undone {
             self.dispatch.refused().set(Some(super::dispatch::Refused {
@@ -1888,7 +1888,7 @@ impl<P: Chained> Chain<P> {
     #[must_use]
     pub fn detached(
         app_id: &'static str,
-        me: &str,
+        me: &tilo_resource::MemberId,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Self> {
         Self::detached_in(RecordStore::in_memory(), app_id, me, base)
@@ -1901,12 +1901,12 @@ impl<P: Chained> Chain<P> {
     pub fn detached_in(
         store: RecordStore,
         app_id: &'static str,
-        me: &str,
+        me: &tilo_resource::MemberId,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Self> {
         let workspace = WorkspaceRecords {
             store,
-            me: me.to_owned(),
+            me: me.clone(),
             permissions: None,
             app_id,
             app_title: app_id,
@@ -1919,7 +1919,7 @@ impl<P: Chained> Chain<P> {
     /// The same detached chain edited as `me`: another person's window
     /// over it, in a test.
     #[must_use]
-    pub fn as_reader(&self, me: &str) -> Self {
+    pub fn as_reader(&self, me: &tilo_resource::MemberId) -> Self {
         Self {
             state: Rc::clone(&self.state),
             dispatch: detached_dispatch(self.state.workspace.app_id, &self.state, me),
@@ -1955,7 +1955,7 @@ impl<P: Chained> Chain<P> {
 fn detached_dispatch<P: Chained>(
     app_id: &'static str,
     state: &Rc<ChainState<P>>,
-    me: &str,
+    me: &tilo_resource::MemberId,
 ) -> Dispatcher<P> {
     dispatching(state, me, |apply| {
         Dispatcher::<P>::new(app_id, state.id(), false, Some(me)).for_workspace_record::<P>(
@@ -1973,11 +1973,11 @@ fn detached_dispatch<P: Chained>(
 /// refused after this device showed it.
 pub(crate) fn dispatching<P: Chained>(
     state: &Rc<ChainState<P>>,
-    me: &str,
+    me: &tilo_resource::MemberId,
     make: impl FnOnce(Box<dyn Fn(&P::Action) -> Result<(), ActionError>>) -> Dispatcher<P>,
 ) -> Dispatcher<P> {
     let applying = Rc::downgrade(state);
-    let invoker = ActionInvoker::person(me);
+    let invoker = ActionInvoker::member(me.clone());
     let told: Rc<std::cell::OnceCell<ui_core::LocalState<Option<super::dispatch::Refused>>>> =
         Rc::default();
     let telling = Rc::clone(&told);
@@ -2009,13 +2009,15 @@ pub(crate) fn dispatching<P: Chained>(
 
 /// The record of `me`'s actions waiting for their part, in the workspace the
 /// app's records are kept in: their own there, as the app's records of a
-/// kind are ([`RecordId::of_member`]), or the one a person without a root
+/// kind are ([`DocumentId::of_member`]), or the one a person without a root
 /// identity keeps on this device.
-fn unsent_checkout(me: &str) -> RecordCheckout {
-    let kind = RecordKind::new(UNSENT_KIND);
-    let id = RecordId::of_member(me, UNSENT_KIND)
+fn unsent_checkout(me: &tilo_resource::MemberId) -> DocumentCheckout {
+    let kind = ResourceType::new(UNSENT_KIND);
+    let id = me
+        .person_id()
+        .and_then(|person| DocumentId::of_member(person, UNSENT_KIND))
         .unwrap_or_else(|| ui_core::record::person::record_id(&kind));
-    RecordCheckout::new(id, kind)
+    DocumentCheckout::new(id, kind)
 }
 
 /// The actions the record of waiting actions `doc` keeps for `chain`, in
@@ -2023,7 +2025,7 @@ fn unsent_checkout(me: &str) -> RecordCheckout {
 /// logged.
 fn read_unsent<P: Chained>(
     doc: &ui_core::automerge::AutoCommit,
-    chain: &RecordId,
+    chain: &DocumentId,
 ) -> Vec<Unsent<P>> {
     let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(ROOT, chain.as_str()) else {
         return Vec::new();
@@ -2094,7 +2096,7 @@ impl Chains {
     pub(crate) fn open_beside<P: Chained>(
         &self,
         workspace: Option<&WorkspaceRecords>,
-        base: &RecordId,
+        base: &DocumentId,
         base_state: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Rc<ChainState<P>>> {
         self.open_at::<P>(workspace?, &P::chain_beside(base), base_state)
@@ -2106,7 +2108,7 @@ impl Chains {
     pub(crate) fn open_at<P: Chained>(
         &self,
         workspace: &WorkspaceRecords,
-        chain: &RecordId,
+        chain: &DocumentId,
         base_state: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Rc<ChainState<P>>> {
         if let Some(held) = self.opened::<P>(chain) {
@@ -2122,7 +2124,7 @@ impl Chains {
     }
 
     /// The chain of `P` held for `chain`, if the views opened it.
-    fn opened<P: Chained>(&self, chain: &RecordId) -> Option<Rc<ChainState<P>>> {
+    fn opened<P: Chained>(&self, chain: &DocumentId) -> Option<Rc<ChainState<P>>> {
         let held = self.held.borrow();
         let held = held.get(&(P::KIND, chain.as_str().to_owned()))?;
         Rc::clone(held).downcast::<ChainState<P>>().ok()
@@ -2130,7 +2132,7 @@ impl Chains {
 
     /// Keep `state` for the views that ask for its chain again, published
     /// and answered beside the others.
-    fn hold<P: Chained>(&self, chain: &RecordId, state: &Rc<ChainState<P>>) {
+    fn hold<P: Chained>(&self, chain: &DocumentId, state: &Rc<ChainState<P>>) {
         self.held.borrow_mut().insert(
             (P::KIND, chain.as_str().to_owned()),
             Rc::clone(state) as Rc<dyn Any>,
@@ -2174,7 +2176,7 @@ impl Chains {
     /// changes, for whoever the host admitted to invoke it.
     pub(crate) fn answer(
         &self,
-        me: Option<&str>,
+        me: Option<&tilo_resource::MemberId>,
         payload: &[u8],
         live: &mut ui_core::widget::Edits<'_>,
     ) -> Result<tilo_actions::ActionOutput, String> {
@@ -2188,7 +2190,7 @@ impl Chains {
             .cloned()
             .ok_or_else(|| format!("no chain `{}` is open here", request.record))?;
         let invoker = ui_core::invocation_scope::current_invoker()
-            .or_else(|| me.map(ActionInvoker::person))
+            .or_else(|| me.cloned().map(ActionInvoker::member))
             .ok_or("nobody changes a past version")?;
         api.apply_in(&request.action, &invoker, live)
     }

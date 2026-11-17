@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 
 use automerge::AutoCommit;
+use automerge::transaction::Transactable as _;
 use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::shared_record;
@@ -49,6 +50,68 @@ pub fn commit(doc: &mut AutoCommit, author: &str, time: i64) {
 /// The author a change of a desktop log names.
 pub fn change_author(message: Option<&str>) -> Option<String> {
     shared_record::change_author(message)
+}
+
+/// The name of the workspace in front on a desktop a host value carries, as a person reads it: the
+/// name it was given, or the word for a workspace nobody has named.
+pub fn workspace_name(value: &serde_json::Value) -> Option<String> {
+    desktop_of(value)?
+        .tree
+        .active_workspace()
+        .map(|workspace| crate::names::workspace(&workspace.name))
+}
+
+/// The author the newest change of `log` names.
+pub fn latest_author(log: &AutoCommit) -> Option<String> {
+    log.base_heads().iter().find_map(|head| {
+        let change = automerge::ReadDoc::get_change_by_hash(log, head)?;
+        change_author(change.message())
+    })
+}
+
+/// The shared workspace renamed by a change merged into `log` , which took its desktop from
+/// `before` to `after` : who renamed it, and to what.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceRename {
+    pub author: String,
+    pub name: String,
+}
+
+impl WorkspaceRename {
+    /// The rename `log` 's newest change made, if the workspace in front is named differently in
+    /// `after` than in `before` . The first desktop a host receives (`before` is `None` ) renames
+    /// nothing.
+    pub fn merged(
+        log: &AutoCommit,
+        before: Option<&serde_json::Value>,
+        after: &serde_json::Value,
+    ) -> Option<Self> {
+        let before = workspace_name(before?)?;
+        let name = workspace_name(after).filter(|after| *after != before)?;
+        Some(Self {
+            author: latest_author(log)?,
+            name,
+        })
+    }
+
+    /// The notice for the person `me` , naming the author as `name_of` does: none for a rename they
+    /// made themselves.
+    pub fn notice_for(
+        &self,
+        me: &str,
+        name_of: impl FnOnce(&str) -> String,
+    ) -> Option<crate::notifications::Notification> {
+        (self.author != me).then(|| {
+            let title = crate::i18n::t_args(
+                "workspace-notice-renamed",
+                &[
+                    ("name", name_of(&self.author).into()),
+                    ("workspace", self.name.clone().into()),
+                ],
+            );
+            crate::notifications::Notification::new(title, "")
+        })
+    }
 }
 
 /// The name and colour presence shows for an author (the principal a desktop change names), when
@@ -126,6 +189,52 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_history_log_names_each_change_by_its_author;
 
+        phase a_rename_by_someone_else_is_noticed_with_their_name;
+        // Someone else renaming the shared workspace is news, named in words with who did it; the
+        // first desktop received and a rename of one's own are not.
+        {
+            let mut minter = IdMinter::new(7);
+            let notes = app(&mut minter, "Notes");
+            let mut tree = crate::seed_tree(&mut minter, "Studio", vec![notes]);
+            let mut log = AutoCommit::new();
+            assert!(record(&mut log, &stored(&tree), "ada-root", 1_000));
+            let before = stored(&tree);
+            tree.workspaces[0].name = "Plans".into();
+            let mut peer = log.fork();
+            assert!(record(&mut peer, &stored(&tree), "grace-root", 2_000));
+            log.merge_incoming(&mut peer).unwrap();
+            let after = stored(&tree);
+
+            assert_eq!(
+                WorkspaceRename::merged(&log, None, &after),
+                None,
+                "the first desktop renames nothing"
+            );
+            assert_eq!(WorkspaceRename::merged(&log, Some(&after), &after), None);
+            let rename = WorkspaceRename::merged(&log, Some(&before), &after)
+                .expect("the merged change renamed the workspace");
+            assert_eq!(
+                rename,
+                WorkspaceRename {
+                    author: "grace-root".into(),
+                    name: "Plans".into(),
+                }
+            );
+            let notice = rename
+                .notice_for("ada-root", |user| {
+                    assert_eq!(user, "grace-root");
+                    "Grace".into()
+                })
+                .expect("Ada hears of it");
+            assert_eq!(notice.title, "Grace renamed the workspace to Plans");
+            assert!(
+                rename
+                    .notice_for("grace-root", |_| "Grace".into())
+                    .is_none(),
+                "Grace renamed it herself"
+            );
+        }
+
         phase an_author_presence_knows_reads_by_their_name_and_colour;
         // A workspace's changes name their author by principal (a key); History shows them as presence
         // does, by name and colour, not by the key's first letter in a colour of its own.
@@ -160,7 +269,7 @@ mod tests {
             let mut peer = doc.fork();
 
             let mut mine = tree.clone();
-            mine.workspaces[0].strips[0].name = "Studio · mine".into();
+            mine.workspaces[0].name = "Studio · mine".into();
             desktop_doc::seed(&mut doc, &mine);
             commit(&mut doc, "Ada", 2_000);
 

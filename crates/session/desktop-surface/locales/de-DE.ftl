@@ -61,14 +61,6 @@ topbar-sharing-unknown-window = ein Fenster
 # Wer ein geteiltes Fenster sieht, wenn nichts ihn benennt, nach „Sieht zu:“ oder „Steuert:“.
 topbar-sharing-unnamed-viewer = ein anderes Gerät
 topbar-sharing-window-in-workspace = { $window } in { $workspace }
-topbar-watching-count = +{ $count } { $count ->
-        [one] schaut zu
-       *[other] schauen zu
-    }
-topbar-watching-description = { $count } { $count ->
-        [one] Person schaut
-       *[other] Personen schauen
-    } zu, ohne teilzunehmen
 # A running application's icon in the bar, when the item that named it is gone.
 topbar-app-tray-item = Laufende Anwendung
 topbar-app-tray-unread = { $count } ungelesen
@@ -896,7 +888,7 @@ workspace-notice-agent-finished-in = { $agent } ist fertig: { $count ->
     [one] 1 Änderung
    *[other] { $count } Änderungen
 } in { $workspace }
-workspace-notice-renamed = Der Arbeitsbereich heißt jetzt { $workspace }
+workspace-notice-renamed = { $name } hat den Arbeitsbereich in { $workspace } umbenannt
 # Was der Schreibtisch sagt, wenn etwas nicht geschehen ist, worum jemand
 # gebeten hat: wonach gefragt wurde, warum, und die Taste, die es erneut versucht.
 answer-app-not-opened = { $app } konnte nicht geöffnet werden
@@ -1026,9 +1018,6 @@ people-follows = Folgt { $person }
 people-follows-you = Folgt dir
 people-follows-where = { $place }, folgt { $person }
 people-follows-you-where = { $place }, folgt dir
-
-# The way out of a window that filled the display, said over it once.
-fullscreen-way-out = { $key } beendet das Vollbild.
 
 ## The desktop's published actions
 desktop-actions-chrome = Desktop

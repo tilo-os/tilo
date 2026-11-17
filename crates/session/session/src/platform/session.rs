@@ -24,7 +24,7 @@ use ui::host_operation::ResourceOperationStart;
 
 use crate::assembly::{Session, Shared};
 
-pub use crate::automation::FinishedShortcutRun;
+pub use crate::automation::FinishedInvocation;
 pub use crate::bars::BarShown;
 pub use crate::clock_wait::ClockWait;
 pub use crate::config::SessionConfig;
@@ -57,7 +57,7 @@ use crate::panels::mount::{KeyContext, mount_controls, mount_setup};
 use crate::plane::Plane;
 use crate::search::SessionSearch;
 use crate::services::plane::{mount_services, start_action_plane};
-use tilo_app_launch::Channels as WindowChannels;
+use tilo_app_launch::Links as WindowLinks;
 
 pub use os_actions::SessionAction;
 
@@ -121,13 +121,13 @@ impl Session {
         // workspaces' governance names, which this device's certificate
         // carries. Everything the person does here — the workspaces they
         // own, what the shell records, what the sheets change — is theirs.
-        let seat = crate::identity::seat(&options);
-        options.earlier.clone_from(&seat.earlier);
-        options.person = seat.person;
+        let own = crate::identity::own(&options);
+        options.earlier.clone_from(&own.earlier);
+        options.person = own.person;
         // The ids this device mints are its own, as every workspace derives
         // them from its key: a computer with an identity mints under that
         // rather than the seed the caller passed.
-        if let Some(salt) = seat.salt {
+        if let Some(salt) = own.salt {
             options.salt = salt;
         }
         let sources = crate::config::Sources::from_config(&options.config);
@@ -198,8 +198,8 @@ impl Session {
         let watched_continuity = continuity.clone();
         // Where the person placed their devices' screens beside each other, which the pointer
         // crosses between them by.
-        let arranged = crate::shared_input::Arranged::loaded();
-        let watched_arranged = arranged.clone();
+        let placed = crate::shared_input::PlacementWatch::loaded();
+        let watched_placed = placed.clone();
         // The bar's own setting, read on the same watch: it changes what the
         // shell's band takes and when the bars show.
         let hide_top_bar = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
@@ -234,7 +234,7 @@ impl Session {
             watched_wallpapers.follow(&document);
             crate::background::follow_prefs(&watched_widgets, &document);
             watched_continuity.read(&document);
-            watched_arranged.read(&document);
+            watched_placed.read(&document);
             watched_night_light.read(&document);
             crate::ambient_brightness::read(&watched_auto, &document);
             watched_hide.store(
@@ -542,10 +542,10 @@ impl Session {
         // process the session started, with connections of their own. A
         // window mapping settles what its app's API serves, so an app built
         // before the API keeps a process per window from then on.
-        let window_channels = WindowChannels::new(crate::app_tabs::ServiceLinks::new(
+        let window_links = WindowLinks::new(crate::app_tabs::ServiceLinks::new(
             std::sync::Arc::clone(&options.launches),
         ));
-        let settling = Rc::clone(&window_channels);
+        let settling = Rc::clone(&window_links);
         let mut policy =
             crate::background::WindowPlacement::for_shell(options.shell, &desktop, strips);
         // A window opens in the workspace its process was launched into: an agent's or a service's
@@ -568,7 +568,7 @@ impl Session {
         // tilolang instance reach an origin through.
         let connectors = Rc::new(crate::connectors::ConnectorHost::new());
         if let Some(launch) = &options.launch {
-            launch.lend_channels(Rc::clone(&window_channels), Rc::clone(&connectors));
+            launch.lend_links(Rc::clone(&window_links), Rc::clone(&connectors));
         }
 
         // The programs the person downloaded: the registry takes the
@@ -772,7 +772,7 @@ impl Session {
             Arc::new(crate::shared_input::SharedInput::new(
                 Arc::clone(link),
                 continuity.clone(),
-                arranged,
+                placed,
             ))
         });
         // Nearby Send: one engine for every file that leaves this device for
@@ -988,7 +988,7 @@ impl Session {
             ),
             crate::people::Given {
                 scale: options.scale,
-                seated: options.person.clone(),
+                device_person: options.person.clone(),
                 notes: {
                     let notes = std::sync::Arc::clone(&notes);
                     Rc::new(move || notes.windows())
@@ -1391,7 +1391,7 @@ impl Session {
         // the id its caller made it with: the session knows who sits here
         // before it starts them.
         for service in &mut started {
-            service.seated(&options.person, &seat.earlier);
+            service.own_person(&options.person, &own.earlier);
         }
         let services = mount_services(&mut published, started);
         // The records the services keep themselves: the activity lists an agent's run in one and
@@ -1447,7 +1447,7 @@ impl Session {
             .add(Box::new(crate::window_share::WindowShareService::new(
                 Rc::clone(&window_shares),
             )));
-        // The displays, on the same API: their arrangements land as the
+        // The displays, on the same API: their modes land as the
         // commands the loop carries out, their brightness is set at once, and
         // the reading says where each display stands.
         let displays_service = crate::displays::Displays::mount(
@@ -1568,7 +1568,7 @@ impl Session {
             desktop,
             activity,
             person: options.person.clone(),
-            earlier: seat.earlier,
+            earlier: own.earlier,
             search,
             launch: options.launch,
             #[cfg(target_os = "linux")]
@@ -2789,7 +2789,7 @@ impl Session {
     /// The shortcut runs that finished and no history recorder took yet,
     /// oldest first: what the history names its changes by.
     #[must_use]
-    pub fn take_finished_shortcut_runs(&self) -> Vec<FinishedShortcutRun> {
+    pub fn take_finished_invocations(&self) -> Vec<FinishedInvocation> {
         self.automation.take_finished()
     }
 

@@ -274,6 +274,7 @@ mod tests {
                     cluster_id: WORKSPACE.into(),
                     record_id: "notes".into(),
                     envelope: envelope(),
+                    own: None,
                 },
                 Some(comment()),
             ),

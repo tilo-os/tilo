@@ -564,7 +564,7 @@ mod tests {
             use crate::history_mode::checked_files::FileHistoryTarget;
             use fs_protocol::files::*;
             let mut host = test_host();
-            let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(3));
+            let record = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3));
             let mut files = FileController::new(FileHistoryTarget {
                 binding: uuid::Uuid::new_v4(),
                 record,
@@ -581,7 +581,7 @@ mod tests {
                     schema_version: 1,
                     workspace_id: uuid::Uuid::from_u128(1),
                     mount_lifetime: uuid::Uuid::from_u128(2),
-                    record_id: record,
+                    document_id: record,
                     frontier: [4; 32],
                 },
                 Operation::Undo {
@@ -618,7 +618,7 @@ mod tests {
                     panic!()
                 };
                 let source = source.clone();
-                let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(3));
+                let record = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3));
                 let target = FileHistoryTarget {
                     binding: uuid::Uuid::new_v4(),
                     record,
@@ -639,7 +639,7 @@ mod tests {
                         schema_version: 1,
                         workspace_id: uuid::Uuid::from_u128(1),
                         mount_lifetime: uuid::Uuid::from_u128(2),
-                        record_id: record,
+                        document_id: record,
                         frontier: [4; 32],
                     },
                     Operation::Restore {
@@ -750,7 +750,7 @@ mod tests {
         let scope = FileHistoryReadScopeV1 {
             workspace_id: uuid::Uuid::from_u128(1),
             mount_lifetime: uuid::Uuid::from_u128(2),
-            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(3)),
+            document_id: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3)),
             frontier: [4; 32],
         };
         let original = Arc::new(Transport {
@@ -761,7 +761,7 @@ mod tests {
         let original_handle: Arc<dyn FileHistoryTransport> = original.clone();
         let target = FileHistoryTarget {
             binding: uuid::Uuid::new_v4(),
-            record: scope.record_id,
+            record: scope.document_id,
             label: "same display path".into(),
             transport: original_handle.clone(),
             authors: crate::history_source::AuthorDirectory::new(),
@@ -791,7 +791,7 @@ mod tests {
             schema_version: 1,
             workspace_id: scope.workspace_id,
             mount_lifetime: scope.mount_lifetime,
-            record_id: scope.record_id,
+            document_id: scope.document_id,
             frontier: scope.frontier,
         };
         let request = host
@@ -823,7 +823,7 @@ mod tests {
         let fresh_binding = uuid::Uuid::new_v4();
         source.set_target(Some(FileHistoryTarget {
             binding: fresh_binding,
-            record: scope.record_id,
+            record: scope.document_id,
             label: "same display path".into(),
             transport: fresh.clone(),
             authors: crate::history_source::AuthorDirectory::new(),
@@ -856,7 +856,7 @@ mod tests {
         remounted.mount_lifetime = uuid::Uuid::new_v4();
         let replacement = FileHistoryTarget {
             binding: uuid::Uuid::new_v4(),
-            record: scope.record_id,
+            record: scope.document_id,
             label: "same display path".into(),
             transport: Arc::new(Transport {
                 scope: remounted,
@@ -906,7 +906,7 @@ mod tests {
                 person: hex::encode(ada),
             },
         );
-        let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(3));
+        let record = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3));
         let mut files = FileController::new(FileHistoryTarget {
             binding: uuid::Uuid::new_v4(),
             record,
@@ -919,7 +919,7 @@ mod tests {
         });
         let version = |id: u128, person: [u8; 32], device: [u8; 32]| FileVersionV1 {
             id: FileVersionId(uuid::Uuid::from_u128(id)),
-            record_id: record,
+            document_id: record,
             parents: vec![],
             actor: fs_protocol::FileActor {
                 person: collab_types::Ed25519PublicKey::from_bytes(person),
@@ -1120,7 +1120,7 @@ mod tests {
         use crate::history_mode::checked_files::FileHistoryTarget;
         use fs_protocol::files::*;
         let (ada, ada_laptop) = ([1; 32], [2; 32]);
-        let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(3));
+        let record = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3));
         let mut files = FileController::new(FileHistoryTarget {
             binding: uuid::Uuid::new_v4(),
             record,
@@ -1140,7 +1140,7 @@ mod tests {
         });
         let version = |id: u128, timestamp_ms: u64, parents: Vec<u128>, provenance| FileVersionV1 {
             id: FileVersionId(uuid::Uuid::from_u128(id)),
-            record_id: record,
+            document_id: record,
             parents: parents
                 .into_iter()
                 .map(|parent| FileVersionId(uuid::Uuid::from_u128(parent)))

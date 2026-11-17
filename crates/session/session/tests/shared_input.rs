@@ -120,8 +120,8 @@ fn key(device: &Device, op: &str, key: &str) {
     ok(device, &json!({"op": op, "key": key}));
 }
 
-/// A screen of the arrangement as a device reads it: its device, whether it is its own, its place
-/// in the arrangement and on its own device.
+/// A screen of the placement as a device reads it: its device, whether it is its own, its place
+/// in the placement and on its own device.
 struct Screen {
     device: String,
     local: bool,
@@ -170,7 +170,7 @@ fn picture(device: &Device, name: &str) {
     );
 }
 
-/// The laptop's screen and the phone's beside it, as the laptop's arrangement lays them out: the
+/// The laptop's screen and the phone's beside it, as the laptop's placement lays them out: the
 /// phone's id, the way across the edge between them, and the laptop's own screen.
 struct Beside {
     phone: String,

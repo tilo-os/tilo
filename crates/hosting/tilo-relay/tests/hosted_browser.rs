@@ -120,6 +120,7 @@ struct Routing(Arc<HostedBrowsers>);
 impl AppServingPlane for Routing {
     /// A listing naming no provider is the host's own: it publishes the
     /// workspace itself, and lists the Browser window its VM holds beside it.
+    /// The host names no workspace on its own rows, as the workspace host does.
     fn serve(
         &self,
         workspace_id: WorkspaceId,
@@ -134,7 +135,7 @@ impl AppServingPlane for Routing {
             providers: vec![CatalogueProvider {
                 provider: HOST_PROVIDER.into(),
                 app_id: String::new(),
-                workspace: WS_NAME.into(),
+                workspace: String::new(),
                 record_id: String::new(),
                 browsable: false,
             }],
@@ -899,7 +900,8 @@ async fn the_host_lists_the_window_and_hands_its_listing_to_it() {
     );
     assert_eq!(
         window.workspace, WS_NAME,
-        "named as the workspace's other publishers"
+        "named by the workspace it was opened in, so a caller holding what runs \
+         in its workspace to that workspace keeps it"
     );
     assert!(window.browsable);
     assert!(
@@ -1745,6 +1747,7 @@ async fn an_environment_opens_its_own_record_and_no_other() {
         .send(Envelope::OpenRecord {
             workspace_id: WS,
             channel: notes_channel(),
+            own: None,
         })
         .unwrap();
     let refusal = next(&environment, "environment").await;
@@ -1756,6 +1759,7 @@ async fn an_environment_opens_its_own_record_and_no_other() {
         .send(Envelope::OpenRecord {
             workspace_id: WS,
             channel: window_channel(),
+            own: None,
         })
         .unwrap();
     let answer = next(&environment, "environment").await;

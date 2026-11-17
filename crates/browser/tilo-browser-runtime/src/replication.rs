@@ -29,7 +29,7 @@
 //!
 //! A package's workspace-primary document travels with an empty record, as the
 //! native broker sends it; in the page's stores it is
-//! [`ui::record::RecordId::package_primary`], kept at the workspace index.
+//! [`ui::record::DocumentId::package_primary`], kept at the workspace index.
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -146,7 +146,7 @@ pub(crate) struct Joined {
     /// opens it. The workspace has everything up to them, so what the mount sends
     /// first is what it changed after them, not the whole document: a
     /// checkpoint reaches only devices that lack the record, and the changes
-    /// a window makes as it opens (taking a seat) would never reach the
+    /// a window makes as it opens (taking an admission) would never reach the
     /// others.
     delivered: HashMap<(String, String), Vec<ui::automerge::ChangeHash>>,
     /// The heads each record stood at when the workspace last delivered it, as the page read it:
@@ -418,11 +418,21 @@ pub(crate) fn record_heads(
 }
 
 /// The name the workspace in front is called on peer `id`: its governance's, which every device
-/// and every list of it reads.
+/// and every list of it reads, else the name its desktop carries once the workspace delivered or
+/// the page published one.
 pub(crate) fn workspace_name(id: u32) -> Option<String> {
     let joined = replica_of(id)?;
     let joined = joined.borrow();
-    joined.peer.engine().workspace_name(joined.workspace)
+    joined
+        .peer
+        .engine()
+        .workspace_name(joined.workspace)
+        .or_else(|| {
+            joined
+                .desktop_value
+                .as_ref()
+                .and_then(tilo_desktop_surface::history_log::workspace_name)
+        })
 }
 
 /// The name `workspace`'s governance records, as this page holds it: the workspace's one name,
@@ -1608,9 +1618,19 @@ impl Joined {
         if self.desktop_value.as_ref() == Some(&value) {
             return Ok(());
         }
+        // A peer renaming the workspace is news to everyone else here; the
+        // first desktop this page receives is not.
+        let renamed = tilo_desktop_surface::history_log::WorkspaceRename::merged(
+            self.desktop.document(),
+            self.desktop_value.as_ref(),
+            &value,
+        );
         for (&id, mounted) in &self.mounts {
             if let Some((handle, shared)) = &mounted.attachment.desktop {
                 crate::desktop::apply_shared(handle, shared, &value)?;
+                if let Some(rename) = &renamed {
+                    shared.renames.borrow_mut().push(rename.clone());
+                }
                 woken.insert(id);
             }
         }

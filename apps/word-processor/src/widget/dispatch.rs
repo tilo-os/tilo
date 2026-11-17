@@ -961,7 +961,7 @@ impl Editor {
         self.perform_action(state, &action);
     }
 
-    /// Insert a table after the caret and seat the caret in its first cell.
+    /// Insert a table after the caret and place the caret in its first cell.
     pub(super) fn insert_table_via_action(
         &mut self,
         state: &mut ui::widget::Edits<'_>,

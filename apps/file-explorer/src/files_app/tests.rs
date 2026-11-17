@@ -167,7 +167,7 @@ mod open_with_tests {
             mime: String::new(),
             sync_state: None,
             content_hash: None,
-            record_id: None,
+            document_id: None,
             availability: None,
             history: None,
             app: None,
@@ -829,7 +829,7 @@ mod command_path_tests {
             #[cfg(unix)]
             scheduled_metadata_refresh_preserves_record_selection_and_scroll();
             #[cfg(unix)]
-            collaborative_search_activation_resolves_the_latest_path_by_record_id();
+            collaborative_search_activation_resolves_the_latest_path_by_document_id();
         }
 
         phase folder_resource_exports_canonical_actions_handlers_and_ids;
@@ -1475,7 +1475,7 @@ mod command_path_tests {
             mime: mime.into(),
             sync_state: None,
             content_hash: None,
-            record_id: None,
+            document_id: None,
             availability: None,
             history: None,
             app: None,
@@ -2041,10 +2041,10 @@ mod command_path_tests {
             let mut entry = ent("report.txt", false, "text/plain");
             entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
                 &serde_json::to_vec(&serde_json::json!({
-                    "schema_version": 1, "record_id": record, "total_versions": 1,
+                    "schema_version": 1, "document_id": record, "total_versions": 1,
                     "versions_truncated": false, "heads": [version],
                     "versions": [
-                        {"id": version, "record_id": record, "parents": [],
+                        {"id": version, "document_id": record, "parents": [],
                          "actor": {"person": person.to_vec(), "device": device.to_vec()},
                          "timestamp_ms": 9, "content_hash": vec![3; 32], "metadata_hash": vec![4; 32], "provenance": "Edit"}
                     ], "conflicts_truncated": false, "conflicts": []
@@ -2076,7 +2076,7 @@ mod command_path_tests {
             let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(version).unwrap());
             w.state()
                 .apply_command(FileCommand::ShowInWorkspaceActivity {
-                    record_id: record.into(),
+                    document_id: record.into(),
                     version_id: selected,
                 });
             let Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
@@ -2267,7 +2267,7 @@ mod command_path_tests {
         entry.path = path;
         entry.availability = Some(fs_protocol::AvailabilityProjectionV1 {
             schema_version: 1,
-            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(1)),
+            document_id: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(1)),
             current_version: Some(fs_protocol::FileVersionId(uuid::Uuid::from_u128(2))),
             residency: fs_protocol::Residency::Partial { resident_bytes: 1 },
             transfer: fs_protocol::ProjectedTransfer {
@@ -2816,13 +2816,13 @@ mod command_path_tests {
             "old\u{1f}.txt"
         });
         std::fs::write(&old, b"x").unwrap();
-        let record_id = uuid::Uuid::from_u128(0xfeed);
+        let document_id = uuid::Uuid::from_u128(0xfeed);
         let w = FileExplorerWidget::new();
         w.state().workspace_roots = vec![d.path().to_path_buf()];
         w.state().current_path = d.path().to_path_buf();
         let mut entry = ent("old\u{1f}.txt", false, "text/plain");
         entry.path = old.clone();
-        entry.record_id = Some(*record_id.as_bytes());
+        entry.document_id = Some(*document_id.as_bytes());
         w.state().entries = vec![entry];
         let mut doc = automerge::AutoCommit::new();
         let resources = crate::files_app::published::tree(&w, &doc);
@@ -2830,7 +2830,7 @@ mod command_path_tests {
             .children
             .iter()
             .find(|resource| {
-                resource.id.as_str() == crate::search_provider::record_resource_id(record_id)
+                resource.id.as_str() == crate::search_provider::record_resource_id(document_id)
             })
             .expect("a collaborative file uses its record UUID as the resource identity");
         assert_eq!(entry.kind, "files.record");
@@ -2852,7 +2852,7 @@ mod command_path_tests {
         assert!(renamed.exists());
         w.state().entries[0].path = renamed;
         w.state().entries[0].name = "new.txt".into();
-        w.state().entries[0].record_id = Some(*record_id.as_bytes());
+        w.state().entries[0].document_id = Some(*document_id.as_bytes());
         let refreshed = crate::files_app::published::tree(&w, &doc);
         assert!(
             api::resolve(&refreshed, &address).is_some(),
@@ -3636,7 +3636,7 @@ mod command_path_tests {
         std::fs::write(&file, b"shared").unwrap();
         let availability = serde_json::to_vec(&serde_json::json!({
             "schema_version": 1,
-            "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+            "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
             "current_version": null,
             "residency": {"state": "not_resident"},
             "transfer": {"phase": "idle", "progress": null, "last_error": null,
@@ -3679,7 +3679,7 @@ mod command_path_tests {
         let availability = |state: serde_json::Value| {
             serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
-                "record_id": uuid::Uuid::new_v4(),
+                "document_id": uuid::Uuid::new_v4(),
                 "current_version": null,
                 "residency": state,
                 "transfer": {"phase": "idle", "progress": null, "last_error": null,
@@ -3749,7 +3749,7 @@ mod command_path_tests {
         let after = dir.path().join("after.txt");
         std::fs::write(&before, b"shared").unwrap();
         let record = uuid::Uuid::from_u128(0x5151);
-        xattr::set(&before, ui::prelude::RECORD_ID_XATTR, record.as_bytes()).unwrap();
+        xattr::set(&before, ui::prelude::DOCUMENT_ID_XATTR, record.as_bytes()).unwrap();
         xattr::set(&before, fs_protocol::SYNC_XATTR, b"projected").unwrap();
 
         let widget = FileExplorerWidget::new();
@@ -3786,7 +3786,7 @@ mod command_path_tests {
         let availability = |policy: &str, inherited: bool| {
             serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                 "current_version": null,
                 "residency": {"state": "resident", "bytes": 4},
                 "transfer": {"phase": "idle", "progress": null, "last_error": null,
@@ -3879,7 +3879,7 @@ mod command_path_tests {
         std::fs::write(&file, b"data").unwrap();
         let availability = serde_json::to_vec(&serde_json::json!({
             "schema_version": 1,
-            "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+            "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
             "current_version": null,
             "residency": {"state": "resident", "bytes": 4},
             "transfer": {"phase": "idle", "progress": null, "last_error": null,
@@ -3921,7 +3921,7 @@ mod command_path_tests {
         entry.availability = fs_protocol::AvailabilityProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                 "current_version": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
                 "residency": {"state": "not_resident"},
                 "transfer": {"phase": "idle", "progress": null,
@@ -4104,12 +4104,12 @@ mod command_path_tests {
 
     fn governed_history_surfaces_open_real_detail_panels() {
         let mut entry = ent("shared.txt", false, "text/plain");
-        entry.record_id =
+        entry.document_id =
             Some(*uuid::Uuid::from_u128(0xb0d4_e23f_c7cb_4ded_a427_b32c_f9da_9341).as_bytes());
         entry.rich_metadata = fs_protocol::MetadataProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                 "properties": {"schema_version": 1, "image_width": 1920,
                     "image_height": 1080, "duration_ms": 65000,
                     "page_count": 4, "codec": "h264", "container": "mp4"}
@@ -4120,13 +4120,13 @@ mod command_path_tests {
         entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                 "total_versions": 1,
                 "versions_truncated": false,
                 "heads": ["a0d4e23f-c7cb-4ded-a427-b32cf9da9342"],
                 "versions": [{
                     "id": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
-                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                     "parents": [],
                     "actor": {"person": vec![1; 32], "device": vec![2; 32]},
                     "timestamp_ms": 9,
@@ -4172,13 +4172,13 @@ mod command_path_tests {
         let mut entry = ent("report.txt", false, "text/plain");
         entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1, "record_id": record, "total_versions": 2,
+                "schema_version": 1, "document_id": record, "total_versions": 2,
                 "versions_truncated": false, "heads": [current],
                 "versions": [
-                    {"id": older, "record_id": record, "parents": [],
+                    {"id": older, "document_id": record, "parents": [],
                      "actor": {"person": vec![1; 32], "device": vec![2; 32]},
                      "timestamp_ms": 9, "content_hash": vec![3; 32], "metadata_hash": vec![4; 32], "provenance": "Create"},
-                    {"id": current, "record_id": record, "parents": [older],
+                    {"id": current, "document_id": record, "parents": [older],
                      "actor": {"person": vec![5; 32], "device": vec![6; 32]},
                      "timestamp_ms": 10, "content_hash": vec![7; 32], "metadata_hash": vec![8; 32], "provenance": "Edit"}
                 ], "conflicts_truncated": false, "conflicts": []
@@ -4192,7 +4192,7 @@ mod command_path_tests {
         let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(older).unwrap());
         w.state()
             .apply_command(FileCommand::ShowInWorkspaceActivity {
-                record_id: record.into(),
+                document_id: record.into(),
                 version_id: selected,
             });
         assert!(w.state().collab_panel.is_none());
@@ -4319,18 +4319,18 @@ mod command_path_tests {
     }
 
     #[cfg(unix)]
-    fn collaborative_search_activation_resolves_the_latest_path_by_record_id() {
+    fn collaborative_search_activation_resolves_the_latest_path_by_document_id() {
         let dir = tempfile::tempdir().unwrap();
-        let record_id = uuid::Uuid::from_u128(0xabc);
+        let id = uuid::Uuid::from_u128(0xabc);
         let nested = dir.path().join("nested");
         let file = nested.join("renamed.txt");
         std::fs::create_dir(&nested).unwrap();
         std::fs::write(&file, b"hello").unwrap();
-        xattr::set(&file, ui::prelude::RECORD_ID_XATTR, record_id.as_bytes()).unwrap();
+        xattr::set(&file, ui::prelude::DOCUMENT_ID_XATTR, id.as_bytes()).unwrap();
         crate::model::sync_state_tests::set_record_index(
             dir.path(),
             &[serde_json::json!({
-                "record_id": record_id,
+                "document_id": id,
                 "path": "/nested/renamed.txt",
                 "is_dir": false
             })],
@@ -4352,9 +4352,7 @@ mod command_path_tests {
         );
         let hit = ui::search::SearchProvider::search(&source, "renamed")
             .into_iter()
-            .find(|result| {
-                result.action_id == crate::search_provider::record_resource_id(record_id)
-            })
+            .find(|result| result.action_id == crate::search_provider::record_resource_id(id))
             .expect("collaborative record is searchable");
         let row = widget
             .state()
@@ -4382,13 +4380,13 @@ mod command_path_tests {
         entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                 "total_versions": 2,
                 "versions_truncated": false,
                 "heads": [current],
                 "versions": [{
                     "id": previous,
-                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                     "parents": [],
                     "actor": {"person": vec![1; 32], "device": vec![2; 32]},
                     "timestamp_ms": 9,
@@ -4397,7 +4395,7 @@ mod command_path_tests {
                     "provenance": "Create"
                 }, {
                     "id": current,
-                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                     "parents": [previous],
                     "actor": {"person": vec![1; 32], "device": vec![2; 32]},
                     "timestamp_ms": 10,
@@ -4439,13 +4437,13 @@ mod command_path_tests {
         entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                 "total_versions": 2,
                 "versions_truncated": false,
                 "heads": [current, other],
                 "versions": [{
                     "id": other,
-                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                     "parents": [],
                     "actor": {"person": vec![1; 32], "device": vec![2; 32]},
                     "timestamp_ms": 9,
@@ -4454,7 +4452,7 @@ mod command_path_tests {
                     "provenance": "Edit"
                 }, {
                     "id": current,
-                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                     "parents": [other],
                     "actor": {"person": vec![6; 32], "device": vec![7; 32]},
                     "timestamp_ms": 10,
@@ -4465,7 +4463,7 @@ mod command_path_tests {
                 "conflicts_truncated": false,
                 "conflicts": [{
                     "id": conflict,
-                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                     "versions": [other, current],
                     "status": "Open",
                     "resolution": null

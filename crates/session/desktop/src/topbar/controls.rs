@@ -172,19 +172,10 @@ impl TopBarChrome {
             Self::CONTROL_INVITE => t("topbar-invite"),
             Self::CONTROL_PEOPLE => {
                 let named = self.sharing_viewers();
-                let watching = self.watching();
-                let name = if named.is_empty() {
+                if named.is_empty() {
                     t("topbar-show-people")
                 } else {
                     self.sharing_disclosure(&named)
-                };
-                if watching == 0 {
-                    name
-                } else {
-                    format!(
-                        "{name}; {}",
-                        t_args("topbar-watching-description", &[("count", watching.into())])
-                    )
                 }
             }
             Self::CONTROL_MEDIA => t("topbar-capture-privacy"),

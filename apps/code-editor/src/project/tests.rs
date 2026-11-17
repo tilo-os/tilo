@@ -354,7 +354,7 @@ tilo_test_env::scenario! {
             ),
         )
         .unwrap();
-        let finished = terminal::resource::Finished {
+        let finished = terminal::resource::FinishedCommand {
             command: "cargo test".into(),
             cwd: "/src".into(),
             exit: 101,
@@ -363,7 +363,7 @@ tilo_test_env::scenario! {
         };
         act(
             &mut project,
-            &crate::actions::terminal(Terminal::RECORD_RUN.with(finished).build(0).unwrap()),
+            &crate::actions::terminal(Terminal::RECORD_COMMAND.with(finished).build(0).unwrap()),
         )
         .unwrap();
         act(
@@ -373,7 +373,7 @@ tilo_test_env::scenario! {
         .unwrap();
         let state = project.state().unwrap();
         let session = state.terminal_panel.as_ref().unwrap();
-        assert_eq!(session.runs.get(&Id::from("r1")).unwrap().exit, 101);
+        assert_eq!(session.commands.get(&Id::from("r1")).unwrap().exit, 101);
         let asked: Vec<(&str, &str)> = state
             .terminal_requests
             .pending()

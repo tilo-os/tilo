@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use app_state::{DocStore, DocWriter};
 use automerge::ChangeHash;
-use collab_types::record::RecordId;
+use collab_types::document::DocumentId;
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
 use collaboration::history_source::steps::{self, Scope};
 use collaboration::history_source::verbs::{self, HistoryEdit};
@@ -206,7 +206,7 @@ impl Writers {
 }
 
 /// The document the copy of chunk `chunk` of `route`'s record is kept in, in `documents`: the
-/// record of the chunk above the record ([`RecordId::chunk`]), a record of its own beside the
+/// record of the chunk above the record ([`DocumentId::chunk`]), a record of its own beside the
 /// record's copy. `None` for the record's own chunk, which the record itself opens, and for a
 /// route whose record is no record id.
 fn copy_document(
@@ -217,7 +217,7 @@ fn copy_document(
     if chunk == FIRST {
         return None;
     }
-    let base = RecordId::from_route(route.record.as_deref().unwrap_or(""))?;
+    let base = DocumentId::from_route(route.record.as_deref().unwrap_or(""))?;
     let key = base.chunk(chunk).storage_key();
     record_document(
         documents,
@@ -240,7 +240,7 @@ fn route_document(
             collaboration::record::save::workspace_document(documents, &route.app_id, &workspace)
         }
         Some(record) => {
-            let id = RecordId::parse(record)
+            let id = DocumentId::parse(record)
                 .ok_or_else(|| RecordError::Open(format!("`{record}` is no record id")))?;
             record_document(documents, &route.app_id, &workspace, &id.storage_key())
         }
@@ -523,7 +523,7 @@ impl InstanceRecord {
             // A member's own record of an app that kept the workspace's record before starts
             // from what that record held on this device (`open_stored_adopting`).
             None => Ok(match route.record.as_deref() {
-                Some(record) if tilo_action_policy::member_record(record).is_some() => {
+                Some(record) if !record.is_empty() && crate::keeps_own_records(&route.app_id) => {
                     open_stored_adopting(
                         store,
                         workspace_document(documents, &route.app_id, &workspace).ok(),
@@ -620,10 +620,20 @@ impl InstanceRecord {
         }
     }
 
+    /// The person at the window, as the runtime names them.
+    fn person_actor(&self) -> crate::runtime::Actor {
+        crate::runtime::Actor::Member(crate::runtime::ids::MemberId::person(self.person.clone()))
+    }
+
+    /// The steps that are the person's own: what their undo and redo take.
+    fn own_steps(&self) -> Scope {
+        Scope::Invoker(self.person_actor())
+    }
+
     /// Read and write the chunks through `store` from here on, which writes as the person at
     /// the window: what they do there is written once, as the change it makes.
     fn held_by(&mut self, store: &crate::store::TiloStore) {
-        store.set_author(self.person.as_bytes());
+        store.set_author(&self.person_actor());
         self.chunks = Docs::Store(store.clone());
     }
 
@@ -784,14 +794,14 @@ impl InstanceRecord {
     /// Whether the person at the window has a step to undo, or an undo to redo.
     #[must_use]
     pub fn can_undo(&self) -> (bool, bool) {
-        self.can_undo_as(&self.person)
+        self.can_undo_as(&self.person_actor())
     }
 
-    /// Whether `person` has a step to undo, or an undo to redo, in the record: what the
-    /// history verbs `undo` and `redo` would take for them.
+    /// Whether `who` has a step to undo, or an undo to redo, in the record: what the history
+    /// verbs `undo` and `redo` would take for them.
     #[must_use]
-    pub fn can_undo_as(&self, person: &str) -> (bool, bool) {
-        let scope = Scope::Invoker(tilo_actions::Acting::of_key(person).by);
+    pub fn can_undo_as(&self, who: &crate::runtime::Actor) -> (bool, bool) {
+        let scope = Scope::Invoker(who.clone());
         let owns = |version: &tilo_resource::history::Version| scope.owns(version);
         let mut undo = false;
         let mut redo = false;
@@ -808,7 +818,7 @@ impl InstanceRecord {
     /// action that made it names, in this unit and in every other one the action wrote.
     #[must_use]
     pub fn last_step_invocation(&self) -> Option<InvocationId> {
-        let scope = Scope::Invoker(tilo_actions::Acting::of_key(&self.person).by);
+        let scope = self.own_steps();
         let step = self.last_step(&scope)?;
         self.invocation_of(&step)
     }
@@ -891,7 +901,7 @@ impl InstanceRecord {
         let Some(chunk) = self.chunk_of_change(change) else {
             return false;
         };
-        let scope = Scope::Invoker(tilo_actions::Acting::of_key(&self.person).by);
+        let scope = self.own_steps();
         self.read(|chunks| {
             chunks.held(chunk).is_some_and(|doc| {
                 steps::steps_in_effect(doc, &|version| scope.owns(version), usize::MAX)
@@ -946,7 +956,7 @@ impl InstanceRecord {
         resource: &str,
         kind: &str,
     ) -> Result<bool, RecordError> {
-        let scope = Scope::Invoker(tilo_actions::Acting::of_key(&self.person).by);
+        let scope = self.own_steps();
         let Some(step) = self.last_step(&scope) else {
             return Ok(false);
         };
@@ -1030,7 +1040,7 @@ impl InstanceRecord {
         if !self.can_undo().1 {
             return Ok(false);
         }
-        let scope = Scope::Invoker(tilo_actions::Acting::of_key(&self.person).by);
+        let scope = self.own_steps();
         let owns = |version: &tilo_resource::history::Version| scope.owns(version);
         let ambient = ActionContext {
             source_invocation: Some(InvocationId::new()),
@@ -1352,7 +1362,7 @@ impl InstanceRecord {
             .zip(&records)
             .map(|((_, mutation), record)| collab_types::UnitMutation {
                 app: &self.route.app_id,
-                record,
+                document_id: record,
                 mutation,
                 document: None,
             })
@@ -1456,7 +1466,7 @@ impl InstanceRecord {
             }
             self.manager.join_route(
                 self.chunk_route(chunk),
-                collab_types::record::RecordKind::new(self.kind.clone()),
+                collab_types::document::ResourceType::new(self.kind.clone()),
             );
         }
     }
@@ -1674,7 +1684,7 @@ impl InstanceRecord {
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }
-        let author = invoker.acting.by.key();
+        let author = invoker.acting.by.clone();
         let context = context.with_invoker(invoker);
         let workspace = self.route.cluster_id.to_string();
         let app = self.route.app_id.clone();
@@ -1698,20 +1708,14 @@ impl InstanceRecord {
         };
         let (before, refused) = match &self.chunks {
             Docs::Store(store) => {
-                let (out, moved) = store.commit_action(
-                    chunk,
-                    (action, part),
-                    encoded,
-                    author.as_bytes(),
-                    context,
-                    check,
-                );
+                let (out, moved) =
+                    store.commit_action(chunk, (action, part), encoded, &author, context, check);
                 self.moved |= moved;
                 out.map_err(|error| RecordError::Refused(error.to_string()))??
             }
             Docs::Own(_) => self.write_chunk(chunk, |doc| {
                 let before =
-                    crate::store::apply_step(doc, action, encoded, author.as_bytes(), context)
+                    crate::store::apply_step(doc, action, encoded, &author.actor_bytes(), context)
                         .map_err(|error| RecordError::Refused(error.to_string()))?;
                 check(doc, before)
             })?,
@@ -1998,7 +2002,10 @@ pub struct ReadRecord {
 impl ReadRecord {
     /// The record on `route`, joined through `manager`: held empty until the workspace sends it.
     pub fn join(route: RouteSpec, manager: &mut CollaborationManager, kind: &str) -> Self {
-        manager.join_route(route.clone(), collab_types::record::RecordKind::new(kind));
+        manager.join_route(
+            route.clone(),
+            collab_types::document::ResourceType::new(kind),
+        );
         Self {
             route,
             kind: kind.to_owned(),
@@ -2087,7 +2094,7 @@ impl ReadRecord {
             }
             manager.join_route(
                 chunk_route(&self.route, chunk),
-                collab_types::record::RecordKind::new(self.kind.clone()),
+                collab_types::document::ResourceType::new(self.kind.clone()),
             );
         }
     }

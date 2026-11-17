@@ -10,6 +10,7 @@
 //! what the store reads.
 
 use serde::{Deserialize, Serialize};
+use tilo_action_policy::Actor;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -90,7 +91,7 @@ pub enum Lit {
     /// No value: an option that is none.
     Absent,
     Set(Vec<Lit>),
-    Principal(String),
+    Actor(Actor),
 }
 
 /// A Float a predicate compares: equal, ordered and hashed by its value, `-0.0` as `0.0`.
@@ -151,8 +152,8 @@ impl Lit {
                 if let Some(J::String(r)) = m.get("ref") {
                     return Some(Self::Ref(r.clone()));
                 }
-                if let Some(J::String(p)) = m.get("principal") {
-                    return Some(Self::Principal(p.clone()));
+                if let Some(actor) = m.get("actor") {
+                    return serde_json::from_value(actor.clone()).ok().map(Self::Actor);
                 }
                 return None;
             }
@@ -175,7 +176,8 @@ impl Lit {
             Self::Int(i) => Some(i.to_string()),
             Self::Float(f) => Some(f.0.to_string()),
             Self::Bool(b) => Some(b.to_string()),
-            Self::Variant(v) | Self::Ref(v) | Self::Principal(v) => Some(v.clone()),
+            Self::Variant(v) | Self::Ref(v) => Some(v.clone()),
+            Self::Actor(actor) => serde_json::to_string(actor).ok(),
             other => other.as_text().map(str::to_owned),
         }
     }
@@ -196,13 +198,10 @@ impl Lit {
             (Self::Float(x), Self::Float(y)) => x.cmp(y),
             (Self::Int(x), Self::Float(y)) => Float(*x as f64).cmp(y),
             (Self::Float(x), Self::Int(y)) => x.cmp(&Float(*y as f64)),
-            (Self::Variant(x), Self::Variant(y))
-            | (Self::Ref(x), Self::Ref(y))
-            | (Self::Principal(x), Self::Principal(y))
-                if !ordered =>
-            {
+            (Self::Variant(x), Self::Variant(y)) | (Self::Ref(x), Self::Ref(y)) if !ordered => {
                 x.cmp(y)
             }
+            (Self::Actor(x), Self::Actor(y)) if !ordered => x.cmp(y),
             (Self::Ident(x), y) | (y, Self::Ident(x)) if !ordered => {
                 let y = y.as_text()?;
                 x.to_lowercase().cmp(&y.to_lowercase())
@@ -320,7 +319,7 @@ impl<F> Pred<F> {
 
     /// The same predicate with each [`Operand::Viewer`] as the person `who` names: whose list it is.
     #[must_use]
-    pub fn viewer(&self, who: &str) -> Self
+    pub fn viewer(&self, who: &Actor) -> Self
     where
         F: Clone,
     {
@@ -502,12 +501,12 @@ impl<F> Operand<F> {
         })
     }
 
-    fn viewer(&self, who: &str) -> Self
+    fn viewer(&self, who: &Actor) -> Self
     where
         F: Clone,
     {
         match self {
-            Self::Viewer => Self::Lit(Lit::Principal(who.to_owned())),
+            Self::Viewer => Self::Lit(Lit::Actor(who.clone())),
             other => other.clone(),
         }
     }

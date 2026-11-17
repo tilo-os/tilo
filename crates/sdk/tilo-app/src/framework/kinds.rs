@@ -26,7 +26,7 @@ fn name<A: ResourceApp>(state: &dyn std::any::Any) -> Option<String> {
 }
 
 /// Applies an app's seed to a new record, created by `me` on `device`.
-type Seed = fn(&mut Doc, &str, &str) -> Result<(), String>;
+type Seed = fn(&mut Doc, &tilo_resource::MemberId, &str) -> Result<(), String>;
 /// Every framework app's kind whose definition this process created, and
 /// its seed.
 static HOSTED: Mutex<(Kinds, Vec<(&'static str, Seed)>)> = Mutex::new((Kinds::new(), Vec::new()));
@@ -58,7 +58,11 @@ pub(crate) fn register<A: ResourceApp>() {
     hosted.1.push((kind, seed::<A>));
 }
 
-fn seed<A: ResourceApp>(doc: &mut Doc, me: &str, device: &str) -> Result<(), String> {
+fn seed<A: ResourceApp>(
+    doc: &mut Doc,
+    me: &tilo_resource::MemberId,
+    device: &str,
+) -> Result<(), String> {
     let seed = A::seed(&SeedCx {
         me,
         device,
@@ -70,7 +74,12 @@ fn seed<A: ResourceApp>(doc: &mut Doc, me: &str, device: &str) -> Result<(), Str
 /// Seed a record of `kind` its genesis just created, as `me` creating it on
 /// `device` without a window: the app's [`ResourceApp::seed`] with no host,
 /// applied as in a window. A kind no app registered has nothing to seed.
-pub fn seed_record(kind: &str, doc: &mut Doc, me: &str, device: &str) -> Result<(), String> {
+pub fn seed_record(
+    kind: &str,
+    doc: &mut Doc,
+    me: &tilo_resource::MemberId,
+    device: &str,
+) -> Result<(), String> {
     let seed = HOSTED
         .lock_recover()
         .1

@@ -115,7 +115,7 @@ impl AppBrokerState {
         let workspace_id = workspace.id().to_string();
         let witnessed = self.consume_answer(
             request.confirmation.as_ref(),
-            &self.witness_binding(actor.id(), &workspace_id, request),
+            &self.witness_binding(actor.member(), &workspace_id, request),
         );
         if !Self::confirmed_as_asked(
             actor,
@@ -302,7 +302,7 @@ impl AppBrokerState {
             operation,
             &crate::automation::SaveContext {
                 catalog: &catalog,
-                saver: authority.1.id(),
+                saver: authority.1.member(),
                 keymap: &keymap,
                 fixed_label: &|fixed| library.fixed_shortcut_label(fixed),
             },
@@ -339,7 +339,7 @@ impl AppBrokerState {
                 operation,
                 &crate::automation::SaveContext {
                     catalog: &catalog,
-                    saver: actor.id(),
+                    saver: actor.member(),
                     keymap: &keymap,
                     fixed_label: &|fixed| library.fixed_shortcut_label(fixed),
                 },
@@ -369,7 +369,7 @@ impl AppBrokerState {
                 return self.finish_framework_action(admitted, Ok(output));
             }
             crate::automation::LibraryPlan::Stop(stop) => {
-                let stopped = self.ended_runs.running.running.stop(
+                let stopped = self.ended_invocations.open.running.stop(
                     &workspace_id,
                     &stop,
                     "asked for from the shortcuts library",
@@ -398,7 +398,7 @@ impl AppBrokerState {
         };
         let stored = library.store(crate::services::ShortcutLibraryRequest {
             workspace: workspace_id,
-            actor: actor.id().to_owned(),
+            actor: actor.member().clone(),
             change,
             context: request
                 .context
@@ -492,7 +492,7 @@ impl AppBrokerState {
         let witnessed = owner_action
             && self.consume_answer(
                 request.confirmation.as_ref(),
-                &self.witness_binding(authority.1.id(), &authority.0.id().to_string(), request),
+                &self.witness_binding(authority.1.member(), &authority.0.id().to_string(), request),
             );
         if owner_action && !witnessed && request.confirmation != Some(Confirmation::Confirmed) {
             return Err(ActionHostError::confirmation_required());

@@ -54,8 +54,13 @@ const WIDTHS: [&str; 7] = [
 
 /// A headless session showing `tree` , with a turn taken so its shell has laid the windows out.
 fn session_with(tree: Layout) -> Session {
+    session_on(&[OutputConfig::new("HEADLESS-1", 1280, 800)], tree)
+}
+
+/// A headless session on `outputs` showing `tree` , laid out.
+fn session_on(outputs: &[OutputConfig], tree: Layout) -> Session {
     let mut session = crate::common::headless_on(
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
+        outputs,
         Options {
             collab: false,
             ..Options::default()
@@ -445,3 +450,34 @@ fn stand_in(root: &std::path::Path) -> std::path::PathBuf {
 
 /// The layer the menu's view asks the compositor for.
 const NAMESPACE: &str = "tilo-window-menu";
+
+/// A menu opened on the right of two displays stands where the person pressed on that display: the
+/// surface drawing it covers that display alone and draws from its corner, so the reading's anchor
+/// is the press less that corner.
+#[test]
+fn a_menu_opened_on_the_second_display_stands_at_the_press() {
+    let mut session = session_on(
+        &[
+            OutputConfig::new("HEADLESS-1", 1280, 800),
+            OutputConfig::new("HEADLESS-2", 1280, 800).at(1280, 0),
+        ],
+        layout_tree(),
+    );
+    session
+        .invoke(
+            WINDOW_MENU,
+            "open",
+            &args(&json!({ "tab": "20", "anchor": "1800,50" })),
+        )
+        .expect("the menu opens where the person pressed");
+    session.step(REFRESH).expect("a turn of the session");
+    let reading = menu(&session);
+    assert_eq!(
+        (
+            reading["anchor"]["x"].as_f64().expect("x"),
+            reading["anchor"]["y"].as_f64().expect("y")
+        ),
+        (520.0, 50.0),
+        "at the press, on the display it landed on: {reading}"
+    );
+}

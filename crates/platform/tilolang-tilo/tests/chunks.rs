@@ -10,7 +10,7 @@ use serde_json::json;
 use tilo_actions::ActionInvoker;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Edit, EditOp, Model as _, Segment};
-use tilolang_runtime::Principal;
+use tilolang_runtime::Actor;
 use tilolang_runtime::Value;
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::place::{Place, Placement as Placed};
@@ -111,7 +111,12 @@ fn split() -> (Host, (Meta, String, String)) {
     let mut second = AutoCommit::new();
     create(&mut second, &family, "second", "second");
 
-    let host = Host::new(&record, Principal::new("ada"), || None).unwrap();
+    let host = Host::new(
+        &record,
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
     host.load_builtin(TODO, "").unwrap();
     let mut chunks = Chunks::of(record);
     chunks.insert(1, second);
@@ -225,7 +230,7 @@ tilo_test_env::scenario! {
         let board = host.root_of(BOARD_APP).unwrap();
         host.runtime()
             .invoke_action(
-                &Principal::new("ada"),
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 (
                     add.as_str(),
                     vec![Value::resource(&board), Value::text("c")],
@@ -425,7 +430,12 @@ pub(crate) fn board() -> (Host, Docs, Meta, String, String) {
         reads::resource_obj(&record, BOARD_APP, &root).is_some(),
         "the record holds the root"
     );
-    let host = Host::new(&record, Principal::new("ada"), || None).unwrap();
+    let host = Host::new(
+        &record,
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
     assert!(
         host.store().record(&root).is_ok(),
         "the store reads the root"
@@ -851,7 +861,12 @@ fn a_chunk_this_device_lacks_is_waited_for_and_read_when_it_arrives() {
     // This replica holds the record alone: the chunk the rest of the cards are in has not
     // reached this device.
     let record = docs.doc(chunk::FIRST).clone();
-    let host = Host::open(Opening::default(), Principal::new("ada"), || None).unwrap();
+    let host = Host::open(
+        Opening::default(),
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
     host.adopt(Chunks::of(record));
     host.load_builtin(BOARD, &ids).unwrap();
     host.wait_index();
@@ -925,7 +940,7 @@ fn a_chunk_this_device_lacks_is_waited_for_and_read_when_it_arrives() {
         .clone();
     let board = host.root_of(BOARD_APP).unwrap();
     let refused = host.runtime().invoke_action(
-        &Principal::new("ada"),
+        &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         (
             add.as_str(),
             vec![Value::resource(&board), Value::text("away")],
@@ -1115,7 +1130,7 @@ fn a_card_added_past_a_full_run_of_a_record_kept_as_one_document_is_kept() {
                 record: Some(record),
                 ..Opening::default()
             },
-            Principal::new("ada"),
+            Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             || None,
         )
         .unwrap();

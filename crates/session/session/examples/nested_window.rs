@@ -29,8 +29,8 @@ mod nested {
     use std::time::{Duration, Instant};
 
     use tilo_compositor::{
-        Arrangement, Compositor, InputEvent, LayoutPoint, LayoutRect, ModeRequest, OutputChange,
-        OutputConfig, WindowInfo, WindowPolicy,
+        Compositor, InputEvent, LayoutPoint, LayoutRect, ModeRequest, OutputChange, OutputConfig,
+        WindowInfo, WindowPlacement, WindowPolicy,
     };
 
     /// How long the session may take to show its window here.
@@ -73,16 +73,17 @@ mod nested {
             &mut self,
             windows: &[(WindowInfo, LayoutRect)],
             outputs: &[LayoutRect],
-        ) -> Option<Vec<Arrangement>> {
+        ) -> Option<Vec<WindowPlacement>> {
             let output = outputs.first()?;
             let changes: Vec<_> = windows
                 .iter()
                 .filter(|(_, rect)| *rect != LayoutRect::new(output.loc, output.size))
-                .map(|(info, _)| Arrangement {
+                .map(|(info, _)| WindowPlacement {
                     id: info.id,
                     location: output.loc,
                     size: Some((output.size.w, output.size.h)),
                     clip: None,
+                    fullscreen: None,
                 })
                 .collect();
             (!changes.is_empty()).then_some(changes)

@@ -57,7 +57,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
-# The window channel an app's later windows are asked for on, and the release a
+# The window link an app's later windows are asked for on, and the release a
 # launch takes it with.
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 launcher = { path = "../../packaging/launcher" }

@@ -139,7 +139,7 @@ fn main() -> ExitCode {
         return ExitCode::from(code);
     }
     // So do the confined workers the host runs apps in.
-    if let Some(code) = tilo_agent_participant::worker::dispatch_early() {
+    if let Some(code) = tilo_agent_session::worker::dispatch_early() {
         return ExitCode::from(code);
     }
     let _ = tracing_subscriber::fmt()
@@ -445,6 +445,12 @@ fn repair_workspace<'a>(
             .record_routes(workspace)
             .await
             .map_err(|error| anyhow::anyhow!("{workspace}: {error}"))?;
+        // A person's own record, sealed for their devices alone (their drafts),
+        // is not the host's to read, nor to repair.
+        let theirs = workspaces
+            .workspace_record_routes(workspace)
+            .await
+            .map_err(|error| anyhow::anyhow!("{workspace}: {error}"))?;
         for (record_app, record) in routes {
             if app.is_some_and(|only| only != record_app) {
                 continue;
@@ -455,9 +461,7 @@ fn repair_workspace<'a>(
             {
                 Ok(Some(history)) => history,
                 Ok(None) => continue,
-                // A person's own record, sealed for their devices alone (their
-                // drafts), is not the host's to read, nor to repair.
-                Err(_) if tilo_action_policy::member_record(&record).is_some() => continue,
+                Err(_) if !theirs.contains(&(record_app.clone(), record.clone())) => continue,
                 Err(error) => {
                     let report = RecordReport {
                         workspace: workspace.to_owned(),
@@ -852,7 +856,7 @@ fn build(
 /// The messages of a part of a chat's messages, by id; for any other record,
 /// the keys at its top.
 fn count(app: &str, record: &str, doc: &AutoCommit) -> BTreeSet<String> {
-    let part = ui::record::RecordId::parse(record)
+    let part = ui::record::DocumentId::parse(record)
         .is_some_and(|id| app == CHAT && chat::parts::part_index(&id).is_some());
     if part {
         return chat::messages::read_part(doc)
@@ -1110,7 +1114,7 @@ fn host_cert(root: &SigningKey, host: &SigningKey, name: &str) -> anyhow::Result
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 #[cfg(test)]
-tilo_agent_participant::app_worker!();
+tilo_agent_session::app_worker!();
 
 #[cfg(test)]
 mod tests {
@@ -1163,7 +1167,7 @@ mod tests {
         workspace: &str,
         (key, cert): (&SigningKey, &DeviceCert),
     ) {
-        let catalogue = tilo_agent_participant::AppCatalogue::native();
+        let catalogue = tilo_agent_session::AppCatalogue::native();
         workspaces
             .prepare_application(workspace, cert, &catalogue, CHAT, "")
             .await
@@ -1283,7 +1287,7 @@ mod tests {
     async fn a_record_that_holds_a_sequence_twice_is_repaired_with_every_message() {
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let _ = tilo_agent_participant::AppCatalogue::native();
+        let _ = tilo_agent_session::AppCatalogue::native();
         // The device's channel keys outlive the host, as its channel service
         // keeps them across a restart.
         let keys = std::sync::Arc::new(TestGroupKeys::default());
@@ -1387,13 +1391,13 @@ mod tests {
     async fn a_record_waiting_on_a_change_it_never_got_reads_whole_once_repaired() {
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let _ = tilo_agent_participant::AppCatalogue::native();
+        let _ = tilo_agent_session::AppCatalogue::native();
         let keys = std::sync::Arc::new(TestGroupKeys::default());
         let relay =
             test_host_holding(scratch.path(), &key, &cert, std::sync::Arc::clone(&keys)).await;
         let workspaces = relay.workspaces().clone();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-        let catalogue = tilo_agent_participant::AppCatalogue::native();
+        let catalogue = tilo_agent_session::AppCatalogue::native();
         workspaces
             .prepare_application(&workspace, &cert, &catalogue, CHAT, "")
             .await

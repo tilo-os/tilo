@@ -439,6 +439,7 @@ fn commit_sealed(hosted: &Hosted, keys: &key_group::ContentKeys, when: SystemTim
                     app: APP.into(),
                     record: RECORD.into(),
                     envelope,
+                    own: None,
                 },
             },
             when,

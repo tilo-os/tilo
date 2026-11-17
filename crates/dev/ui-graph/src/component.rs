@@ -454,7 +454,7 @@ impl Type {
             Self::Int => "Int".into(),
             Self::Float => "Float".into(),
             Self::Bool => "Bool".into(),
-            Self::Principal => "Principal".into(),
+            Self::Principal => "Actor".into(),
             Self::Resource => "a resource".into(),
             Self::Time => "Time".into(),
             Self::Icon => "Icon".into(),

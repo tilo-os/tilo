@@ -28,16 +28,16 @@ use automerge::ChangeHash;
 /// Upper bound on one encoded message; anything larger is not a handoff.
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 
-/// Where a moved record went and who moved it, as its retirement records.
-/// Anyone who can read the old record learns only these ids; whether they
+/// Where a moved document went and who moved it, as its retirement records.
+/// Anyone who can read the old document learns only these ids; whether they
 /// can see the destination is for their own desktop to say.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Successor {
-    /// The workspace the record now lives in.
+    /// The workspace the document now lives in.
     pub workspace: String,
     /// Its id there.
-    pub record: String,
+    pub document: String,
     /// The person who moved it.
     pub by: String,
 }
@@ -207,7 +207,7 @@ mod tests {
         {
             let successor = Successor {
                 workspace: "3f2b1c00-0000-4000-8000-0000000000e1".into(),
-                record: "uuid:5b0e".into(),
+                document: "uuid:5b0e".into(),
                 by: "person:ada".into(),
             };
             for request in [

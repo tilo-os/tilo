@@ -7,7 +7,7 @@
 //!
 //! - a `Date` or `Time` parameter takes a day or a moment, as people say it ([`crate::natural`]):
 //!   "tomorrow", "fri 10am", "in 2 weeks", "3 nov";
-//! - a `Principal` parameter takes `@name`, matched against the workspace's members by the name they
+//! - an `Actor` parameter takes `@name`, matched against the workspace's members by the name they
 //!   go by;
 //! - a parameter of a record type takes `#title`, matched against the records of that type by its
 //!   title field.
@@ -18,6 +18,7 @@
 
 use crate::calendar::{DAY, day_text, time_text};
 use crate::natural::{Language, day_label, scan, words};
+use tilo_action_policy::Actor;
 
 /// What a create action's parameter takes out of the text an entry is typed into.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,7 +44,7 @@ pub struct Param {
 pub enum Filled {
     Day(String),
     Time(String),
-    Who(String),
+    Who(Actor),
     Record(String),
 }
 
@@ -72,7 +73,7 @@ pub struct Parsed {
 /// What the text's names can be matched against: who is in the workspace and the records its
 /// collections hold.
 pub trait Look {
-    fn people(&self) -> Vec<(String, String)>;
+    fn people(&self) -> Vec<(String, Actor)>;
     fn records(&self, app: &str, ty: &str) -> Vec<(String, String)>;
 }
 
@@ -165,7 +166,7 @@ pub fn read(
         ));
     }
 
-    // Who: "@name" once for each principal, by the name they go by or their id.
+    // Who: "@name" once for each actor, by the name they go by or their id.
     if let Some(slot) = params.iter().position(|p| p.takes == Takes::Who) {
         let people = look.people();
         for (i, word) in words.iter().enumerate() {
@@ -175,12 +176,12 @@ pub fn read(
             let Some(name) = word.text.strip_prefix('@').filter(|n| !n.is_empty()) else {
                 continue;
             };
-            let mut found: Vec<&str> = people
+            let mut found: Vec<&Actor> = people
                 .iter()
                 .filter(|(name_of, id)| {
-                    name_of.eq_ignore_ascii_case(name) || id.eq_ignore_ascii_case(name)
+                    name_of.eq_ignore_ascii_case(name) || id.id().eq_ignore_ascii_case(name)
                 })
-                .map(|(_, id)| id.as_str())
+                .map(|(_, id)| id)
                 .collect();
             found.sort_unstable();
             found.dedup();
@@ -189,10 +190,10 @@ pub fn read(
             };
             let name_of = people
                 .iter()
-                .find(|(_, person)| person == id)
+                .find(|(_, person)| person == *id)
                 .map_or(name, |(name_of, _)| name_of.as_str());
             used[i] = true;
-            fills.push((slot, Filled::Who((*id).to_owned())));
+            fills.push((slot, Filled::Who((*id).clone())));
             parts.push((
                 i,
                 Part {
@@ -326,17 +327,22 @@ fn without(words: &[crate::natural::Word], taken: &[usize]) -> String {
 mod tests {
     use super::{Filled, Look, Param, Takes, read};
     use crate::natural::Language;
+    use tilo_action_policy::{Actor, MemberId};
+
+    fn person(id: &str) -> Actor {
+        MemberId::person(id).into()
+    }
 
     const NOW: i64 = 1_793_257_200;
     const BERLIN: i64 = 3600;
 
     struct Fixed {
-        people: Vec<(String, String)>,
+        people: Vec<(String, Actor)>,
         records: Vec<(String, String)>,
     }
 
     impl Look for Fixed {
-        fn people(&self) -> Vec<(String, String)> {
+        fn people(&self) -> Vec<(String, Actor)> {
             self.people.clone()
         }
 
@@ -347,7 +353,7 @@ mod tests {
 
     fn look() -> Fixed {
         Fixed {
-            people: vec![("Bo".into(), "bo".into()), ("Ada".into(), "ada".into())],
+            people: vec![("Bo".into(), person("bo")), ("Ada".into(), person("ada"))],
             records: vec![
                 ("Move flat".into(), "tasks:Move flat".into()),
                 ("Move office".into(), "tasks:Move office".into()),
@@ -392,7 +398,7 @@ mod tests {
                 vec![
                     (1, Filled::Day("2026-10-30".into())),
                     (2, Filled::Time("2026-10-30T09:00:00Z".into())),
-                    (3, Filled::Who("bo".into())),
+                    (3, Filled::Who(person("bo"))),
                     (4, Filled::Record("tasks:Move flat".into())),
                 ]
             );
@@ -435,7 +441,7 @@ mod tests {
             assert_eq!(parsed.title, "call landlord @zoe");
             assert!(parsed.parts.is_empty());
             let mut two = look();
-            two.people.push(("Bo".into(), "bo-2".into()));
+            two.people.push(("Bo".into(), person("bo-2")));
             let parsed = story("call @bo", &tasks(), &two);
             assert_eq!(parsed.title, "call @bo");
             assert!(parsed.parts.is_empty());
@@ -471,7 +477,7 @@ mod tests {
                 vec![
                     (1, Filled::Day("2026-10-30".into())),
                     (2, Filled::Time("2026-10-30T09:00:00Z".into())),
-                    (3, Filled::Who("bo".into())),
+                    (3, Filled::Who(person("bo"))),
                 ]
             );
             assert_eq!(done.parts[0].label, "Morgen");

@@ -1,6 +1,6 @@
 //! Durable local availability policy for collaborative file records.
 //!
-//! Keyed by [`FileRecordId`], never by a path: paths are mutable presentation metadata, while pin
+//! Keyed by [`FileDocumentId`], never by a path: paths are mutable presentation metadata, while pin
 //! and eviction decisions must survive renames and moves. This records policy and evidence; the
 //! content store retains or deletes bytes.
 
@@ -13,7 +13,7 @@ use fs_protocol::projection::{
     ProjectedReplicaEvidence,
 };
 use fs_protocol::{
-    AvailabilityPolicy, AvailabilityProjectionV1, FileRecordId, FileVersionId, ProjectedTransfer,
+    AvailabilityPolicy, AvailabilityProjectionV1, FileDocumentId, FileVersionId, ProjectedTransfer,
     Residency, TransferPhase, TransferProgress,
 };
 use serde::{Deserialize, Serialize};
@@ -72,10 +72,10 @@ pub struct Freshness {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordAvailability {
-    pub record_id: FileRecordId,
+    pub document_id: FileDocumentId,
     pub kind: RecordKind,
     /// Stable parent record, not a path, so a directory pin reaches descendants created after it.
-    pub parent: Option<FileRecordId>,
+    pub parent: Option<FileDocumentId>,
     /// Current immutable version. Replica evidence must name this exact value.
     pub current_version: Option<FileVersionId>,
     pub residency: Residency,
@@ -89,9 +89,9 @@ pub struct RecordAvailability {
 }
 
 impl RecordAvailability {
-    pub fn new(record_id: FileRecordId, kind: RecordKind) -> Self {
+    pub fn new(document_id: FileDocumentId, kind: RecordKind) -> Self {
         Self {
-            record_id,
+            document_id,
             kind,
             parent: None,
             current_version: None,
@@ -139,7 +139,7 @@ impl RecordAvailability {
 
         AvailabilityProjectionV1 {
             schema_version: AVAILABILITY_PROJECTION_VERSION,
-            record_id: self.record_id,
+            document_id: self.document_id,
             current_version: self.current_version,
             residency: self.residency,
             transfer: ProjectedTransfer {
@@ -239,19 +239,19 @@ pub enum AvailabilityError {
     #[error("unsupported availability schema version {0}")]
     UnsupportedVersion(u16),
     #[error("availability registry contains duplicate record {0:?}")]
-    DuplicateRecord(FileRecordId),
+    DuplicateRecord(FileDocumentId),
     #[error("record {record:?} refers to missing parent {parent:?}")]
     MissingParent {
-        record: FileRecordId,
-        parent: FileRecordId,
+        record: FileDocumentId,
+        parent: FileDocumentId,
     },
     #[error("record {record:?} has non-directory parent {parent:?}")]
     ParentNotDirectory {
-        record: FileRecordId,
-        parent: FileRecordId,
+        record: FileDocumentId,
+        parent: FileDocumentId,
     },
     #[error("record ancestry contains a cycle at {0:?}")]
-    AncestryCycle(FileRecordId),
+    AncestryCycle(FileDocumentId),
     #[error("transfer progress exceeds its declared total")]
     InvalidTransferProgress,
     #[error("current content revision is invalid")]
@@ -260,7 +260,7 @@ pub enum AvailabilityError {
 
 pub struct AvailabilityRegistry {
     path: PathBuf,
-    records: BTreeMap<FileRecordId, RecordAvailability>,
+    records: BTreeMap<FileDocumentId, RecordAvailability>,
     /// Inside [`Self::batch`]: mutations are validated and persisted once, when the batch ends.
     deferred: bool,
     /// Bumped by every commit that changes what pinned hydration acts on; see
@@ -269,7 +269,7 @@ pub struct AvailabilityRegistry {
     hydration_watch: tokio::sync::watch::Sender<u64>,
     /// Records whose committed state changed since [`Self::take_changed_records`] last took them,
     /// kept while someone subscribes through [`Self::subscribe_changes`].
-    changed: BTreeSet<FileRecordId>,
+    changed: BTreeSet<FileDocumentId>,
     changes_watch: tokio::sync::watch::Sender<()>,
     #[cfg(test)]
     persists: std::sync::atomic::AtomicU64,
@@ -283,7 +283,7 @@ fn hydration_view(
 ) -> (
     AvailabilityPolicy,
     RecordKind,
-    Option<FileRecordId>,
+    Option<FileDocumentId>,
     Option<FileVersionId>,
     Residency,
 ) {
@@ -323,7 +323,7 @@ impl AvailabilityRegistry {
         }
         let mut records = BTreeMap::new();
         for record in document.records {
-            let id = record.record_id;
+            let id = record.document_id;
             if records.insert(id, record).is_some() {
                 return Err(AvailabilityError::DuplicateRecord(id));
             }
@@ -342,8 +342,8 @@ impl AvailabilityRegistry {
         })
     }
 
-    pub fn get(&self, record_id: FileRecordId) -> Option<&RecordAvailability> {
-        self.records.get(&record_id)
+    pub fn get(&self, document_id: FileDocumentId) -> Option<&RecordAvailability> {
+        self.records.get(&document_id)
     }
 
     pub fn records(&self) -> impl Iterator<Item = &RecordAvailability> {
@@ -372,11 +372,11 @@ impl AvailabilityRegistry {
         self.changes_watch.subscribe()
     }
 
-    pub fn take_changed_records(&mut self) -> BTreeSet<FileRecordId> {
+    pub fn take_changed_records(&mut self) -> BTreeSet<FileDocumentId> {
         std::mem::take(&mut self.changed)
     }
 
-    fn note_changed(&mut self, ids: impl IntoIterator<Item = FileRecordId>) {
+    fn note_changed(&mut self, ids: impl IntoIterator<Item = FileDocumentId>) {
         if self.changes_watch.receiver_count() == 0 {
             return;
         }
@@ -419,10 +419,10 @@ impl AvailabilityRegistry {
     /// worker can take the zero-scan fast path whenever no pins remain.
     pub fn clear_automatic_transfer_subtree(
         &mut self,
-        root: FileRecordId,
+        root: FileDocumentId,
     ) -> Result<bool, AvailabilityError> {
-        let is_in_subtree = |record_id: FileRecordId| {
-            let mut cursor = Some(record_id);
+        let is_in_subtree = |document_id: FileDocumentId| {
+            let mut cursor = Some(document_id);
             let mut remaining = self.records.len().saturating_add(1);
             while let Some(id) = cursor {
                 if id == root {
@@ -440,14 +440,14 @@ impl AvailabilityRegistry {
             .records
             .values()
             .filter(|record| {
-                is_in_subtree(record.record_id)
+                is_in_subtree(record.document_id)
                     && matches!(
-                        self.effective_policy(record.record_id),
+                        self.effective_policy(record.document_id),
                         Ok(Some(AvailabilityPolicy::Automatic))
                     )
                     && record.transfer != TransferState::default()
             })
-            .map(|record| record.record_id)
+            .map(|record| record.document_id)
             .collect::<Vec<_>>();
         if ids.is_empty() {
             return Ok(false);
@@ -471,7 +471,7 @@ impl AvailabilityRegistry {
     /// pin reach what is created in it later. Unpinning cancels the automatic transfers below.
     pub fn set_policy_along(
         &mut self,
-        ancestry: &[(FileRecordId, RecordKind, Option<FileRecordId>)],
+        ancestry: &[(FileDocumentId, RecordKind, Option<FileDocumentId>)],
         policy: AvailabilityPolicy,
     ) -> Result<(), AvailabilityError> {
         let Some(&(target, ..)) = ancestry.last() else {
@@ -502,7 +502,7 @@ impl AvailabilityRegistry {
         &mut self,
         revision: fs_protocol::ContentRevisionV1,
         kind: RecordKind,
-        parent: Option<FileRecordId>,
+        parent: Option<FileDocumentId>,
         observed_at_ms: u64,
     ) -> Result<bool, AvailabilityError> {
         revision
@@ -510,9 +510,9 @@ impl AvailabilityRegistry {
             .map_err(|_| AvailabilityError::InvalidCurrentRevision)?;
         let mut record = self
             .records
-            .get(&revision.record_id)
+            .get(&revision.document_id)
             .cloned()
-            .unwrap_or_else(|| RecordAvailability::new(revision.record_id, kind));
+            .unwrap_or_else(|| RecordAvailability::new(revision.document_id, kind));
         let version_changed = record.current_version != Some(revision.version_id);
         let metadata_changed = record.kind != kind
             || record.parent != parent
@@ -560,7 +560,7 @@ impl AvailabilityRegistry {
         if hydration_changed {
             self.bump_hydration_generation();
         }
-        let changed: Vec<FileRecordId> = self
+        let changed: Vec<FileDocumentId> = self
             .records
             .iter()
             .filter(|(id, record)| before.get(id) != Some(*record))
@@ -573,7 +573,7 @@ impl AvailabilityRegistry {
     /// Insert or replace a record and durably commit the whole registry; invalid ancestry leaves
     /// memory and disk unchanged.
     pub fn put(&mut self, record: RecordAvailability) -> Result<(), AvailabilityError> {
-        let id = record.record_id;
+        let id = record.document_id;
         let previous = self.records.insert(id, record);
         if self.deferred {
             return Ok(());
@@ -605,15 +605,15 @@ impl AvailabilityRegistry {
 
     pub fn effective_policy(
         &self,
-        record_id: FileRecordId,
+        document_id: FileDocumentId,
     ) -> Result<Option<AvailabilityPolicy>, AvailabilityError> {
-        let Some(mut record) = self.records.get(&record_id) else {
+        let Some(mut record) = self.records.get(&document_id) else {
             return Ok(None);
         };
         let mut seen = BTreeSet::new();
         loop {
-            if !seen.insert(record.record_id) {
-                return Err(AvailabilityError::AncestryCycle(record.record_id));
+            if !seen.insert(record.document_id) {
+                return Err(AvailabilityError::AncestryCycle(record.document_id));
             }
             if record.policy == AvailabilityPolicy::Pinned {
                 return Ok(Some(AvailabilityPolicy::Pinned));
@@ -625,7 +625,7 @@ impl AvailabilityRegistry {
                 .records
                 .get(&parent)
                 .ok_or(AvailabilityError::MissingParent {
-                    record: record.record_id,
+                    record: record.document_id,
                     parent,
                 })?;
         }
@@ -636,7 +636,7 @@ impl AvailabilityRegistry {
     /// the tree became the record, so only a caller who accepts losing the bytes may release them.
     pub fn eviction_decision(
         &self,
-        record_id: FileRecordId,
+        document_id: FileDocumentId,
         _now_ms: u64,
         _requirements: EvictionRequirements,
         destructive_override: bool,
@@ -644,13 +644,13 @@ impl AvailabilityRegistry {
         if destructive_override {
             return EvictionDecision::AllowedDestructiveOverride;
         }
-        let Some(record) = self.records.get(&record_id) else {
+        let Some(record) = self.records.get(&document_id) else {
             return EvictionDecision::Denied(EvictionBlocker::UnknownRecord);
         };
         if record.transfer.phase.is_active() {
             return EvictionDecision::Denied(EvictionBlocker::ActiveTransfer);
         }
-        match self.effective_policy(record_id) {
+        match self.effective_policy(document_id) {
             Ok(Some(AvailabilityPolicy::Pinned)) => {
                 return EvictionDecision::Denied(EvictionBlocker::Pinned);
             }
@@ -680,18 +680,24 @@ impl AvailabilityRegistry {
     }
 }
 
-/// Whether `record_id` is pinned, itself or through a stable ancestor, in a captured snapshot of
+/// Whether `document_id` is pinned, itself or through a stable ancestor, in a captured snapshot of
 /// `records`. Missing or cyclic ancestry counts as pinned, so it can never become permission to
 /// release local data.
-pub(crate) fn pinned_in_snapshot(records: &[RecordAvailability], record_id: FileRecordId) -> bool {
-    let mut current = Some(record_id);
+pub(crate) fn pinned_in_snapshot(
+    records: &[RecordAvailability],
+    document_id: FileDocumentId,
+) -> bool {
+    let mut current = Some(document_id);
     let mut remaining = records.len().saturating_add(1);
-    while let Some(record_id) = current {
+    while let Some(document_id) = current {
         if remaining == 0 {
             return true;
         }
         remaining = remaining.saturating_sub(1);
-        let Some(record) = records.iter().find(|record| record.record_id == record_id) else {
+        let Some(record) = records
+            .iter()
+            .find(|record| record.document_id == document_id)
+        else {
             return true;
         };
         if record.policy == AvailabilityPolicy::Pinned {
@@ -703,7 +709,7 @@ pub(crate) fn pinned_in_snapshot(records: &[RecordAvailability], record_id: File
 }
 
 fn validate_records(
-    records: &BTreeMap<FileRecordId, RecordAvailability>,
+    records: &BTreeMap<FileDocumentId, RecordAvailability>,
 ) -> Result<(), AvailabilityError> {
     for record in records.values() {
         if record
@@ -717,18 +723,18 @@ fn validate_records(
             let parent_record = records
                 .get(&parent)
                 .ok_or(AvailabilityError::MissingParent {
-                    record: record.record_id,
+                    record: record.document_id,
                     parent,
                 })?;
             if parent_record.kind != RecordKind::Directory {
                 return Err(AvailabilityError::ParentNotDirectory {
-                    record: record.record_id,
+                    record: record.document_id,
                     parent,
                 });
             }
         }
 
-        let mut next = Some(record.record_id);
+        let mut next = Some(record.document_id);
         let mut seen = BTreeSet::new();
         while let Some(id) = next {
             if !seen.insert(id) {
@@ -746,7 +752,7 @@ mod tests {
     use fs_protocol::projection::{MAX_AVAILABILITY_XATTR_BYTES, ProjectionError};
     use tempfile::TempDir;
 
-    fn file(id: FileRecordId, version: FileVersionId) -> RecordAvailability {
+    fn file(id: FileDocumentId, version: FileVersionId) -> RecordAvailability {
         let mut record = RecordAvailability::new(id, RecordKind::File);
         record.current_version = Some(version);
         record.residency = Residency::Resident { bytes: 1024 };
@@ -763,7 +769,7 @@ mod tests {
         {
             let dir = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(dir.path().join("a.json")).unwrap();
-            let (first, second) = (FileRecordId::new(), FileRecordId::new());
+            let (first, second) = (FileDocumentId::new(), FileDocumentId::new());
             registry.put(file(first, FileVersionId::new())).unwrap();
             assert!(
                 registry.take_changed_records().is_empty(),
@@ -801,9 +807,9 @@ mod tests {
             {
                 let temp = TempDir::new().unwrap();
                 let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-                let pinned_dir = FileRecordId::new();
-                let other_dir = FileRecordId::new();
-                let child = FileRecordId::new();
+                let pinned_dir = FileDocumentId::new();
+                let other_dir = FileDocumentId::new();
+                let child = FileDocumentId::new();
 
                 let mut directory = RecordAvailability::new(pinned_dir, RecordKind::Directory);
                 directory.policy = AvailabilityPolicy::Pinned;
@@ -832,7 +838,7 @@ mod tests {
                 let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
                 assert!(!registry.has_pinned_policy());
 
-                let id = FileRecordId::new();
+                let id = FileDocumentId::new();
                 let mut record = file(id, FileVersionId::new());
                 registry.put(record.clone()).unwrap();
                 assert!(!registry.has_pinned_policy());
@@ -849,11 +855,11 @@ mod tests {
     }
 
     #[test]
-    fn availability_registry_persists_by_stable_record_id_and_rejects_tampering() {
+    fn availability_registry_persists_by_stable_document_id_and_rejects_tampering() {
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("availability/state.json");
-            let id = FileRecordId::new();
+            let id = FileDocumentId::new();
             let version = FileVersionId::new();
 
             let mut first = AvailabilityRegistry::open(&path).unwrap();
@@ -887,7 +893,7 @@ mod tests {
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("availability.json");
-            let id = FileRecordId::new();
+            let id = FileDocumentId::new();
             let version = FileVersionId::new();
             let old_name = "draft.png";
 
@@ -907,9 +913,9 @@ mod tests {
         {
             let temp = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-            let id = FileRecordId::new();
+            let id = FileDocumentId::new();
             let mut record = file(id, FileVersionId::new());
-            record.parent = Some(FileRecordId::new());
+            record.parent = Some(FileDocumentId::new());
             assert!(matches!(
                 registry.put(record),
                 Err(AvailabilityError::MissingParent { .. })
@@ -949,7 +955,7 @@ mod tests {
                     projection
                 );
                 assert_eq!(projection.schema_version, AVAILABILITY_PROJECTION_VERSION);
-                assert_eq!(projection.record_id, record.record_id);
+                assert_eq!(projection.document_id, record.document_id);
                 assert_eq!(projection.residency, record.residency);
                 assert_eq!(projection.transfer.phase, TransferPhase::Downloading);
                 assert_eq!(projection.policy, AvailabilityPolicy::Pinned);
@@ -1048,10 +1054,10 @@ mod tests {
     }
 
     fn rich_record() -> RecordAvailability {
-        let id = FileRecordId::new();
+        let id = FileDocumentId::new();
         let version = FileVersionId::new();
         RecordAvailability {
-            record_id: id,
+            document_id: id,
             kind: RecordKind::File,
             parent: None,
             current_version: Some(version),

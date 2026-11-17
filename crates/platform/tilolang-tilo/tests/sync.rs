@@ -102,7 +102,7 @@ fn typed(ada: &Replica, meta: &tilolang_runtime::Meta, root: &str, item: &str, t
             txn,
             &ChangeNote {
                 action: "$edit".to_owned(),
-                invoker: ada.name.clone(),
+                invoker: Some(tilolang_tilo::personal::actor(&ada.name)),
                 ..ChangeNote::default()
             },
         )
@@ -453,7 +453,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_sync_of_one_unrelated_change_takes_no_row_of_a_thousand_away() {
-    use tilolang_runtime::Principal;
+    use tilolang_runtime::Actor;
     use tilolang_runtime::meta::FieldKind;
     use tilolang_runtime::store::{FieldSpec, Splice};
     use tilolang_runtime::value::ResourceRef;
@@ -483,7 +483,7 @@ fn a_sync_of_one_unrelated_change_takes_no_row_of_a_thousand_away() {
         ada.host
             .runtime()
             .invoke_action(
-                &Principal::new("ada"),
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 (
                     add.as_str(),
                     vec![Value::resource(&list), Value::text(text)],

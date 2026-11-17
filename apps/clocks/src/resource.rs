@@ -157,7 +157,7 @@ impl ResourceApp for ClocksShell {
         )
     }
 
-    fn launch_record(input: &LaunchInput<'_>) -> Option<ui::record::RecordId> {
+    fn launch_record(input: &LaunchInput<'_>) -> Option<ui::record::DocumentId> {
         crate::native_timers::activation_record(input.arguments().first()?)
     }
 

@@ -668,3 +668,39 @@ tilo_test_env::scenario! {
         }
     }
 }
+
+/// The host's notice offers its Undo to assistive technology as a named button, and a press of
+/// it there hands the host the action as a pointer press does.
+#[test]
+fn a_notices_button_is_named_and_pressed_by_assistive_technology() {
+    use crate::widget::Widget as _;
+    let notice = std::rc::Rc::new(std::cell::RefCell::new(Transient::new()));
+    let pressed = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let mut layer = NoticeLayer::new(std::rc::Rc::clone(&notice), {
+        let pressed = std::rc::Rc::clone(&pressed);
+        move |id: &str| pressed.borrow_mut().push(id.to_owned())
+    });
+    notice.borrow_mut().show_for(
+        crate::window_toolbar::ToolbarNotice::new("Notes closed", ToastKind::Info).action(
+            crate::window_toolbar::ToolbarAction::new("reopen", "undo-2", "Undo"),
+        ),
+        ACTION_NOTICE_LIFETIME,
+    );
+    let node = layer.accessibility().expect("the notice is announced");
+    assert_eq!(node.value.as_deref(), Some("Notes closed"));
+    let undo = &node.children[0];
+    assert_eq!(undo.name.as_deref(), Some("Undo"));
+    assert!(undo.action_target.is_some(), "a reader can press it");
+
+    let mut doc = automerge::AutoCommit::new();
+    let key = undo.key.expect("the button keeps its identity");
+    assert!(layer.perform_action(
+        &crate::a11y::Action::Activate,
+        &[key],
+        &mut crate::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    ));
+    assert_eq!(*pressed.borrow(), ["reopen"]);
+    let (since, gone) = notice.borrow().span().expect("it is up");
+    assert_eq!(gone - since, ACTION_NOTICE_LIFETIME);
+}

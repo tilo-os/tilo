@@ -151,17 +151,14 @@ impl TiloStore {
     /// Have the store write an action's writes as `author` (the record's holder) where they are
     /// the first open writes of their chunk, so they are the action's change as written
     /// ([`Self::commit_action`]).
-    pub fn set_author(&self, author: &[u8]) {
-        self.changing().author = Some(automerge::ActorId::from(author));
+    pub fn set_author(&self, author: &crate::runtime::Actor) {
+        self.changing().author = Some(author.clone());
     }
 
     /// Run `run` with the store writing as `author`: an invocation the API builds for an agent
     /// is the agent's change, written as theirs.
-    pub fn writing_as<R>(&self, author: &[u8], run: impl FnOnce() -> R) -> R {
-        let held = self
-            .changing()
-            .author
-            .replace(automerge::ActorId::from(author));
+    pub fn writing_as<R>(&self, author: &crate::runtime::Actor, run: impl FnOnce() -> R) -> R {
+        let held = self.changing().author.replace(author.clone());
         let out = run();
         self.changing().author = held;
         out
@@ -181,14 +178,14 @@ impl TiloStore {
         chunk: ChunkNo,
         (action, part): (&dyn tilo_actions::Action, Option<&DynAction>),
         encoded: tilo_actions::EncodedAction,
-        author: &[u8],
+        author: &crate::runtime::Actor,
         context: tilo_actions::ActionContext,
         then: impl FnOnce(&mut Doc, Vec<automerge::ChangeHash>) -> R,
     ) -> (Result<R, tilo_actions::ActionError>, bool) {
         let written = part.and_then(|part| Some((part, self.held().written_as(chunk, part)?)));
         let Some((part, described)) = written else {
             return self.write_chunk(chunk, |doc| {
-                let before = apply_step(doc, action, encoded, author, context)?;
+                let before = apply_step(doc, action, encoded, &author.actor_bytes(), context)?;
                 Ok(then(doc, before))
             });
         };
@@ -198,8 +195,15 @@ impl TiloStore {
             inner.write_alone(chunk, part.edits.len(), author);
             let doc = inner.chunks.open_held(chunk);
             let before = doc.committed_heads();
-            tilo_actions::commit_written(doc, part, encoded, author, context, Some(described))
-                .map(|_| then(doc, before))
+            tilo_actions::commit_written(
+                doc,
+                part,
+                encoded,
+                &author.actor_bytes(),
+                context,
+                Some(described),
+            )
+            .map(|_| then(doc, before))
         };
         (out, self.catch_up(chunk))
     }
@@ -344,7 +348,7 @@ impl Inner {
     /// as its open transaction alone, written under `author`: as they are when they are all it
     /// holds and were written so, else written again so. What else it held goes back on once
     /// the action's change is taken in ([`Self::reapply_kept`]).
-    fn write_alone(&mut self, chunk: ChunkNo, count: usize, author: &[u8]) {
+    fn write_alone(&mut self, chunk: ChunkNo, count: usize, author: &crate::runtime::Actor) {
         let open = self
             .local
             .iter()
@@ -353,7 +357,7 @@ impl Inner {
         let as_author = self
             .chunks
             .mirror(chunk)
-            .is_some_and(|doc| doc.get_actor().to_bytes() == author);
+            .is_some_and(|doc| doc.get_actor().to_bytes() == author.actor_bytes());
         if open == count && as_author {
             return;
         }
@@ -368,11 +372,10 @@ impl Inner {
         let Some(doc) = self.chunks.mirror_mut(chunk) else {
             return;
         };
-        let author = automerge::ActorId::from(author);
-        doc.set_actor(author.clone());
+        doc.set_actor(automerge::ActorId::from(author.actor_bytes()));
         for write in &part {
             let written =
-                super::write_edit(doc, &write.app, &write.edit, write.index, Some(&author));
+                super::write_edit(doc, &write.app, &write.edit, write.index, Some(author));
             if let Err(error) = written {
                 tracing::error!(app = %write.app, %error, "an action's write did not apply again");
             }

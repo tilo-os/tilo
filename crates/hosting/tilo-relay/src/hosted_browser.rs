@@ -109,8 +109,8 @@ pub const TITLE: &str = "Browser";
 /// `app.so.tilo.browser`, and the record it makes is opened by the session in
 /// the workspace's VM. This host mounts nothing of the app.
 #[must_use]
-pub fn placed_app() -> tilo_agent_participant::PlacedApp {
-    tilo_agent_participant::PlacedApp {
+pub fn placed_app() -> tilo_agent_session::PlacedApp {
+    tilo_agent_session::PlacedApp {
         app_id: APP,
         title: TITLE,
         needs: None,
@@ -122,11 +122,11 @@ pub fn placed_app() -> tilo_agent_participant::PlacedApp {
 /// app starts in the workspace's VM, in the apps session there
 /// ([`tilo_actions::remote::linux_apps`]). This host mounts nothing of it.
 #[must_use]
-pub fn placed_linux_apps() -> tilo_agent_participant::PlacedApp {
-    tilo_agent_participant::PlacedApp {
+pub fn placed_linux_apps() -> tilo_agent_session::PlacedApp {
+    tilo_agent_session::PlacedApp {
         app_id: linux_apps::APP,
         title: linux_apps::TITLE,
-        needs: Some(tilo_agent_participant::PlacedArgument {
+        needs: Some(tilo_agent_session::PlacedArgument {
             name: linux_apps::APP_ARGUMENT,
             description: "the app to open, by its desktop file's name, such as \
                           org.gnome.TextEditor",
@@ -658,17 +658,15 @@ impl HostedBrowsers {
         {
             return answer;
         }
-        // Named as the workspace's other publishers are, so a caller holding
-        // the listing to its own workspace keeps it.
-        let workspace = page
-            .providers
-            .first()
-            .map_or_else(|| up.workspace.clone(), |listed| listed.workspace.clone());
+        // Named by the workspace it was opened in: a caller holding what runs
+        // in its own workspace to that workspace keeps it. The host's own rows
+        // name no workspace (they are the caller's by the host serving them),
+        // so theirs is not the name to copy.
         page.providers
             .push(tilo_actions::remote::CatalogueProvider {
                 provider: up.window.provider.clone(),
                 app_id: APP.to_owned(),
-                workspace,
+                workspace: up.workspace.clone(),
                 record_id: up.record.clone(),
                 browsable: true,
             });

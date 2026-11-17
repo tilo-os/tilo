@@ -269,7 +269,7 @@ fn start_direct(
             workspace,
             "echo",
             trigger,
-            tilo_automation::RunId(fixture.request.invocation.0),
+            tilo_automation::InvocationId(fixture.request.invocation.0),
             serde_json::Map::new(),
         )
     } else {
@@ -343,7 +343,7 @@ async fn direct_palette_keyboard_and_unattended_runs_cross_signed_barriers() {
             }
         })
         .await;
-        let finished = fixture.state.take_finished_shortcut_runs();
+        let finished = fixture.state.take_finished_invocations();
         assert_eq!(finished.len(), 1);
         let expected = trigger
             .as_ref()
@@ -355,9 +355,9 @@ async fn direct_palette_keyboard_and_unattended_runs_cross_signed_barriers() {
                 trigger,
                 Some(tilo_automation::TriggerSpec::AppOpened { .. })
             ) {
-                tilo_automation::RunMode::Unattended
+                tilo_automation::InvocationMode::Unattended
             } else {
-                tilo_automation::RunMode::Interactive
+                tilo_automation::InvocationMode::Interactive
             }
         );
         let record = fixture
@@ -444,7 +444,7 @@ async fn signed_run_keeps_original_uuid_owner_and_terminal_and_retries_only_once
     );
     fixture.finish().await;
     fixture.invoke().await.unwrap();
-    assert_eq!(fixture.state.take_finished_shortcut_runs().len(), 1);
+    assert_eq!(fixture.state.take_finished_invocations().len(), 1);
     let record = fixture
         .state
         .journal
@@ -485,7 +485,7 @@ async fn journal_failure_starts_no_run_and_can_retry_after_repair() {
     *fixture.state.journal.lock().unwrap() = journal;
     fixture.invoke().await.unwrap();
     fixture.finish().await;
-    assert_eq!(fixture.state.take_finished_shortcut_runs().len(), 1);
+    assert_eq!(fixture.state.take_finished_invocations().len(), 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -532,13 +532,16 @@ async fn nested_steps_keep_original_owner_and_sign_each_steps_own_uuid() {
     fixture.request.target.address.resource = tilo_automation::shortcut_resource_id("outer");
     fixture.invoke().await.unwrap();
     fixture.finish().await;
-    let finished = fixture.state.take_finished_shortcut_runs();
+    let finished = fixture.state.take_finished_invocations();
     assert_eq!(finished.len(), 3, "outer, middle and leaf each executed");
     let mut invocations = std::collections::HashSet::new();
     for run in &finished {
-        assert_eq!(run.report.outcome, tilo_automation::RunOutcome::Completed);
+        assert_eq!(
+            run.report.outcome,
+            tilo_automation::InvocationOutcome::Completed
+        );
         let mut key = fixture.key.clone();
-        key.invocation = tilo_actions::InvocationId(run.report.run.0);
+        key.invocation = tilo_actions::InvocationId(run.report.invocation.0);
         assert!(invocations.insert(key.invocation));
         let record = fixture
             .state
@@ -572,11 +575,11 @@ async fn propagated_custody_does_not_bypass_the_shortcut_grant() {
     fixture.request.target.address.resource = tilo_automation::shortcut_resource_id("denied");
     fixture.invoke().await.unwrap();
     fixture.finish().await;
-    let finished = fixture.state.take_finished_shortcut_runs();
+    let finished = fixture.state.take_finished_invocations();
     assert_eq!(finished.len(), 1, "the ungranted child never starts");
     assert!(matches!(
         finished[0].report.outcome,
-        tilo_automation::RunOutcome::Failed { .. }
+        tilo_automation::InvocationOutcome::Failed { .. }
     ));
 }
 
@@ -703,7 +706,7 @@ async fn a_stopped_run_ends_as_cancelled_keeping_the_steps_it_reached() {
         loop {
             if let Some(finished) = fixture
                 .state
-                .take_finished_shortcut_runs()
+                .take_finished_invocations()
                 .into_iter()
                 .find(|run| run.report.shortcut == "waiting")
             {
@@ -719,7 +722,7 @@ async fn a_stopped_run_ends_as_cancelled_keeping_the_steps_it_reached() {
     assert!(
         matches!(
             reported.report.outcome,
-            tilo_automation::RunOutcome::Cancelled { .. }
+            tilo_automation::InvocationOutcome::Cancelled { .. }
         ),
         "a stopped run is cancelled, not failed: {:?}",
         reported.report
@@ -746,7 +749,7 @@ async fn stopping_a_shortcut_that_is_not_running_stops_nothing_and_is_no_error()
     fixture.invoke().await.unwrap();
     fixture.finish().await;
     wait_for_finished(&fixture).await;
-    let _ = fixture.state.take_finished_shortcut_runs();
+    let _ = fixture.state.take_finished_invocations();
     let workspace = fixture.caller.workspace().unwrap();
     assert!(
         fixture
@@ -778,7 +781,7 @@ async fn an_unscoped_broker_api_does_not_invent_native_custody() {
     );
     let mut key = fixture.key.clone();
     key.owner = InvocationOwner::Local {
-        actor: BrokerActor::for_caller(&fixture.caller).id,
+        actor: BrokerActor::for_caller(&fixture.caller).member().clone(),
     };
     assert!(
         fixture
@@ -827,12 +830,12 @@ fn several_steps(count: usize) -> tilo_automation::Shortcut {
     clippy::future_not_send,
     reason = "the fixture's broker state is thread confined to the test's current-thread runtime"
 )]
-async fn finished_run(fixture: &Fixture) -> automation::FinishedShortcutRun {
+async fn finished_run(fixture: &Fixture) -> automation::FinishedInvocation {
     tilo_test_env::within("the run finishes", async {
         loop {
             if let Some(run) = fixture
                 .state
-                .take_finished_shortcut_runs()
+                .take_finished_invocations()
                 .into_iter()
                 .find(|run| run.shortcut.id == "several")
             {
@@ -858,7 +861,10 @@ async fn a_continued_run_does_not_run_the_steps_before_the_one_it_goes_on_from()
         )
         .expect("the shortcut starts");
     let first = finished_run(&fixture).await;
-    assert_eq!(first.report.outcome, tilo_automation::RunOutcome::Completed);
+    assert_eq!(
+        first.report.outcome,
+        tilo_automation::InvocationOutcome::Completed
+    );
     assert_eq!(first.report.steps.len(), 4, "{:?}", first.report);
 
     // The person fixed the third step and runs the shortcut again from it.
@@ -871,7 +877,7 @@ async fn a_continued_run_does_not_run_the_steps_before_the_one_it_goes_on_from()
             "several",
             serde_json::Map::new(),
             Some(tilo_automation::Continuation {
-                run: first.report.run,
+                invocation: first.report.invocation,
                 from: third.clone(),
             }),
         )
@@ -880,7 +886,7 @@ async fn a_continued_run_does_not_run_the_steps_before_the_one_it_goes_on_from()
     let second = finished_run(&fixture).await;
     assert_eq!(
         second.report.outcome,
-        tilo_automation::RunOutcome::Completed,
+        tilo_automation::InvocationOutcome::Completed,
         "{:?}",
         second.report
     );
@@ -904,7 +910,10 @@ async fn a_continued_run_does_not_run_the_steps_before_the_one_it_goes_on_from()
         let path = tilo_automation::StepPath::parse(&index.to_string());
         assert_eq!(
             second.report.steps[index].invocation,
-            Some(tilo_automation::invocation_id(second.report.run, &path)),
+            Some(tilo_automation::step_invocation_id(
+                second.report.invocation,
+                &path
+            )),
             "step {index} runs again under this run's own invocation"
         );
         assert_ne!(
@@ -924,7 +933,7 @@ async fn continuing_a_run_the_broker_did_not_record_is_refused_and_starts_nothin
         "several",
         serde_json::Map::new(),
         Some(tilo_automation::Continuation {
-            run: tilo_automation::RunId::new(),
+            invocation: tilo_automation::InvocationId::new(),
             from: tilo_automation::StepPath::parse("0"),
         }),
     );
@@ -949,7 +958,7 @@ async fn continuing_a_run_from_the_run_itself_is_refused() {
         "several",
         serde_json::Map::new(),
         Some(tilo_automation::Continuation {
-            run: tilo_automation::RunId::new(),
+            invocation: tilo_automation::InvocationId::new(),
             from: tilo_automation::StepPath::root(),
         }),
     );

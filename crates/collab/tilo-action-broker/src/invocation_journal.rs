@@ -54,7 +54,7 @@ use tilo_actions::{InvocationId, InvocationUpdate};
 #[serde(deny_unknown_fields)]
 pub(super) enum InvocationOwner {
     Local {
-        actor: String,
+        actor: tilo_action_policy::MemberId,
     },
     Certified {
         root: [u8; 32],
@@ -443,7 +443,10 @@ pub(super) fn evidence_facts(
             .owner
             .verified_actor()
             .ok_or("legacy actor cannot attest a user")?,
-        actor_id: text("actor")?,
+        actor_id: tilo_actions::MemberId::deserialize(
+            intent.get("actor").ok_or("admission actor missing")?,
+        )
+        .map_err(|_| "admission actor missing")?,
         app_id: text("app_id")?,
         record_id: text("record_id")?,
         resource: text("resource")?,
@@ -1417,7 +1420,7 @@ mod tests {
             let mut local = key();
             local.host = journal.host();
             local.owner = InvocationOwner::Local {
-                actor: "person".into(),
+                actor: tilo_actions::MemberId::person("person"),
             };
             journal.admit(local, serde_json::json!({}), 1).unwrap();
             drop(journal);
@@ -1448,7 +1451,7 @@ mod tests {
             let mut local = key();
             local.host = journal.host();
             local.owner = InvocationOwner::Local {
-                actor: "person".into(),
+                actor: tilo_actions::MemberId::person("person"),
             };
             journal.admit(local, serde_json::json!({}), 2).unwrap();
             assert_eq!(
@@ -1464,7 +1467,7 @@ mod tests {
             let mut foreign = recovered.snapshot.records[0].key.clone();
             for owner in [
                 InvocationOwner::Local {
-                    actor: "person".into(),
+                    actor: tilo_actions::MemberId::person("person"),
                 },
                 InvocationOwner::Certified {
                     root: [1; 32],
@@ -1499,7 +1502,7 @@ mod tests {
             journal.admit(k, serde_json::json!({}), 1).unwrap();
             let mut conflicting = journal.snapshot.records[0].clone();
             conflicting.key.owner = InvocationOwner::Local {
-                actor: "other".into(),
+                actor: tilo_actions::MemberId::person("other"),
             };
             conflicting.wire_id = 2;
             journal.snapshot.records.push(conflicting);

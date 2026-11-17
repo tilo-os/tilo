@@ -52,6 +52,7 @@ mod close_button_tests;
 mod close_motion_tests;
 mod commands;
 mod displays;
+mod drawn;
 pub use displays::{display_rect, working_display};
 mod floating;
 mod floats;
@@ -127,6 +128,8 @@ pub fn published_selection(
 
 /// The app that shows a workspace's history.
 const ACTIVITY_APP: &str = tilo_actions::remote::workspace_activity::APP_ID;
+/// The action of the Undo a close offers ([`DesktopHandle::press_notice`]).
+const REOPEN_CLOSED: &str = "shell-reopen-closed";
 
 /// Where a host's tab contents come from.
 pub trait TileSource {
@@ -224,6 +227,9 @@ struct Shared {
     /// The windows whose menu asked to be shared with their workspace, or to stop, waiting for
     /// the host ([`DesktopHandle::take_workspace_share_asks`]).
     workspace_share_asks: Vec<(TabId, bool)>,
+    /// The windows whose menu asked to go to a new strip, waiting for the host
+    /// ([`DesktopHandle::take_new_strip_moves`]).
+    new_strip_moves: Vec<TabId>,
     /// The windows waiting for the person ([`DesktopHandle::ask_attention`]),
     /// until each has their focus.
     asking: std::collections::BTreeSet<TabId>,
@@ -297,6 +303,9 @@ struct Shared {
     search_asks: Vec<(usize, Option<String>)>,
     /// The open search, as last shown: its query and rows, and whether it is still filling in.
     shown_search: search::ShownSearch,
+    /// The windows whose shown tab has drawn what it shows, as of the last update pass
+    /// ([`DesktopHandle::drawn`]).
+    drawn: std::collections::BTreeSet<TabId>,
     /// The field the person types into in the desktop itself, as last
     /// shown, and the text committed into it from outside the keyboard,
     /// taken on the next update pass.
@@ -329,10 +338,8 @@ struct Shared {
     /// What the person chose on a window that stopped answering, for the host to carry out
     /// ([`DesktopHandle::take_liveness_choices`]).
     liveness: Vec<(TabId, LivenessChoice)>,
-    /// Where the host confirms in passing what left nothing to see.
-    acknowledger: ui::widget::acknowledgement::Acknowledger,
-    /// What a confirmation's Undo runs after a close: the reopen Shift+Super+T makes.
-    reopen: Rc<dyn Fn()>,
+    /// What the shell says over the windows for a while ([`DesktopHandle::notice`]).
+    notice: Rc<RefCell<ui::widget::toast::Transient<ui::window_toolbar::ToolbarNotice>>>,
     /// The notifications the host installed: the shell carries out what the person chose there,
     /// and the host above the windows draws them ([`DesktopHandle::notifications`]).
     notifications: Option<DesktopNotifications>,
@@ -359,19 +366,43 @@ pub struct DesktopHandle {
 }
 
 impl DesktopHandle {
-    /// Confirm in passing an action that left nothing to see ("Link
-    /// copied"): a short-lived pill, said politely to screen readers,
-    /// never a notification. The host asks for a redraw.
+    /// Say in passing what left nothing to see, or why nothing happened: a short-lived notice
+    /// over the windows, said politely to screen readers, never a notification.
     pub fn acknowledge(&self, text: impl Into<String>) {
-        let shared = self.shared.borrow_mut();
-        shared.acknowledger.say(text);
-        shared.wake.wake();
+        self.shared
+            .borrow()
+            .say(ui::window_toolbar::ToolbarNotice::new(
+                text,
+                ui::widget::toast::ToastKind::Info,
+            ));
     }
 
-    /// What says the confirmations ([`Self::acknowledge`]): the host draws them over the windows.
+    /// The notice the shell says over the windows: the host draws it
+    /// ([`ui::widget::toast::NoticeLayer`]) and passes its button presses to
+    /// [`Self::press_notice`].
     #[must_use]
-    pub fn acknowledger(&self) -> ui::widget::acknowledgement::Acknowledger {
-        self.shared.borrow().acknowledger.clone()
+    pub fn notice(
+        &self,
+    ) -> Rc<RefCell<ui::widget::toast::Transient<ui::window_toolbar::ToolbarNotice>>> {
+        Rc::clone(&self.shared.borrow().notice)
+    }
+
+    /// The person pressed the notice's button for `action`: the notice goes and the action runs.
+    /// Whether the notice up offered it.
+    pub fn press_notice(&self, action: &str) -> bool {
+        let offered = {
+            let shared = self.shared.borrow();
+            let mut notice = shared.notice.borrow_mut();
+            let offered = notice
+                .get()
+                .is_some_and(|notice| notice.actions.iter().any(|offer| offer.id == action));
+            offered && notice.dismiss()
+        };
+        if offered && action == REOPEN_CLOSED {
+            // Undo after a close reopens as Shift+Super+T does, through the same command.
+            let _ = self.dispatch(ChromeEffect::ReopenClosed);
+        }
+        offered
     }
 
     pub fn revision(&self) -> u64 {
@@ -534,7 +565,10 @@ impl DesktopHandle {
             // at once, and nothing moves.
             (Admitted::Close(ids), _) if shared.holders.contains_key(&ids.tab) => {
                 let refusal = holder_refusal(&shared.holders, ids.tab);
-                shared.acknowledger.say(refusal.clone());
+                shared.say(ui::window_toolbar::ToolbarNotice::new(
+                    refusal.clone(),
+                    ui::widget::toast::ToastKind::Info,
+                ));
                 return Err(refusal);
             }
             _ => {}
@@ -689,11 +723,9 @@ impl DesktopHandle {
         self.shared.borrow_mut().minter.mint()
     }
 
-    /// Apply a workspace or strip command to the active workspace through
-    /// the model's own reduction
-    /// ([`tilo_desktop_model::commands::apply_command`]), with ids from the
-    /// tree's id space. A strip it creates is shown; when the strip shown is
-    /// removed, the workspace's first one is. The caller has asked the
+    /// Apply a workspace or strip command to the active workspace as
+    /// [`tilo_desktop_model::commands::apply_to_active_workspace`] does, with
+    /// ids from the tree's id space. The caller has asked the
     /// workspace's policy ([`tilo_desktop_model::commands::may_command`]) first.
     /// Returns the strip a `CreateStrip` made.
     ///
@@ -707,45 +739,14 @@ impl DesktopHandle {
         &self,
         command: &tilo_desktop_model::commands::DesktopCommand,
     ) -> Result<Option<StripId>, String> {
-        use tilo_desktop_model::commands::{DesktopCommand, apply_command};
-        if !matches!(
-            command,
-            DesktopCommand::RenameWorkspace { .. }
-                | DesktopCommand::CreateStrip { .. }
-                | DesktopCommand::RenameStrip { .. }
-                | DesktopCommand::RemoveStrip { .. }
-                | DesktopCommand::MoveStrip { .. }
-        ) {
-            return Err("only workspace and strip commands apply here".into());
-        }
         let mut shared = self.shared.borrow_mut();
         let Shared { tree, minter, .. } = &mut *shared;
-        let active = tree.active;
-        let workspace = tree
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id() == active)
-            .ok_or("there is no active workspace")?;
-        let before: Vec<StripId> = workspace.strips.iter().map(|strip| strip.id).collect();
-        apply_command(
-            workspace,
-            command,
-            &mut || Ok(minter.mint()),
-            &mut |_, _| Err("a workspace command opens no window".into()),
-        )?;
-        let after: Vec<StripId> = workspace.strips.iter().map(|strip| strip.id).collect();
-        let made = after.iter().copied().find(|id| !before.contains(id));
-        let first = after.first().copied();
-        if let Some(made) = made {
-            tree.active_strip.insert(active, made);
-        } else if let Some(first) = first
-            && tree
-                .active_strip
-                .get(&active)
-                .is_none_or(|shown| !after.contains(shown))
-        {
-            tree.active_strip.insert(active, first);
-        }
+        let made =
+            tilo_desktop_model::commands::apply_to_active_workspace(tree, command, &mut || {
+                Ok(minter.mint())
+            })?;
+        // The session publishes the edit as it does any other change from outside the shell.
+        tree.external_revision = tree.external_revision.wrapping_add(1);
         shared.replaced = true;
         shared.changed();
         Ok(made)
@@ -988,13 +989,6 @@ impl DesktopSurface {
         let search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>> =
             Rc::new(RefCell::new(tilo_desktop_search::LazyDesktopSearch::new()));
         let shared = Rc::new(RefCell::new(Shared::new(tree, minter, &search)));
-        // A close is undone as the person's reopen undoes it, through the same command.
-        let reopening = Rc::downgrade(&shared);
-        shared.borrow_mut().reopen = Rc::new(move || {
-            if let Some(shared) = reopening.upgrade() {
-                let _ = DesktopHandle { shared }.dispatch(ChromeEffect::ReopenClosed);
-            }
-        });
         #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
         let tiles = Box::new(peer_view::PeerTiles::new(
             tiles,
@@ -1681,6 +1675,7 @@ impl DesktopSurface {
             shared.search_request = Some(request);
         }
         shared.menus.extend(window_menu::take_asked_menus(row));
+        changed |= window_menu::give_back_display(&mut shared.tree, strip_id, row);
         if changed {
             shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
             shared.changed();
@@ -2038,8 +2033,10 @@ impl Widget for DesktopSurface {
         // Last, so a row this pass rebuilt shows its windows' own artwork in the same frame it
         // appeared in.
         let artwork = self.sync_window_artwork();
+        let drawn = self.sync_drawn();
         self.seen_search = self.shared.borrow().search_revision;
         changed
+            || drawn
             || row_changed
             || bars_changed
             || share_asked
@@ -2118,6 +2115,10 @@ impl Widget for DesktopSurface {
                 continue;
             };
             row.apply_layout(taffy, child, inner);
+            // The window the person works in stays whole on its display wherever a move or a width
+            // change put it.
+            let focused = self.shared.borrow().tree.active_group_for(*strip);
+            row.keep_in_view(focused, ui::motion::frame_now(), reveal_source());
             let Some((_, group)) = reveal.filter(|(reveal_strip, _)| reveal_strip == strip) else {
                 continue;
             };

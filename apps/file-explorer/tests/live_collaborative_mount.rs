@@ -46,7 +46,11 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
         .unwrap()
         .create_dir(ROOT_INO, "Offline", 1)
         .unwrap();
-    let folder_record_id = namespace.lock().unwrap().record_id_for(folder_ino).unwrap();
+    let folder_document_id = namespace
+        .lock()
+        .unwrap()
+        .document_id_for(folder_ino)
+        .unwrap();
     let mut expected = Vec::new();
     for (name, body) in [
         ("first.png", b"first live payload".as_slice()),
@@ -58,14 +62,14 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
             .unwrap()
             .create_file(ROOT_INO, name, Some(&hash), body.len() as u64, 1)
             .unwrap();
-        let record_id = namespace.lock().unwrap().record_id_for(ino).unwrap();
-        expected.push((name, record_id, hash, body.len() as u64));
+        let document_id = namespace.lock().unwrap().document_id_for(ino).unwrap();
+        expected.push((name, document_id, hash, body.len() as u64));
     }
 
     let mut availability =
         AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-    for (_, record_id, _, bytes) in &expected {
-        let mut record = RecordAvailability::new(*record_id, RecordKind::File);
+    for (_, document_id, _, bytes) in &expected {
+        let mut record = RecordAvailability::new(*document_id, RecordKind::File);
         record.residency = FsResidency::Resident { bytes: *bytes };
         availability.put(record).unwrap();
     }
@@ -96,15 +100,15 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
     files.state().navigate(mount.clone());
     assert_eq!(files.state().entries().len(), expected.len() + 1);
     for entry in files.state().entries() {
-        let Some((_, record_id, hash, bytes)) =
+        let Some((_, document_id, hash, bytes)) =
             expected.iter().find(|(name, ..)| name == &entry.name)
         else {
             assert_eq!(entry.name, "Offline");
             assert!(entry.is_dir);
-            assert_eq!(entry.record_id, Some(*folder_record_id.0.as_bytes()));
+            assert_eq!(entry.document_id, Some(*folder_document_id.0.as_bytes()));
             continue;
         };
-        assert_eq!(entry.record_id, Some(*record_id.0.as_bytes()));
+        assert_eq!(entry.document_id, Some(*document_id.0.as_bytes()));
         assert_eq!(entry.content_hash, Some(*hash.as_bytes()));
         let projection = entry.availability.as_ref().unwrap();
         assert_eq!(projection.policy, AvailabilityPolicy::Automatic);
@@ -166,14 +170,14 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
     );
     {
         let registry = availability.lock().unwrap();
-        for (_, record_id, _, _) in &expected {
+        for (_, document_id, _, _) in &expected {
             assert_eq!(
-                registry.get(*record_id).unwrap().policy,
+                registry.get(*document_id).unwrap().policy,
                 fs_protocol::AvailabilityPolicy::Automatic
             );
         }
         assert_eq!(
-            registry.get(folder_record_id).unwrap().policy,
+            registry.get(folder_document_id).unwrap().policy,
             fs_protocol::AvailabilityPolicy::Pinned
         );
         drop(registry);

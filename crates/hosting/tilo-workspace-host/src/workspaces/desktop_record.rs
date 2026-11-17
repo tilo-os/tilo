@@ -5,7 +5,7 @@ use super::{GovernedWorkspace, Workspaces};
 
 impl Workspaces {
     /// Give `governed`, a workspace this host governs, its shared desktop record
-    /// when it has none yet, so every member's arrangement has the record to
+    /// when it has none yet, so every member's layout has the record to
     /// land in. A workspace made now holds it from the start
     /// ([`tilo_peer_state::workspace_seed`]); one made before is given it
     /// here. Not in a workspace whose records are its members' sealed channels:

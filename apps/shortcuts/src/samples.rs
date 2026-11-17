@@ -15,7 +15,7 @@ use ui::tilo_actions::{
 };
 
 use crate::drafting::Drafted;
-use crate::effects::{Drafting, EffectsState, Refined, RunRecord, RunStatus};
+use crate::effects::{Drafting, EffectsState, Invocation, InvocationStatus, Refined};
 use crate::model::Workbench;
 use crate::view;
 use ui::Arrival;
@@ -334,7 +334,7 @@ pub fn stage(
             .filter_map(|value| serde_json::from_value(value).ok())
             .collect();
         let first_run = scenario == Some("empty");
-        let run = |serial, id: &str, name: &str, status, started: &str| RunRecord {
+        let run = |serial, id: &str, name: &str, status, started: &str| Invocation {
             serial,
             shortcut_id: id.into(),
             name: name.into(),
@@ -344,7 +344,7 @@ pub fn stage(
         effects.set(EffectsState {
             catalogue: Arrival::Ready(staged_catalog()),
             library: Arrival::Ready(if first_run { Vec::new() } else { saved }),
-            runs: if first_run {
+            invocations: if first_run {
                 Vec::new()
             } else {
                 vec![
@@ -352,7 +352,7 @@ pub fn stage(
                         3,
                         "morning-digest",
                         "Morning digest",
-                        RunStatus::Completed {
+                        InvocationStatus::Completed {
                             value: Some(json!("Three new notes, one needs a reply")),
                             degraded: None,
                         },
@@ -362,7 +362,7 @@ pub fn stage(
                         2,
                         "quick-note",
                         "Quick note",
-                        RunStatus::Completed {
+                        InvocationStatus::Completed {
                             value: None,
                             degraded: None,
                         },
@@ -372,7 +372,7 @@ pub fn stage(
                         1,
                         "mail-me-my-notes",
                         "Mail me my notes",
-                        RunStatus::Failed("the outbox is not reachable".into()),
+                        InvocationStatus::Failed("the outbox is not reachable".into()),
                         "08:12",
                     ),
                 ]

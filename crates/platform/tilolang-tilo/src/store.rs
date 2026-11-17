@@ -223,7 +223,7 @@ struct LocalWrite {
     derived: bool,
     /// Whose change it is written as: the store's author when it was written
     /// ([`TiloStore::writing_as`]); none for a derived write, which no change commits.
-    author: Option<automerge::ActorId>,
+    author: Option<crate::runtime::Actor>,
     /// Whether those who read the mirror were told what it changed when its action committed
     /// ([`unsaved::tell`]): the record's change that carries it then tells only what the record
     /// says differently ([`TiloStore::sync`]).
@@ -245,13 +245,11 @@ fn write_edit(
     app: &str,
     edit: &DynEdit,
     index: usize,
-    author: Option<&automerge::ActorId>,
+    author: Option<&crate::runtime::Actor>,
 ) -> Result<(), tilo_actions::ActionError> {
-    // An author's actor is the bytes of their key ([`TiloStore::writing_as`]).
     let _lent = author
-        .and_then(|author| {
-            tilo_resource::MemberId::parse(&String::from_utf8_lossy(author.to_bytes()))
-        })
+        .and_then(crate::runtime::Actor::member_id)
+        .cloned()
         .map(tilo_resource::action::RecordActorScope::enter);
     apply_edits(doc, app, std::slice::from_ref(edit), &edit_seed(index))
 }
@@ -455,7 +453,7 @@ struct Inner {
     /// Who the record's holder writes as: an action's writes into a chunk with no other open
     /// writes are made under this actor, so they are the change the holder commits for it
     /// ([`TiloStore::commit_action`]).
-    author: Option<automerge::ActorId>,
+    author: Option<crate::runtime::Actor>,
     /// The chunks the store asked its source for and the source cannot give: they are not on
     /// this device yet, or the peer holding them is away. Each is asked for once and waited on:
     /// the sync that brings it reads it then ([`Inner::attach_document`]), and a window reads
@@ -1214,16 +1212,16 @@ impl TiloStore {
     }
 
     /// Turn the plain text each record of `app` holds in a field its type now keeps as rich
-    /// text into rich text with the same words, and write each as a change of the record
-    /// (committed under `by`, the package version's migration principal). A record already
+    /// text into rich text with the same words, and write each as a change of the record, the
+    /// app's own. A record already
     /// holding rich text is not written, so a second run writes nothing. Returns how many
     /// records changed. The workspace's origin calls it once, as it opens (`Host::migrate`).
-    pub fn upgrade_plain_text(&self, app: &str, module: &str, by: &str) -> usize {
+    pub fn upgrade_plain_text(&self, app: &str, module: &str) -> usize {
         if self.load_record().is_err() {
             return 0;
         }
         let mut inner = self.mutate();
-        inner.upgrade_plain_text(app, module, by)
+        inner.upgrade_plain_text(app, module)
     }
 
     /// What the trigger `key` last did for the resource `doc`: the period it ran in, or the
@@ -1333,7 +1331,9 @@ impl TiloStore {
                 .collect(),
             ),
             authorship: Authorship {
-                invoker: person.to_owned(),
+                invoker: Some(crate::runtime::Actor::Member(
+                    crate::runtime::ids::MemberId::person(person),
+                )),
                 ..Authorship::default()
             },
             edits,
@@ -2053,9 +2053,9 @@ impl Inner {
             && index == 0
             && doc.pending_ops() == 0
             && let Some(author) = self.author.as_ref()
-            && doc.get_actor() != author
+            && doc.get_actor().to_bytes() != author.actor_bytes()
         {
-            doc.set_actor(author.clone());
+            doc.set_actor(automerge::ActorId::from(author.actor_bytes()));
         }
         let subject = (!derived && !named && subject_of(edit.bare()))
             .then(|| (AppId::from(app), read_subject(app, edit.bare(), doc)));

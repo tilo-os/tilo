@@ -1,7 +1,7 @@
 //! Resource types by kind, for a host that links no resource type's code at
 //! the call site.
 //!
-//! Every record names the kind of resource it holds (`RecordKind`, the
+//! Every record names the kind of resource it holds (`ResourceType`, the
 //! `record_kind` of an app's definition, [`Resource::KIND`]). A host that
 //! works with whatever a workspace holds — an agent, a service, a script
 //! runner — looks the kind up here and gets everything the typed [`Resource`]

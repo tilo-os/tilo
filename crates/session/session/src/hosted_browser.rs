@@ -318,7 +318,8 @@ enum Window {
     Unopened,
     /// The launch was made, and no window published for it yet.
     Opening,
-    /// The window publishes under this provider, which page actions name: its tab, one number.
+    /// The window publishes under this provider, which page actions name: the id the
+    /// session's broker lists it by, one number.
     Open(u64),
     /// Browser did not open, and why is in the log: nothing asks again.
     Failed,
@@ -471,7 +472,7 @@ impl HostedBrowser {
         {
             self.used();
         }
-        self.publish(shared);
+        self.publish();
     }
 
     /// Once the workspace's host can be asked, have the session ask it for what this device may not
@@ -657,13 +658,25 @@ impl HostedBrowser {
         }
     }
 
+    /// The provider the session's broker lists this session's window under: the
+    /// app the session started, on the record the relay opened it on. `None`
+    /// while the broker lists no such window yet.
+    fn window_provider(&self) -> Option<u64> {
+        self.broker.as_ref()?.window_provider(
+            BROWSER,
+            &self.material.workspace,
+            Some(&self.material.record),
+        )
+    }
+
     /// Report the window's provider once it publishes: the window instance the shell shows the app
-    /// in, which is what every page action on it names.
-    fn publish(&mut self, shared: &Shared) {
+    /// in, which is what every page action on it names. It is the one the session's broker lists
+    /// the window under, so a caller naming that id reaches the window's own actions.
+    fn publish(&mut self) {
         if !matches!(self.window, Window::Opening) {
             return;
         }
-        let Some(provider) = tab_of(shared, &self.material.workspace, BROWSER) else {
+        let Some(provider) = self.window_provider() else {
             return;
         };
         self.say(Report::Up {
@@ -1064,27 +1077,6 @@ fn holds_windows(shared: &Shared, workspace: &str) -> bool {
             .flat_map(|strip| strip.window_groups.iter())
             .flat_map(|group| group.tabs.iter())
             .any(|tab| matches!(tab.tile, tilo_desktop_model::TileContent::Foreign { .. }))
-    })
-}
-
-/// The tab `app`'s window takes in `workspace`, once the shell holds one: the window's instance,
-/// which is the provider its actions are published under.
-fn tab_of(shared: &Shared, workspace: &str, app: &str) -> Option<u64> {
-    shared.handle.read(|tree| {
-        tree.workspaces
-            .iter()
-            .find(|held| held.id().to_string() == workspace)
-            .and_then(|held| {
-                held.strips
-                    .iter()
-                    .flat_map(|strip| strip.window_groups.iter())
-                    .flat_map(|group| group.tabs.iter())
-                    .find(|tab| {
-                        tilo_desktop_model::apps::canonical_app_id(&tab.tile)
-                            .is_some_and(|shown| shown == app)
-                    })
-            })
-            .map(|tab| tab.id)
     })
 }
 

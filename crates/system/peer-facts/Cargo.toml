@@ -1,0 +1,24 @@
+[package]
+name = "tilo-peer-facts"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Who is on the other end of a root service's local socket: the kernel's account of the caller, and whether it is the active session's compositor"
+
+[lib]
+name = "peer_facts"
+path = "src/lib.rs"
+
+[dependencies]
+libc.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

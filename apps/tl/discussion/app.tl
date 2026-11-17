@@ -101,7 +101,7 @@ view thread(about: host.Resource) {
 /// `spoke` is who the thread's `@` drawer offers, its own people first.
 view comment_row(
     c: Comment,
-    spoke: List<Principal>,
+    spoke: List<Actor>,
     editing: State<Option<Comment>>,
     revised: State<RichText>,
 ) {

@@ -308,7 +308,12 @@ tilo_test_env::scenario! {
             // Retain the original foreign restriction even when the native
             // continuation presents only the person's keyless projection.
             fixture.caller =
-                tilo_actions::remote::Caller::local_person(BrokerActor::for_caller(&fixture.caller).id)
+                tilo_actions::remote::Caller::local_person(
+                    BrokerActor::for_caller(&fixture.caller)
+                        .member()
+                        .person_id()
+                        .unwrap(),
+                )
                     .in_workspace(&fixture.workspace);
             assert!(fixture.caller.device_public_key().is_none());
             let descriptor = if close {

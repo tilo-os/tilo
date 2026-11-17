@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};
+use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{Layout, Strip, StripId, TabId, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, Destination, LayoutEffect};
 use tilo_desktop_surface::{DesktopHandle, HostActionSource, NotificationLayer, names};
@@ -28,7 +28,6 @@ use crate::chrome::{ChromeIntent, TopBarPresence};
 use crate::control_hints::{ControlHints, HintFrame, HintsFeed};
 use crate::display_identify::DisplayIdentify;
 use crate::emoji::EmojiLink;
-use crate::fullscreen_hint::FullscreenHint;
 use crate::host_contract::{DesktopAsk, DesktopRules, JOIN_WORKSPACE, WORKSPACE_SETTINGS};
 use crate::overlays::{Overlays, Slot};
 use crate::overview::workspace_cards;
@@ -61,9 +60,9 @@ pub struct DesktopChrome {
     /// The bars of the other displays, each on its own: a display besides the one in use carries
     /// the compact bar.
     compact: Vec<TopBarChrome>,
-    /// The shell's confirmations in passing ("Link copied"), over the windows on the display the
-    /// person works on.
-    acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer,
+    /// What the shell says in passing ("Link copied", "Notes closed" with its Undo), over the
+    /// windows on the display the person works on.
+    notice: ui::widget::toast::NoticeLayer,
     /// Where the bars stood at the bar's source last reading, and the snapshot revision it was read
     /// at.
     placement: Placement,
@@ -127,8 +126,6 @@ pub struct DesktopChrome {
     /// When each display's bar shows over the window covering it: shared with the shell's band, so
     /// the bar's room and the bars it is in agree.
     reveals: Rc<RefCell<Reveals>>,
-    /// The way out of the window that filled a display, said once over it.
-    fullscreen_hint: FullscreenHint,
     /// Which screen is which, said on each display for a moment after Settings asks.
     identify: DisplayIdentify,
     /// Where the displays are the identify cards stand on, each by its monitor, as last read from
@@ -170,8 +167,6 @@ enum PaintedOverlay {
     StripLabels,
     /// The emoji card.
     Emoji,
-    /// The way out of the window that filled a display.
-    Hint,
     /// Which screen is which, after Settings asked.
     Identify,
     /// The search palette.
@@ -184,10 +179,9 @@ enum PaintedOverlay {
 
 impl PaintedOverlay {
     /// Every painted overlay, bottom to top.
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 6] = [
         Self::StripLabels,
         Self::Emoji,
-        Self::Hint,
         Self::Identify,
         Self::Search,
         Self::Switcher,
@@ -200,7 +194,6 @@ impl PaintedOverlay {
         ui::a11y::hash_key(&match self {
             Self::StripLabels => "chrome-strip-labels",
             Self::Emoji => "chrome-emoji-card",
-            Self::Hint => "chrome-fullscreen-way-out",
             Self::Identify => "chrome-display-identify",
             Self::Search => "chrome-search-palette",
             Self::Switcher => "chrome-window-switcher",
@@ -213,7 +206,6 @@ impl PaintedOverlay {
         match self {
             Self::StripLabels => chrome.navigator.is_open(),
             Self::Emoji => chrome.emoji.is_open(),
-            Self::Hint => chrome.fullscreen_hint.is_up(ui::time::now()),
             Self::Identify => chrome.identify.is_up(ui::time::now()),
             Self::Search => chrome.search.is_open(),
             Self::Switcher => chrome.switcher.is_up(),
@@ -241,9 +233,12 @@ impl DesktopChrome {
         Self {
             bar,
             compact: Vec::new(),
-            acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer::new(
-                handle.acknowledger(),
-            ),
+            notice: ui::widget::toast::NoticeLayer::new(handle.notice(), {
+                let handle = handle.clone();
+                move |action| {
+                    handle.press_notice(action);
+                }
+            }),
             placement: Placement::default(),
             bars_revision: u64::MAX,
             overview: OverviewPanel::new(),
@@ -274,7 +269,6 @@ impl DesktopChrome {
             overlays: Overlays::new(),
             focused: false,
             reveals: Rc::default(),
-            fullscreen_hint: FullscreenHint::default(),
             identify: DisplayIdentify::default(),
             identify_displays: Vec::new(),
             answered: None,
@@ -624,7 +618,6 @@ impl DesktopChrome {
         match overlay {
             PaintedOverlay::StripLabels => self.navigator.accessibility(),
             PaintedOverlay::Emoji => self.emoji.accessibility(),
-            PaintedOverlay::Hint => self.fullscreen_hint.accessibility(ui::time::now()),
             PaintedOverlay::Identify => self.identify.accessibility(ui::time::now()),
             PaintedOverlay::Search => self.search.accessibility(),
             PaintedOverlay::Switcher => self.switcher.accessibility(),
@@ -1092,13 +1085,10 @@ impl DesktopChrome {
     /// Apply a strip or workspace edit through the desktop's one command path and replicate the
     /// result; the strip it made, if any.
     fn edit_workspace(&self, command: &DesktopCommand) -> Result<Option<StripId>, String> {
-        let mut tree = self.handle.read(Clone::clone);
-        let made =
-            apply_to_active_workspace(&mut tree, command, &mut || Ok(self.handle.mint_id()))?;
-        self.handle.replace_tree(tree);
+        let made = self.handle.apply_command(command)?;
         if let DesktopCommand::RenameWorkspace { name } = command {
-            // The workspace's name is its governance's, which every device and list of it reads:
-            // the host writes it there, and it is projected back onto this shell.
+            // The workspace's name is the workspace's, which every device and list of it reads
+            // from its governance: the shell keeps it at once, and the host writes it there.
             let workspace = self.handle.read(|tree| {
                 tree.active_workspace()
                     .map(tilo_desktop_model::Workspace::id)
@@ -1540,22 +1530,21 @@ impl DesktopChrome {
         }
     }
 
-    /// The pointer over the confirmation's button ("Undo"), drawn over the windows: hovering lights
+    /// The pointer over the notice's button ("Undo"), drawn over the windows: hovering lights
     /// it, and a press that begins on it is its own. Whether the event was the button's.
-    fn acknowledgement_takes(&mut self, event: &WindowEvent) -> bool {
+    fn notice_takes(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. } => {
-                self.acknowledgement.pointer_at(self.cursor);
+                self.notice.pointer_at(self.cursor);
                 false
             }
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
                 ..
-            } => self.cursor.is_some_and(|at| {
-                self.acknowledgement
-                    .press(at, *state == ElementState::Pressed)
-            }),
+            } => self
+                .cursor
+                .is_some_and(|at| self.notice.press(at, *state == ElementState::Pressed)),
             _ => false,
         }
     }
@@ -1795,7 +1784,6 @@ impl DesktopChrome {
         !self.intents.borrow().is_empty()
             || (self.emoji.needs_redraw() || self.emoji.needs_animation_frame())
             || self.navigator.needs_animation_frame(ui::time::now())
-            || self.fullscreen_hint.needs_redraw(ui::time::now())
             || self.identify.needs_redraw(ui::time::now())
             || self.switcher.needs_redraw()
             || self.peek.needs_redraw(ui::time::now())
@@ -1900,6 +1888,7 @@ impl DesktopChrome {
         reveals.set_height(height);
         reveals.set_hide(hide);
         reveals.follow(&places, now);
+        reveals.set_below(self.handle.covering_bar().map(|(_, bar)| bar));
         changed |= reveals.settle(now, |_| held);
         let full_presence = reveals.presence(None, held);
         let compact: Vec<(Option<u32>, TopBarPresence)> = self
@@ -1928,9 +1917,6 @@ impl DesktopChrome {
                 changed = true;
             }
         }
-        // A window that just filled a display says how to leave it, once;
-        // leaving full screen takes the words away with it.
-        self.fullscreen_hint.follow(self.reveals.borrow().entered());
         // Settings asked which screen is which: each display says its number and name for a moment.
         changed |= self.follow_identify(now);
         changed
@@ -2268,6 +2254,10 @@ impl Widget for DesktopChrome {
             self.apply_workspace_choice(choice);
             changed = true;
         }
+        for tab in self.handle.take_new_strip_moves() {
+            self.move_to_new_strip(tab);
+            changed = true;
+        }
         // The mark reads as pressed while the overview it zoomed out to is up.
         let overview_open = self.overview.is_open();
         if self.menu_shown.replace(overview_open) != overview_open {
@@ -2325,7 +2315,18 @@ impl Widget for DesktopChrome {
         let about = self.about.build_layout(taffy, theme, map);
         let workspace_menu = self.workspace_menu.build_layout(taffy, theme, map);
         let search = self.search.build_layout(taffy, theme, map);
-        let mut kids = vec![bar, content, overview, about, workspace_menu, search];
+        // Laid out as the other layers are, so assistive technology and the session's controls
+        // reach its button.
+        let notice = self.notice.build_layout(taffy, theme, map);
+        let mut kids = vec![
+            bar,
+            content,
+            overview,
+            about,
+            workspace_menu,
+            search,
+            notice,
+        ];
         if let Some(notices) = self.notices.as_mut() {
             kids.push(notices.build_layout(taffy, theme, map));
         }
@@ -2361,6 +2362,7 @@ impl Widget for DesktopChrome {
             about,
             workspace_menu,
             search,
+            notice,
             compact @ ..,
         ] = &kids[..]
         else {
@@ -2371,7 +2373,8 @@ impl Widget for DesktopChrome {
         let under_bar = ui::widget::layout_rect(taffy, *overview, inner);
         let area = self.overview_area().unwrap_or(under_bar);
         self.overview.stand_in(area);
-        self.acknowledgement
+        self.notice.apply_layout(taffy, *notice, inner);
+        self.notice
             .place(self.working_display().unwrap_or(self.rect));
         self.about.apply_layout(taffy, *about, inner);
         self.workspace_menu
@@ -2442,9 +2445,6 @@ impl Widget for DesktopChrome {
             theme,
             ui::time::now(),
         );
-        // Above everything: the window that filled the display hides the chrome that would leave
-        // it, so the words saying how are the only way out the person can see.
-        self.fullscreen_hint.draw(scene, transform, text, theme);
         // Settings' Identify, said on each display so the canvas tile and the physical screen carry
         // the same number.
         self.identify
@@ -2456,8 +2456,8 @@ impl Widget for DesktopChrome {
         // Above even search: Alt+Tab's panel, which is the walk the person is in the middle of and
         // the only thing a press reaches while it is up.
         let host = self.working_display().unwrap_or(self.rect);
-        self.acknowledgement.place(host);
-        self.acknowledgement
+        self.notice.place(host);
+        self.notice
             .draw_child(scene, transform, text, theme, presence);
         self.switcher.draw(scene, transform, text, theme, host);
         // Over all of it, and in the way of nothing: the keys a held Super reaches take no input,
@@ -2474,6 +2474,7 @@ impl Widget for DesktopChrome {
             about,
             workspace_menu,
             search,
+            _notice,
             compact @ ..,
         ] = &kids[..]
         else {
@@ -2490,7 +2491,7 @@ impl Widget for DesktopChrome {
         if self.switcher.is_up() {
             return self.walk_the_pointer(event, ctx);
         }
-        if self.acknowledgement_takes(event) {
+        if self.notice_takes(event) {
             *ctx.handled = true;
             return;
         }
@@ -2583,7 +2584,7 @@ impl Widget for DesktopChrome {
             &self.about,
             &self.workspace_menu,
             &self.search,
-            &self.acknowledgement,
+            &self.notice,
         ];
         children.extend(self.notices.iter().map(|layer| layer as &dyn Widget));
         children.extend(self.compact.iter().map(|bar| bar as &dyn Widget));
@@ -2679,7 +2680,7 @@ impl Widget for DesktopChrome {
             &mut self.about,
             &mut self.workspace_menu,
             &mut self.search,
-            &mut self.acknowledgement,
+            &mut self.notice,
         ];
         children.extend(
             self.notices
@@ -2724,7 +2725,6 @@ impl Widget for DesktopChrome {
     fn needs_animation_frame(&self) -> bool {
         self.hints.needs_animation_frame(ui::time::now())
             || self.emoji.needs_animation_frame()
-            || self.fullscreen_hint.is_moving(ui::time::now())
             || self.peek.is_moving(ui::time::now())
             || self.identify.is_moving(ui::time::now())
             || self.navigator.needs_animation_frame(ui::time::now())
@@ -2741,7 +2741,7 @@ impl Widget for DesktopChrome {
             &self.overview,
             &self.about,
             &self.search,
-            &self.acknowledgement,
+            &self.notice,
         ]
         .into_iter()
         .chain(self.notices.iter().map(|layer| layer as &dyn Widget))
@@ -2752,7 +2752,6 @@ impl Widget for DesktopChrome {
                 .next_wake_deadline(&self.navigator_frame, ui::time::now()),
         )
         .chain(self.reveals.borrow().deadline())
-        .chain(self.fullscreen_hint.next_wake_deadline(ui::time::now()))
         .chain(self.peek.next_wake_deadline(ui::time::now()))
         .chain(self.identify.next_wake_deadline(ui::time::now()))
         .chain(self.hints.next_wake_deadline(ui::time::now()))

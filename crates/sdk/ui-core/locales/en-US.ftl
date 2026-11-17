@@ -49,6 +49,7 @@ host-window-minimize = Minimize
 host-window-maximize = Maximize
 host-window-restore = Restore
 host-window-snap = Snap back into the strip
+host-window-exit-fullscreen = Exit full screen
 host-window-collapse = Collapse
 host-window-expand = Expand
 host-window-close = Close
@@ -761,12 +762,12 @@ host-native-history-unconfirmed = The page didn't confirm its undo. Check the pa
 host-native-page-history-scope = Undo and redo act on this page. Your last change may have been in another field.
 
 # Shared native screen topology canvas
-display-arrangement-name = Display arrangement
-display-arrangement-description = Press a display to choose it and drag it to place it beside another. From the keyboard, the display picker chooses one and the arrow keys move it.
-display-arrangement-empty = No displays to arrange
-display-arrangement-item = Display { $number }: { $name }
-display-arrangement-item-primary = Display { $number }: { $name }, main display
-display-arrangement-item-position = { $width } × { $height } at { $x }, { $y }
+display-placement-name = Display layout
+display-placement-description = Press a display to choose it and drag it to place it beside another. From the keyboard, the display picker chooses one and the arrow keys move it.
+display-placement-empty = No displays to arrange
+display-placement-item = Display { $number }: { $name }
+display-placement-item-primary = Display { $number }: { $name }, main display
+display-placement-item-position = { $width } × { $height } at { $x }, { $y }
 
 
 app-activate-window = Show this window
@@ -796,11 +797,11 @@ widget-documents-in-workspace = In this workspace
 # Shown instead of a window's document while it cannot be opened.
 record-unavailable-title = Can't open this document
 record-unavailable-hint = It isn't available on this device right now. It may still be on its way, or it was moved or deleted.
-display-arrangement-offline = Offline
-display-arrangement-apart = Apart
-display-arrangement-offline-apart = Offline, apart
-display-arrangement-item-status = { $position }; { $status }
-display-arrangement-caption-status = { $status }: { $name }
+display-placement-offline = Offline
+display-placement-apart = Apart
+display-placement-offline-apart = Offline, apart
+display-placement-item-status = { $position }; { $status }
+display-placement-caption-status = { $status }: { $name }
 
 # Search: the row that lists the rest of a group the palette cut short
 search-show-all = Show all { $count }

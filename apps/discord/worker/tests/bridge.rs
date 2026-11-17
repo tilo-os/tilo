@@ -23,7 +23,7 @@ use discord::record::{Guild, MappedKind, Ownership, guild};
 use ed25519_dalek::SigningKey;
 use fake_discord::{CHANNEL_GENERAL, FakeDiscord, GUILD, TOKEN, User};
 use serde_json::Value;
-use tilo_agent_participant::AppCatalogue;
+use tilo_agent_session::AppCatalogue;
 use tilo_connector::{BlobAccess, ConnectorProcess, WorkerCommand};
 use tilo_relay::workspace_bots::installed::{self, BotRunner};
 use tilo_relay::workspace_bots::membership::{HostRootCertifier, keep_member};
@@ -33,7 +33,7 @@ use ui::tilo_actions::ActionContext;
 use ui::tilo_resource::{Id, Invoke, Replica, Resource as _};
 
 tilo_automerge_isolate::test_worker!();
-tilo_agent_participant::app_worker!();
+tilo_agent_session::app_worker!();
 
 const APP: &str = "so.tilo.discord";
 const CHAT: &str = "so.tilo.chat";
@@ -128,7 +128,7 @@ impl Workspace {
     /// (starting the first), each changed part carried to the workspace on its
     /// own route. The ids of the messages it added.
     async fn part_as(&self, author: &str, invoke: Invoke<chat::parts::ChatPart>) -> Vec<String> {
-        use tilo_agent_participant::{Replica, ReplicaActor, Seed};
+        use tilo_agent_session::{Replica, ReplicaActor, Seed};
         use ui::collaboration::DocumentMutation;
         let chat = self
             .workspaces
@@ -138,7 +138,7 @@ impl Workspace {
             .unwrap();
         let mut held = Vec::new();
         for (app, record) in self.workspaces.record_routes(&self.id).await.unwrap() {
-            let Some(part) = ui::record::RecordId::parse(&record)
+            let Some(part) = ui::record::DocumentId::parse(&record)
                 .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
             else {
                 continue;
@@ -171,7 +171,7 @@ impl Workspace {
                 author,
                 ReplicaActor::Owner,
                 Seed::Existing {
-                    record: ui::record::RecordId::package_primary(),
+                    record: ui::record::DocumentId::package_primary(),
                     changes: vec![chat],
                 },
             )
@@ -1656,8 +1656,8 @@ async fn chat_categories(workspace: &Workspace) -> Vec<String> {
         .collect()
 }
 
-/// The bridge's arrangements of Discord's channels so far.
-fn arrangements(fake: &FakeDiscord) -> usize {
+/// The bridge's orders of Discord's channels so far.
+fn orders(fake: &FakeDiscord) -> usize {
     changes(fake)
         .into_iter()
         .filter(|call| *call == format!("PATCH /guilds/{GUILD}/channels"))
@@ -1703,7 +1703,7 @@ async fn moving_channels_in_discord_rearranges_chat() {
     })
     .await;
     quiet(&mut runner, &bridge, "settled").await;
-    assert_eq!(arrangements(fake), 0, "Discord's own move is not sent back");
+    assert_eq!(orders(fake), 0, "Discord's own move is not sent back");
     assert_eq!(
         discord_list(fake, Some(CATEGORY_CHANNELS), 0),
         ["general", "roadmap"]
@@ -1819,13 +1819,13 @@ async fn moving_channels_in_chat_rearranges_discord() {
         chat_list(&bridge.workspace, Some("Channels")).await,
         in_chat
     );
-    let sent = arrangements(fake);
+    let sent = orders(fake);
     let idle = quiet(&mut runner, &bridge, "idle").await;
     assert!(
         !idle.iter().any(|call| call.starts_with("PATCH")),
         "{idle:#?}"
     );
-    assert_eq!(arrangements(fake), sent);
+    assert_eq!(orders(fake), sent);
 }
 
 /// Lay the workspace's Chat out as its owner did before any bridge ran:
@@ -1958,7 +1958,7 @@ impl Bridge {
         &self,
         change: impl FnOnce() -> Invoke<ui::tilo_workspace_emoji::WorkspaceEmoji>,
     ) {
-        let record = collab_types::workspace_record_id(ui::tilo_workspace_emoji::KIND);
+        let record = collab_types::workspace_document_id(ui::tilo_workspace_emoji::KIND);
         let saved = self
             .workspace
             .workspaces
@@ -1995,8 +1995,8 @@ impl Bridge {
             .unwrap_or_default();
         ui::record::init_scoped(
             &mut doc,
-            &ui::record::RecordId::parse(record).unwrap(),
-            &ui::record::RecordKind::new(KIND),
+            &ui::record::DocumentId::parse(record).unwrap(),
+            &ui::record::ResourceType::new(KIND),
             CHAT,
             Some(&self.workspace.id),
         );

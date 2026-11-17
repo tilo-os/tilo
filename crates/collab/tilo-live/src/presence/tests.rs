@@ -378,7 +378,7 @@ tilo_test_env::scenario! {
                 size: [1440, 852],
                 windows: vec![ShellWindow {
                     app: "so.tilo.notes".into(),
-                    record: [7; 8],
+                    document: [7; 8],
                     rect: [0, 0, 5000, 5000],
                     focused: true,
                 }],

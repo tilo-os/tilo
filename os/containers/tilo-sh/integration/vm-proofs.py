@@ -26,6 +26,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 WORKSPACE, ACCOUNT, OUT = sys.argv[1:4]
 BROWSER_USER = sys.argv[4] if len(sys.argv) > 4 else "tilo-browser"
@@ -72,7 +73,16 @@ def in_guest() -> dict[str, list[str]]:
         body,
     ]
     say(f"running the proofs in {WORKSPACE}'s VM")
-    ran = subprocess.run(command, text=True, capture_output=True, timeout=900)
+    # The host suspends a VM that went idle, and takes no new run while it does:
+    # it says so, and the run once it finished wakes the VM again. Saving a
+    # VM's memory takes as long as the machine holding it takes to write.
+    deadline = time.monotonic() + 240
+    while True:
+        ran = subprocess.run(command, text=True, capture_output=True, timeout=900)
+        held = (ran.stdout + ran.stderr).find("is being suspended") >= 0
+        if not held or time.monotonic() >= deadline:
+            break
+        time.sleep(3)
     sys.stderr.write(ran.stderr)
     if ran.returncode != 0:
         fail(f"the proofs did not run in the VM ({ran.returncode}): {ran.stdout[-2000:]}{ran.stderr[-2000:]}")

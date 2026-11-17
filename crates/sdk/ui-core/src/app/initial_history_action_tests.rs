@@ -780,7 +780,7 @@ tilo_test_env::scenario! {
         );
         app.collaboration.manager.join_route(
             unowned.clone(),
-            crate::record::RecordKind::new("tilo.rich-text"),
+            crate::record::ResourceType::new("tilo.rich-text"),
         );
         while !app
             .committed_documents

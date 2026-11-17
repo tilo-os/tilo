@@ -1926,16 +1926,17 @@ impl QuickSettingsControl {
     }
 }
 
-/// Quick Settings arrangement stored in the shared settings document.
+/// The Quick Settings panel's controls, in the person's order, stored in the shared settings
+/// document.
 ///
 /// Missing, unknown and duplicate values are normalised on load.  This both
-/// migrates the old fixed dashboard (which had no saved arrangement) and
+/// migrates the old fixed dashboard (which saved no controls) and
 /// lets later releases add controls without corrupting an older layout.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QuickSettingsConfig {
     /// A control a later release added and this one does not know is
-    /// skipped, never a reason to drop the person's whole arrangement.
+    /// skipped, never a reason to drop every control.
     #[serde(deserialize_with = "known_controls")]
     pub controls: Vec<QuickSettingsControl>,
 }

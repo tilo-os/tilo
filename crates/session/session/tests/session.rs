@@ -1835,34 +1835,7 @@ tilo_test_env::scenario! {
     {
         use tilo_sheets::SheetState as _;
         let _settled = ui::motion::testing::settled();
-        // The name is the workspace's governance's, so the session holds the workspace it founds
-        // there, as a session of a person with an identity does: a throwaway one, as
-        // `dist/dev/nested-session.sh` mints.
-        let mut home = tilo_test_env::TestHome::new().expect("a home");
-        let identity = home.config().join("tilo/identity");
-        std::fs::create_dir_all(&identity).expect("the identity's directory");
-        let root = home.root().join("system");
-        home.env().set("TILO_IDENTITY_ROOT", &root);
-        tilo_identity_host::provisioning::ensure_throwaway_test_identity(
-            &identity,
-            &tilo_identity_host::provisioning::collaboration_identity_paths(),
-            tilo_identity_host::provisioning::IdentityStorage::Files,
-        )
-        .expect("the throwaway identity");
-        let mut session = crate::common::headless(Options {
-            person: "Pat".to_owned(),
-            collab: true,
-            state: Some(home.state().to_path_buf()),
-            ..Options::default()
-        });
-        // The workspace is founded under the word for one nobody named, and the shell shows the
-        // name its governance holds.
-        crate::common::until(&mut session, "the founded workspace's name", |session| {
-            session.handle().read(|tree| {
-                tree.active_workspace()
-                    .is_some_and(|workspace| workspace.name == "Workspace")
-            })
-        });
+        let mut session = session();
         session.step(Duration::from_millis(1)).unwrap();
         let state = session
             .workspace_settings()
@@ -1882,16 +1855,12 @@ tilo_test_env::scenario! {
                 &arguments(serde_json::json!({ "name": "Garden" })),
             )
             .expect("rename");
-        // The governance takes the name, and the session projects it onto the shell.
-        let named = |session: &Session| {
-            session.handle().read(|tree| {
-                tree.active_workspace()
-                    .map(|workspace| workspace.name.clone())
-            })
-        };
-        crate::common::until(&mut session, "the governance's new name on the shell", |session| {
-            named(session).as_deref() == Some("Garden")
+        session.step(Duration::from_millis(1)).unwrap();
+        let name = session.handle().read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.name.clone())
         });
+        assert_eq!(name.as_deref(), Some("Garden"));
         // The bar says the name the workspace has now: the person sees the rename where the next frame
         // draws it.
         session.step(Duration::from_millis(1)).unwrap();

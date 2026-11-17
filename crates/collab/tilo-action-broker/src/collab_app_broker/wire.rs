@@ -378,6 +378,11 @@ impl JoinedChannel {
                             app: route.app_id.clone(),
                             record: route.record_id.clone(),
                             envelope: Box::new(envelope),
+                            own: collab_types::OwnRecord::recognise(
+                                &route.app_id,
+                                &route.record_id,
+                                current_identity.verified.user_public_key,
+                            ),
                         },
                     },
                     self.record_kind.clone(),
@@ -617,7 +622,7 @@ impl JoinedChannel {
         )
         .with_app(&surface.app_id, &surface.app_id)
         .with_described(tilo_actions::Described::new(what));
-        let actor = current.broker_actor().id;
+        let actor = current.broker_actor().member().clone();
         if self.state.durable_owner_required
             || self
                 .state

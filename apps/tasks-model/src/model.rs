@@ -27,9 +27,9 @@ mod tracker_area;
 pub use effect::{NOTE_KIND, NOTES, TasksEffect};
 pub use goal::Area;
 pub use issue::{
-    ASSIGNEE_FORMS, Attachment, Imported, ImportedMessage, Issue, Link, MAX_ESTIMATE,
-    MAX_MESSAGE_CHARS, Message, MessageKind, NewIssue, Priority, Status, agent_assignee,
-    checked_assignee, outside_assignee, person_assignee,
+    ASSIGNEE_FORMS, Attachment, Issue, Link, MAX_ESTIMATE, MAX_MESSAGE_CHARS, Message, MessageKind,
+    NewIssue, Priority, Status, agent_assignee, checked_assignee, outside_assignee,
+    person_assignee,
 };
 pub use record::{Tracker, tracker};
 pub use tracker_area::{Kind, Person, TrackerArea};

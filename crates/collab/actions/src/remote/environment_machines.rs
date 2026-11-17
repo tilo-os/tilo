@@ -6,7 +6,7 @@
 //! that same host as a copy of the source's disk; when the host deletes a
 //! workspace, its machine goes first. The host asks the member device of that
 //! VM host over the device plane, as the device it is, the way it asks for a
-//! shell command ([`environment_runs`](super::environment_runs)):
+//! shell command ([`environment_commands`](super::environment_commands)):
 //!
 //! - [`branch_target`] names a branch, an action of the branch's environment
 //!   ([`RESOURCE`]): the workspace asked in is the branch, and the argument is
@@ -30,10 +30,10 @@ use crate::api::ActionAddress;
 
 /// The provider the member answers a workspace's machine under: the one its
 /// runs are.
-pub const PROVIDER: &str = super::environment_runs::PROVIDER;
+pub const PROVIDER: &str = super::environment_commands::PROVIDER;
 /// The resource branching or deleting one is an action of: the workspace's
 /// environment.
-pub const RESOURCE: &str = super::environment_runs::RESOURCE;
+pub const RESOURCE: &str = super::environment_commands::RESOURCE;
 /// Make the workspace's machine a copy of another workspace's.
 pub const BRANCH: &str = "branch-machine";
 /// Delete the workspace's machine, its disk and its snapshot.

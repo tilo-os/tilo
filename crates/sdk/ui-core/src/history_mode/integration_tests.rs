@@ -148,7 +148,7 @@ tilo_test_env::scenario! {
                 "fixture",
                 "restore-lifetime",
                 RESTORABLE.app_id,
-                crate::RecordId::for_tab(17),
+                crate::DocumentId::for_tab(17),
             ),
         };
         let registration = HistoryRegistration::new(&RESTORABLE, vec![source]).unwrap();
@@ -294,7 +294,7 @@ fn review_driver() -> FrameHarness {
             "fixture",
             "restore-lifetime",
             RESTORABLE.app_id,
-            crate::RecordId::for_tab(18),
+            crate::DocumentId::for_tab(18),
         ),
     };
     let registration = HistoryRegistration::new(&RESTORABLE, vec![source]).unwrap();
@@ -397,7 +397,7 @@ struct RetainedLifecycleHandles {
     events: std::rc::Rc<std::cell::Cell<usize>>,
     event_value: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     wrong_owner: std::rc::Rc<std::cell::Cell<usize>>,
-    intent: std::rc::Rc<std::cell::RefCell<Option<crate::record::RecordCheckout>>>,
+    intent: std::rc::Rc<std::cell::RefCell<Option<crate::record::DocumentCheckout>>>,
     last_owner: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     accepted: Accepted,
 }
@@ -651,7 +651,7 @@ impl crate::widget::ResourceOperations for RetainedLifecycleProbe {
 }
 
 impl crate::record::capability::RecordScoped for RetainedLifecycleProbe {
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+    fn record_intent(&self) -> Option<crate::record::DocumentCheckout> {
         self.handles.intent.borrow().clone()
     }
 }

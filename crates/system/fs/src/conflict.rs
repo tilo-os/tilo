@@ -10,7 +10,7 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use fs_protocol::{FileNameV1, FileRecordId, FileVersionId, MAX_FILE_NAME_BYTES};
+use fs_protocol::{FileDocumentId, FileNameV1, FileVersionId, MAX_FILE_NAME_BYTES};
 use iroh_blobs::Hash;
 
 use crate::namespace::{Namespace, ROOT_ID};
@@ -24,7 +24,7 @@ pub struct ContentConflict {
     pub loser: Hash,
     /// Present for revision-aware conflicts. Legacy hash-only conflicts keep
     /// these empty and cannot be projected as first-class signed conflicts.
-    pub record_id: Option<FileRecordId>,
+    pub document_id: Option<FileDocumentId>,
     pub winner_version: Option<FileVersionId>,
     pub loser_version: Option<FileVersionId>,
 }
@@ -129,7 +129,7 @@ fn concurrent_edits(ns: &Namespace, id: &str, out: &mut Vec<ContentConflict>) {
                     &parent,
                     &name,
                     &hex::encode(hash.0),
-                    Some((revision.record_id, winner.version_id, revision.version_id)),
+                    Some((revision.document_id, winner.version_id, revision.version_id)),
                 );
             }
             return;
@@ -298,7 +298,7 @@ fn push_copy(
     parent: &str,
     name: &FileNameV1,
     loser_hex: &str,
-    revision_binding: Option<(FileRecordId, FileVersionId, FileVersionId)>,
+    revision_binding: Option<(FileDocumentId, FileVersionId, FileVersionId)>,
 ) {
     let Some(loser) = hash_from_hex(loser_hex) else {
         return;
@@ -314,7 +314,7 @@ fn push_copy(
         parent_id: parent.to_string(),
         name: cname,
         loser,
-        record_id: revision_binding.map(|binding| binding.0),
+        document_id: revision_binding.map(|binding| binding.0),
         winner_version: revision_binding.map(|binding| binding.1),
         loser_version: revision_binding.map(|binding| binding.2),
     });
@@ -387,13 +387,13 @@ mod tests {
             {
                 let mut a = Namespace::new("A").unwrap();
                 let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
-                let record_id = a.record_id_for(ino).unwrap();
+                let document_id = a.document_id_for(ino).unwrap();
                 let snap = a.save();
                 let mut b = Namespace::from_bytes("B", &snap).unwrap();
                 let bino = b.lookup(ROOT_INO, "doc").unwrap().ino.0;
                 let revision_a = fs_protocol::ContentRevisionV1 {
                     schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                    record_id,
+                    document_id,
                     version_id: fs_protocol::FileVersionId::new(),
                     content_hash: Some(fs_protocol::ContentHash([10; 32])),
                     byte_len: 10,
@@ -401,7 +401,7 @@ mod tests {
                 };
                 let revision_b = fs_protocol::ContentRevisionV1 {
                     schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                    record_id,
+                    document_id,
                     version_id: fs_protocol::FileVersionId::new(),
                     content_hash: Some(fs_protocol::ContentHash([20; 32])),
                     byte_len: 20,
@@ -419,7 +419,7 @@ mod tests {
                 };
                 let conflicts = detect(&a);
                 assert_eq!(conflicts.len(), 1);
-                assert_eq!(conflicts[0].record_id, Some(record_id));
+                assert_eq!(conflicts[0].document_id, Some(document_id));
                 assert_eq!(conflicts[0].winner_version, Some(winner.version_id));
                 assert_eq!(conflicts[0].loser_version, Some(loser.version_id));
                 assert_eq!(

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination};
 use ui::permissions::{Acting, ActionKind, Answer, PermissionContext, Standing, TreePath};
-use ui::record::{RecordId, RecordStore};
+use ui::record::{DocumentId, RecordStore};
 
 use tilo_feedback::{
     Destination, DurableStore, Error, FeedbackHost, MaskedScreenshot, Receipt, Recorded,
@@ -294,7 +294,7 @@ pub trait ReceiptSigner {
 /// current owner status around it and the signing service.
 pub struct CanonicalRecord {
     pub records: RecordStore,
-    pub record: RecordId,
+    pub record: DocumentId,
     pub project: ReportProjection,
     /// The owner's durable content store, where the workspace keeps what its
     /// records reference. Without one a report with a screenshot is never

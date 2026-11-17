@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::remote::ActionHostError;
 
 use super::{Firing, MAX_QUEUED_FIRINGS};
-use crate::run::{RunOutcome, RunReport, StepFailure, StepStatus};
+use crate::run::{InvocationOutcome, InvocationReport, StepFailure, StepStatus};
 
 pub const BACKOFF_FIRST: Duration = Duration::from_secs(1);
 pub const BACKOFF_MAX: Duration = Duration::from_secs(600);
@@ -93,7 +93,7 @@ impl FiringQueue {
         if self
             .queued
             .iter()
-            .any(|queued| queued.firing.run == firing.run)
+            .any(|queued| queued.firing.invocation == firing.invocation)
         {
             return None;
         }
@@ -124,14 +124,14 @@ impl FiringQueue {
     }
 
     /// Settle the head with how its run went.
-    pub fn finished(&mut self, report: &RunReport, now_ms: i64) -> Finished {
+    pub fn finished(&mut self, report: &InvocationReport, now_ms: i64) -> Finished {
         let Some(head) = self.queued.front_mut() else {
             return Finished::Done;
         };
-        if head.firing.run != report.run {
+        if head.firing.invocation != report.invocation {
             return Finished::Done;
         }
-        let RunOutcome::Failed { failure, .. } = &report.outcome else {
+        let InvocationOutcome::Failed { failure, .. } = &report.outcome else {
             self.queued.pop_front();
             return Finished::Done;
         };
@@ -231,7 +231,9 @@ impl FiringQueue {
 mod tests {
     use super::*;
     use crate::StepPath;
-    use crate::run::{RunId, RunMode, RunOutcome, RunReport, StepFailure};
+    use crate::run::{
+        InvocationId, InvocationMode, InvocationOutcome, InvocationReport, StepFailure,
+    };
     use crate::shortcut::TriggerSpec;
 
     fn firing(n: u8) -> Firing {
@@ -242,20 +244,20 @@ mod tests {
                 app_id: None,
                 from: None,
             },
-            run: RunId(uuid::Uuid::from_bytes([n; 16])),
+            invocation: InvocationId(uuid::Uuid::from_bytes([n; 16])),
             inputs: serde_json::Map::new(),
             cause: None,
             event: format!("e{n}"),
         }
     }
 
-    fn report(run: RunId, outcome: RunOutcome) -> RunReport {
-        RunReport {
-            run,
+    fn report(invocation: InvocationId, outcome: InvocationOutcome) -> InvocationReport {
+        InvocationReport {
+            invocation,
             shortcut: "s".into(),
             version: None,
             trigger: "t".into(),
-            mode: RunMode::Unattended,
+            mode: InvocationMode::Unattended,
             steps: vec![],
             output: None,
             degraded: Vec::new(),
@@ -263,8 +265,8 @@ mod tests {
         }
     }
 
-    fn failed(failure: StepFailure) -> RunOutcome {
-        RunOutcome::Failed {
+    fn failed(failure: StepFailure) -> InvocationOutcome {
+        InvocationOutcome::Failed {
             path: StepPath::root().child(0),
             failure,
         }
@@ -282,7 +284,7 @@ mod tests {
             }
             assert_eq!(queue.next_due(0).unwrap().firing.event, "e1");
             assert!(matches!(
-                queue.finished(&report(firing(1).run, RunOutcome::Completed), 0),
+                queue.finished(&report(firing(1).invocation, InvocationOutcome::Completed), 0),
                 Finished::Done
             ));
             assert_eq!(queue.next_due(0).unwrap().firing.event, "e2");
@@ -343,7 +345,7 @@ mod tests {
                 }),
             });
             let Finished::Retry { at_ms } =
-                queue.finished(&report(firing(1).run, unavailable.clone()), 1_000)
+                queue.finished(&report(firing(1).invocation, unavailable.clone()), 1_000)
             else {
                 panic!("retried");
             };
@@ -356,7 +358,7 @@ mod tests {
             let mut now = 2_000;
             let mut last = Finished::Done;
             for _ in 2..=MAX_ATTEMPTS {
-                last = queue.finished(&report(firing(1).run, unavailable.clone()), now);
+                last = queue.finished(&report(firing(1).invocation, unavailable.clone()), now);
                 if let Finished::Retry { at_ms } = last {
                     now = at_ms;
                 }
@@ -376,8 +378,8 @@ mod tests {
                 app_id: "a".into(),
                 action: "b".into(),
             };
-            let mut denied = report(firing(1).run, failed(outside()));
-            denied.steps.push(crate::run::StepRecord {
+            let mut denied = report(firing(1).invocation, failed(outside()));
+            denied.steps.push(crate::run::StepEntry {
                 path: StepPath::root().child(0),
                 step: "post".into(),
                 invocation: None,

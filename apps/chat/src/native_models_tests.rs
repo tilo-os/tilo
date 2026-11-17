@@ -104,7 +104,7 @@ fn chat(client: &UnixStream) -> (ChatApp, crate::testing::Workspace) {
     .with_models(models);
     app.attach_framework(ui::framework::Dispatcher::detached(
         "so.tilo.chat",
-        &identity.id,
+        &ui::tilo_resource::MemberId::person(&identity.id),
     ));
     app.attach_workspace(&doc);
     app.reload(&doc);

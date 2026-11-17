@@ -4,6 +4,7 @@
 exclude = [
     "vendor/leveldb-sys",
     "vendor/hexane",
+    "vendor/iroh-blobs",
     "vendor/buffa-build",
     "vendor/rig-core",
     "tools/web/wasm-split",
@@ -168,7 +169,7 @@ members = [
     "apps/word-processor",
 
     # Agent
-    "crates/agent/agent-participant",
+    "crates/agent/agent-session",
     "crates/agent/agent-web-tools",
     "crates/agent/connector",
     "crates/agent/local-model-service",
@@ -530,7 +531,7 @@ members = [
     "crates/system/projector",
     "crates/system/sandbox-core",
     "crates/system/secret-service",
-    "crates/system/seat-peer",
+    "crates/system/peer-facts",
     "crates/system/secret-vault",
     "crates/system/settings-store",
     "crates/system/settings-sections",
@@ -1573,6 +1574,9 @@ leveldb-sys = { path = "vendor/leveldb-sys" }
 # after it loaded holds what it holds, not every buffer its columns were. See
 # vendor/hexane/TILO-PATCH.md.
 hexane = { path = "vendor/hexane" }
+# The content store's metadata database keeps the page cache its owner bounds, not redb's
+# default gigabyte. See vendor/iroh-blobs/TILO-PATCH.md.
+iroh-blobs = { path = "vendor/iroh-blobs" }
 # Assemble fragmented OpenAI Chat tool names consistently in Rig's decoder.
 # Exact registry baseline and removal condition: vendor/rig-core/PROVENANCE.md.
 rig-core = { path = "vendor/rig-core" }

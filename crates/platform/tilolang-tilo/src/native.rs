@@ -693,11 +693,14 @@ fn encoded(ty: &Ty, plain: &Json, meta: &Meta) -> Result<Json, String> {
                 })?;
             json!({"enum": declared.id, "variant": found.id, "fields": {}})
         }
-        Ty::Principal => {
-            let who = plain
-                .as_str()
-                .ok_or_else(|| format!("{plain} names no principal"))?;
-            json!({"principal": who})
+        // A member as the app's model keeps them, or a person by their id.
+        Ty::Actor => {
+            let who: tilolang_runtime::ids::MemberId = match plain {
+                Json::String(person) => tilolang_runtime::ids::MemberId::person(person.clone()),
+                other => serde_json::from_value(other.clone())
+                    .map_err(|_| format!("{plain} names no actor"))?,
+            };
+            json!({"actor": tilolang_runtime::ids::Actor::Member(who)})
         }
         Ty::Record(key) => json!({"ref": reference(plain)?, "ty": type_id(key)}),
         // A field of no type the runtime reads as a value of its own: its JSON, as the app

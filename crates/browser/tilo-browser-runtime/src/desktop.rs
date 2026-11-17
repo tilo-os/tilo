@@ -30,7 +30,7 @@ use ui::application::{
 use ui::application_view::InstanceViewStore;
 use ui::automerge::AutoCommit;
 use ui::permissions::{MemberId, SharedPermissions};
-use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
+use ui::record::{DocumentCheckout, DocumentId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
 use ui::window_share::ResourceView;
 
@@ -341,13 +341,18 @@ pub(crate) struct Shared {
     /// looked, for the frame metrics.
     wakers: Arc<std::sync::Mutex<Vec<&'static str>>>,
     /// The record each tab shows, once its component created or opened it.
-    records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
+    records: Rc<RefCell<HashMap<TabId, DocumentCheckout>>>,
     /// A tab bound a record since the desktop was last saved.
     records_changed: Rc<Cell<bool>>,
     /// Tabs that could not open yet: a peer's desktop named a record
     /// before the record itself arrived, or the tab's application is still
     /// loading.
     waiting: Rc<RefCell<std::collections::HashSet<TabId>>>,
+    /// The tabs whose window could not open what it names, with what the window says instead
+    /// ([`crate::window_states`]).
+    pub(crate) unopened: Rc<RefCell<HashMap<TabId, String>>>,
+    /// The tabs whose app runs on its record in their window.
+    landed: Rc<RefCell<std::collections::HashSet<TabId>>>,
     /// The record ids of tabs this page has not bound yet: an application
     /// whose code has not loaded, one it does not run, or a record it does not
     /// read. Each is written back to the shared shell under the spelling it
@@ -365,12 +370,9 @@ pub(crate) struct Shared {
     /// The agent run that opened each window an agent opened, by tab, as the
     /// workspace's shell last said.
     pub opened_by: Rc<RefCell<BTreeMap<TabId, tilo_desktop_model::ownership::OpenedBy>>>,
-    /// The name this page last asked its host to give the workspace, until the workspace's
-    /// governance takes it: a rename it asked for is no news to it.
-    pub asked_name: Rc<RefCell<Option<String>>>,
-    /// The name the workspace's governance recorded when this page last projected it onto the
-    /// shell: a different one since is a rename.
-    pub projected_name: Rc<RefCell<Option<String>>>,
+    /// The workspace renamed since the mount last looked, for a notice when
+    /// someone else did it.
+    pub renames: Rc<RefCell<Vec<tilo_desktop_surface::history_log::WorkspaceRename>>>,
     /// Whether the workspace lets this desktop's person close and move what
     /// others made, as it last answered ([`crate::replication`] asks).
     pub moderates: Arc<AtomicBool>,
@@ -427,7 +429,7 @@ pub(crate) struct Shared {
 
 impl Shared {
     /// The record the window of `tab` shows, once its component opened one.
-    pub fn record_of(&self, tab: TabId) -> Option<RecordCheckout> {
+    pub fn record_of(&self, tab: TabId) -> Option<DocumentCheckout> {
         self.records.borrow().get(&tab).cloned()
     }
 
@@ -499,6 +501,29 @@ impl Shared {
             .iter()
             .find(|(_, checkout)| shows(checkout.id.route()) && checkout.kind == kind)
             .map(|(tab, _)| *tab)
+    }
+
+    /// Where each window of the desktop stands ([`crate::window_states`]), by its tab in hex as
+    /// the page's status names tabs.
+    pub(crate) fn window_states(
+        &self,
+        handle: &DesktopHandle,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let drawn = handle.drawn();
+        let unopened = self.unopened.borrow();
+        let landed = self.landed.borrow();
+        handle.read(|tree| {
+            tree.tabs()
+                .map(|tab| {
+                    let state = crate::window_states::WindowState::of(
+                        unopened.get(&tab.id).map(String::as_str),
+                        landed.contains(&tab.id),
+                        drawn.contains(&tab.id),
+                    );
+                    (format!("{:x}", tab.id), window_state_json(&state))
+                })
+                .collect()
+        })
     }
 
     /// The applications whose code the page is fetching now: a window of one
@@ -673,7 +698,7 @@ impl Shared {
         )
     }
 
-    pub fn bound_records(&self) -> Vec<(TabId, RecordCheckout)> {
+    pub fn bound_records(&self) -> Vec<(TabId, DocumentCheckout)> {
         self.records
             .borrow()
             .iter()
@@ -925,9 +950,9 @@ impl Tiles {
         let app_id = self.ready_app(tab)?;
         let definition = application(app_id).ok_or_else(|| not_in_the_browser(app_id))?;
         let unbound = self.shared.unbound.borrow().get(&tab.id).cloned();
-        if let Some(id) = unbound.as_deref().and_then(RecordId::from_route) {
+        if let Some(id) = unbound.as_deref().and_then(DocumentId::from_route) {
             self.shared.unbound.borrow_mut().remove(&tab.id);
-            let checkout = RecordCheckout::new(id, definition.record_kind.clone());
+            let checkout = DocumentCheckout::new(id, definition.record_kind.clone());
             self.shared.records.borrow_mut().insert(tab.id, checkout);
         }
         if definition.app_id() == tilo_desktop::feedback::PACKAGE {
@@ -937,7 +962,7 @@ impl Tiles {
         let (target, named_new) = self.launch_target(definition, &store, tab.id)?;
         // A member's own record is theirs to start whatever their role; the
         // workspace's record waits for someone who writes there.
-        let own = named_new.as_ref().is_some_and(|id| id.owner().is_some());
+        let own = definition.member_record && named_new.is_some();
         if !own && (named_new.is_some() || matches!(target, LaunchTarget::PrimaryNew)) {
             self.may_start_record(tab)?;
         }
@@ -977,7 +1002,7 @@ impl Tiles {
         &self,
         definition: &'static ApplicationDefinition,
         store: RecordStore,
-        (target, named_new): (LaunchTarget, Option<RecordId>),
+        (target, named_new): (LaunchTarget, Option<DocumentId>),
         instance: TabId,
         restore: RestoreInput,
     ) -> Result<AppComponent, Unbuilt> {
@@ -1064,9 +1089,9 @@ impl Tiles {
         let definition = application(&view.app)
             .filter(|definition| definition.app_id() != tilo_desktop::feedback::PACKAGE)
             .ok_or_else(|| not_in_the_browser(&view.app))?;
-        let id = RecordId::from_route(&view.record).ok_or("It is no longer there")?;
+        let id = DocumentId::from_route(&view.record).ok_or("It is no longer there")?;
         let store = self.store(definition)?;
-        let checkout = RecordCheckout::new(id, definition.record_kind.clone());
+        let checkout = DocumentCheckout::new(id, definition.record_kind.clone());
         match store.try_open_record(&checkout) {
             Ok(_) => {}
             Err(
@@ -1200,7 +1225,7 @@ impl Tiles {
         definition: &'static ApplicationDefinition,
         store: &RecordStore,
         tab: TabId,
-    ) -> Result<(LaunchTarget, Option<RecordId>), Unready> {
+    ) -> Result<(LaunchTarget, Option<DocumentId>), Unready> {
         let saved = self.shared.records.borrow().get(&tab).cloned();
         match saved {
             Some(checkout) => Ok((
@@ -1223,7 +1248,7 @@ impl Tiles {
         definition: &'static ApplicationDefinition,
         store: &RecordStore,
         tab: TabId,
-    ) -> Option<Result<(LaunchTarget, Option<RecordId>), Unready>> {
+    ) -> Option<Result<(LaunchTarget, Option<DocumentId>), Unready>> {
         let author = MemberId::person(self.inputs.author.clone());
         let opening = crate::app_page::own_opening(definition, store, &author)?;
         Some(match opening {
@@ -1246,7 +1271,7 @@ impl Tiles {
         definition: &'static ApplicationDefinition,
         store: &RecordStore,
         tab: TabId,
-    ) -> Result<(LaunchTarget, Option<RecordId>), Unready> {
+    ) -> Result<(LaunchTarget, Option<DocumentId>), Unready> {
         if !definition.keeps_workspace_record() {
             return self.unbound_target(definition, store, tab);
         }
@@ -1276,9 +1301,9 @@ impl Tiles {
         definition: &'static ApplicationDefinition,
         store: &RecordStore,
         tab: TabId,
-    ) -> Result<(LaunchTarget, Option<RecordId>), Unready> {
-        let default = RecordCheckout::new(
-            RecordId::workspace_default(),
+    ) -> Result<(LaunchTarget, Option<DocumentId>), Unready> {
+        let default = DocumentCheckout::new(
+            DocumentId::workspace_default(),
             definition.record_kind.clone(),
         );
         let taken = self
@@ -1328,6 +1353,8 @@ impl TileSource for Tiles {
         match self.component(tab) {
             Ok(component) => {
                 self.shared.waiting.borrow_mut().remove(&tab.id);
+                self.shared.unopened.borrow_mut().remove(&tab.id);
+                self.shared.landed.borrow_mut().insert(tab.id);
                 // Built, but its first frame is not drawn yet: the window
                 // stands with what the app declared for that time (its
                 // manifest's `arrival-skeleton`) until it presents.
@@ -1344,6 +1371,8 @@ impl TileSource for Tiles {
             // `arrival-skeleton`), and the app goes on with that arrival once
             // built.
             Err(Unready::Arriving) => {
+                self.shared.unopened.borrow_mut().remove(&tab.id);
+                self.shared.landed.borrow_mut().remove(&tab.id);
                 let TileContent::LocalApp { app_id, .. } = &tab.tile else {
                     return TileHost::new(ui::widget::TileContent::Arriving)
                         .arriving_from(code_host());
@@ -1354,6 +1383,11 @@ impl TileSource for Tiles {
                     .with_arrival_shape(shape)
             }
             Err(Unready::Notice(detail)) => {
+                self.shared
+                    .unopened
+                    .borrow_mut()
+                    .insert(tab.id, detail.clone());
+                self.shared.landed.borrow_mut().remove(&tab.id);
                 if self.shared.records.borrow().contains_key(&tab.id) {
                     self.shared.waiting.borrow_mut().insert(tab.id);
                 }
@@ -1501,7 +1535,7 @@ pub(crate) struct Persistence {
     store: Rc<dyn DurableStore>,
     saved_revision: Cell<u64>,
     records_changed: Rc<Cell<bool>>,
-    records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
+    records: Rc<RefCell<HashMap<TabId, DocumentCheckout>>>,
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
     authors: Authors,
     /// The layout's own document: the profile's copy of it, which is the layout's
@@ -1741,7 +1775,7 @@ pub(crate) fn return_to(
 /// shell's own spelling otherwise ([`tilo_desktop_surface::host::records::adopted`]).
 fn adopted_records(
     desktop: &tilo_desktop_model::ownership::SharedDesktop,
-) -> (HashMap<TabId, RecordCheckout>, HashMap<TabId, String>) {
+) -> (HashMap<TabId, DocumentCheckout>, HashMap<TabId, String>) {
     tilo_desktop_surface::host::records::adopted(desktop, |app| {
         application(app).map(|definition| definition.record_kind.clone())
     })
@@ -1822,6 +1856,20 @@ fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -
     }
     shared.linked = linked_accounts(&shared, notify);
     shared
+}
+
+/// A window's state as the page's status says it: `{"state": …}`, with the `reason` of a window
+/// that could not open.
+fn window_state_json(state: &crate::window_states::WindowState) -> serde_json::Value {
+    use crate::window_states::WindowState;
+    match state {
+        WindowState::Arriving => serde_json::json!({"state": "arriving"}),
+        WindowState::Landed => serde_json::json!({"state": "landed"}),
+        WindowState::Drawn => serde_json::json!({"state": "drawn"}),
+        WindowState::CouldNotOpen { reason } => {
+            serde_json::json!({"state": "could-not-open", "reason": reason})
+        }
+    }
 }
 
 pub(crate) fn mount(

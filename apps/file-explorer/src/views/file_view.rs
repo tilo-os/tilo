@@ -1424,7 +1424,7 @@ mod tests {
             mime: String::new(),
             sync_state: None,
             content_hash: None,
-            record_id: None,
+            document_id: None,
             availability: None,
             history: None,
             app: None,
@@ -1821,7 +1821,7 @@ mod tests {
             mime: String::new(),
             sync_state: None,
             content_hash: None,
-            record_id: None,
+            document_id: None,
             availability: None,
             history: None,
             app: None,
@@ -1897,7 +1897,7 @@ mod tests {
             mime: String::new(),
             sync_state: None,
             content_hash: None,
-            record_id: None,
+            document_id: None,
             availability: None,
             history: None,
             app: None,
@@ -2175,7 +2175,7 @@ mod tests {
     ) -> AvailabilityProjectionV1 {
         let value = serde_json::json!({
             "schema_version": 1,
-            "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+            "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
             "current_version": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
             "residency": residency,
             "transfer": {
@@ -2416,13 +2416,13 @@ mod tests {
         fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                 "total_versions": 2,
                 "versions_truncated": false,
                 "heads": [current, other],
                 "versions": [{
                     "id": other,
-                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                     "parents": [],
                     "actor": {"person": vec![1; 32], "device": vec![2; 32]},
                     "timestamp_ms": 9,
@@ -2431,7 +2431,7 @@ mod tests {
                     "provenance": "Edit"
                 }, {
                     "id": current,
-                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                     "parents": [other],
                     "actor": {"person": vec![6; 32], "device": vec![7; 32]},
                     "timestamp_ms": 10,
@@ -2442,7 +2442,7 @@ mod tests {
                 "conflicts_truncated": false,
                 "conflicts": [{
                     "id": "c0d4e23f-c7cb-4ded-a427-b32cf9da9343",
-                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                     "versions": [other, current],
                     "status": "Open",
                     "resolution": null

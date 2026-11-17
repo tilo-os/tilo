@@ -27,7 +27,7 @@ mod cases {
             let notes = w.rt.history(&c.doc).unwrap();
             let incs: Vec<_> = notes.iter().filter(|n| n.action == "inc").collect();
             assert_eq!(incs.len(), 2, "one change per invocation: {notes:?}");
-            assert_eq!(incs[0].invoker, "me");
+            assert_eq!(incs[0].invoker, Some(person("me")));
             assert_eq!(incs[0].module, w.counter.0);
             assert!(
                 incs[0].chain.is_empty(),

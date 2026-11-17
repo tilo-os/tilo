@@ -20,7 +20,8 @@ used in code.
   its person.
 - **Bot**: an installed program with its own identity and role in a workspace, reacting to events
   as itself (a bridge, an integration, moderation).
-- **Automation**: saved steps with triggers. Runs for the member who owns it. Not a member.
+- **Automation**: saved steps with triggers. Runs for the member who owns it. One execution is an
+  invocation. Not a member.
 - **Member**: a person, agent or bot in a workspace, with a role.
 - **Role**: what a member may do in a workspace.
 
@@ -44,6 +45,8 @@ the graph may make it.
 ## Screen
 
 - **Display**: a screen.
+- **Display placement**: where each of a person's displays stands and in what order, across their
+  devices. One setting of the person's; the Displays pane edits it.
 - **Layout**: a workspace's strips, window groups and tabs. Workspace data, shared by its members.
 - **Strip**, **window group**, **tab**: the parts of a layout.
 - **View**: how the shell shows a layout (strips, canvas, others a shell adds).

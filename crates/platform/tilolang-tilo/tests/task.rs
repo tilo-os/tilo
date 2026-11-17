@@ -30,8 +30,8 @@ struct Task {
 }
 
 /// The agent's task, as the author of the programs these tests run.
-fn agent() -> tilolang_tilo::runtime::Principal {
-    tilolang_tilo::runtime::Principal::new("agent:task-1")
+fn agent() -> tilolang_tilo::runtime::Actor {
+    tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("task-1"))
 }
 
 /// Notes and Todo, each in a host of its own, and a task of them; the policy refuses the

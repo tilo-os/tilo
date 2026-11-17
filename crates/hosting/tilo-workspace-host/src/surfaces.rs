@@ -252,7 +252,7 @@ pub(crate) fn arrived() {
 /// role: a Viewer's role grants nothing to write in the workspace, so no
 /// document change it sends is one the workspace takes, and the relay says so
 /// of a change of an encrypted record too, which it cannot read. Their own
-/// record is no part of what the workspace grants ([`tilo_action_policy::member_record`]):
+/// record is no part of what the workspace grants ([`collab_types::OwnRecord`]):
 /// it is theirs to write whatever their role. `None` for any other role, for
 /// a change of the author's own record, for a workspace whose governor
 /// projected no standings (`standings`), and for a delta that carries no
@@ -295,11 +295,26 @@ pub(crate) fn role_refusal(
 fn writes_own_record(message: &neighbour_wire::NeighbourMsg, person: &str) -> bool {
     matches!(
         message,
-        neighbour_wire::NeighbourMsg::AppDocument { record_id, .. }
-            if !person.is_empty()
-                && tilo_action_policy::member_record(record_id)
-                    .is_some_and(|(owner, _)| owner == person)
+        neighbour_wire::NeighbourMsg::AppDocument { record_id, own: Some(own), .. }
+            if !person.is_empty() && own.names(record_id) && own.person() == person
     )
+}
+
+/// Why the relay refuses the change the delta `delta` carries as a write of a
+/// member's own record by `person` (their user root key): only the record's
+/// person writes it, whatever anyone's role. `None` for a change of no
+/// member's own record, and for the record's person.
+pub(crate) fn own_refusal(
+    store: &crate::store::WorkspaceStore,
+    person: &[u8; 32],
+    delta: &[u8],
+) -> Option<tilo_relay_protocol::refusal::Refusal> {
+    let owner = store.frame_owner(delta)?;
+    (owner != *person).then(|| {
+        tilo_relay_protocol::refusal::Refusal::NotAllowed(
+            "another member's own record, which only they write".to_owned(),
+        )
+    })
 }
 
 /// Why the relay refuses the change the delta `delta` carries, if it does:
@@ -323,16 +338,23 @@ pub(crate) fn refusal(
         record: &route.record_id,
     };
     let author = standings.map(|standings| standings.get(envelope.author.as_bytes()));
+    // A member's own record is decided as theirs: its person does anything in
+    // it, nobody else anything.
+    let person = route
+        .own
+        .as_ref()
+        .filter(|own| own.names(&route.record_id))
+        .map(collab_types::OwnRecord::person);
+    let mut cx = tilo_action_policy::Context::at(tilo_clock::unix_now());
+    if let Some(person) = &person {
+        cx = cx.with_own_record(&route.record_id, person);
+    }
     let allows = |node: &tilo_action_policy::TreePath, kind| match author {
         // No projection: membership already decided who may write here.
         None => true,
         Some(None) => false,
         Some(Some(standing)) => {
-            standing.answer(
-                node,
-                kind,
-                &tilo_action_policy::Context::at(tilo_clock::unix_now()),
-            ) == tilo_action_policy::Answer::Allow
+            standing.answer(node, kind, &cx) == tilo_action_policy::Answer::Allow
         }
     };
     collab_types::decide_op(

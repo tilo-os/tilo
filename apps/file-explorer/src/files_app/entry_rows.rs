@@ -111,7 +111,7 @@ impl FilesState {
         }
         let mut rows = Vec::with_capacity(self.entries.len().min(MAX_EAGER_ENTRY_RESOURCES));
         for entry in self.entries.iter().take(MAX_EAGER_ENTRY_RESOURCES) {
-            let key = (entry.path.clone(), entry.record_id);
+            let key = (entry.path.clone(), entry.document_id);
             let facts = self.entry_row_facts(&context, entry);
             let row = match last.remove(&key) {
                 Some(row) if row.entry == *entry && row.facts == facts => row,
@@ -168,10 +168,10 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
     use crate::effects::{FilesEffect, row_action};
     let resource_id = FilesState::entry_resource_id(entry);
     let id = || resource_id.clone();
-    let record_id = entry.record_id.map(uuid::Uuid::from_bytes);
+    let document_id = entry.document_id.map(uuid::Uuid::from_bytes);
     let mut resource = ResourceSpec::new(
         resource_id.clone(),
-        if record_id.is_some() {
+        if document_id.is_some() {
             "files.record"
         } else {
             "files.entry"
@@ -200,10 +200,10 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
             "forget-recent",
             t("files-recent-forget"),
         ));
-    } else if let Some(record_id) = record_id {
+    } else if let Some(document_id) = document_id {
         resource.actions.push(row_action(
             &FilesEffect::Reveal {
-                record: record_id.to_string(),
+                record: document_id.to_string(),
             },
             crate::search_provider::REVEAL_ACTION,
             t("files-action-reveal"),
@@ -419,7 +419,7 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
             ));
         }
     }
-    if entry.record_id.is_some() {
+    if entry.document_id.is_some() {
         resource.actions.push(row_action(
             &FilesEffect::Share { entry: id() },
             "share",

@@ -156,6 +156,7 @@ impl Task {
                             app: route.app_id.clone(),
                             record: route.record.clone(),
                             envelope: Box::new(op),
+                            own: view.peer().own_write(&route.app_id, &route.record, &author),
                         },
                     })
                 })
@@ -273,8 +274,9 @@ impl Task {
         delivered
     }
 
-    /// Count what this device's custody still owes its hosts, over every workspace.
-    pub(super) fn count_custody(&self) {
+    /// Count what this device's custody still owes its hosts, over every workspace, and follow
+    /// the writes that left it unanswered ([`Self::follow_custody`]).
+    pub(super) fn count_custody(&mut self) {
         let owner = self.replicas.owner();
         let pending = self
             .workspaces
@@ -284,10 +286,35 @@ impl Task {
             .sum();
         self.reports
             .change(|status| status.outgoing_pending = pending);
+        self.follow_custody();
+    }
+
+    /// Writes leave custody unanswered when another write carries them: a compaction of their
+    /// record folds the ones it covers, and a renewal carries the change of the write it renews.
+    /// A barrier owed one of them is owed what custody holds now, which carries it, and
+    /// completes once that is answered; its writes never come back to be answered themselves.
+    fn follow_custody(&mut self) {
+        if self.barriers.is_empty() {
+            return;
+        }
+        let owed = self.owed();
+        let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
+            .into_iter()
+            .map(|(mut left, refused, complete)| {
+                if !left.is_subset(&owed) {
+                    left.clone_from(&owed);
+                }
+                (left, refused, complete)
+            })
+            .partition(|(left, _, _)| !left.is_empty());
+        self.barriers = waiting;
+        for (_, refused, complete) in done {
+            let _ = complete.send(refused.map_or(Ok(()), Err));
+        }
     }
 
     /// Complete `done` once every write now in this device's custody is answered by its host, or
-    /// left it renewed ([`Self::release_renewed`]).
+    /// the write that carries it is ([`Self::follow_custody`]).
     pub(super) fn await_custody(&mut self, done: Completion, refused: Option<String>) {
         let owed = self.owed();
         if owed.is_empty() {
@@ -328,23 +355,7 @@ impl Task {
             }
         }
         if renewed > 0 {
-            self.release_renewed();
-        }
-    }
-
-    /// Complete each barrier whose writes all left custody, the last of them renewed.
-    fn release_renewed(&mut self) {
-        let owed = self.owed();
-        let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
-            .into_iter()
-            .map(|(mut left, refused, complete)| {
-                left.retain(|id| owed.contains(id));
-                (left, refused, complete)
-            })
-            .partition(|(left, _, _)| !left.is_empty());
-        self.barriers = waiting;
-        for (_, refused, complete) in done {
-            let _ = complete.send(refused.map_or(Ok(()), Err));
+            self.count_custody();
         }
     }
 
@@ -446,7 +457,6 @@ impl Task {
             }
         }
         self.outbound_due = true;
-        self.count_custody();
         for Answered {
             id,
             outcome,
@@ -477,6 +487,9 @@ impl Task {
                 let _ = complete.send(refused.map_or(Ok(()), Err));
             }
         }
+        // Counted once the answers took their writes off the barriers: a write that left custody
+        // answered is not one another write carries.
+        self.count_custody();
     }
 }
 

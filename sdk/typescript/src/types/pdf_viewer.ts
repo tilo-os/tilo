@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.pdf-viewer@df5c8c476ed389e7";
+export const SURFACE = "so.tilo.pdf-viewer@ff95f35fbe75b49f";
 
 export interface AdoptedAnnotation {
   id: string;
@@ -347,7 +347,7 @@ export interface AddSignatureArgs {
 
 /** The arguments of `add-typed-signature`. */
 export interface AddTypedSignatureArgs {
-  signer?: string;
+  signer: string;
   page?: number;
 }
 
@@ -477,8 +477,8 @@ export interface Document extends tilo.Resource {
   }): Promise<tilo.Run | void>;
   /** Runs `add-signature` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addSignatureMany(items: AddSignatureArgs[]): Promise<tilo.ActionAnswer[]>;
-  addTypedSignature(args?: {
-    signer?: string;
+  addTypedSignature(args: {
+    signer: string;
     page?: number;
   }): Promise<tilo.Run | void>;
   /** Runs `add-typed-signature` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */

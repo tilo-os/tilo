@@ -18,7 +18,7 @@ use std::time::Duration;
 use tilo_peer_state::{PERSONAL_ALPN, PersonalStore, PersonalSync, RefusalReason};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationReason};
 use ui::permissions::MemberId;
-use ui::record::RecordKind;
+use ui::record::ResourceType;
 use ui::record::person::PersonRecords;
 use web_time::SystemTime;
 
@@ -144,7 +144,7 @@ fn app_record(person: &str) -> ui::record::person::StoredRecord {
         ui::record::RecordOwners::with_store(std::rc::Rc::new(durable_store::MemoryStore::new()));
     PersonRecords::open(&mut owners, NOTES, MemberId::person(person.to_owned()))
         .unwrap()
-        .open_record(RecordKind::new(KIND), &|_| Ok(()))
+        .open_record(ResourceType::new(KIND), &|_| Ok(()))
         .unwrap()
 }
 

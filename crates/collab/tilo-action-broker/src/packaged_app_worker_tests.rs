@@ -685,14 +685,14 @@ async fn a_journaled_session_admits_the_app_its_launcher_started() {
             // A record every app of the workspace opens is the workspace's,
             // not its owner's alone: any app of the workspace holds its route,
             // and the workspace's grants on the owner decide its changes.
-            let shared = collab_types::WORKSPACE_RECORDS
+            let shared = collab_types::WORKSPACE_DOCUMENTS
                 .iter()
                 .find(|record| record.app != env.route.app_id)
                 .expect("a record every app of the workspace opens, kept by another app");
             let workspace_record = CrdtRoute::record(
                 shared.app,
                 env.route.cluster_id.clone(),
-                collab_types::workspace_record_id(shared.kind),
+                collab_types::workspace_document_id(shared.kind),
             );
             let kept = app
                 .join_channel(&workspace_record.channel_key(), &identity)

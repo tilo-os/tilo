@@ -568,7 +568,9 @@ async fn invocation_journal_real_effect_once_across_concurrent_duplicate_respons
             assert!(
                 fixture
                     .state
-                    .invocation_statuses(&caller.admitted.principal_id)
+                    .invocation_statuses(&tilo_actions::MemberId::person(
+                        caller.admitted.principal_id.clone()
+                    ))
                     .is_empty(),
                 "legacy principal-only lookup cannot reveal certified terminal output"
             );
@@ -694,7 +696,7 @@ tilo_test_env::scenario! {
         assert!(
             fixture
                 .state
-                .invocation_statuses(&caller.admitted.principal_id)
+                .invocation_statuses(&tilo_actions::MemberId::person(caller.admitted.principal_id.clone()))
                 .is_empty(),
             "legacy root-scoped queries must not disclose another device's private results"
         );

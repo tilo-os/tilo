@@ -390,7 +390,7 @@ pub struct Changed {
 }
 
 /// Per document, who made the record's change to it.
-pub type By = BTreeMap<DocId, Option<String>>;
+pub type By = BTreeMap<DocId, Option<crate::runtime::Actor>>;
 
 /// Per document, the items whose placement changes wrote, each with whether they made it.
 pub type Placed = BTreeMap<DocId, BTreeMap<String, bool>>;
@@ -440,7 +440,7 @@ impl Changed {
                     self.by.insert(doc, who);
                 }
                 // Known, and this change names nobody, or someone else.
-                Some(Some(seen)) if who.as_deref() != Some(seen.as_str()) => {
+                Some(Some(seen)) if who.as_ref() != Some(seen) => {
                     self.by.insert(doc, None);
                 }
                 // Already unknown, or known and named again.
@@ -693,7 +693,7 @@ fn places_only(path: &[Prop]) -> bool {
 }
 
 /// The person the change `change` names as the one who made it, when its message names one.
-fn maker_of(change: &Change) -> Option<String> {
+fn maker_of(change: &Change) -> Option<crate::runtime::Actor> {
     crate::index::reflect::maker_of(change)
 }
 
@@ -707,7 +707,7 @@ struct ChangedBuilder {
     placed: Placed,
     nested: BTreeSet<DocId>,
     /// Who the change being read names as its maker, when it names one.
-    maker: Option<String>,
+    maker: Option<crate::runtime::Actor>,
     by: By,
 }
 
@@ -939,14 +939,14 @@ impl ChangedBuilder {
     /// Note that the document `doc` changed by the change being read, and who made it: a
     /// document two people's changes reached in one batch names nobody.
     fn made_by(&mut self, doc: &str) {
-        let Some(who) = self.maker.as_deref() else {
+        let Some(who) = self.maker.as_ref() else {
             // The change names nobody: it says nothing of who made it.
             self.by.entry(doc.to_owned()).or_insert(None);
             return;
         };
         match self.by.get(doc) {
             None => {
-                self.by.insert(doc.to_owned(), Some(who.to_owned()));
+                self.by.insert(doc.to_owned(), Some(who.clone()));
             }
             Some(Some(seen)) if seen != who => {
                 self.by.insert(doc.to_owned(), None);

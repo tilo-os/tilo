@@ -383,7 +383,7 @@ impl GovernedWorkspace {
             // first use: a seed record would go out in the clear before its
             // channel exists, and every member who joins after the channel
             // opened refuses that cleartext. The shared desktop starts with
-            // the first arrangement written to it, sealed, as in a workspace that
+            // the first layout written to it, sealed, as in a workspace that
             // never had one (`prepare_desktop_record`).
             seed.documents.clear();
         }
@@ -966,6 +966,10 @@ struct WorkspacesInner {
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
     /// Each record write of a member the governor's copy took in.
     record_writes: tokio::sync::broadcast::Sender<RecordWrite>,
+    /// Moves whenever a person's own settings kept here — their mail
+    /// accounts — changed, so a window following them reads them again
+    /// ([`person_settings`]).
+    person_settings_moved: tokio::sync::watch::Sender<u64>,
     /// What the changes a record's repair kept wait for, by record, so a
     /// member's write to it is only tried against them when it could release
     /// one ([`repaired_records`]).
@@ -1224,6 +1228,7 @@ impl Workspaces {
                 asks_people: std::sync::RwLock::default(),
                 machines: std::sync::RwLock::default(),
                 record_writes: tokio::sync::broadcast::channel(256).0,
+                person_settings_moved: tokio::sync::watch::channel(0).0,
                 #[cfg(feature = "agents")]
                 repairs: repaired_records::Repairs::default(),
                 content: content::ContentSlot::default(),
@@ -1731,6 +1736,27 @@ impl Workspaces {
         if governed.seals() {
             routes.extend(governed.peer().sealed_routes());
         }
+        drop(governed);
+        Ok(routes)
+    }
+
+    /// [`Self::record_routes`] but the members' own records
+    /// ([`collab_types::OwnRecord`]): each is that person's alone, no record
+    /// of the workspace's.
+    ///
+    /// # Errors
+    /// As [`Self::record_routes`].
+    pub async fn workspace_record_routes(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<(String, String)>, CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let governed = state.lock().await;
+        let mut routes = governed.peer().plaintext_routes();
+        if governed.seals() {
+            routes.extend(governed.peer().sealed_routes());
+        }
+        routes.retain(|(app, record)| governed.peer().own_record(app, record).is_none());
         drop(governed);
         Ok(routes)
     }
@@ -2347,7 +2373,7 @@ impl Workspaces {
     }
 
     /// Take a member's own windows into the workspace's governance: the changes
-    /// a member publishes to the workspace's arrangement. The workspace's admission decides
+    /// a member publishes to the workspace's layout. The workspace's admission decides
     /// them exactly as every member's does (a change to what someone else
     /// made, without the workspace's leave, is refused); the governor commits what
     /// it admitted as the workspace's next generation, which every member then

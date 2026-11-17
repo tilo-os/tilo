@@ -460,7 +460,7 @@ impl Guild {
                 overwrites: c.overwrites,
             })
             .collect();
-        // An arrangement the bridge asked for and Discord showed whole (or
+        // An order the bridge asked for and Discord showed whole (or
         // refused) is no longer laid over what Discord shows.
         for id in crate::order::finished(self, &channels) {
             self.outbox.forget(&id);

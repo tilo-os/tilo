@@ -275,10 +275,10 @@ impl AppConnection {
 }
 
 /// Whether `route` names a record every app of its workspace opens
-/// ([`collab_types::workspace_record`]): the workspace keeps it rather than the app that
+/// ([`collab_types::workspace_document`]): the workspace keeps it rather than the app that
 /// writes it, so any admitted app of the workspace holds its route, and
 /// [`attested_route_access`] lets it change the record as the workspace's grants on the
 /// owner decide.
 fn kept_for_every_app_of_the_workspace(route: &CrdtRoute) -> bool {
-    collab_types::workspace_record(&route.app_id, &route.record_id).is_some()
+    collab_types::workspace_document(&route.app_id, &route.record_id).is_some()
 }

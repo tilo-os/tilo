@@ -442,7 +442,7 @@ pub struct PdfApp {
     sidebar_scroll: f64,
     sidebar_reveal: Option<String>,
     signer_name: String,
-    author: String,
+    author: crate::model::Author,
 
     sig_mode: SigMode,
     sig_strokes: Vec<Vec<(f64, f64)>>,
@@ -759,10 +759,6 @@ impl PdfApp {
     )]
     fn build(doc: Document, content: ContentStore) -> Self {
         let page_count = doc.page_count();
-        let author = std::env::var("QUICK_APP_ID")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "You".to_string());
         Self {
             doc,
             bar: ui::framework::BarCommands::new(),
@@ -850,7 +846,7 @@ impl PdfApp {
             sidebar_scroll: 0.0,
             sidebar_reveal: None,
             signer_name: String::new(),
-            author,
+            author: crate::model::Author::default(),
             sig_mode: SigMode::Type,
             sig_strokes: Vec::new(),
             sig_stroke: None,
@@ -996,7 +992,7 @@ impl PdfApp {
     ) {
         self.read_only = dispatcher.read_only();
         if let Some(me) = dispatcher.me() {
-            me.clone_into(&mut self.author);
+            self.author = crate::model::Author::Member(me.clone());
         }
         self.dispatcher = Some(dispatcher);
     }
@@ -1054,17 +1050,16 @@ impl PdfApp {
         thread
     }
 
-    fn known_name(&self, id: &str) -> Option<String> {
-        let name = self
-            .people
-            .as_ref()
-            .map_or_else(|| id.to_owned(), |people| people.name(id));
-        (name != id || !opaque_participant_id(id)).then_some(name)
+    /// The name the workspace gives the person at the window.
+    fn my_name(&self) -> Option<String> {
+        let me = self.author.member()?;
+        let name = self.people.as_ref()?.member(me)?.name;
+        (!name.trim().is_empty()).then_some(name)
     }
 
     pub(crate) fn signer(&self) -> String {
         if self.signer_name.is_empty() {
-            self.known_name(&self.author).unwrap_or_default()
+            self.my_name().unwrap_or_default()
         } else {
             self.signer_name.clone()
         }
@@ -5133,10 +5128,6 @@ impl ui::widget::controls::ActionControls for PdfApp {
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         ui::widget::semantic_action_bindings(self.accessibility())
     }
-}
-
-fn opaque_participant_id(id: &str) -> bool {
-    id.len() >= 16 && id.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 impl ui::widget::Findable for PdfApp {

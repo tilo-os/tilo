@@ -2,7 +2,7 @@
 //! their actions run on the resources of theirs it holds, as Today draws the todo list's rows.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{Principal, UiNode, Value};
+use tilolang_runtime::{Actor, UiNode, Value};
 use tilolang_tilo::bundle::Bundle;
 
 /// The package in `dir` compiled with the packages it uses, as `tilolang build` bundles it: its
@@ -62,7 +62,7 @@ fn a_bundle_draws_the_rows_of_the_packages_it_uses() {
     let (mut replica, _) = crate::fixtures::Replica::new("ada", AutoCommit::new(), &[]);
     let bundle = today();
     replica.host.load_bundle(&bundle).unwrap();
-    let ada = Principal::new("ada");
+    let ada = Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"));
     // Each package's own first scenario fills it, then Today's attaches them, each change
     // committed through the workspace as a window commits it: the record holds who made what,
     // which a place that names what the person has not read asks for.

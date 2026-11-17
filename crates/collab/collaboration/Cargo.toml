@@ -75,7 +75,7 @@ runtime-identity = { package = "tilo-identity-client", version = "0.1.0", path =
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
-# A file's durable record id is the `user.tilo.record-id` attribute
+# A file's durable record id is the `user.tilo.document-id` attribute
 # `tilo-files` keeps; record ids hash paths with a fixed FNV-1a.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }

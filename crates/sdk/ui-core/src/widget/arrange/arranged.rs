@@ -1,11 +1,11 @@
-//! The one widget every layout primitive is: a container whose arrangement a [`Layout`]
+//! The one widget every layout primitive is: a container whose layout a [`Layout`]
 //! decides, around child slots.
 //!
 //! Each child sits in a *wrapper* node whose style carries the child's [`Fit`] (fill weight,
 //! bounds, aspect, span, place). The container style and the wrappers' styles come from the
 //! layout, and are chosen again during layout from the width the container was given
 //! ([`Widget::adjust_layout_style`]): constraints flow down, the container decides its
-//! arrangement from what it was offered, and a child never reads its own final size.
+//! layout from what it was offered, and a child never reads its own final size.
 
 use std::collections::HashMap;
 
@@ -194,37 +194,37 @@ pub(super) fn lead_container(mut style: Style, lead: f32, leading: Side) -> Styl
 pub trait Layout {
     fn name(&self) -> &'static str;
 
-    /// The readable column this arrangement keeps what it holds in, when it is one: a page's
+    /// The readable column this layout keeps what it holds in, when it is one: a page's
     /// measure, which a bar at the foot of the column stands in too.
     fn readable_column(&self) -> Option<Length> {
         None
     }
 
-    /// The container's style for the current arrangement, `lead` pixels of gutter reserved
+    /// The container's style for the current layout, `lead` pixels of gutter reserved
     /// before what it holds.
     fn container(&self, resolved: &Resolved, lead: f32) -> Style;
 
-    /// The side the arrangement leads on: where `lead` reserves its gutter. A row written
+    /// The side the layout leads on: where `lead` reserves its gutter. A row written
     /// right to left leads on the right.
     fn leading(&self) -> Side {
         Side::Leading
     }
 
-    /// The wrapper style of slot `index` for the current arrangement.
+    /// The wrapper style of slot `index` for the current layout.
     fn slot(&self, index: usize, slot: &Slot, resolved: &Resolved) -> Style;
 
-    /// Whether the arrangement is decided from the allocated size ([`Self::settle`]).
+    /// Whether the layout is decided from the allocated size ([`Self::settle`]).
     fn settles(&self) -> bool {
         false
     }
 
-    /// Decide the arrangement from the allocated size. Returns whether the decision differs
+    /// Decide the layout from the allocated size. Returns whether the decision differs
     /// from the one it settled on last, in whichever tree that was.
     fn settle(&mut self, _allocated: Size<f32>, _resolved: &Resolved) -> bool {
         false
     }
 
-    /// The arrangement was settled from the tree the container is placed from: what a host
+    /// The layout was settled from the tree the container is placed from: what a host
     /// reads of it (whether a navigating split is collapsed) is published here, never from a
     /// tree that was only measured.
     fn applied(&mut self) {}
@@ -233,7 +233,7 @@ pub trait Layout {
     /// count (a grid that keeps no empty columns) reads it.
     fn items(&mut self, _count: usize) {}
 
-    /// Whether slot `index` is not shown in the current arrangement.
+    /// Whether slot `index` is not shown in the current layout.
     fn hidden(&self, _index: usize) -> bool {
         false
     }
@@ -312,7 +312,7 @@ impl<L: Layout> Arranged<L> {
         self
     }
 
-    /// The layout, to read the arrangement it settled on.
+    /// The layout, to read what it settled on.
     pub const fn layout(&self) -> &L {
         &self.layout
     }
@@ -510,7 +510,7 @@ impl<L: Layout> Arranged<L> {
         }
     }
 
-    /// Whether this container's styles follow from the room a solve gave it: an arrangement
+    /// Whether this container's styles follow from the room a solve gave it: a layout
     /// its layout settles from the width (a grid's columns, a split's panes), a lead kept only
     /// where the column has room for it, or a slot whose height a ratio derives from its width.
     fn styled_by_room(&self) -> bool {
@@ -524,7 +524,7 @@ impl<L: Layout> Arranged<L> {
     ///
     /// The comparison is with `tree`, never with what this container set last: one container
     /// is laid out in more than one tree (a region measures it in a copy of the window's tree
-    /// before it places it), and each tree takes the arrangement its own solve settled on.
+    /// before it places it), and each tree takes the layout its own solve settled on.
     ///
     /// How the node sits in its parent stays as the parent set it: a parent that places it (a
     /// virtual list positions its rows) or grows it into its slot changed those after the
@@ -585,7 +585,7 @@ impl<L: Layout> Arranged<L> {
         changed
     }
 
-    /// Lay the child at `index` out again `by` from where the arrangement placed it: a layer
+    /// Lay the child at `index` out again `by` from where the layout placed it: a layer
     /// that stands where something drawn inside a sibling says (a window's controls on the
     /// trailing end of its app's header row, which only that row's layout knows).
     pub(crate) fn offset_child(&mut self, tree: &TaffyTree<()>, index: usize, by: Vec2) {
@@ -704,7 +704,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
                 self.column,
             ));
         }
-        // The arrangement is settled from what this tree allocated, and this tree is styled for
+        // The layout is settled from what this tree allocated, and this tree is styled for
         // it wherever it is not yet. Whether the layout's decision changed since it last settled
         // says nothing about this tree: another tree's solve may have settled it.
         self.layout.settle(allocated, &self.resolved);
@@ -713,7 +713,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
 
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(tree, node, origin);
-        // What this container draws, hit-tests and tells its host is the arrangement of the
+        // What this container draws, hit-tests and tells its host is the layout of the
         // tree it is placed from, whichever tree was settled last.
         if self.layout.settles()
             && let Ok(laid) = tree.layout(node)
@@ -804,9 +804,9 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         }
     }
 
-    /// An arrangement paints nothing of its own: what changed is what its
+    /// A layout paints nothing of its own: what changed is what its
     /// shown children repaint. The default would repaint its whole box
-    /// whenever any child changed, which for a window's root arrangement is
+    /// whenever any child changed, which for a window's root layout is
     /// the whole window for each keystroke.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         for (index, slot) in self.slots.iter().enumerate() {
@@ -824,7 +824,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     }
 
     /// A shown child holding the pointer (a drag it latched, a menu open in it) owns input the
-    /// same way through this arrangement: without the forward, a drag that began in a slot and
+    /// same way through this layout: without the forward, a drag that began in a slot and
     /// travelled out of it would stop receiving motion and release, and its drop would be lost
     /// at the edge. The hidden slots hold nothing that can be pressed.
     fn wants_pointer_capture(&self) -> bool {
@@ -862,7 +862,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         dirty
     }
 
-    /// Laid out once, an arrangement lays out again only for what a child reports.
+    /// Laid out once, a layout lays out again only for what a child reports.
     fn is_layout_dirty(&self) -> bool {
         self.node.is_none() || self.slots.iter().any(|slot| slot.element.is_layout_dirty())
     }
@@ -882,9 +882,9 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         change
     }
 
-    /// An arrangement paints nothing of its own (see [`Self::collect_damage`]), so it is
+    /// A layout paints nothing of its own (see [`Self::collect_damage`]), so it is
     /// dirty exactly when a shown child is. The default (`defaults::needs_redraw`) answers
-    /// `true` for a widget with no children, which made an empty arrangement — a view whose
+    /// `true` for a widget with no children, which made an empty layout — a view whose
     /// every part is conditional and none stands — dirty forever, drawing a frame each time
     /// it was asked.
     fn needs_redraw(&self) -> bool {

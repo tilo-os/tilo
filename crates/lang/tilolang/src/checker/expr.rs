@@ -300,12 +300,12 @@ impl Checker<'_> {
             // An action's requirement also says, where the action is presented, whether the person looking
             // may invoke it: there `invoker` is them.
             if self.st.ctx == Ctx::Action || self.st.invoker == super::Invoker::Viewer {
-                return Ex::host(Imp::Invoker, vec![], Ty::Principal);
+                return Ex::host(Imp::Invoker, vec![], Ty::Actor);
             }
             self.err(
                 "E049",
                 span,
-                "`invoker` is the principal the runtime authenticated for this invocation; only an action can read it",
+                "`invoker` is the actor the runtime authenticated for this invocation; only an action can read it",
             );
             return Ex::error();
         }
@@ -533,7 +533,7 @@ impl Checker<'_> {
                 Ex::error()
             }
             Ty::Record(_) | Ty::Union(_) => Ex::host(Imp::RefId, vec![v], Ty::Text),
-            Ty::Principal => Ex::host(Imp::PrincipalName, vec![v], Ty::Text),
+            Ty::Actor => Ex::host(Imp::ActorName, vec![v], Ty::Text),
             // Its value as that shows, or `none`: what `print` shows of an Option.
             Ty::Option(inner) => {
                 let (opt, inner) = (v.ty.clone(), (**inner).clone());
@@ -555,7 +555,7 @@ impl Checker<'_> {
             }
             other => {
                 let t = self.show(other);
-                self.err("E020", span, format!("a value of type {t} cannot be shown as text; interpolate Text, Int, Float, Bool, a Duration, a Date, a Time, a Principal or a record"));
+                self.err("E020", span, format!("a value of type {t} cannot be shown as text; interpolate Text, Int, Float, Bool, a Duration, a Date, a Time, an Actor or a record"));
                 Ex::error()
             }
         }
@@ -831,12 +831,12 @@ impl Checker<'_> {
             Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => {
                 Ex::host(Imp::StrEq, vec![l, r], Ty::Bool)
             }
-            Ty::Principal => Ex::host(Imp::PrincipalEq, vec![l, r], Ty::Bool),
+            Ty::Actor => Ex::host(Imp::ActorEq, vec![l, r], Ty::Bool),
             Ty::Record(_) | Ty::Union(_) => Ex::host(Imp::RefEq, vec![l, r], Ty::Bool),
             Ty::Error => Ex::error(),
             other => {
                 let t = self.show(&other);
-                self.err("E024", span, format!("{t} values cannot be compared with `==`; compare scalars, Text, records, principals, enums, options, results, tuples or lists"));
+                self.err("E024", span, format!("{t} values cannot be compared with `==`; compare scalars, Text, records, actors, enums, options, results, tuples or lists"));
                 Ex::error()
             }
         }

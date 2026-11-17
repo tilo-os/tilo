@@ -45,7 +45,7 @@ struct Shared<P: Resource> {
     owner: &'static str,
     app_id: &'static str,
     app_title: &'static str,
-    me: String,
+    me: tilo_resource::MemberId,
     permissions: Option<LivePermissions>,
     /// The state, followed change by change.
     live: Live<P>,
@@ -160,7 +160,7 @@ impl<P: Resource> Shared<P> {
         // Who the change is: the invoker's own actor (an agent acting in a turn, attributed as it
         // is at an app's record origin), or the person seated here for an invoker naming nobody.
         let invoker = if invoker.acting.by.id().is_empty() {
-            ActionInvoker::person(&self.me)
+            ActionInvoker::member(self.me.clone())
         } else {
             invoker.clone()
         };
@@ -220,7 +220,7 @@ impl<P: Resource> WorkspaceRecord<P> {
             app,
             permissions,
             wake,
-            records.author().key(),
+            records.author().clone(),
         )
     }
 
@@ -258,14 +258,14 @@ impl<P: Resource> WorkspaceRecord<P> {
             app,
             permissions,
             wake,
-            records.author().key(),
+            records.author().clone(),
         )
     }
 
     /// [`Self::open_at`] of the record `owner` keeps as its own primary one of
     /// `P::KIND` in the workspace: the record an app keeps as itself (Chat's
     /// of its chat, `chat.workspace`), which `open_record` cannot open because
-    /// the package's primary id is a sentinel no [`RecordId::parse`] accepts.
+    /// the package's primary id is a sentinel no [`DocumentId::parse`] accepts.
     /// An app's own window opens it this way; so does the session, reading the
     /// conversations its agents answer in.
     pub fn open_primary(
@@ -284,7 +284,7 @@ impl<P: Resource> WorkspaceRecord<P> {
             app,
             permissions,
             wake,
-            records.author().key(),
+            records.author().clone(),
         )
         .ok()
     }
@@ -298,7 +298,7 @@ impl<P: Resource> WorkspaceRecord<P> {
         app: (&'static str, &'static str),
         permissions: Option<LivePermissions>,
         wake: Option<WakeHandle>,
-        me: String,
+        me: tilo_resource::MemberId,
     ) -> Result<Self, Unopened> {
         let record = match opened {
             Ok(record) => record,
@@ -347,7 +347,7 @@ impl<P: Resource> WorkspaceRecord<P> {
 
     /// The record's id, which names it in the workspace.
     #[must_use]
-    pub fn id(&self) -> &ui_core::record::RecordId {
+    pub fn id(&self) -> &ui_core::record::DocumentId {
         &self.shared.record.checkout().id
     }
 
@@ -385,7 +385,7 @@ impl<P: Resource> WorkspaceRecord<P> {
     }
 
     /// The person who acts here.
-    pub fn me(&self) -> &str {
+    pub fn me(&self) -> &tilo_resource::MemberId {
         &self.shared.me
     }
 

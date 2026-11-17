@@ -377,7 +377,7 @@ A child that can need its own permissions, sharing or history (a chat's
 channel, a category) is a record of its own, not a field: `Children` in the
 parent lists each one by id, in order, with its kind, the sibling it is
 grouped under and whether it is in the workspace's trash
-(`tilo_resource::children`). Its record is `RecordId::child` of the parent,
+(`tilo_resource::children`). Its record is `DocumentId::child` of the parent,
 under an id minted once that never changes, so moving it moves only its
 reference and every reference to it keeps working.
 
@@ -426,8 +426,9 @@ writes an `ActionAddress`, an action id string or an argument map.
 
 A view edits another record than its app's own the same way. The app's
 record of a kind beside the one shown (`cx.person::<P>()`, kept with its other
-records in the workspace it is open in, one per member, `member:<root>:<kind>`,
-which only that member's devices read or change) and a settings section that is a model
+records in the workspace it is open in, one per member, of a kind the app's
+manifest declares each member's own (`[resources] own`), which only that
+member's devices read or change) and a settings section that is a model
 (`#[derive(Model)]` with an empty `#[resource]`, read with `cx.settings::<T>()`)
 are records of their own: `cx.record(&record, |cx| ..)` builds a part of the
 view over it, whose controls bind its paths and verbs, and a surface submits

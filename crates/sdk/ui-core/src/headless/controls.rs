@@ -1226,7 +1226,7 @@ mod locus_tests {
                     "synthetic",
                     "workspace",
                     "test.locus",
-                    crate::RecordId::for_tab(71),
+                    crate::DocumentId::for_tab(71),
                 ),
             }],
         )

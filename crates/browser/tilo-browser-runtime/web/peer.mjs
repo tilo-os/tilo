@@ -29,6 +29,7 @@ import {backoffDelay} from './reconnect.mjs';
 import {createSpeakers} from './live-speakers.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
 import {memberText} from './json-text.mjs';
+import {changed as pageChanged} from './changes.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody, rememberBrowserDevice} from './device-custody.mjs';
@@ -612,6 +613,8 @@ async function connect({
     for (const listener of [...statusListeners]) {
       try { listener(snapshot); } catch {}
     }
+    // Whoever waits on the page's state reads it again now (`changes.mjs`).
+    pageChanged();
   };
   const untilSnapshot = (settled, timeoutMs, timeoutMessage) => new Promise((resolve, reject) => {
     const check = () => {

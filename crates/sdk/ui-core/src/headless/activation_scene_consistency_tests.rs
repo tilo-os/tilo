@@ -735,7 +735,7 @@ fn original_history_preflight_preserves_suspended_live_caret_control() {
                     "controlled-profile",
                     "controlled-workspace",
                     HISTORY.app_id,
-                    crate::RecordId::for_tab(95210),
+                    crate::DocumentId::for_tab(95210),
                 ),
             },
         ],

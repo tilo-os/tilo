@@ -26,6 +26,7 @@ use neighbour_wire::RecordSync;
 use tilo_lock::MutexRecover as _;
 
 use super::{RETAINED_DIR, StoreError, WorkspaceStore};
+use crate::payloads::Route;
 use crate::transport::Envelope;
 
 /// How a channel's record syncs, as this store knows it.
@@ -69,7 +70,7 @@ pub(crate) enum Reach {
 type ChainKey = (String, String);
 
 #[derive(Default)]
-struct Classes {
+pub(super) struct Classes {
     channels: HashMap<[u8; 32], Class>,
     /// Every record but the shared desktop and the chains' heads reaches
     /// only the devices that opened it.
@@ -79,6 +80,10 @@ struct Classes {
     /// The person (their user root key) whose own record each channel
     /// carries: only their devices are sent it.
     owners: HashMap<[u8; 32], [u8; 32]>,
+    /// The person (their user root key) of each member device whose retained
+    /// identity was read for it ([`WorkspaceStore::device_person`]): a
+    /// certificate binds its device to one person for good.
+    pub(super) people: HashMap<[u8; 32], [u8; 32]>,
     /// The chain each chain's head channel ([`neighbour_wire::chain_head`])
     /// names, for every chain with a part.
     chains: HashMap<[u8; 32], ChainKey>,
@@ -90,12 +95,20 @@ struct Classes {
 }
 
 impl Classes {
-    fn learn(&mut self, channel: [u8; 32], app: &str, record: &str) {
+    fn learn(&mut self, channel: [u8; 32], route: &Route) {
+        let (app, record) = (route.app_id.as_str(), route.record_id.as_str());
+        // A frame naming the record's kind and person is taken at its word
+        // only for the record those two name, on that record's channel: its id
+        // derives from them, so no other person's frame claims it, whichever
+        // arrived first.
+        if let Some(own) = &route.own
+            && own.names(record)
+            && neighbour_wire::app_document_channel(app, record) == channel
+        {
+            self.owners.insert(channel, own.owner);
+        }
         if self.channels.contains_key(&channel) {
             return;
-        }
-        if let Some(owner) = owner_of(record) {
-            self.owners.insert(channel, owner);
         }
         let class = match neighbour_wire::record_sync(record) {
             // Nothing is published under a chain's head: it names one.
@@ -120,6 +133,20 @@ impl Classes {
             RecordSync::Chunk { .. } => Class::Chunk,
         };
         self.channels.insert(channel, class);
+    }
+
+    /// Learn `app`'s `record`, of no member, as a frame on `channel` names it.
+    #[cfg(test)]
+    fn learn_plain(&mut self, channel: [u8; 32], app: &str, record: &str) {
+        self.learn(
+            channel,
+            &Route {
+                app_id: app.to_owned(),
+                cluster_id: String::new(),
+                record_id: record.to_owned(),
+                own: None,
+            },
+        );
     }
 
     fn reach(&self, channel: &[u8; 32]) -> Option<Reach> {
@@ -158,22 +185,12 @@ impl Classes {
     }
 }
 
-/// The user root key of the person whose own record `record` is
-/// ([`tilo_action_policy::member_record`]); `None` for a record of the
-/// workspace.
-pub(crate) fn owner_of(record: &str) -> Option<[u8; 32]> {
-    let (person, _) = tilo_action_policy::member_record(record)?;
-    let mut root = [0; 32];
-    hex::decode_to_slice(person, &mut root).ok()?;
-    Some(root)
-}
-
 /// What a retained lineage's frames say about its record.
 enum LineageRecord {
     /// No frame retained yet.
     Empty,
-    /// The app and record its document frames name.
-    Record(String, String),
+    /// The route its document frames name.
+    Record(Route),
     /// Known already, or no document frame.
     Other,
 }
@@ -200,7 +217,7 @@ pub(super) fn lineage_channel(name: &OsStr) -> Option<[u8; 32]> {
 }
 
 impl WorkspaceStore {
-    fn classes(&self) -> std::sync::MutexGuard<'_, Classes> {
+    pub(super) fn classes(&self) -> std::sync::MutexGuard<'_, Classes> {
         self.capture_leases.records.0.lock_recover()
     }
 
@@ -259,7 +276,7 @@ impl WorkspaceStore {
             return Reach::Everyone;
         };
         let mut classes = self.classes();
-        classes.learn(*channel, &route.app_id, &route.record_id);
+        classes.learn(*channel, &route);
         classes.reach(channel).unwrap_or(Reach::Everyone)
     }
 
@@ -273,7 +290,7 @@ impl WorkspaceStore {
         }
         let (route, _) = self.payloads.open_document(body?)?;
         let mut classes = self.classes();
-        classes.learn(*channel, &route.app_id, &route.record_id);
+        classes.learn(*channel, &route);
         classes.owners.get(channel).copied()
     }
 
@@ -281,10 +298,32 @@ impl WorkspaceStore {
     /// sent the record `channel` carries: any device for a record of the
     /// workspace, only that person's for a person's own record.
     pub(crate) fn reaches_person(&self, channel: &[u8; 32], person: &[u8; 32]) -> bool {
+        // Every retained record's person is known first: a host that just
+        // started has read no lineage yet.
+        if let Err(error) = self.read_lineage_records() {
+            tracing::warn!(%error, "the retained records' people did not read");
+            return false;
+        }
         self.classes()
             .owners
             .get(channel)
             .is_none_or(|owner| owner == person)
+    }
+
+    /// The person (their user root key) whose own record the state frame
+    /// `delta` changes: retained on a record's channel, or sent as it is.
+    /// `None` for a frame of no member's own record.
+    pub(crate) fn frame_owner(&self, delta: &[u8]) -> Option<[u8; 32]> {
+        if let Some(
+            crate::coedit::CoeditPayload::Checkpoint { channel, body }
+            | crate::coedit::CoeditPayload::RetainedDelta { channel, body },
+        ) = crate::coedit::CoeditPayload::decode(delta)
+        {
+            return self.record_owner(&channel, Some(&body));
+        }
+        let (route, _) = self.payloads.open_document(delta)?;
+        let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record_id);
+        self.record_owner(&channel, Some(delta))
     }
 
     /// Learn the record of `channel` from `bytes`, a frame about to be
@@ -303,8 +342,7 @@ impl WorkspaceStore {
         else {
             return;
         };
-        self.classes()
-            .learn(*channel, &route.app_id, &route.record_id);
+        self.classes().learn(*channel, &route);
     }
 
     /// The channels of the chains' heads: what a device that subscribes now
@@ -361,7 +399,7 @@ impl WorkspaceStore {
     /// would say.
     #[cfg(test)]
     pub(crate) fn learn_record(&self, channel: [u8; 32], app: &str, record: &str) {
-        self.classes().learn(channel, app, record);
+        self.classes().learn_plain(channel, app, record);
     }
 
     /// Learn the record of every retained lineage not read yet, unless no
@@ -420,8 +458,8 @@ impl WorkspaceStore {
                     unread = true;
                     continue;
                 }
-                (LineageRecord::Record(app, record), Some(channel)) => {
-                    classes.learn(channel, &app, &record);
+                (LineageRecord::Record(route), Some(channel)) => {
+                    classes.learn(channel, &route);
                 }
                 _ => {}
             }
@@ -445,7 +483,7 @@ impl WorkspaceStore {
         Ok(super::retained::body_of(&bytes, self.workspace_id)
             .and_then(|body| self.payloads.open_document(&body))
             .map_or(LineageRecord::Other, |(route, _)| {
-                LineageRecord::Record(route.app_id, route.record_id)
+                LineageRecord::Record(route)
             }))
     }
 
@@ -492,20 +530,20 @@ mod tests {
     fn a_chain_replays_its_head_and_keeps_earlier_parts_for_who_opens_them() {
         let mut classes = Classes::default();
         let (eager, on_demand, first, second) = ([1; 32], [2; 32], [3; 32], [4; 32]);
-        classes.learn(eager, "app", "general");
-        classes.learn(
+        classes.learn_plain(eager, "app", "general");
+        classes.learn_plain(
             on_demand,
             "app",
             &neighbour_wire::on_demand_record("uuid:1"),
         );
-        classes.learn(first, "app", &neighbour_wire::record_part("chat", 0));
+        classes.learn_plain(first, "app", &neighbour_wire::record_part("chat", 0));
         assert_eq!(classes.reach(&eager), Some(Reach::Everyone));
         assert_eq!(classes.reach(&on_demand), Some(Reach::Opened(on_demand)));
         assert_eq!(classes.reach(&first), Some(Reach::Head(first)));
-        classes.learn(second, "app", &neighbour_wire::record_part("chat", 1));
+        classes.learn_plain(second, "app", &neighbour_wire::record_part("chat", 1));
         assert_eq!(classes.reach(&first), Some(Reach::Opened(first)));
         assert_eq!(classes.reach(&second), Some(Reach::Head(second)));
-        classes.learn(first, "app", &neighbour_wire::record_part("chat", 0));
+        classes.learn_plain(first, "app", &neighbour_wire::record_part("chat", 0));
         assert_eq!(classes.reach(&second), Some(Reach::Head(second)));
         assert_eq!(classes.reach(&[9; 32]), None);
     }
@@ -518,14 +556,14 @@ mod tests {
         };
         let (note, desktop, first, second) = ([1; 32], desktop_channel(), [3; 32], [4; 32]);
         let chain = neighbour_wire::app_document_channel("chat", &neighbour_wire::chain_head("m"));
-        classes.learn(note, "notes", "note-1");
-        classes.learn(
+        classes.learn_plain(note, "notes", "note-1");
+        classes.learn_plain(
             desktop,
             tilo_desktop_model::ownership::DESKTOP_APP,
             tilo_desktop_model::ownership::DESKTOP_RECORD,
         );
         assert_eq!(classes.head_of(&chain), None, "a chain with no part yet");
-        classes.learn(first, "chat", &neighbour_wire::record_part("m", 0));
+        classes.learn_plain(first, "chat", &neighbour_wire::record_part("m", 0));
         assert_eq!(classes.reach(&note), Some(Reach::Opened(note)));
         assert_eq!(classes.reach(&desktop), Some(Reach::Everyone));
         // A chain's head reaches who opened the chain's head, which names it.
@@ -534,7 +572,7 @@ mod tests {
             Some(Reach::ChainHead { head: first, chain })
         );
         assert_eq!(classes.head_of(&chain), Some(first));
-        classes.learn(second, "chat", &neighbour_wire::record_part("m", 1));
+        classes.learn_plain(second, "chat", &neighbour_wire::record_part("m", 1));
         assert_eq!(classes.head_of(&chain), Some(second));
         assert_eq!(classes.reach(&first), Some(Reach::Opened(first)));
         // Another app's chain of the same name is a chain of its own.

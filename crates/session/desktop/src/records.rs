@@ -1,6 +1,6 @@
-use ui::record::{RecordCheckout, RecordKind};
+use ui::record::{DocumentCheckout, ResourceType};
 
 /// Checked package records preserve tab identity; Chat is the workspace package-primary record.
-pub fn component_record(app_id: &str, tab: u64, kind: RecordKind) -> RecordCheckout {
-    RecordCheckout::for_component_tab(app_id, tab, kind)
+pub fn component_record(app_id: &str, tab: u64, kind: ResourceType) -> DocumentCheckout {
+    DocumentCheckout::for_component_tab(app_id, tab, kind)
 }

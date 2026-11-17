@@ -249,7 +249,7 @@ tilo_test_env::scenario! {
         let request = request();
         let binding = fixture
             .state
-            .witness_binding("person", &fixture.workspace, &request);
+            .witness_binding(&tilo_actions::MemberId::person("person"), &fixture.workspace, &request);
         // Nobody answers on the person's own device: what comes back to the
         // foreign device is a refusal, never a confirmation.
         let answered = fixture

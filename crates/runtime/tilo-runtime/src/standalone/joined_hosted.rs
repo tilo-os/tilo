@@ -177,6 +177,7 @@ impl Joined {
             app,
             record,
             envelope,
+            ..
         } = &request.operation
         else {
             return Err("an app writes documents to its workspace".into());
@@ -190,20 +191,22 @@ impl Joined {
             .own_host
             .get()
             .ok_or("this profile runs no workspace host")?;
-        let (held, changes, generation) = self.owner.with_current(workspace, |view| {
-            let now = SystemTime::now();
-            Ok((
-                view.peer().holds_document(&app, &record),
-                view.peer().permissions(own, now).is_ok_and(|member| {
-                    member.allows(
-                        &member.policy.node().app(&app),
-                        tilo_action_policy::ActionKind::Undoable,
-                        now,
-                    )
-                }),
-                view.generation(),
-            ))
-        })?;
+        let (held, changes, generation, own_record) =
+            self.owner.with_current(workspace, |view| {
+                let now = SystemTime::now();
+                Ok((
+                    view.peer().holds_document(&app, &record),
+                    view.peer().permissions(own, now).is_ok_and(|member| {
+                        member.allows(
+                            &member.policy.node().app(&app),
+                            tilo_action_policy::ActionKind::Undoable,
+                            now,
+                        )
+                    }),
+                    view.generation(),
+                    view.peer().own_write(&app, &record, &own),
+                ))
+            })?;
         if !held {
             let kind = record_kind
                 .as_deref()
@@ -223,6 +226,7 @@ impl Joined {
             cluster_id: workspace.to_string(),
             record_id: record.clone(),
             envelope: Box::new(envelope.clone()),
+            own: own_record,
         };
         let digest =
             *blake3::hash(&postcard::to_allocvec(&message).map_err(|error| error.to_string())?)

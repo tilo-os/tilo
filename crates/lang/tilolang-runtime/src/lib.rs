@@ -84,7 +84,7 @@ pub use engine::{
 };
 pub use error::RuntimeError;
 pub use exec::InvokeOutcome;
-pub use ids::{ModuleHash, PackageId, Principal};
+pub use ids::{Actor, ModuleHash, PackageId};
 pub use live::LiveStats;
 pub use marks::DOC_VERSIONS;
 pub use meta::Meta;

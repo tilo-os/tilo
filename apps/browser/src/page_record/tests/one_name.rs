@@ -17,7 +17,7 @@ const MEMBER: &str = "agent:claude-code";
 /// A session of the member on the device that runs the page, by the name the
 /// host that admitted it knows it by.
 fn here(name: &str) -> ActionInvoker {
-    agent_for_ada(MEMBER).named(Some(name.to_owned()))
+    agent_for_ada("claude-code").named(Some(name.to_owned()))
 }
 
 /// A session of the same member that came in from Ada's laptop.

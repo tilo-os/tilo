@@ -335,7 +335,7 @@ impl CodeEditor {
     }
 
     /// Stamps inserted runs with this author id (peer-attribution highlight).
-    pub fn set_local_author(&mut self, author: Option<String>) {
+    pub fn set_local_author(&mut self, author: Option<crate::permissions::MemberId>) {
         self.inner.set_local_author(author);
     }
 

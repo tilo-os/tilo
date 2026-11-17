@@ -534,7 +534,7 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
         let stale = id;
         f.authority.set(
             ui::permissions::PermissionContext::member(
-                f.author.key(),
+                f.author.id(),
                 ui::permissions::Role::Viewer,
             )
             .at_unix_time(100),
@@ -962,7 +962,7 @@ fn has_selected_node(node: &ui::headless::InspectionNode) -> bool {
 
 fn assert_empty_retypes_once(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
     page: notes::PageId,
     driver: &mut ui::headless::FrameHarness,
 ) {
@@ -1073,7 +1073,7 @@ fn bound_open_tag_uses_current_membership_without_prior_sync() {
 
 fn assert_open_tag_view(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
     a: &mut ui::headless::FrameHarness,
     tag: uuid::Uuid,
     title: &str,
@@ -1143,7 +1143,7 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
         .unwrap();
     a.relayout();
     f.authority.set(
-        ui::permissions::PermissionContext::member(f.author.key(), ui::permissions::Role::Viewer)
+        ui::permissions::PermissionContext::member(f.author.id(), ui::permissions::Role::Viewer)
             .at_unix_time(100),
     );
     assert!(

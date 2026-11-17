@@ -21,7 +21,7 @@ use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
 use tilo_action_broker::services::LauncherServices;
-use tilo_app_launch::channels::ancestry;
+use tilo_app_launch::links::ancestry;
 use tilo_broker_core::services::{
     AuthenticatedApplicationLaunch, LaunchPlace, LaunchableApplication,
 };

@@ -68,7 +68,11 @@ pub(super) fn writes_derived(
 /// Commit a transaction that wrote only what an origin derives: tell each reader what changed,
 /// and queue, send and version nothing. Whether it did (a transaction with any saved write is
 /// the record's, and the caller commits it as ever).
-pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState, by: &str) -> bool {
+pub(super) fn commit_derived(
+    inner: &mut Inner,
+    state: &mut TxnState,
+    by: Option<&crate::runtime::Actor>,
+) -> bool {
     if state.saved > 0 {
         return false;
     }
@@ -95,7 +99,7 @@ pub(super) fn tell_saved(
             .or_default()
             .push(note.clone());
     }
-    tell(inner, state, &note.invoker);
+    tell(inner, state, note.invoker.as_ref());
     if !marked {
         let start = state.start.min(writes);
         for write in inner.local.iter_mut().take(writes).skip(start) {
@@ -107,7 +111,11 @@ pub(super) fn tell_saved(
 /// Tell whoever reads what the transaction `state` wrote: each document it reached, with the
 /// fields it changed and how each collection's listing moved, `by` naming who made it. Returns
 /// the documents told.
-pub(super) fn tell(inner: &mut Inner, state: &mut TxnState, by: &str) -> Vec<DocId> {
+pub(super) fn tell(
+    inner: &mut Inner,
+    state: &mut TxnState,
+    by: Option<&crate::runtime::Actor>,
+) -> Vec<DocId> {
     let mut collections = std::mem::take(&mut state.collections);
     let mut told = Vec::new();
     for (doc, fields) in std::mem::take(&mut state.touched) {
@@ -128,7 +136,7 @@ pub(super) fn tell(inner: &mut Inner, state: &mut TxnState, by: &str) -> Vec<Doc
                 .into_iter()
                 .collect(),
             listings: own,
-            by: Some(by.to_owned()),
+            by: by.cloned(),
         });
         told.push(doc);
     }

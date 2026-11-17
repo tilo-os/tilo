@@ -29,8 +29,8 @@ fn a_route_whose_first_read_never_answers_holds_up_nothing_else() {
     };
     let (fd, _captures, _thread) = stand_up_fake_broker(broker);
     let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", workspace);
-    manager.join_route(stuck.clone(), collab_types::record::RecordKind::new(""));
-    manager.join_route(other.clone(), collab_types::record::RecordKind::new(""));
+    manager.join_route(stuck.clone(), collab_types::document::ResourceType::new(""));
+    manager.join_route(other.clone(), collab_types::document::ResourceType::new(""));
     let started = Instant::now();
     let events = poll_until(&mut manager, |events| {
         events.iter().any(

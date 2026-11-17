@@ -216,7 +216,7 @@ fn annotation_of(
         page: page.page + 1,
         kind,
         color,
-        author: info.author.clone(),
+        author: Author::named(info.author.clone()),
         chars: None,
         created_ms: parse_pdf_date(&info.modified)
             .or_else(|| parse_pdf_date(&info.created))
@@ -459,7 +459,7 @@ pub fn thread_print(a: &Annotation, thread: Option<&Comment>) -> String {
     s.push('|');
     s.push_str(&a.color.key());
     s.push('|');
-    s.push_str(&a.author);
+    s.push_str(a.author.file_name());
     if let Some(c) = thread {
         s.push('|');
         s.push_str(&c.text);

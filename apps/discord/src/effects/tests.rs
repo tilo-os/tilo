@@ -278,7 +278,7 @@ fn a_link_keeps_the_names_and_unlinking_mine_takes_only_mine() {
     .unwrap();
     let me = app.state().links.iter().next().unwrap().person.clone();
     app.effect_by(
-        "someone-else",
+        &ui::tilo_resource::MemberId::person("someone-else"),
         &DiscordEffect::AcceptLink {
             token: "THEIRS".into(),
         },
@@ -296,7 +296,7 @@ fn a_link_keeps_the_names_and_unlinking_mine_takes_only_mine() {
     );
     let reused = app
         .effect_by(
-            "a-third-person",
+            &ui::tilo_resource::MemberId::person("a-third-person"),
             &DiscordEffect::AcceptLink {
                 token: "MINE".into(),
             },
@@ -318,15 +318,21 @@ fn a_link_keeps_the_names_and_unlinking_mine_takes_only_mine() {
 
     // Nobody reads or unlinks another person's link.
     let theirs: ui::linked_accounts::Reading = serde_json::from_value(
-        app.effect_by("a-third-person", &DiscordEffect::MyLink)
-            .unwrap()
-            .value
-            .unwrap(),
+        app.effect_by(
+            &ui::tilo_resource::MemberId::person("a-third-person"),
+            &DiscordEffect::MyLink,
+        )
+        .unwrap()
+        .value
+        .unwrap(),
     )
     .unwrap();
     assert_eq!((theirs.account, theirs.unlink), (None, None));
-    app.effect_by("a-third-person", &DiscordEffect::UnlinkMine)
-        .unwrap();
+    app.effect_by(
+        &ui::tilo_resource::MemberId::person("a-third-person"),
+        &DiscordEffect::UnlinkMine,
+    )
+    .unwrap();
     assert_eq!(app.state().links.len(), 2, "a third person unlinks nothing");
 
     app.effect(&DiscordEffect::UnlinkMine).unwrap();

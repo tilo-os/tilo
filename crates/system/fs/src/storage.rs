@@ -107,7 +107,7 @@ struct LogicalFile {
     path: String,
     logical_bytes: u64,
     hash: Option<Hash>,
-    record_id: fs_protocol::FileRecordId,
+    document_id: fs_protocol::FileDocumentId,
     mtime: u64,
 }
 
@@ -167,14 +167,14 @@ impl StorageAuthority {
                 }
                 let inode = ns.inode_for_node(&identity)?;
                 let path = ns.path_for(inode)?;
-                let record_id = ns.record_id_for(inode)?;
+                let document_id = ns.document_id_for(inode)?;
                 Some(LogicalFile {
                     identity,
                     inode,
                     path,
                     logical_bytes: entry.size,
                     hash: entry.hash,
-                    record_id,
+                    document_id,
                     mtime: entry.mtime,
                 })
             })
@@ -189,7 +189,7 @@ impl StorageAuthority {
         file: LogicalFile,
         dirty: &HashSet<u64>,
         records: &[RecordAvailability],
-        plans: &HashMap<fs_protocol::FileRecordId, Option<EvictionPlan>>,
+        plans: &HashMap<fs_protocol::FileDocumentId, Option<EvictionPlan>>,
     ) -> FileBlobs {
         let LogicalFile {
             identity,
@@ -197,12 +197,14 @@ impl StorageAuthority {
             path,
             logical_bytes,
             hash,
-            record_id,
+            document_id,
             mtime,
         } = file;
         let is_dirty = dirty.contains(&inode);
-        let record = records.iter().find(|record| record.record_id == record_id);
-        let is_pinned = pinned_in_snapshot(records, record_id);
+        let record = records
+            .iter()
+            .find(|record| record.document_id == document_id);
+        let is_pinned = pinned_in_snapshot(records, document_id);
         let Some(hash) = hash else {
             return FileBlobs {
                 state: SyncedFileState {
@@ -232,7 +234,7 @@ impl StorageAuthority {
             residence.in_flight || record.is_some_and(|record| record.transfer.phase.is_active());
         let reclaimable = if !is_dirty && !is_pinned && !in_flight && durable {
             plans
-                .get(&record_id)
+                .get(&document_id)
                 .and_then(Option::as_ref)
                 .map_or(0, |plan| plan.reclaimable_bytes)
         } else {
@@ -302,8 +304,8 @@ impl StorageAuthority {
             })
     }
 
-    fn root_record(&self) -> Option<fs_protocol::FileRecordId> {
-        self.namespace.lock_recover().record_id_for(ROOT_INO)
+    fn root_record(&self) -> Option<fs_protocol::FileDocumentId> {
+        self.namespace.lock_recover().document_id_for(ROOT_INO)
     }
 
     fn check_workspace(&self, workspace: &str) -> Result<()> {
@@ -322,7 +324,7 @@ impl StorageAuthority {
         let records = self.records();
         let by_id: HashMap<_, _> = records
             .iter()
-            .map(|record| (record.record_id, record))
+            .map(|record| (record.document_id, record))
             .collect();
         // A pin reaches every file below the folder it is set on, whether
         // or not the file has a record of its own yet.
@@ -477,7 +479,7 @@ impl StorageAuthority {
             };
             match self
                 .enqueue_canonical_eviction(
-                    file.record_id,
+                    file.document_id,
                     expected_hash,
                     file.identity.clone(),
                     file.inode,
@@ -485,13 +487,13 @@ impl StorageAuthority {
                 .await
             {
                 Ok((request_id, plan)) => {
-                    if self.observe_once(file.record_id, request_id).await? {
+                    if self.observe_once(file.document_id, request_id).await? {
                         report.evicted_files = report.evicted_files.saturating_add(1);
                         report.freed_bytes =
                             report.freed_bytes.saturating_add(plan.reclaimable_bytes);
                     } else {
                         report.queued_files = report.queued_files.saturating_add(1);
-                        self.spawn_observer(file.record_id, request_id);
+                        self.spawn_observer(file.document_id, request_id);
                     }
                 }
                 Err(error) => report.skipped.push(format!("{}: {error}", file.path)),
@@ -502,7 +504,7 @@ impl StorageAuthority {
 
     async fn enqueue_canonical_eviction(
         &self,
-        record_id: fs_protocol::FileRecordId,
+        document_id: fs_protocol::FileDocumentId,
         expected_hash: Hash,
         identity: String,
         inode: u64,
@@ -514,7 +516,7 @@ impl StorageAuthority {
         let runtime = coordinator.handoff_runtime();
         coordinator
             .prepare_with_handoff(
-                record_id,
+                document_id,
                 crate::eviction::EvictionMode::Safe,
                 None,
                 Some(expected_hash),
@@ -529,7 +531,7 @@ impl StorageAuthority {
                         &dirty,
                         &identity,
                         inode,
-                        record_id,
+                        document_id,
                         expected_hash,
                     )?;
                     let request_id = match existing_request {
@@ -552,17 +554,21 @@ impl StorageAuthority {
 
     async fn observe_once(
         &self,
-        record_id: fs_protocol::FileRecordId,
+        document_id: fs_protocol::FileDocumentId,
         request_id: EvictionRequestId,
     ) -> Result<bool> {
         self.coordinator()?
-            .observe_once(record_id, request_id)
+            .observe_once(document_id, request_id)
             .await
     }
 
-    fn spawn_observer(&self, record_id: fs_protocol::FileRecordId, request_id: EvictionRequestId) {
+    fn spawn_observer(
+        &self,
+        document_id: fs_protocol::FileDocumentId,
+        request_id: EvictionRequestId,
+    ) {
         if let Ok(coordinator) = self.coordinator() {
-            coordinator.spawn_observer(record_id, request_id);
+            coordinator.spawn_observer(document_id, request_id);
         }
     }
 
@@ -665,7 +671,7 @@ fn add_to(split: &mut ResidencySplit, facts: &FileFacts) {
 fn kept_by_policy(
     ns: &mut Namespace,
     ino: u64,
-    records: &HashMap<fs_protocol::FileRecordId, &RecordAvailability>,
+    records: &HashMap<fs_protocol::FileDocumentId, &RecordAvailability>,
 ) -> bool {
     let mut cursor = Some(ino);
     // A namespace is a tree; the bound only keeps a corrupt one finite.
@@ -674,7 +680,7 @@ fn kept_by_policy(
             return false;
         };
         if ns
-            .record_id_for(current)
+            .document_id_for(current)
             .and_then(|id| records.get(&id))
             .is_some_and(|record| record.policy == fs_protocol::AvailabilityPolicy::Pinned)
         {
@@ -710,7 +716,7 @@ fn snapshot_candidate_ids(
     dirty: &HashSet<u64>,
     records: &[RecordAvailability],
     now: u64,
-) -> Vec<fs_protocol::FileRecordId> {
+) -> Vec<fs_protocol::FileDocumentId> {
     logical
         .iter()
         .filter(|file| {
@@ -718,14 +724,14 @@ fn snapshot_candidate_ids(
                 && !dirty.contains(&file.inode)
                 && records
                     .iter()
-                    .find(|record| record.record_id == file.record_id)
+                    .find(|record| record.document_id == file.document_id)
                     .is_some_and(|record| {
                         !record.transfer.phase.is_active()
-                            && !pinned_in_snapshot(records, file.record_id)
+                            && !pinned_in_snapshot(records, file.document_id)
                             && has_fresh_signed_ack_at(record, now)
                     })
         })
-        .map(|file| file.record_id)
+        .map(|file| file.document_id)
         .collect()
 }
 
@@ -737,14 +743,14 @@ fn validate_live_eviction_token<Stage>(
     dirty: &HashMap<u64, Stage>,
     identity: &str,
     inode: u64,
-    record_id: fs_protocol::FileRecordId,
+    document_id: fs_protocol::FileDocumentId,
     expected_hash: Hash,
 ) -> Result<()> {
     if dirty.contains_key(&inode) {
         anyhow::bail!("workspace changed during eviction authorization");
     }
     let matches = namespace.inode_for_node(identity) == Some(inode)
-        && namespace.record_id_for(inode) == Some(record_id)
+        && namespace.document_id_for(inode) == Some(document_id)
         && namespace
             .entry_for_node(identity)
             .is_some_and(|entry| entry.hash == Some(expected_hash));
@@ -983,27 +989,27 @@ mod tests {
                 assert_eq!(app_from_path("/apps"), None);
             }
             {
-                let record = fs_protocol::FileRecordId::new();
-                let missing_parent = fs_protocol::FileRecordId::new();
+                let record = fs_protocol::FileDocumentId::new();
+                let missing_parent = fs_protocol::FileDocumentId::new();
                 let mut row = RecordAvailability::new(record, crate::availability::RecordKind::File);
                 row.parent = Some(missing_parent);
                 assert!(pinned_in_snapshot(&[row], record));
             }
             {
-                let record_id = fs_protocol::FileRecordId::new();
+                let document_id = fs_protocol::FileDocumentId::new();
                 let logical = vec![LogicalFile {
                     identity: "candidate".into(),
                     inode: 7,
                     path: "/candidate".into(),
                     logical_bytes: 1,
                     hash: Some(Hash::from([1; 32])),
-                    record_id,
+                    document_id,
                     mtime: 0,
                 }];
                 let mut dirty = HashSet::new();
                 dirty.insert(7);
                 let mut record =
-                    RecordAvailability::new(record_id, crate::availability::RecordKind::File);
+                    RecordAvailability::new(document_id, crate::availability::RecordKind::File);
                 record.current_version = Some(fs_protocol::FileVersionId::new());
                 assert!(snapshot_candidate_ids(&logical, &dirty, &[record], unix_now_ms()).is_empty());
             }
@@ -1042,11 +1048,11 @@ mod tests {
                     .unwrap()
                     .create_file(ROOT_INO, "report.txt", Some(&expected), 1, 1)
                     .unwrap();
-                let (identity, record_id) = {
+                let (identity, document_id) = {
                     let namespace = namespace.lock().unwrap();
                     (
                         namespace.id_for_ino(inode).unwrap().to_owned(),
-                        namespace.record_id_for(inode).unwrap(),
+                        namespace.document_id_for(inode).unwrap(),
                     )
                 };
                 assert!(
@@ -1055,7 +1061,7 @@ mod tests {
                         &dirty.lock().unwrap(),
                         &identity,
                         inode,
-                        record_id,
+                        document_id,
                         expected,
                     )
                     .is_ok()
@@ -1074,7 +1080,7 @@ mod tests {
                         &dirty.lock().unwrap(),
                         &identity,
                         inode,
-                        record_id,
+                        document_id,
                         expected,
                     )
                     .is_err()
@@ -1093,7 +1099,7 @@ mod tests {
                         &dirty.lock().unwrap(),
                         &identity,
                         inode,
-                        record_id,
+                        document_id,
                         expected,
                     )
                     .is_err()
@@ -1108,11 +1114,11 @@ mod tests {
                     .unwrap()
                     .create_file(ROOT_INO, "lease.txt", Some(&expected), 1, 1)
                     .unwrap();
-                let (identity, record_id) = {
+                let (identity, document_id) = {
                     let namespace = namespace.lock().unwrap();
                     (
                         namespace.id_for_ino(inode).unwrap().to_owned(),
-                        namespace.record_id_for(inode).unwrap(),
+                        namespace.document_id_for(inode).unwrap(),
                     )
                 };
 
@@ -1124,7 +1130,7 @@ mod tests {
                         &dirty_lease,
                         &identity,
                         inode,
-                        record_id,
+                        document_id,
                         expected,
                     )
                     .is_ok()
@@ -1199,7 +1205,11 @@ mod tests {
             .files()
             .set_retention(hashes[1].as_bytes(), Retention::Cached)
             .unwrap();
-        let backed_up = namespace.lock().unwrap().record_id_for(inodes[2]).unwrap();
+        let backed_up = namespace
+            .lock()
+            .unwrap()
+            .document_id_for(inodes[2])
+            .unwrap();
         let mut record = RecordAvailability::new(backed_up, RecordKind::File);
         record.current_version = Some(fs_protocol::FileVersionId::new());
         registry.lock().unwrap().put(record).unwrap();

@@ -291,6 +291,7 @@ fn entry((spec, declared): &(ResourceSpec, Option<Declared>), instances: bool) -
             label: String::new(),
             version: 0,
             person: false,
+            own: false,
             verbs,
             fields: Vec::new(),
             types: types.into_types(),

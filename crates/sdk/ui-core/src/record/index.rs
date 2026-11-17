@@ -1,6 +1,6 @@
 use super::{
-    AutoCommit, INDEX, ObjId, ObjType, ObjectAt, ROOT, ReadDoc, RecordCheckout, RecordId,
-    RecordKind, RecordSet, StringAt, Transactable, object_at, str_at, string_at,
+    AutoCommit, DocumentCheckout, DocumentId, INDEX, ObjId, ObjType, ObjectAt, ROOT, ReadDoc,
+    RecordSet, ResourceType, StringAt, Transactable, object_at, str_at, string_at,
 };
 use tilo_sort::CompactSort as _;
 
@@ -26,8 +26,8 @@ fn index_ro(doc: &AutoCommit) -> Option<ObjId> {
 /// concurrently converge on one index entry. The document it resolves to
 /// remains within this workspace's scope; this is not a grant to another
 /// workspace.
-pub fn reference(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind) -> bool {
-    if RecordId::parse(id.as_str()).is_none() || !kind.is_valid() {
+pub fn reference(doc: &mut AutoCommit, id: &DocumentId, kind: &ResourceType) -> bool {
+    if DocumentId::parse(id.as_str()).is_none() || !kind.is_valid() {
         return false;
     }
     let Some(idx) = index_obj(doc) else {
@@ -69,7 +69,7 @@ const MAX_NAME_CHARS: usize = 256;
 /// Say what `id`, a record this workspace references, is called: `None`
 /// when its app gives it no name of its own. Whether the entry changed;
 /// a record the index does not reference is left alone.
-pub fn set_name(doc: &mut AutoCommit, id: &RecordId, name: Option<&str>) -> bool {
+pub fn set_name(doc: &mut AutoCommit, id: &DocumentId, name: Option<&str>) -> bool {
     let Some(idx) = index_ro(doc) else {
         return false;
     };
@@ -92,7 +92,7 @@ pub fn set_name(doc: &mut AutoCommit, id: &RecordId, name: Option<&str>) -> bool
 }
 
 /// What the index says `id` is called, if it names it.
-pub fn name_of(doc: &AutoCommit, id: &RecordId) -> Option<String> {
+pub fn name_of(doc: &AutoCommit, id: &DocumentId) -> Option<String> {
     let idx = index_ro(doc)?;
     let ObjectAt::Object(entry) = object_at(doc, &idx, id.as_str(), ObjType::Map) else {
         return None;
@@ -107,7 +107,7 @@ pub fn name_of(doc: &AutoCommit, id: &RecordId) -> Option<String> {
 
 /// Drop a record's reference from this workspace. The record itself is
 /// untouched — another workspace may hold an independently scoped replica.
-pub fn unreference(doc: &mut AutoCommit, id: &RecordId) -> bool {
+pub fn unreference(doc: &mut AutoCommit, id: &DocumentId) -> bool {
     let Some(idx) = index_ro(doc) else {
         return false;
     };
@@ -118,13 +118,13 @@ pub fn unreference(doc: &mut AutoCommit, id: &RecordId) -> bool {
 }
 
 /// Whether this workspace references `id`.
-pub fn holds(doc: &AutoCommit, id: &RecordId) -> bool {
+pub fn holds(doc: &AutoCommit, id: &DocumentId) -> bool {
     index_ro(doc).is_some_and(|idx| {
         let ObjectAt::Object(entry) = object_at(doc, &idx, id.as_str(), ObjType::Map) else {
             return false;
         };
         str_at(doc, &entry, "kind")
-            .map(RecordKind::new)
+            .map(ResourceType::new)
             .is_some_and(|kind| kind.is_valid())
     })
 }
@@ -133,19 +133,19 @@ pub fn holds(doc: &AutoCommit, id: &RecordId) -> bool {
 /// for callers that already have their own work bound; hosts that learn a
 /// collaborator-supplied index should use [`discoverable_references`]
 /// instead.
-pub fn references(doc: &AutoCommit) -> Vec<RecordCheckout> {
+pub fn references(doc: &AutoCommit) -> Vec<DocumentCheckout> {
     let Some(idx) = index_ro(doc) else {
         return Vec::new();
     };
-    let mut out: Vec<RecordCheckout> = doc
+    let mut out: Vec<DocumentCheckout> = doc
         .keys(&idx)
         .filter_map(|k| {
-            let id = RecordId::parse(&k)?;
+            let id = DocumentId::parse(&k)?;
             let ObjectAt::Object(object) = object_at(doc, &idx, k.as_str(), ObjType::Map) else {
                 return None;
             };
-            let kind = RecordKind::new(str_at(doc, &object, "kind")?);
-            let checkout = RecordCheckout::new(id, kind);
+            let kind = ResourceType::new(str_at(doc, &object, "kind")?);
+            let checkout = DocumentCheckout::new(id, kind);
             checkout.is_valid().then_some(checkout)
         })
         .collect();
@@ -158,20 +158,20 @@ pub fn references(doc: &AutoCommit) -> Vec<RecordCheckout> {
 /// returns at most [`super::MAX_DISCOVERED_RECORDS`] valid entries.
 /// It does **not** open records, create persistence, or join record
 /// routes; the caller must make that explicit after choosing a record.
-pub fn discoverable_references(doc: &AutoCommit) -> Vec<RecordCheckout> {
+pub fn discoverable_references(doc: &AutoCommit) -> Vec<DocumentCheckout> {
     let Some(idx) = index_ro(doc) else {
         return Vec::new();
     };
-    let mut out: Vec<RecordCheckout> = doc
+    let mut out: Vec<DocumentCheckout> = doc
         .keys(&idx)
         .take(super::MAX_INDEX_KEYS_SCANNED)
         .filter_map(|key| {
-            let id = RecordId::parse(&key)?;
+            let id = DocumentId::parse(&key)?;
             let ObjectAt::Object(entry) = object_at(doc, &idx, key.as_str(), ObjType::Map) else {
                 return None;
             };
-            let kind = RecordKind::new(str_at(doc, &entry, "kind")?);
-            let checkout = RecordCheckout::new(id, kind);
+            let kind = ResourceType::new(str_at(doc, &entry, "kind")?);
+            let checkout = DocumentCheckout::new(id, kind);
             checkout.is_valid().then_some(checkout)
         })
         .collect();
@@ -186,9 +186,9 @@ pub fn discoverable_references(doc: &AutoCommit) -> Vec<RecordCheckout> {
 pub fn referencing(
     workspace: &AutoCommit,
     docs: &RecordSet,
-    target: &RecordId,
+    target: &DocumentId,
     relation: &str,
-) -> Vec<RecordCheckout> {
+) -> Vec<DocumentCheckout> {
     references(workspace)
         .into_iter()
         .filter(|c| {
@@ -204,8 +204,8 @@ pub fn referencing(
 /// Copy, the explicit verb: mints a new record id rather than reusing
 /// the origin's. The new document is created empty by the caller's
 /// next [`RecordSet::checkout`]; this returns the identity to check out.
-pub fn duplicate(doc: &mut AutoCommit, origin: &RecordCheckout) -> RecordCheckout {
-    let copy = RecordCheckout::new(RecordId::minted(), origin.kind.clone());
+pub fn duplicate(doc: &mut AutoCommit, origin: &DocumentCheckout) -> DocumentCheckout {
+    let copy = DocumentCheckout::new(DocumentId::minted(), origin.kind.clone());
     reference(doc, &copy.id, &copy.kind);
     copy
 }

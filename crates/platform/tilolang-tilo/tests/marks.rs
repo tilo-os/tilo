@@ -4,11 +4,11 @@
 //! once the run is seen.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{Principal, ResourceRef, UiNode, Value, ViewEvent, ViewInstance};
+use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewEvent, ViewInstance};
 use tilolang_tilo::host::Host;
 
 use crate::fixtures::Replica;
-use crate::legibility::{AGENT, NOTES_APP, RUN, Tidied, a_run_in_notes_and_tasks, call};
+use crate::legibility::{AGENT, NOTES_APP, RUN, Tidied, a_run_in_notes_and_tasks, call, helper};
 
 fn find_all<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
     if node.kind == kind {
@@ -81,20 +81,20 @@ fn tree_marks(view: &mut ViewInstance) -> Vec<(String, Option<UiNode>)> {
         .collect()
 }
 
-fn principal(node: &UiNode, prop: &str) -> Option<String> {
+fn actor(node: &UiNode, prop: &str) -> Option<String> {
     match node.props.get(prop) {
-        Some(Value::Principal(who)) => Some(who.0.clone()),
+        Some(Value::Actor(who)) => Some(who.id().to_owned()),
         _ => None,
     }
 }
 
 /// Everyone the mark names, in the order it names them.
-fn principals(node: &UiNode) -> Vec<String> {
+fn actors(node: &UiNode) -> Vec<String> {
     match node.props.get("by_all") {
         Some(Value::List(items)) => items
             .iter()
             .filter_map(|item| match item {
-                Value::Principal(who) => Some(who.0.clone()),
+                Value::Actor(who) => Some(who.id().to_owned()),
                 _ => None,
             })
             .collect(),
@@ -137,7 +137,7 @@ tilo_test_env::scenario! {
             let mark = marked(&marks, &at.id_string())
                 .unwrap_or_else(|| panic!("{at:?} is marked: {marks:?}"));
             assert_eq!(mark.kind, "ui.ChangeMark");
-            assert_eq!(principal(mark, "by").as_deref(), Some(AGENT));
+            assert_eq!(actor(mark, "by").as_deref(), Some(AGENT));
             assert_eq!(
                 mark.props.get("run"),
                 Some(&Value::text("Tidy my notes and tasks"))
@@ -160,9 +160,9 @@ tilo_test_env::scenario! {
             .find(|m| m.props.get("window") == Some(&Value::Bool(true)))
             .cloned()
             .expect("the window's header is marked");
-        assert_eq!(principal(&window, "by").as_deref(), Some(AGENT));
+        assert_eq!(actor(&window, "by").as_deref(), Some(AGENT));
         assert_eq!(
-            principals(&window),
+            actors(&window),
             vec![AGENT.to_owned()],
             "the header names everyone who changed it"
         );
@@ -199,7 +199,7 @@ tilo_test_env::scenario! {
         );
 
         // Mark all seen on the run: every mark goes, live.
-        assert!(ada.host.runtime().mark_run_seen("ada", RUN));
+        assert!(ada.host.runtime().mark_run_seen(&tilolang_tilo::personal::actor("ada"), RUN));
         let marks = tree_marks(&mut notebook);
         assert!(marks.iter().all(|(_, mark)| mark.is_none()), "{marks:?}");
         assert!(
@@ -214,12 +214,12 @@ tilo_test_env::scenario! {
         let mut editor = ada.host.open_resource(&groceries, None).unwrap();
         let changed: Vec<UiNode> = all(editor.tree(), "ui.TextInput")
             .into_iter()
-            .filter(|input| principal(input, "changed_by").is_some())
+            .filter(|input| actor(input, "changed_by").is_some())
             .cloned()
             .collect();
         // The title it renamed, not the body it left alone.
         assert_eq!(changed.len(), 1, "{changed:?}");
-        assert_eq!(principal(&changed[0], "changed_by").as_deref(), Some(AGENT));
+        assert_eq!(actor(&changed[0], "changed_by").as_deref(), Some(AGENT));
         assert_eq!(
             changed[0].props.get("previous"),
             Some(&Value::text("Groceries"))
@@ -232,12 +232,12 @@ tilo_test_env::scenario! {
             "the note's window is marked"
         );
         // Once seen, the field is the field again.
-        assert!(ada.host.runtime().mark_seen("ada", &groceries).unwrap());
+        assert!(ada.host.runtime().mark_seen(&tilolang_tilo::personal::actor("ada"), &groceries).unwrap());
         editor.poll_patches().unwrap();
         assert!(
             all(editor.tree(), "ui.TextInput")
                 .iter()
-                .all(|input| principal(input, "changed_by").is_none())
+                .all(|input| actor(input, "changed_by").is_none())
         );
     }
 
@@ -247,8 +247,8 @@ tilo_test_env::scenario! {
         let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(PLACED, "")]);
         let shelf = Value::resource(&ada.host.root_of(app).unwrap());
         ada.commit();
-        call(&ada, AGENT, app, "shelve", vec![shelf, Value::text("Dune")]);
-        ada.commit_in_run(AGENT, RUN, "Stock the shelf");
+        call(&ada, &helper(), app, "shelve", vec![shelf, Value::text("Dune")]);
+        ada.commit_in_run(&helper(), RUN, "Stock the shelf");
         let mut view = ada.view(app);
         let rows = rows(&mut view);
         let placed: Vec<&UiNode> = rows
@@ -256,7 +256,7 @@ tilo_test_env::scenario! {
             .flat_map(|row| all(row, "ui.ChangeMark"))
             .collect();
         assert_eq!(placed.len(), 1, "one mark, the view's: {rows:?}");
-        assert_eq!(principal(placed[0], "by").as_deref(), Some(AGENT));
+        assert_eq!(actor(placed[0], "by").as_deref(), Some(AGENT));
         assert_eq!(
             placed[0].props.get("run"),
             Some(&Value::text("Stock the shelf"))
@@ -282,7 +282,7 @@ fn the_header_names_everyone_who_changed_it() {
         .find(|m| m.props.get("window") == Some(&Value::Bool(true)))
         .cloned()
         .expect("the window's header is marked");
-    let mut who = principals(&window);
+    let mut who = actors(&window);
     who.sort();
     assert_eq!(
         who,
@@ -341,7 +341,7 @@ fn a_task_the_run_removed_stays_a_struck_row_until_its_removal_is_seen() {
     let (title, mark) = &removed[0];
     assert_eq!(title, "Stale", "the row says what was removed");
     assert_eq!(mark.props.get("kind"), Some(&Value::text("removed")));
-    assert_eq!(principal(mark, "by").as_deref(), Some(AGENT));
+    assert_eq!(actor(mark, "by").as_deref(), Some(AGENT));
     // The notebook's tree stands the note it removed in too, as a node of its own
     // (`a_note_the_run_removed_stands_struck_in_the_tree`).
     let mut notebook = ada.view(NOTES_APP);
@@ -349,7 +349,11 @@ fn a_task_the_run_removed_stays_a_struck_row_until_its_removal_is_seen() {
     let note_rows = removed_rows(notebook.tree());
     assert_eq!(note_rows.len(), 1, "{note_rows:?}");
     // Seen, the row goes.
-    assert!(ada.host.runtime().mark_run_seen("ada", RUN));
+    assert!(
+        ada.host
+            .runtime()
+            .mark_run_seen(&tilolang_tilo::personal::actor("ada"), RUN)
+    );
     inbox.poll_patches().unwrap();
     assert!(removed_rows(inbox.tree()).is_empty());
     notebook.poll_patches().unwrap();
@@ -374,7 +378,7 @@ fn a_list_built_over_the_record_shows_what_left_it() {
     let (title, mark) = &removed[0];
     assert_eq!(title, "Stale", "the row says what was removed");
     assert_eq!(mark.props.get("kind"), Some(&Value::text("removed")));
-    assert_eq!(principal(mark, "by").as_deref(), Some(AGENT));
+    assert_eq!(actor(mark, "by").as_deref(), Some(AGENT));
 }
 
 const PLACED: &str = r#"app so.tilo.lang.placed "Placed"
@@ -459,7 +463,11 @@ fn labelled(node: &UiNode, label: &str) -> Option<UiNode> {
 }
 
 const BO: &str = "bo";
-const SCOUT: &str = "agent:scout";
+const SCOUT: &str = "scout";
+
+fn scout() -> Actor {
+    tilolang_tilo::runtime::ids::MemberId::agent(SCOUT).into()
+}
 
 /// Ada's week when she was away a day: she wrote four tasks, and while she was out Bo took the
 /// mail and her agent moved the survey to today and finished the milk.
@@ -497,13 +505,15 @@ fn a_day_away() -> Away {
         "assign",
         vec![
             Value::resource(&paper),
-            Value::some(Value::Principal(Principal::new("ada"))),
+            Value::some(Value::Actor(Actor::from(
+                tilolang_tilo::runtime::ids::MemberId::person("ada"),
+            ))),
         ],
     );
     ada.commit_as(BO);
     call(
         &ada,
-        SCOUT,
+        &scout(),
         crate::legibility::TASKS_APP,
         "schedule",
         vec![
@@ -513,12 +523,12 @@ fn a_day_away() -> Away {
     );
     call(
         &ada,
-        SCOUT,
+        &scout(),
         crate::legibility::TASKS_APP,
         "check",
         vec![Value::resource(&milk)],
     );
-    ada.commit_as(SCOUT);
+    ada.commit_as(&scout());
     Away { ada, paper, survey }
 }
 
@@ -543,7 +553,7 @@ tilo_test_env::scenario! {
     // A day away at a glance: the header names everyone who changed anything and says how much.
     {
         let (_away, _tasks, window) = a_day_away_at_today();
-        let mut who = principals(&window);
+        let mut who = actors(&window);
         who.sort();
         assert_eq!(
             who,
@@ -615,7 +625,7 @@ tilo_test_env::scenario! {
         );
         let seen_by: Vec<String> = all(&content, "ui.Avatar")
             .into_iter()
-            .filter_map(|avatar| principal(avatar, "who"))
+            .filter_map(|avatar| actor(avatar, "who"))
             .collect();
         assert!(seen_by.contains(&SCOUT.to_owned()), "{seen_by:?}");
         assert!(seen_by.contains(&BO.to_owned()), "{seen_by:?}");
@@ -757,7 +767,10 @@ fn a_task_bo_changed(changes: usize) -> (Replica, ResourceRef) {
     };
     ada.commit();
     assert!(
-        ada.host.runtime().mark_seen("ada", &milk).unwrap(),
+        ada.host
+            .runtime()
+            .mark_seen(&tilolang_tilo::personal::actor("ada"), &milk)
+            .unwrap(),
         "she has seen the task she made"
     );
     // Bo at their window a moment later, changing it again and again.
@@ -834,7 +847,10 @@ fn a_day_aways_catch_up_marks_all_seen_at_once_and_undo_brings_them_back() {
         "every mark goes at once"
     );
     assert!(
-        away.ada.host.runtime().undo_seen("ada"),
+        away.ada
+            .host
+            .runtime()
+            .undo_seen(&tilolang_tilo::personal::actor("ada")),
         "the catch-up is undone"
     );
     tasks.poll_patches().unwrap();
@@ -853,7 +869,12 @@ fn the_headers_mark_reads_the_changes_not_the_items() {
             .expect("the workspace seeds");
         // The packages the record was seeded from, loaded as a workspace loads them: from the
         // compilation both sizes share, not compiled again per size.
-        let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
+        let host = Host::new(
+            &doc,
+            Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            || None,
+        )
+        .unwrap();
         for package in compiled {
             host.load_compiled(package).expect("the package loads");
         }
@@ -934,8 +955,12 @@ fn a_note_the_run_removed_stands_struck_in_the_tree() {
         .cloned()
         .expect("who removed it");
     assert_eq!(mark.props.get("kind"), Some(&Value::text("removed")));
-    assert_eq!(principal(&mark, "by").as_deref(), Some(AGENT));
+    assert_eq!(actor(&mark, "by").as_deref(), Some(AGENT));
     // Seen, the row goes.
-    assert!(ada.host.runtime().mark_run_seen("ada", RUN));
+    assert!(
+        ada.host
+            .runtime()
+            .mark_run_seen(&tilolang_tilo::personal::actor("ada"), RUN)
+    );
     assert!(struck(&mut notebook).is_empty());
 }

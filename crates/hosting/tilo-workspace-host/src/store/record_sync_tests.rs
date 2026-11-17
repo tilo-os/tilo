@@ -17,6 +17,7 @@ fn route(record: &str) -> Route {
         app_id: APP.to_owned(),
         cluster_id: "7".to_owned(),
         record_id: record.to_owned(),
+        own: None,
     }
 }
 

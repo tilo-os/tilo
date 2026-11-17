@@ -586,7 +586,7 @@ impl RichTextLine {
         self.inner.bound_obj().cloned()
     }
 
-    pub fn set_local_author(&mut self, author: Option<String>) {
+    pub fn set_local_author(&mut self, author: Option<crate::permissions::MemberId>) {
         self.paint_dirty = true;
         self.inner.set_local_author(author);
     }

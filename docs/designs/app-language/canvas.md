@@ -92,7 +92,7 @@ sharp at the screen's real size.
   take the free spot adjacent to it, judged against what the person sees (`free_place_within`).
 - **Places** are `ui.MapPin`s holding the resource's view with no `ui.WindowFrame`; the handle
   is a shell view shown on hover and selection.
-- **The arrangement** records each place's resource, view, point and size (`ArrangementPlace`);
+- **The layout** records each place's resource, view, point and size (`LayoutPlace`);
   placing never moves what is there (`free_place_near`, `free_place_next_to`). What is found at
   a click stands with its top-left at the click, narrowed (to a window's least width) to the free
   room to its right before the next place or the view's edge (`free_width_at`); only when not

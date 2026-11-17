@@ -123,7 +123,7 @@ pub struct QuickSettingsState {
     /// The Devices section's rows, in order, as the session publishes them.
     pub device_rows: Vec<crate::hosted::HostedRow>,
     /// Which controls the panel shows, in the person's order.
-    pub arrangement: settings_store::hardware::QuickSettingsConfig,
+    pub config: settings_store::hardware::QuickSettingsConfig,
     /// How many notifications the person has not read, as the bell counts
     /// them: the row's count.
     pub notifications: usize,
@@ -184,9 +184,9 @@ impl Default for QuickSettingsState {
             microphone: None,
             sound_streams: Vec::new(),
             device_rows: Vec::new(),
-            // As the person left it: the session keeps the arrangement and publishes it, and a
+            // As the person left it: the session keeps the controls and publishes them, and a
             // panel started before that reading arrives starts where they left it.
-            arrangement: settings_store::hardware::QuickSettingsConfig::load(),
+            config: settings_store::hardware::QuickSettingsConfig::load(),
             notifications: 0,
             handoff_targets: None,
             now_playing: None,
@@ -263,7 +263,7 @@ impl QuickSettingsState {
         Self {
             // The controls as they come, not as this machine's settings happen to have them: what
             // a screenshot or a test shows.
-            arrangement: settings_store::hardware::QuickSettingsConfig::default(),
+            config: settings_store::hardware::QuickSettingsConfig::default(),
             brightness: 0.6,
             brightness_available: true,
             volume_available: true,

@@ -11,7 +11,7 @@ use tilo_actions::ActionOutput;
 use tilo_resource::Effect;
 use tilolang_runtime::program::ReadRequest;
 use tilolang_runtime::value::{ResourceRef, to_json};
-use tilolang_runtime::{AgentBlock, Principal, Resolution, RunOutcome, UiNode};
+use tilolang_runtime::{Actor, AgentBlock, Resolution, RunOutcome, UiNode};
 
 use crate::host::Host;
 use crate::publish::Caller;
@@ -198,18 +198,15 @@ fn output(value: Json) -> ActionOutput {
 }
 
 impl Host {
-    /// Answer `effect` for `caller`, the principal the API admitted (the person at the window
-    /// when `None`). An agent's code is written by its own principal, so what it applies to
+    /// Answer `effect` for `caller`, the actor the API admitted (the person at the window
+    /// when `None`). An agent's code is written by its own actor, so what it applies to
     /// another app or outside asks a person first.
     pub fn answer(
         &self,
         effect: HostEffect,
         caller: Option<&Caller>,
     ) -> Result<ActionOutput, String> {
-        let agent = &caller.map_or_else(
-            || self.viewer().clone(),
-            |caller| Principal::new(caller.actor.clone()),
-        );
+        let agent = &caller.map_or_else(|| self.viewer().clone(), |caller| caller.actor.clone());
         if let Some(caller) = caller.filter(|caller| caller.agent) {
             self.inner.admit_agent(caller);
         }
@@ -436,7 +433,7 @@ impl Host {
 
     fn resolve_suggestion(
         &self,
-        approver: &Principal,
+        approver: &Actor,
         target: &str,
         decision: &str,
     ) -> Result<ActionOutput, String> {

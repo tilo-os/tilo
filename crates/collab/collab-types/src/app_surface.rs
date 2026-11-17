@@ -180,6 +180,28 @@ pub fn person_record_kinds(app_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The kinds `app_id`'s surface marks each member's own record in the
+/// workspace (`own`, a tilolang package's `records: .own`). Empty when this
+/// process holds no surface for it.
+#[must_use]
+pub fn own_record_kinds(app_id: &str) -> Vec<String> {
+    bytes_of(app_id)
+        .and_then(|bytes| {
+            tilo_failure::ignored!(
+                "a held surface that does not parse was logged when it was named, and declares nothing here",
+                crate::surface::SurfaceFile::parse(bytes).ok()
+            )
+        })
+        .map(|file| {
+            file.resources
+                .into_iter()
+                .filter(|surface| surface.own)
+                .map(|surface| surface.kind)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[must_use]
 pub fn keeps_person_record(app_id: &str, kind: &str) -> bool {
     person_record_kinds(app_id)

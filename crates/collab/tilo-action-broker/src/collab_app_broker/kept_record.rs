@@ -39,7 +39,7 @@ pub(super) fn working_route(
 
 impl JoinedChannel {
     /// The route the connection works as. A record-scoped connection names its record inside
-    /// the channel id (the SDK joins `<cluster>#record:<id>`), parsed back out here; the app is
+    /// the channel id (the SDK joins `<cluster>#document:<id>`), parsed back out here; the app is
     /// the launched one, also where the channel is the record of an id it had before.
     pub(super) fn route(&self) -> CrdtRoute {
         let route = self.record_route();

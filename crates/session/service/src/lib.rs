@@ -105,7 +105,7 @@ pub trait Service {
     /// under, and the ids they went by before this device had an identity.
     /// A service that records who changed what authors its changes as this
     /// person; one that records none ignores it.
-    fn seated(&mut self, _person: &str, _earlier: &[String]) {}
+    fn own_person(&mut self, _person: &str, _earlier: &[String]) {}
 
     /// What it publishes now: its resources, each with its actions.
     fn resources(&self) -> Vec<ResourceSpec>;
@@ -127,7 +127,7 @@ pub trait Service {
     ) -> Result<Started, ApiError>;
 
     /// [`Self::invoke`] as `invoker` (an agent, a script), which what the change makes is
-    /// attributed to. The default runs it as the person seated here, as [`Self::invoke`] does.
+    /// attributed to. The default runs it as the person at this device, as [`Self::invoke`] does.
     ///
     /// # Errors
     /// The API's refusal.

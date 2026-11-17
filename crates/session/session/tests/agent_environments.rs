@@ -411,7 +411,7 @@ fn agent_sessions(session: &Session) -> Vec<(String, String, String)> {
 
 /// Wait until a session the shell calls `name` is here, and say how.
 #[track_caller]
-fn seated_as(session: &mut Session, name: &str) -> (String, String, String) {
+fn session_for(session: &mut Session, name: &str) -> (String, String, String) {
     crate::common::wait_for(session, format!("{name} at the shell"), |session| {
         agent_sessions(session)
             .into_iter()
@@ -515,7 +515,7 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
         listed.get("error").is_none(),
         "it reaches the desktop's actions: {listed}"
     );
-    let (dev_session, _, doing) = seated_as(&mut session, "Claude Code in Env dev #1");
+    let (dev_session, _, doing) = session_for(&mut session, "Claude Code in Env dev #1");
     assert_eq!(
         doing, "Studio",
         "the shell shows the agent, from its environment, working in Studio"
@@ -614,7 +614,7 @@ fn always_allow_is_remembered_per_environment() {
     asked(&mut session, &questions);
     allow(&mut session, 2);
     assert!(first.answer(&mut session).get("result").is_some());
-    seated_as(&mut session, "Claude Code in Env dev #1");
+    session_for(&mut session, "Claude Code in Env dev #1");
 
     let again = Environment::open(&socket, "dev", Some(STUDIO), Some(("Claude Code", "own")));
     again.socket(&mut session);
@@ -623,7 +623,7 @@ fn always_allow_is_remembered_per_environment() {
         "let in as the person said"
     );
     assert!(questions.pending().is_empty(), "without asking");
-    seated_as(&mut session, "Claude Code in Env dev #2");
+    session_for(&mut session, "Claude Code in Env dev #2");
 
     let other = Environment::open(&socket, "other", Some(STUDIO), Some(("Claude Code", "own")));
     other.socket(&mut session);
@@ -674,8 +674,8 @@ fn two_programs_of_one_name_are_two_agents() {
         second.answers(&mut session)[0].get("result").is_some(),
         "the person let this program in for the session"
     );
-    let (first_session, ..) = seated_as(&mut session, "Claude Code #1");
-    let (second_session, _, doing) = seated_as(&mut session, "Claude Code #2");
+    let (first_session, ..) = session_for(&mut session, "Claude Code #1");
+    let (second_session, _, doing) = session_for(&mut session, "Claude Code #2");
     assert_ne!(first_session, second_session, "two sessions");
     assert_eq!(doing, "Garden");
 
@@ -714,7 +714,7 @@ fn a_program_asks_for_a_workspace_the_person_may_grant() {
     );
     allow(&mut session, 0);
     assert!(studio.answers(&mut session)[0].get("result").is_some());
-    let (_, _, doing) = seated_as(&mut session, "Claude Code #1");
+    let (_, _, doing) = session_for(&mut session, "Claude Code #1");
     assert_eq!(doing, "Studio", "where it asked, not Garden in front");
 
     for workspace in [ELSEWHERE, "00000000-0000-4000-8000-000000000000"] {

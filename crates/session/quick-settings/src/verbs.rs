@@ -269,7 +269,7 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
             (CHROME, "open-settings")
         }
         // What the panel shows, which is this device's own setting: the
-        // session keeps it, so it is the same arrangement whether the panel
+        // session keeps it, so they are the same controls whether the panel
         // is drawn or not.
         QsEffect::ShowControl { control } => {
             put(&mut arguments, "control", control);
@@ -398,7 +398,7 @@ mod tests {
         }
 
         phase arranging_the_panel_is_the_sessions_own_setting;
-        // The arrangement is this device's own setting: the session keeps it, so a person, an agent
+        // The controls are this device's own setting: the session keeps them, so a person, an agent
         // and a script change the panel the same way whether it is drawn or not.
         {
             assert_eq!(

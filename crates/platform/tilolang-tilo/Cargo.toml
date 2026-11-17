@@ -49,7 +49,8 @@ collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
 # The workspace record's on-disk copy and its writer, and who wrote a step (`instance::record`).
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state", optional = true }
 durable-store = { version = "0.1.0", path = "../../system/durable-store", optional = true }
-collab-types = { version = "0.1.0", path = "../../collab/collab-types", optional = true }
+# Each member's own record of a package declaring `records: .own` (`member_record_of`).
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The platform's history sentences, which the host's history verbs speak in.
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 
@@ -60,7 +61,6 @@ record = [
     "collaboration/native",
     "dep:tilo-app-state",
     "dep:durable-store",
-    "dep:collab-types",
 ]
 [dev-dependencies]
 # The tests drive the instance's commit path (`instance::record`) whatever else the build has

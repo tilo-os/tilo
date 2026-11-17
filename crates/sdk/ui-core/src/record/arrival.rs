@@ -1,7 +1,7 @@
 //! Waking the windows that read a store when another replica's change
 //! arrives in it, and what the workspace said of records it asked for.
 
-use super::{RecordId, RecordStore};
+use super::{DocumentId, RecordStore};
 
 impl RecordStore {
     /// Wake the window `reader` belongs to whenever another replica's change
@@ -32,13 +32,13 @@ impl RecordStore {
     }
 
     /// The workspace's hosts sent everything they hold of `id`, a record this
-    /// store asked them for ([`RecordId::arrives_on_demand`]), or no host is
+    /// store asked them for ([`DocumentId::arrives_on_demand`]), or no host is
     /// connected to ask: what of it is here is all there is for now. What
     /// reads it and still lacks it (a part held from its genesis that
     /// nothing arrived in) shows it unavailable rather than loading, until
     /// something of it arrives, which clears this. Wakes the store's
     /// readers. Callable while a frame reads the store.
-    pub fn note_workspace_answered(&self, id: RecordId) {
+    pub fn note_workspace_answered(&self, id: DocumentId) {
         self.note_workspace_answer(id, super::WorkspaceAnswer::HoldsNone);
     }
 
@@ -47,7 +47,7 @@ impl RecordStore {
     /// or it is another person's own, which opening then says
     /// ([`super::RecordOpenError::NotYours`]) rather than waiting for it.
     /// Wakes the store's readers. Callable while a frame reads the store.
-    pub fn note_workspace_answer(&self, id: RecordId, answer: super::WorkspaceAnswer) {
+    pub fn note_workspace_answer(&self, id: DocumentId, answer: super::WorkspaceAnswer) {
         if let Ok(set) = self.0.try_borrow() {
             set.wanted.borrow_mut().remove(&id);
             set.answered.borrow_mut().insert(id, answer);
@@ -59,14 +59,14 @@ impl RecordStore {
     /// Whether the workspace's hosts answered for `id`
     /// ([`Self::note_workspace_answer`]) and nothing of it arrived since.
     #[must_use]
-    pub fn workspace_answered(&self, id: &RecordId) -> bool {
+    pub fn workspace_answered(&self, id: &DocumentId) -> bool {
         self.workspace_answer(id).is_some()
     }
 
     /// What the workspace's hosts answered for `id`, if they did and nothing
     /// of it arrived since.
     #[must_use]
-    pub fn workspace_answer(&self, id: &RecordId) -> Option<super::WorkspaceAnswer> {
+    pub fn workspace_answer(&self, id: &DocumentId) -> Option<super::WorkspaceAnswer> {
         self.0
             .try_borrow()
             .ok()
@@ -75,7 +75,7 @@ impl RecordStore {
 
     /// A peer's change to `id` was merged: more may follow, and every window
     /// reading the store is woken, as its own merge of it finds nothing new.
-    pub(crate) fn peer_change_merged(&self, id: &RecordId) {
+    pub(crate) fn peer_change_merged(&self, id: &DocumentId) {
         if let Ok(set) = self.0.try_borrow() {
             set.answered.borrow_mut().remove(id);
         }

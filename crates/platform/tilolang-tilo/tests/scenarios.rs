@@ -2,7 +2,7 @@
 //! tests and benchmarks start from.
 
 use automerge::AutoCommit;
-use tilolang_runtime::Principal;
+use tilolang_runtime::Actor;
 
 use tilolang_tilo::used::{UsedApp, answer};
 
@@ -83,7 +83,10 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
             replica
                 .host
                 .runtime()
-                .invoke_action(&Principal::new("ada"), (scenario.action.as_str(), vec![]))
+                .invoke_action(
+                    &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+                    (scenario.action.as_str(), vec![]),
+                )
                 .unwrap_or_else(|e| panic!("{app} {:?}: {e}", scenario.name));
             replica.commit();
             let view = replica.view(app);
@@ -118,13 +121,16 @@ fn a_scenarios_named_person_is_a_member_of_the_workspace() {
     replica
         .host
         .runtime()
-        .invoke_action(&Principal::new("ada"), (scenario.action.as_str(), vec![]))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (scenario.action.as_str(), vec![]),
+        )
         .unwrap();
     let members = replica.host.runtime().members();
     assert!(
         members
             .iter()
-            .any(|member| member.who().0 == "scenario:Mia"),
+            .any(|member| member.who().id() == "scenario:Mia"),
         "Mia is one of the workspace's: {members:?}"
     );
 }
@@ -178,7 +184,10 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
         owner
             .host
             .runtime()
-            .invoke_action(&Principal::new("ada"), (first.action.as_str(), vec![]))
+            .invoke_action(
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+                (first.action.as_str(), vec![]),
+            )
             .unwrap();
         owner.commit();
     }

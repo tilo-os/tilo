@@ -28,17 +28,17 @@ impl NavShell {
     /// Show a transient notice in the window's bar: an operation's result or
     /// failure. It replaces the one showing and leaves on its own.
     pub fn toast(&mut self, text: impl Into<String>, kind: ToastKind) {
-        self.notice.show(ShellNotice {
+        self.show_notice(ShellNotice {
             text: text.into(),
             kind,
             action: None,
         });
-        self.notice_pressed = None;
-        self.publish_notice();
     }
 
     /// Show a notice with one button beside it in the bar, named `action`
-    /// ("Undo") with the icon `icon` ("undo-2").
+    /// ("Undo") with the icon `icon` ("undo-2"). It stays
+    /// [`ACTION_NOTICE_LIFETIME`](crate::widget::toast::ACTION_NOTICE_LIFETIME), long enough
+    /// to reach the button.
     /// [`Self::take_toast_action`] reports the press.
     pub fn toast_with_action(
         &mut self,
@@ -47,11 +47,20 @@ impl NavShell {
         icon: &str,
         action: impl Into<String>,
     ) {
-        self.notice.show(ShellNotice {
+        self.show_notice(ShellNotice {
             text: text.into(),
             kind,
             action: Some((icon.to_owned(), action.into())),
         });
+    }
+
+    fn show_notice(&mut self, notice: ShellNotice) {
+        let lifetime = if notice.action.is_some() {
+            crate::widget::toast::ACTION_NOTICE_LIFETIME
+        } else {
+            crate::widget::toast::NOTICE_LIFETIME
+        };
+        self.notice.show_for(notice, lifetime);
         self.notice_pressed = None;
         self.publish_notice();
     }
@@ -84,13 +93,11 @@ impl NavShell {
 
     /// Show `held` again in the shell built in its place, as it stood.
     pub fn restore_notice(&mut self, held: HeldNotice) {
-        self.notice.show(ShellNotice {
+        self.show_notice(ShellNotice {
             text: held.text,
             kind: held.kind,
             action: held.action,
         });
-        self.notice_pressed = None;
-        self.publish_notice();
     }
 
     pub(super) fn publish_notice(&self) {

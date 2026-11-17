@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use automerge::AutoCommit;
-use tilolang_runtime::{Principal, ResourceRef, Value};
+use tilolang_runtime::{Actor, ResourceRef, Value};
 use tilolang_tilo::publish::{PlanRequest, Planner, Publications};
 
 use crate::fixtures::Replica;
@@ -37,7 +37,10 @@ fn seeded_chat() -> (Replica, String) {
     let scenario = meta.scenarios.first().expect("Chat declares a scenario");
     ada.host
         .runtime()
-        .invoke_action(&Principal::new("ada"), (scenario.action.as_str(), vec![]))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (scenario.action.as_str(), vec![]),
+        )
         .unwrap();
     ada.commit();
     (ada, root.doc)
@@ -269,7 +272,10 @@ fn mail_staged(name: &str) -> (Replica, Option<ResourceRef>) {
     let made = ada
         .host
         .runtime()
-        .invoke_action(&Principal::new("ada"), (scenario.action.as_str(), vec![]))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (scenario.action.as_str(), vec![]),
+        )
         .unwrap();
     ada.commit();
     let made = match made {

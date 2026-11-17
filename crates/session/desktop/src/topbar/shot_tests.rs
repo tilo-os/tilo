@@ -334,7 +334,7 @@ fn the_right_end_shows_each_person_once_flush_and_in_one_icon_size() {
                 );
             }
         }
-        // No reserved seat left empty: the status cluster is its slots and its pad, nothing
+        // No reserved place left empty: the status cluster is its slots and its pad, nothing
         // more, and it ends at the bar's edge pad.
         let pill = bar.tray_pill_rect();
         let pad = f64::from(theme.tokens.spacing.rhythm.tight);

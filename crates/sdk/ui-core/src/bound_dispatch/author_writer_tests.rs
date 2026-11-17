@@ -1,6 +1,6 @@
 use super::*;
 use crate::portable_storage::PortableStorage;
-use crate::record::{RecordId, RecordKind, RecordOwners, author_writer};
+use crate::record::{DocumentId, RecordOwners, ResourceType, author_writer};
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
 
@@ -15,7 +15,7 @@ tilo_test_env::scenario! {
         let records = RecordOwners::portable(cache)
             .open(APP, "workspace")
             .unwrap();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         records.create_record(&checkout).unwrap();
         let (binding, _scope, _owner) = mount(&records, &checkout, "You", 1, true);
         let publication = BoundPublication::default();
@@ -75,7 +75,7 @@ tilo_test_env::scenario! {
         let records = RecordOwners::portable(cache)
             .open(APP, "workspace")
             .unwrap();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         records.create_record(&checkout).unwrap();
         let (mut binding, _scope, _owner) = mount(&records, &checkout, "person", 1, true);
         binding.author = MemberId::person("agent");
@@ -130,7 +130,7 @@ tilo_test_env::scenario! {
         let records = RecordOwners::portable(cache)
             .open(APP, "workspace")
             .unwrap();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         records.create_record(&checkout).unwrap();
         let (mut binding, _scope, _owner) = mount(&records, &checkout, "person", 1, true);
         std::rc::Rc::make_mut(&mut binding.operation_context).invoker =
@@ -176,7 +176,7 @@ tilo_test_env::scenario! {
     phase per_author_mounts_write_as_their_authors_and_the_record_keeps_its_pages_writer;
     {
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         let writer = {
             let records = RecordOwners::portable(cache.clone())
                 .open(APP, "workspace")
@@ -268,7 +268,7 @@ tilo_test_env::scenario! {
 /// A mount of `checkout` for `author`, as `HostContext::callback_binding` makes one.
 pub(super) fn mount(
     records: &RecordStore,
-    checkout: &RecordCheckout,
+    checkout: &DocumentCheckout,
     author: &str,
     instance: u64,
     writes_as_author: bool,
@@ -299,7 +299,7 @@ pub(super) fn mount(
 
 fn writers_of(
     records: &RecordStore,
-    id: &RecordId,
+    id: &DocumentId,
     write: impl FnOnce(),
 ) -> Vec<automerge::ActorId> {
     let before = records.with(id, |doc| doc.get_heads()).unwrap();

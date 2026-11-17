@@ -666,7 +666,7 @@ pub struct Session {
     /// attached.
     #[cfg(target_os = "linux")]
     pub(crate) displays: crate::display_settings::Displays,
-    /// The displays as a published service: the arrangements they are used in
+    /// The displays as a published service: the modes they are used in
     /// and how bright each one is, kept told of the outputs the compositor
     /// shows.
     #[cfg(target_os = "linux")]

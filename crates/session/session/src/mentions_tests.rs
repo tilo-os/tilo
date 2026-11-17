@@ -11,7 +11,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
 use super::*;
 use crate::platform::records::Changes;
 use ui::mentions::{MARK, reading_nothing};
-use ui::record::{RecordId, RecordKind};
+use ui::record::{DocumentId, ResourceType};
 
 const ADA: &str = "u-ada";
 const BEA: &str = "u-bea";
@@ -82,8 +82,8 @@ impl Device {
         let mut doc = AutoCommit::new();
         let named = ui::record::index::reference(
             &mut doc,
-            &RecordId::parse(route).expect("a record id"),
-            &RecordKind::new(kind),
+            &DocumentId::parse(route).expect("a record id"),
+            &ResourceType::new(kind),
         );
         assert!(named, "{route} is named in {app}'s index");
         doc.commit();
@@ -164,12 +164,12 @@ fn look_again(mentions: &Mentions) {
 /// A notebook as `tilo_resource::Collection` keeps it: one page, its title and a paragraph whose
 /// text marks `mention` (as `tilo-doc` does), written by `by`.
 fn notebook(text: &str, mention: Option<(usize, usize, &str)>, by: &str) -> AutoCommit {
-    notebook_at(&RecordId::parse(NOTE).unwrap(), text, mention, by)
+    notebook_at(&DocumentId::parse(NOTE).unwrap(), text, mention, by)
 }
 
 /// [`notebook`], kept as the record `id`.
 fn notebook_at(
-    id: &RecordId,
+    id: &DocumentId,
     text: &str,
     mention: Option<(usize, usize, &str)>,
     by: &str,
@@ -178,7 +178,7 @@ fn notebook_at(
     ui::record::init(
         &mut doc,
         id,
-        &RecordKind::new("notes.notebook"),
+        &ResourceType::new("notes.notebook"),
         "workspace",
     );
     let pages = doc.put_object(ROOT, "pages", ObjType::Map).unwrap();
@@ -262,7 +262,7 @@ tilo_test_env::scenario! {
     // A document a file opened in is named by the file's path, and kept under its storage key: its
     // write is noted by the record's route, and the notice opens that record.
     {
-        let file = RecordId::for_file("/run/tilo/documents/Budget for Friday.txt");
+        let file = DocumentId::for_file("/run/tilo/documents/Budget for Friday.txt");
         let route = file.route().to_owned();
         let written = notebook_at(&file, "Ask @Bea about the date", Some((4, 8, BEA)), ADA);
         let device = Device::holding(&[(NOTES, &route, &written)]);
@@ -472,15 +472,15 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
     let mut part = AutoCommit::new();
     // The chat's own record, and the part of it a page of messages is kept in.
     let chat_route = "tab:00000000000000c1".to_owned();
-    let part_route = RecordId::parse(&chat_route)
+    let part_route = DocumentId::parse(&chat_route)
         .expect("a record id")
         .part(0)
         .as_str()
         .to_owned();
     ui::record::init(
         &mut part,
-        &RecordId::parse(&part_route).expect("a record id"),
-        &RecordKind::new("chat.part"),
+        &DocumentId::parse(&part_route).expect("a record id"),
+        &ResourceType::new("chat.part"),
         "workspace",
     );
     let messages = part.put_object(ROOT, "messages", ObjType::Map).unwrap();
@@ -590,8 +590,8 @@ fn tracker(issues: usize) -> AutoCommit {
     let mut doc = AutoCommit::new();
     ui::record::init(
         &mut doc,
-        &RecordId::parse(TRACKER).unwrap(),
-        &RecordKind::new("tasks.tracker"),
+        &DocumentId::parse(TRACKER).unwrap(),
+        &ResourceType::new("tasks.tracker"),
         "workspace",
     );
     let all = doc.put_object(ROOT, "issues", ObjType::Map).unwrap();

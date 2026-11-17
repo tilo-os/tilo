@@ -181,7 +181,8 @@ pub fn write(kind: ColumnKind, lit: &Lit) -> Option<String> {
         | (ColumnKind::Ref, Lit::Ref(v) | Lit::Text(v)) => v.clone(),
         (ColumnKind::Ident, Lit::Ident(t) | Lit::Text(t)) => t.to_lowercase(),
         // Who a resource is assigned to, by the id the workspace names them with.
-        (ColumnKind::Principal, Lit::Principal(p) | Lit::Text(p)) => p.clone(),
+        (ColumnKind::Actor, Lit::Actor(who)) => tilolang_runtime::ids::actor_text(who),
+        (ColumnKind::Actor, Lit::Text(who)) => who.clone(),
         _ => return None,
     })
 }

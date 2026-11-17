@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use ui::framework::{LaunchInput, Publishes, ResourceApp, RunMode, ViewCx};
-use ui::record::RecordId;
+use ui::record::DocumentId;
 use ui::tilo_resource::{
     self, ActionCx, Bytes, Id, Invoke, JsonSchema, ModelError, Refusal, SearchEntry, resource,
 };
@@ -240,7 +240,7 @@ impl PdfMarkup {
                     page_id: annotation.page_id,
                     kind: annotation.mark,
                     color: annotation.color,
-                    author: annotation.author,
+                    author: Author::Named(annotation.author),
                     created_ms: annotation.created_ms,
                     space: GeomSpace::User,
                     ..Annotation::default()
@@ -416,10 +416,7 @@ impl PdfMarkup {
             page_id: annotation.page_id,
             kind: annotation.mark,
             color: annotation.color,
-            author: cx
-                .author()
-                .map(ui::tilo_resource::MemberId::key)
-                .unwrap_or_default(),
+            author: Author::of(cx),
             chars: annotation.chars,
             created_ms: cx.now_ms(),
             space: annotation.space,
@@ -473,10 +470,7 @@ impl PdfMarkup {
                 y: note.y,
             },
             color: note.color,
-            author: cx
-                .author()
-                .map(ui::tilo_resource::MemberId::key)
-                .unwrap_or_default(),
+            author: Author::of(cx),
             chars: None,
             created_ms: cx.now_ms(),
             space: note.space,
@@ -615,7 +609,6 @@ impl PdfMarkup {
     #[action(label = "pdf-tool-sign")]
     pub fn add_signature(
         &mut self,
-        cx: &mut ActionCx,
         #[param("The signature")] signature: NewSignature,
     ) -> Result<(), Refusal> {
         self.on_a_page(&signature.page_id)?;
@@ -626,18 +619,15 @@ impl PdfMarkup {
         {
             return Ok(());
         }
-        let signer = if signature.signer.trim().is_empty() {
-            cx.author()
-                .map(ui::tilo_resource::MemberId::key)
-                .unwrap_or_default()
-        } else {
-            signature.signer
-        };
+        let signer = signature.signer.trim();
+        if signer.is_empty() {
+            return Err(Refusal::new("a signature names who signed"));
+        }
         self.signatures.push(StoredSignature {
             id: signature.id,
             page_id: signature.page_id,
             rect: signature.rect,
-            signer,
+            signer: signer.to_owned(),
             date: signature.date,
             ink: signature.ink,
             space: signature.space,
@@ -653,24 +643,21 @@ impl PdfMarkup {
     pub fn add_typed_signature(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The name signed; your own when omitted")] signer: Option<String>,
+        #[param("The name signed")] signer: String,
         #[param("Page (1 when omitted)")] page: Option<usize>,
     ) -> Result<(), Refusal> {
         let page_id = self.page_id(page.unwrap_or(1)).ok_or(NO_PAGE)?;
         let id = cx.uuid().to_string();
         let date = crate::app::ymd_from_unix_ms(cx.now_ms());
-        self.add_signature(
-            cx,
-            NewSignature {
-                id,
-                page_id,
-                rect: PtRect::new(PAGE_W - MARGIN - 218.0, PAGE_H - MARGIN - 74.0, 218.0, 74.0),
-                signer: signer.unwrap_or_default().trim().to_owned(),
-                date,
-                ink: SignatureInk::Typed,
-                space: GeomSpace::Page,
-            },
-        )
+        self.add_signature(NewSignature {
+            id,
+            page_id,
+            rect: PtRect::new(PAGE_W - MARGIN - 218.0, PAGE_H - MARGIN - 74.0, 218.0, 74.0),
+            signer,
+            date,
+            ink: SignatureInk::Typed,
+            space: GeomSpace::Page,
+        })
     }
 
     /// Delete signature.
@@ -838,11 +825,13 @@ impl ResourceApp for PdfViewerShell {
         }
     }
 
-    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
         input.argument().map(|path| {
-            RecordId::derived(
+            DocumentId::derived(
                 MARKUP_ROLE,
-                &RecordId::identify_file(std::path::absolute(path).unwrap_or_else(|_| path.into())),
+                &DocumentId::identify_file(
+                    std::path::absolute(path).unwrap_or_else(|_| path.into()),
+                ),
             )
         })
     }

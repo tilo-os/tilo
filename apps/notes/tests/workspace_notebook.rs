@@ -8,7 +8,7 @@ use notes::actions::{
 };
 use notes::{MainPanel, NotesShell, PageId};
 use ui::framework::testing::{TestApp, window_record};
-use ui::record::RecordId;
+use ui::record::DocumentId;
 
 fn titles(app: &TestApp<NotesShell>) -> Vec<String> {
     shown(app)
@@ -142,7 +142,7 @@ fn the_workspace_notebook_adopts_each_window_notebook_exactly_once() {
     let windows = app.window_records();
     assert_eq!(
         windows.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
-        [0x41, 0x42, 0x43].map(RecordId::window_default)
+        [0x41, 0x42, 0x43].map(DocumentId::window_default)
     );
     for ((_, doc), heads) in windows.iter().zip(originals) {
         assert_eq!(doc.clone().get_heads(), heads);

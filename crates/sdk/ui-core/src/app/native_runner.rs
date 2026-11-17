@@ -61,9 +61,10 @@ fn create_accessibility_adapter(
 struct AppHandler {
     app: App,
     animation_schedule: animation_schedule::AnimationSchedule,
-    /// When the next "just typed" highlight steps down its fade
-    /// (`PresenceCtx::typing_next_step`).
-    typing_step_at: Option<crate::time::Instant>,
+    /// When what widgets paint from presence next changes on its own: a "just
+    /// typed" highlight steps down its fade, or a composer gone quiet drops
+    /// out of "… is typing" (`PresenceCtx::widgets_change_at`).
+    widgets_change_at: Option<crate::time::Instant>,
     /// When the next presence step is due: a phase's dwell beginning, or a step
     /// of the fade of the text it wrote (`PresenceCtx::interaction_next_wake_deadline`).
     interaction_step_at: Option<crate::time::Instant>,
@@ -4180,17 +4181,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             tracing::debug!(target: "tilo.app.activation", "existing native window activation requested");
         }
 
-        // A "just typed" highlight fades in steps, each a wake deadline: a
-        // step that came due paints once, and the loop sleeps between them
-        // instead of repainting the window at every refresh while a peer
-        // types.
+        // A "just typed" highlight fades in steps, and a composer gone quiet
+        // drops out of "… is typing", each a wake deadline: one that came due
+        // paints once, and the loop sleeps between them instead of repainting
+        // the window at every refresh while a peer types.
         let typing_now = crate::time::now();
         app.presence_ctx.prune_typing(typing_now);
-        let typing_step_due = self.typing_step_at.is_some_and(|due| due <= typing_now);
+        app.presence_ctx.prune_composing(typing_now);
+        let typing_step_due = self.widgets_change_at.is_some_and(|due| due <= typing_now);
         if typing_step_due {
             request_primary_redraw();
         }
-        self.typing_step_at = app.presence_ctx.typing_next_step(typing_now);
+        self.widgets_change_at = app.presence_ctx.widgets_change_at(typing_now);
         let typing_active = typing_step_due;
 
         // What an action shows steps the same way: the frame a phase's dwell
@@ -4394,7 +4396,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             .into_iter()
             .chain(spinner_pose.filter(|_| !spinner_due))
             .chain(tooltip_reveal.filter(|_| !tooltip_pending))
-            .chain(self.typing_step_at)
+            .chain(self.widgets_change_at)
             .chain(self.held_frame)
             .chain(permissions_change_at)
             .min();
@@ -5053,7 +5055,7 @@ impl App {
     }
 
     /// [`Self::run_with_setup`], serving the windows the shell opens in this
-    /// process later with `open` ([`crate::window_channel`]): each becomes one
+    /// process later with `open` ([`crate::window_link`]): each becomes one
     /// more window of the loop, and the loop ends with the last.
     #[allow(
         clippy::expect_used,
@@ -5129,7 +5131,7 @@ impl App {
         // The channel is taken before the launch's own window is made: the
         // shell takes a window as it maps as one this process serves, and only
         // a process that said so before that is served more.
-        let open = open.and_then(|open| process_windows::serve_channel(&proxy).map(|()| open));
+        let open = open.and_then(|open| process_windows::serve_link(&proxy).map(|()| open));
         let mut handler = self.into_handler(&proxy, native_scenario, setup);
         handler.windowless = crate::host::environment().windowless;
         let mut handler = process_windows::ProcessWindows::new(handler, proxy, open);
@@ -5282,7 +5284,7 @@ impl App {
             native_input_pointer_passthrough: false,
             native_input_route_isolation: false,
             animation_schedule: animation_schedule::AnimationSchedule::default(),
-            typing_step_at: None,
+            widgets_change_at: None,
             interaction_step_at: None,
             held_frame: None,
             still_animation: animation_schedule::StillAnimation::default(),

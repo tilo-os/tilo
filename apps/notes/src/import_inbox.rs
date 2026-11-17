@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use base64::Engine as _;
 use serde::Deserialize;
 use ui::application::HostContext;
-use ui::tilo_resource::{Bytes, Id, Invoke, Replica};
+use ui::tilo_resource::{Bytes, Id, Invoke, MemberId, Replica};
 
 use crate::notebook::{Notebook, notebook, page_id};
 
@@ -90,7 +90,7 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
         .content()
         .cloned()
         .unwrap_or_else(tilo_content::ContentStore::memory);
-    let author = context.author().key();
+    let author = context.author().clone();
     context.migrate_record(move |doc| apply(doc, entries, &store, &author))?;
     for name in names {
         let _ = tilo_files::blocking::remove(&data, &name);
@@ -103,9 +103,9 @@ pub(crate) fn apply(
     doc: &mut automerge::AutoCommit,
     entries: Vec<Entry>,
     content: &tilo_content::ContentStore,
-    author: &str,
+    author: &MemberId,
 ) -> Result<bool, String> {
-    let mut replica = Replica::<Notebook>::from_doc(doc.clone()).as_author(author);
+    let mut replica = Replica::<Notebook>::from_doc(doc.clone()).as_member(author.clone());
     let held: BTreeSet<Id> = replica
         .state()
         .map_err(|error| error.to_string())?
@@ -349,7 +349,15 @@ mod tests {
         let mut replica = Replica::<Notebook>::new();
         let mut doc = replica.doc_mut().clone();
         let content = tilo_content::ContentStore::memory();
-        assert!(apply(&mut doc, entries.clone(), &content, "ada").unwrap());
+        assert!(
+            apply(
+                &mut doc,
+                entries.clone(),
+                &content,
+                &ui::tilo_resource::MemberId::person("ada")
+            )
+            .unwrap()
+        );
         let notebook = <Notebook as ui::tilo_resource::Resource>::read(&doc).unwrap();
         let note = |key: &str| {
             notebook
@@ -377,7 +385,15 @@ mod tests {
         assert!(blocks.contains(&format!("asset:{digest}")), "{blocks}");
 
         // Opening again with the same entries adds nothing.
-        assert!(!apply(&mut doc, entries, &content, "ada").unwrap());
+        assert!(
+            !apply(
+                &mut doc,
+                entries,
+                &content,
+                &ui::tilo_resource::MemberId::person("ada")
+            )
+            .unwrap()
+        );
         let again = <Notebook as ui::tilo_resource::Resource>::read(&doc).unwrap();
         assert_eq!(again.pages.len(), 3);
     }

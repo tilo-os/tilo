@@ -377,9 +377,9 @@ fn ordinary_application_starts_with_an_oversized_workspace_catalogue() {
 fn committed_initial_route_uses_one_worker_and_blocks_default_publication() {
     use automerge::transaction::Transactable;
     let cluster = Uuid::new_v4();
-    let want = crate::record::RecordCheckout::new(
-        crate::record::RecordId::minted(),
-        crate::record::RecordKind::new("report"),
+    let want = crate::record::DocumentCheckout::new(
+        crate::record::DocumentId::minted(),
+        crate::record::ResourceType::new("report"),
     );
     let mut source = crate::record::RecordSet::in_memory().with_home(cluster.to_string());
     let mut original = crate::state::State::new();
@@ -449,9 +449,9 @@ fn committed_initial_route_uses_one_worker_and_blocks_default_publication() {
 fn switching_to_a_record_still_joining_joins_its_route_once() {
     use automerge::transaction::Transactable;
     let cluster = Uuid::new_v4();
-    let want = crate::record::RecordCheckout::new(
-        crate::record::RecordId::minted(),
-        crate::record::RecordKind::new("report"),
+    let want = crate::record::DocumentCheckout::new(
+        crate::record::DocumentId::minted(),
+        crate::record::ResourceType::new("report"),
     );
     let mut source = crate::record::RecordSet::in_memory().with_home(cluster.to_string());
     let mut original = crate::state::State::new();
@@ -530,7 +530,7 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
     };
     let (fd, captures, _thread) = stand_up_fake_broker(broker);
     let definition = runner_probe_definition();
-    let shown = crate::record::RecordId::minted();
+    let shown = crate::record::DocumentId::minted();
     let manager = manager_on_record_route(
         fd,
         definition.app_id().to_owned(),
@@ -571,7 +571,7 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
         crate::App::from_component_with_collaboration(component, runner_inputs(), manager).unwrap();
     assert_eq!(captures.lock().unwrap().joined.len(), 1, "the launch route");
 
-    let wanted = crate::record::RecordId::minted();
+    let wanted = crate::record::DocumentId::minted();
     let (next, target) = reopener.prepare(definition, wanted.clone()).unwrap();
     let replacement = definition
         .instantiate(next, target, RestoreInput::None)

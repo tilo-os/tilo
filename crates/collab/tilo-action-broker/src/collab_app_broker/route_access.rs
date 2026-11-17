@@ -19,7 +19,7 @@ pub(super) enum RouteAccess {
 
 /// What the attested launch of `app` may do on `route`: its own route, or
 /// one of the workspace's records
-/// ([`collab_types::WORKSPACE_RECORDS`]); or, read-only, a record of another app whose kinds its surface declares it
+/// ([`collab_types::WORKSPACE_DOCUMENTS`]); or, read-only, a record of another app whose kinds its surface declares it
 /// reads, when the person may read that record (`reads_record`). In the
 /// person's own workspace only the records of theirs its surface declares
 /// ([`person_record_join`]). Anything else is refused: no app writes on
@@ -38,7 +38,7 @@ pub(super) fn attested_route_access(
     }
     // A workspace record is changed from any app's window of its workspace; the
     // workspace's grants on its owner decide each change.
-    if collab_types::workspace_record(&route.app_id, &route.record_id).is_some() {
+    if collab_types::workspace_document(&route.app_id, &route.record_id).is_some() {
         return Ok(RouteAccess::Own);
     }
     if !personal_cluster && !ui::app_surface::reads_app(app, &route.app_id) {
@@ -173,7 +173,7 @@ mod tests {
             "nor another app's record it declares no read of"
         );
         let emoji = CrdtRoute {
-            record_id: collab_types::workspace_record_id("tilo.workspace.emoji"),
+            record_id: collab_types::workspace_document_id("tilo.workspace.emoji"),
             ..workspace_route("so.tilo.chat")
         };
         assert_eq!(

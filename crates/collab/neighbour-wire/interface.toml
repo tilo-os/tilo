@@ -20,6 +20,7 @@ sources = [
     "crates/hosting/tilo-delivery-protocol/src/transport_v2/delta.rs",
     "crates/hosting/tilo-delivery-protocol/src/transport_v2/presence.rs",
     "crates/collab/neighbour-wire/src/lib.rs",
+    "crates/collab/collab-types/src/own_record.rs",
     "crates/collab/neighbour-wire/src/actions.rs",
     "crates/collab/neighbour-wire/src/offer.rs",
     "crates/collab/neighbour-wire/src/colorimetry.rs",
@@ -283,6 +284,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::NotAuthorised.workspace_id" = "#0 WorkspaceId"
 "Envelope::OpenRecord" = "#34 struct"
 "Envelope::OpenRecord.channel" = "#1 [u8; 32]"
+"Envelope::OpenRecord.own" = "#2 Option<OwnedChannel>"
 "Envelope::OpenRecord.workspace_id" = "#0 WorkspaceId"
 "Envelope::PeerRelayHello" = "#8 struct"
 "Envelope::PeerRelayHello.hosted_workspaces" = "#0 Vec<WorkspaceId>"
@@ -494,6 +496,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "NeighbourMsg::AppDocument.app_id" = "#1 String"
 "NeighbourMsg::AppDocument.cluster_id" = "#2 String"
 "NeighbourMsg::AppDocument.envelope" = "#4 Box<SignedOp>"
+"NeighbourMsg::AppDocument.own" = "#5 Option<OwnRecord>"
 "NeighbourMsg::AppDocument.peer" = "#0 PeerId"
 "NeighbourMsg::AppDocument.record_id" = "#3 String"
 "NeighbourMsg::Heartbeat" = "#10 struct"
@@ -647,6 +650,12 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "OpKind::Change" = "#0 unit"
 "OpKind::Compaction" = "#1 unit"
 "OpKind::Redaction" = "#2 unit"
+"OwnRecord" = "struct"
+"OwnRecord.kind" = "#0 String"
+"OwnRecord.owner" = "#1 [u8; 32]"
+"OwnedChannel" = "struct"
+"OwnedChannel.app_id" = "#0 String"
+"OwnedChannel.record" = "#1 OwnRecord"
 "PathStep" = "enum external"
 "PathStep::cell" = "#3 tuple(String, String)"
 "PathStep::field" = "#0 tuple(String)"
@@ -804,8 +813,8 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "ShellSelection.head" = "#1 String"
 "ShellWindow" = "struct deny_unknown_fields"
 "ShellWindow.app" = "#0 String"
+"ShellWindow.document" = "#1 [u8; 8]"
 "ShellWindow.focused" = "#3 bool"
-"ShellWindow.record" = "#1 [u8; 8]"
 "ShellWindow.rect" = "#2 [u16; 4]"
 "Showing" = "struct"
 "Showing.camera" = "#0 bool"

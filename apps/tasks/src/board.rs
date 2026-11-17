@@ -13,13 +13,13 @@ use crate::{Filter, Nav, TasksEffect, reference, tr};
 
 pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
     let chosen = nav.filter.clone();
-    let me = cx.me().map(str::to_owned);
+    let me = cx.me().cloned();
     let board = cx.switch(&chosen, move |cx, chosen| {
         let filter = chosen.as_deref().and_then(Filter::of).unwrap_or_default();
         let tracker = cx.value(Tracker::clone);
         let me = me.clone();
         cx.switch(&tracker, move |cx, tracker| {
-            lanes(cx, tracker, &filter, me.as_deref())
+            lanes(cx, tracker, &filter, me.as_ref())
         })
     });
     // The board's name is the window's location: the bar says where the
@@ -44,7 +44,12 @@ fn status_of(lane: &str) -> Option<Status> {
         .find(|status| status.label_key() == lane)
 }
 
-fn lanes(cx: &ViewCx<Tracker>, tracker: &Tracker, filter: &Filter, me: Option<&str>) -> Element {
+fn lanes(
+    cx: &ViewCx<Tracker>,
+    tracker: &Tracker,
+    filter: &Filter,
+    me: Option<&ui::tilo_resource::MemberId>,
+) -> Element {
     let people = cx.people();
     let mut board = Board::new().with_id("tasks-board");
     for status in Status::ALL {
@@ -106,7 +111,7 @@ fn card(
     ));
     if let Some(assignee) = &issue.assignee {
         let who = people.actor(&assignee.0);
-        facts = facts.push(Box::new(if who.agent {
+        facts = facts.push(Box::new(if who.agent() {
             Badge::text(who.name).style(ChipStyle::Tinted(Tone::Info))
         } else {
             Badge::text(who.name)

@@ -1221,7 +1221,7 @@ impl Resolver<'_> {
                     );
                     return Ty::Error;
                 }
-                // A field's map may hold a set per key (`Map<Set<Principal>>`): stored element by
+                // A field's map may hold a set per key (`Map<Set<Actor>>`): stored element by
                 // element, so it is a field's container too.
                 let set_per_key = field_position
                     && name.name == "Map"

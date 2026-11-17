@@ -356,7 +356,7 @@ mod tests {
             desktop.windows = vec![
                 ShellWindow {
                     app: "so.tilo.notes".into(),
-                    record: [1; 8],
+                    document: [1; 8],
                     rect: [0, 0, 1, 1],
                     focused: true,
                 };

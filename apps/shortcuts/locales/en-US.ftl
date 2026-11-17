@@ -1,4 +1,4 @@
-shortcuts-runs = Recent runs
+shortcuts-invocations = Recent invocations
 shortcuts-edit = Edit
 shortcuts-duplicate = Duplicate
 shortcuts-run = Run
@@ -6,7 +6,7 @@ shortcuts-delete = Delete
 shortcuts-library-unavailable = Saved shortcuts are not available here
 shortcuts-saved-empty = No shortcuts yet
 shortcuts-saved-empty-draft = Describe one and the agent drafts it for you.
-shortcuts-last-run = Last run
+shortcuts-last-invocation = Last invocation
 shortcuts-input-placeholder = Type a value
 shortcuts-blocks = Building blocks
 shortcuts-name = Name

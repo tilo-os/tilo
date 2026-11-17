@@ -244,9 +244,11 @@ member_identity() {
 
 # The plans file the relay and the host admit by (docs/hosted-browser.md,
 # "Metering"): five free Browser page actions, so the card prompt comes after
-# them, and one account with a card on file for the Linux VMs and for what
-# follows the card. TILO_SH_BROWSER_FREE_ACTIONS sets another allowance: a
-# check that counts page actions gives itself few of them. The file lives in
+# them, and the stack's account with a card on file for the Linux VMs and for
+# what follows the card — the account the relay places its workspaces' VMs for,
+# so a proof run inside one names the account that owns it.
+# TILO_SH_BROWSER_FREE_ACTIONS sets another allowance: a check that counts page
+# actions gives itself few of them. The file lives in
 # the secrets the stack mounts for the relay, which reads it again for every
 # page action: an account added to it mid-run is served from the next one.
 plans_file=$secrets/vm-host-plans.json
@@ -273,7 +275,7 @@ plans() {
     "raise_limit": "http://localhost:24110/billing/plan?account={account}"
   },
   "accounts": {
-    "acct-with-card": {
+    "acct-tilo-sh": {
       "plan": "local",
       "max_running": 2,
       "max_vms": 5,

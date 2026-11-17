@@ -392,6 +392,7 @@ impl NativeWorkspaceOwner {
                     app,
                     record,
                     envelope,
+                    ..
                 } = &request.operation
                 else {
                     return Err("unsupported native owner commit family".into());
@@ -514,6 +515,7 @@ fn numbered(
             app,
             record,
             envelope,
+            ..
         } = &mut request.operation
         else {
             return Err("unsupported native owner commit family".into());

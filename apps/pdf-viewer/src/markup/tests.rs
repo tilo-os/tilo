@@ -30,7 +30,7 @@ fn markup(replica: &Replica<PdfMarkup>) -> PdfMarkup {
 }
 
 fn anno(page: usize, kind: AnnoKind, color: HighlightColor, author: &str) -> Annotation {
-    Annotation::new(page, kind, color, author)
+    Annotation::new(page, kind, color, crate::model::Author::named(author))
 }
 
 fn hl(page: usize) -> Annotation {
@@ -888,10 +888,13 @@ fn markup_actions_apply_through_the_api_and_undo_as_their_author() {
         ui::framework::testing::TestApp::<crate::PdfViewerShell>::new().expect("the reader");
     app.invoke(PdfMarkup::START_PAGE_PLAN.with(3))
         .expect("the plan");
-    app.invoke(PdfMarkup::ADD_TYPED_SIGNATURE.with((Some("Grace Hopper".to_owned()), Some(2))))
+    app.invoke(PdfMarkup::ADD_TYPED_SIGNATURE.with(("Grace Hopper".to_owned(), Some(2))))
         .expect("the owner signs");
-    app.invoke(PdfMarkup::ADD_TYPED_SIGNATURE.with((None, Some(1))))
-        .expect("the owner signs as themselves");
+    assert!(
+        app.invoke(PdfMarkup::ADD_TYPED_SIGNATURE.with(("  ".to_owned(), Some(1))))
+            .is_err(),
+        "a signature names who signed"
+    );
     app.call(
         "add-note",
         serde_json::json!({ "text": "Check the figures", "page": 3 }),
@@ -905,28 +908,15 @@ fn markup_actions_apply_through_the_api_and_undo_as_their_author() {
         .expect("named signer is saved");
     assert_eq!(named.ink, SignatureInk::Typed);
     assert_eq!(named.page, 2);
-    let own = state
-        .list_signatures()
-        .into_iter()
-        .find(|signature| signature.page == 1)
-        .expect("unnamed signature is saved");
-    assert!(
-        !own.signer.is_empty(),
-        "an unnamed signature is the invoker's"
-    );
     let note = state
         .list_comments()
         .into_iter()
         .find(|comment| comment.comment.text == "Check the figures")
         .expect("the note's comment");
     assert_eq!(note.page, 3);
-    assert_eq!(
-        note.comment
-            .author
-            .member()
-            .and_then(ui::tilo_resource::MemberId::person_id),
-        Some(own.signer.as_str()),
-        "both are signed by the invoker"
+    assert!(
+        note.comment.author.member().is_some(),
+        "the note is signed by the invoker"
     );
     assert!(
         state

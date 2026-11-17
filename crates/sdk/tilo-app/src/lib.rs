@@ -312,8 +312,8 @@ pub mod prelude {
     };
     pub use tilo_resource::{
         self, ActionCx, ActionDecl, ActionKind, Atom, Collection, Counter, Delta, Demand, Edit,
-        Effect, Id, Invoke, Model, Outbox, Params, Path, PlainText, Refusal, Replica, Resource,
-        SearchEntry, Set, Settled, TextEdit, Undoing, resource,
+        Effect, Id, Invoke, MemberId, Model, Outbox, Params, Path, PlainText, Refusal, Replica,
+        Resource, SearchEntry, Set, Settled, TextEdit, Undoing, resource,
     };
     pub use ui_core::i18n::LabelKey;
 
@@ -326,7 +326,8 @@ pub mod prelude {
     pub use ui_core::arriving::{Arrival, Arriving};
     pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::record::{
-        RECORD_ID_XATTR, RecordCheckout, RecordId, RecordKind, RecordSaveStatus, WorkspaceAnswer,
+        DOCUMENT_ID_XATTR, DocumentCheckout, DocumentId, RecordSaveStatus, ResourceType,
+        WorkspaceAnswer,
     };
     pub use ui_core::storage::{DeviceClass, Scope, SettingsSchema};
     pub use ui_core::tilo_actions;

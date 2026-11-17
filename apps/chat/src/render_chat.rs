@@ -554,19 +554,8 @@ pub(crate) fn typing_line(
     key: &ui::presence::PresenceKey,
 ) -> Option<String> {
     let mut writers: Vec<String> = presence
-        .carets
-        .get(key)
-        .into_iter()
-        .flatten()
-        .map(|(user, _)| user)
-        .chain(
-            presence
-                .selections
-                .get(key)
-                .into_iter()
-                .flatten()
-                .map(|(user, _)| user),
-        )
+        .composing_at(key, ui::time::now())
+        .iter()
         .filter(|user| !presence.is_own_identity(user))
         .map(|user| presence.display_name(user))
         .collect();
@@ -890,7 +879,7 @@ mod tests {
         );
         app.attach_framework(ui::framework::Dispatcher::detached(
             "so.tilo.chat",
-            &app.me.id.clone(),
+            &ui::tilo_resource::MemberId::person(&app.me.id),
         ));
         let line = |id: &str, ts: i64| Message {
             id: id.into(),

@@ -52,7 +52,7 @@ use crate::history_source::{
     CompareError, HistorySource, compare_entries, groups::read_named_ranges,
 };
 use crate::permissions::MemberId;
-use crate::{HistoryEntry, HistoryEntryId, NamedRange, RecordId};
+use crate::{DocumentId, HistoryEntry, HistoryEntryId, NamedRange};
 
 /// Full authority namespace for one historical resource.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -60,7 +60,7 @@ pub struct HistoryResource {
     pub profile_id: String,
     pub workspace_id: String,
     pub app_id: String,
-    pub record_id: RecordId,
+    pub record_id: DocumentId,
 }
 
 impl HistoryResource {
@@ -68,7 +68,7 @@ impl HistoryResource {
         profile_id: impl Into<String>,
         workspace_id: impl Into<String>,
         app_id: impl Into<String>,
-        record_id: RecordId,
+        record_id: DocumentId,
     ) -> Self {
         Self {
             profile_id: profile_id.into(),

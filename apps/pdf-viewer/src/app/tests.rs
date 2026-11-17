@@ -235,7 +235,7 @@ fn highlight_on_first_page() -> ui::tilo_resource::Invoke<crate::PdfMarkup> {
                 1,
                 AnnoKind::highlight(PtRect::new(70.0, 150.0, 290.0, 15.0)),
                 HighlightColor::Yellow,
-                "Ada",
+                crate::model::Author::named("Ada"),
             )
         },
         "source-1",
@@ -949,7 +949,7 @@ fn shared_page_plan_keeps_markup_and_addresses_through_edits() {
                 2,
                 AnnoKind::Note { x: 12.0, y: 24.0 },
                 HighlightColor::Yellow,
-                "You",
+                crate::model::Author::named("You"),
             )
         };
         app.perform_action(
@@ -2425,7 +2425,7 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
         app.commit_edit(&mut Edits::lend(&mut st.doc));
         assert_eq!(
             app.signer(),
-            app.known_name(&app.author).unwrap_or_default(),
+            app.my_name().unwrap_or_default(),
             "an empty signer name falls back to the author"
         );
     }
@@ -2435,11 +2435,14 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
         let (mut app, mut st) = app_with_state();
         let me = "94381abe81de6c0a94381abe81de6c0a";
         let peer = "0badc0de0badc0de0badc0de0badc0de";
-        app.author = me.into();
+        app.author = crate::model::Author::Member(ui::tilo_resource::MemberId::person(me));
         app.signer_name.clear();
         let member =
             |id: &str| crate::model::Author::Member(ui::tilo_resource::MemberId::person(id));
-        app.attach_people(ui::framework::People::named(Some(me), &[(me, "")]));
+        app.attach_people(ui::framework::People::named(
+            Some(&ui::tilo_resource::MemberId::person(me)),
+            &[(ui::tilo_resource::MemberId::person(me), "")],
+        ));
         assert_eq!(app.comment_author_name(&member(me)), "You");
         assert_eq!(app.comment_author_name(&member(peer)), "Someone");
         assert_eq!(app.signer(), "");
@@ -2449,8 +2452,8 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
         assert_eq!(app.signatures.len(), signed, "no nameless signature");
         assert!(app.is_editing(&EditTarget::Signer), "the name field opens");
         app.attach_people(ui::framework::People::named(
-            Some(me),
-            &[(me, "Ada Lovelace")],
+            Some(&ui::tilo_resource::MemberId::person(me)),
+            &[(ui::tilo_resource::MemberId::person(me), "Ada Lovelace")],
         ));
         assert_eq!(app.comment_author_name(&member(me)), "Ada Lovelace");
         assert_eq!(app.signer(), "Ada Lovelace");
@@ -2459,10 +2462,20 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
     eprintln!("phase comment_authors_read_as_the_rosters_names");
     {
         let (mut app, mut st) = app_with_state();
-        app.author = "test-author".into();
+        app.author =
+            crate::model::Author::Member(ui::tilo_resource::MemberId::person("test-author"));
         app.attach_people(ui::framework::People::named(
-            Some("test-author"),
-            &[("test-author", "Tess Author"), ("peer-id", "Bob Builder")],
+            Some(&ui::tilo_resource::MemberId::person("test-author")),
+            &[
+                (
+                    ui::tilo_resource::MemberId::person("test-author"),
+                    "Tess Author",
+                ),
+                (
+                    ui::tilo_resource::MemberId::person("peer-id"),
+                    "Bob Builder",
+                ),
+            ],
         ));
         app.create_note(&mut Edits::lend(&mut st.doc), 2, (120.0, 200.0));
         let thread = PdfMarkup::of(&st.doc)

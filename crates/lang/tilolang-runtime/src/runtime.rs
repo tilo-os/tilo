@@ -11,7 +11,7 @@ use crate::core::{Core, ModelHost, OutsideSink};
 use crate::engine::EngineLimits;
 use crate::error::RuntimeError;
 use crate::exec::InvokeOutcome;
-use crate::ids::{DocId, ModuleHash, PackageId, Principal, RunId};
+use crate::ids::{Actor, DocId, ModuleHash, PackageId, RunId};
 use crate::meta::Meta;
 use crate::project::{ProjectOptions, project};
 use crate::run::Resolution;
@@ -427,7 +427,7 @@ impl Runtime {
     /// carries it to another app's runtime ([`crate::store::UNSEEN`]). `None` for a resource
     /// that holds no items.
     #[must_use]
-    pub fn unseen_reading(&self, person: &str, at: &ResourceRef) -> Option<Json> {
+    pub fn unseen_reading(&self, person: &Actor, at: &ResourceRef) -> Option<Json> {
         let (field, item) = self.core.item_collection_of(at)?;
         let first = self.core.first_unseen_of(person, at, &field, &item).ok()?;
         let count = self.core.unread_count_of(person, at).ok().flatten()?;
@@ -462,7 +462,7 @@ impl Runtime {
         Ok(self.core.take_reading(target, json))
     }
 
-    /// Evaluate an agent block as `principal`. A view renders and
+    /// Evaluate an agent block as `actor`. A view renders and
     /// can be pressed; an action application is invoked, or suggested when the authority asks
     /// (the block's module is the author, so the chain starts with it); data is returned.
     ///
@@ -471,7 +471,7 @@ impl Runtime {
     /// `Package` for a module that does not link, a trap, or a value of the wrong type.
     pub fn run_block(
         &self,
-        principal: &Principal,
+        actor: &Actor,
         block: &CompiledBlock,
     ) -> Result<BlockOutput, RuntimeError> {
         let pkg = self.core.load_block(&block.wasm, &block.meta)?;
@@ -486,7 +486,7 @@ impl Runtime {
                 let window = crate::view_instance::default_window(&target, &[]);
                 let view = ViewInstance::open(
                     Rc::clone(&self.core),
-                    (principal.clone(), window),
+                    (actor.clone(), window),
                     target,
                     Vec::new(),
                 )?;
@@ -499,9 +499,7 @@ impl Runtime {
                         "the block did not produce an action".into(),
                     ));
                 };
-                Ok(BlockOutput::Action(
-                    self.core.invoke_direct(principal, &aref)?,
-                ))
+                Ok(BlockOutput::Action(self.core.invoke_direct(actor, &aref)?))
             }
             BlockKind::Data => Ok(BlockOutput::Data(self.core.eval_block(
                 &pkg,
@@ -518,11 +516,7 @@ impl Runtime {
     /// # Errors
     ///
     /// A store failure while recording the invocation, or a block that traps.
-    pub fn run_agent_block(
-        &self,
-        agent: &Principal,
-        source: &str,
-    ) -> Result<AgentBlock, RuntimeError> {
+    pub fn run_agent_block(&self, agent: &Actor, source: &str) -> Result<AgentBlock, RuntimeError> {
         self.core.run_agent_block(agent, source)
     }
 
@@ -531,7 +525,7 @@ impl Runtime {
     pub fn check_written_view(
         &self,
         source: &str,
-        author: &Principal,
+        author: &Actor,
     ) -> Result<crate::written::WrittenViewInfo, Vec<tilolang::Diagnostic>> {
         self.core.check_written_view(source, author)
     }
@@ -545,9 +539,9 @@ impl Runtime {
     /// [`Runtime::open_view`].
     pub fn open_written_view(
         &self,
-        viewer: &Principal,
+        viewer: &Actor,
         source: &str,
-        author: &Principal,
+        author: &Actor,
         args: Vec<Value>,
     ) -> Result<ViewInstance, RuntimeError> {
         self.core.open_written_view(viewer, source, author, args)
@@ -561,7 +555,7 @@ impl Runtime {
     /// A store failure while recording.
     pub fn record_suggestion(
         &self,
-        invoker: &Principal,
+        invoker: &Actor,
         action: &str,
         args: Vec<Value>,
         suggestion: &crate::run::Suggestion,
@@ -586,7 +580,7 @@ impl Runtime {
     pub fn resolve_invocation(
         &self,
         invocation: &ResourceRef,
-        approver: &Principal,
+        approver: &Actor,
         resolution: Resolution,
     ) -> Result<String, RuntimeError> {
         self.core
@@ -706,14 +700,14 @@ impl Runtime {
             })
     }
 
-    /// Invoke an action as `principal`. The action is an [`ActionRef`], or an
-    /// `(action id, args)` pair for a call made straight by the principal.
+    /// Invoke an action as `actor`. The action is an [`ActionRef`], or an
+    /// `(action id, args)` pair for a call made straight by the actor.
     pub fn invoke_action(
         &self,
-        principal: &Principal,
+        actor: &Actor,
         action: impl Into<ActionRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.core.invoke_direct(principal, &action.into())
+        self.core.invoke_direct(actor, &action.into())
     }
 
     /// [`Runtime::invoke_action`] as the run `run`: an invocation every replica names the same
@@ -727,12 +721,12 @@ impl Runtime {
     pub fn invoke_action_named(
         &self,
         run: &RunId,
-        principal: &Principal,
+        actor: &Actor,
         action: impl Into<ActionRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
         let action = action.into();
         self.core
-            .invoke_direct_as(Some(run), principal, &action, action.from.as_ref())
+            .invoke_direct_as(Some(run), actor, &action, action.from.as_ref())
     }
 
     /// [`Runtime::invoke_action`] made from the resource `from`: what the resources the action
@@ -745,12 +739,12 @@ impl Runtime {
     /// As [`Runtime::invoke_action`].
     pub fn invoke_action_from(
         &self,
-        principal: &Principal,
+        actor: &Actor,
         action: impl Into<ActionRef>,
         from: &crate::value::ResourceRef,
     ) -> Result<InvokeOutcome, RuntimeError> {
         self.core
-            .invoke_direct_as(None, principal, &action.into(), Some(from))
+            .invoke_direct_as(None, actor, &action.into(), Some(from))
     }
 
     /// The arguments of an invocation of `action` with those left out (`None`) given their
@@ -826,35 +820,30 @@ impl Runtime {
     pub fn resolve(
         &self,
         run: &RunId,
-        approver: &Principal,
+        approver: &Actor,
         resolution: Resolution,
     ) -> Result<crate::run::RunOutcome, RuntimeError> {
         self.core.resolve(run, approver, resolution)
     }
 
-    /// Open a view for `principal`, in the window of its first resource argument.
+    /// Open a view for `actor`, in the window of its first resource argument.
     pub fn open_view(
         &self,
-        principal: &Principal,
+        actor: &Actor,
         view: &str,
         args: Vec<Value>,
     ) -> Result<ViewInstance, RuntimeError> {
         let target = self.core.view_target(view)?;
         let window = crate::view_instance::default_window(&target, &args);
-        ViewInstance::open(
-            Rc::clone(&self.core),
-            (principal.clone(), window),
-            target,
-            args,
-        )
+        ViewInstance::open(Rc::clone(&self.core), (actor.clone(), window), target, args)
     }
 
-    /// Open a view for `principal` in the window `window`: the state it declares is how their
+    /// Open a view for `actor` in the window `window`: the state it declares is how their
     /// window shows the resource and where they are in it, that person's own, so another person
     /// looking at the same window is not moved by it.
     pub fn open_window(
         &self,
-        principal: &Principal,
+        actor: &Actor,
         window: &str,
         view: &str,
         args: Vec<Value>,
@@ -862,7 +851,7 @@ impl Runtime {
         let target = self.core.view_target(view)?;
         ViewInstance::open(
             Rc::clone(&self.core),
-            (principal.clone(), window.to_owned()),
+            (actor.clone(), window.to_owned()),
             target,
             args,
         )
@@ -873,7 +862,7 @@ impl Runtime {
         self.core.registry.borrow().default_view(ty)
     }
 
-    /// Open the window of `resource` for `principal` (what `open(r)` asks for): through
+    /// Open the window of `resource` for `actor` (what `open(r)` asks for): through
     /// `view`, or the default view of its type.
     ///
     /// # Errors
@@ -882,7 +871,7 @@ impl Runtime {
     /// [`Runtime::open_window`].
     pub fn open_resource(
         &self,
-        principal: &Principal,
+        actor: &Actor,
         resource: &ResourceRef,
         view: Option<&str>,
     ) -> Result<ViewInstance, RuntimeError> {
@@ -893,7 +882,7 @@ impl Runtime {
             })?,
         };
         self.open_window(
-            principal,
+            actor,
             &resource.id_string(),
             &view,
             vec![Value::resource(resource)],
@@ -917,7 +906,7 @@ impl Runtime {
         &self,
         action: &str,
         subject: &ResourceRef,
-        viewer: &Principal,
+        viewer: &Actor,
     ) -> Result<Option<String>, RuntimeError> {
         let subject = crate::value::RefValue {
             target: Rc::new(subject.clone()),
@@ -940,7 +929,7 @@ impl Runtime {
         &self,
         action: &str,
         subject: &ResourceRef,
-        viewer: &Principal,
+        viewer: &Actor,
     ) -> Result<(Option<String>, Reading), RuntimeError> {
         let subject = crate::value::RefValue {
             target: Rc::new(subject.clone()),
@@ -962,7 +951,7 @@ impl Runtime {
         &self,
         action: &str,
         subject: &ResourceRef,
-        viewer: &Principal,
+        viewer: &Actor,
     ) -> Result<(Option<String>, Reading), RuntimeError> {
         let subject = crate::value::RefValue {
             target: Rc::new(subject.clone()),
@@ -989,7 +978,7 @@ impl Runtime {
         &self,
         action: &str,
         subject: &ResourceRef,
-        viewer: &Principal,
+        viewer: &Actor,
     ) -> Result<(Option<Presentation>, Reading), RuntimeError> {
         let subject = crate::value::RefValue {
             target: Rc::new(subject.clone()),
@@ -1030,7 +1019,7 @@ impl Runtime {
         *self.core.models.borrow_mut() = Some(Box::new(host));
     }
 
-    /// How views show a principal's name. Until it is set, a principal is its id.
+    /// How views show an actor's name. Until it is set, an actor is its id.
     pub fn set_name_host(&self, host: impl crate::core::NameHost + 'static) {
         *self.core.names.borrow_mut() = Some(Box::new(host));
     }
@@ -1109,14 +1098,14 @@ impl Runtime {
     /// The lenses on the resource `resource` (its id) now, as presence reports them: who,
     /// whether it is the person looking, and whether they are composing a message in it. What
     /// `lenses(r)` reads; a view that read the lenses on it runs again when they move.
-    pub fn set_lenses(&self, resource: &str, lenses: &[(Principal, bool, bool)]) {
+    pub fn set_lenses(&self, resource: &str, lenses: &[(Actor, bool, bool)]) {
         let key = crate::platform::lens_key(resource);
         let value = Value::List(
             lenses
                 .iter()
                 .map(|(who, mine, composing)| {
                     Value::Tuple(vec![
-                        Value::Principal(who.clone()),
+                        Value::Actor(who.clone()),
                         Value::Bool(*composing),
                         Value::Bool(*mine),
                     ])
@@ -1132,7 +1121,7 @@ impl Runtime {
     /// `person`'s seen mark of the resource `resource` (its id), as their own record keeps it
     /// ([`crate::seen`]): what `unseen(r)` and the marks the host draws read. A view that read
     /// it runs again when it moves.
-    pub fn set_seen(&self, person: &str, resource: &str, mark: Option<crate::seen::SeenMark>) {
+    pub fn set_seen(&self, person: &Actor, resource: &str, mark: Option<crate::seen::SeenMark>) {
         let key = crate::seen::seen_key(person, resource);
         let value = mark.map_or_else(Value::none, |mark| {
             Value::some(Value::Tuple(vec![
@@ -1148,7 +1137,7 @@ impl Runtime {
 
     /// `person`'s seen mark of `resource`, as this runtime holds it.
     #[must_use]
-    pub fn seen(&self, person: &str, resource: &str) -> Option<crate::seen::SeenMark> {
+    pub fn seen(&self, person: &Actor, resource: &str) -> Option<crate::seen::SeenMark> {
         self.core.seen_mark(person, resource)
     }
 
@@ -1158,7 +1147,7 @@ impl Runtime {
     /// # Errors
     ///
     /// The store could not read the versions of `at`.
-    pub fn unseen(&self, person: &str, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
+    pub fn unseen(&self, person: &Actor, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
         self.core.unseen_of(person, at)
     }
 
@@ -1170,10 +1159,10 @@ impl Runtime {
     /// The store could not read the versions of `at`.
     pub fn seen_by(
         &self,
-        person: &str,
+        person: &Actor,
         coll: &ResourceRef,
         at: &ResourceRef,
-    ) -> Result<Vec<crate::ids::Principal>, StoreError> {
+    ) -> Result<Vec<crate::ids::Actor>, StoreError> {
         Ok(self
             .core
             .seen_by_of(person, coll, at)?
@@ -1189,20 +1178,20 @@ impl Runtime {
     /// # Errors
     ///
     /// The store could not read the versions of `at`.
-    pub fn mark_seen(&self, person: &str, at: &ResourceRef) -> Result<bool, StoreError> {
+    pub fn mark_seen(&self, person: &Actor, at: &ResourceRef) -> Result<bool, StoreError> {
         self.core.mark_seen(person, at)
     }
 
     /// The runs `person` reviewed, as their own record keeps them: every version of one is
     /// seen. A view that read what is unseen runs again when they move.
-    pub fn set_seen_runs(&self, person: &str, runs: &[String]) {
+    pub fn set_seen_runs(&self, person: &Actor, runs: &[String]) {
         self.core.set_seen_runs(person, runs);
     }
 
     /// `person` reviewed the run `run` (its group, *Mark all seen*): every version it made
     /// is seen, in every app, and the host is handed it to keep ([`Self::take_seen`]). Whether
     /// it was not reviewed already.
-    pub fn mark_run_seen(&self, person: &str, run: &str) -> bool {
+    pub fn mark_run_seen(&self, person: &Actor, run: &str) -> bool {
         let mut runs = self.core.seen_runs(person);
         if runs.iter().any(|seen| seen == run) {
             return false;
@@ -1213,7 +1202,7 @@ impl Runtime {
             .seen_writes
             .borrow_mut()
             .push(crate::seen::SeenWrite::Run {
-                person: person.to_owned(),
+                person: person.clone(),
                 run: run.to_owned(),
             });
         true
@@ -1227,13 +1216,13 @@ impl Runtime {
     /// # Errors
     ///
     /// The store could not read the versions of one of them.
-    pub fn mark_all_seen(&self, person: &str, resources: &[String]) -> Result<usize, StoreError> {
+    pub fn mark_all_seen(&self, person: &Actor, resources: &[String]) -> Result<usize, StoreError> {
         self.core.mark_all_seen(person, resources)
     }
 
     /// Give back what the last catch-up in this runtime took away: every mark it moved, as it
     /// was, and the host is handed it to keep. Whether there was one to take back.
-    pub fn undo_seen(&self, person: &str) -> bool {
+    pub fn undo_seen(&self, person: &Actor) -> bool {
         self.core.undo_seen(person)
     }
 
@@ -1338,7 +1327,7 @@ impl Runtime {
         let note = |entry: &OutboxEntry, action: &str| ChangeNote {
             action: action.into(),
             args: Json::String(entry.id.clone()),
-            invoker: String::new(),
+            invoker: None,
             chain: Vec::new(),
             module: String::new(),
             approved_by: None,

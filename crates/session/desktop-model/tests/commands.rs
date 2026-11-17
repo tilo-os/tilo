@@ -494,9 +494,6 @@ tilo_test_env::scenario! {
             "only the active workspace changes"
         );
 
-        // A valid name is taken, for the workspace's governance to record; the shell shows the
-        // name the governance has until then.
-        let named = tree.workspaces[0].name.clone();
         let renamed = apply_to_active_workspace(
             &mut tree,
             &DesktopCommand::RenameWorkspace {
@@ -506,7 +503,7 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         assert_eq!(renamed, None);
-        assert_eq!(tree.workspaces[0].name, named);
+        assert_eq!(tree.workspaces[0].name, "Plans");
         for refused in [
             DesktopCommand::RenameWorkspace { name: "  ".into() },
             DesktopCommand::CreateStrip {
@@ -519,7 +516,7 @@ tilo_test_env::scenario! {
         ] {
             assert!(apply_to_active_workspace(&mut tree, &refused, &mut mint).is_err());
         }
-        assert_eq!(tree.workspaces[0].name, named);
+        assert_eq!(tree.workspaces[0].name, "Plans");
         assert_eq!(tree.workspaces[0].strips.len(), 2);
 
         // Removing the shown strip shows the workspace's first; a strip with

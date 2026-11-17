@@ -32,16 +32,17 @@ impl WindowPolicy for Movable {
         &mut self,
         windows: &[(WindowInfo, Rectangle<i32, Logical>)],
         _outputs: &[Rectangle<i32, Logical>],
-    ) -> Option<Vec<Arrangement>> {
+    ) -> Option<Vec<WindowPlacement>> {
         let at = (*self.at.borrow())?;
         Some(
             windows
                 .iter()
-                .map(|(window, _)| Arrangement {
+                .map(|(window, _)| WindowPlacement {
                     id: window.id,
                     location: at,
                     size: None,
                     clip: None,
+                    fullscreen: None,
                 })
                 .collect(),
         )

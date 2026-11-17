@@ -9,8 +9,8 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_actions::remote::workspace_activity as wire;
 
 use super::{
-    ActivityDeepLink, ActivityTree, ActivityView, BoundaryDirection, DetailAction,
-    GroupNameRequest, HistoryEntry, HistoryEntryId, LensSelection, Period, RecordId, SystemTime,
+    ActivityDeepLink, ActivityTree, ActivityView, BoundaryDirection, DetailAction, DocumentId,
+    GroupNameRequest, HistoryEntry, HistoryEntryId, LensSelection, Period, SystemTime,
     WorkSessionBoundary, WorkspaceActivityOutcome, WorkspaceActivityPane, WorkspaceHistoryId,
     WorkspaceScope, comparison_change_labels, comparison_field_changes, detail_provenance,
     handled_outcome, humanize_app_id, local_resume_snapshot, t, t_args,
@@ -644,7 +644,7 @@ impl WorkspaceActivityPane {
                             .host
                             .app_display_name(&step.app)
                             .unwrap_or_else(|| humanize_app_id(&step.app));
-                        let record = RecordId::parse(&step.record)
+                        let record = DocumentId::parse(&step.record)
                             .and_then(|id| id.file_path())
                             .and_then(|path| {
                                 path.file_name()

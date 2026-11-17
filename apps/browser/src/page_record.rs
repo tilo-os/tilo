@@ -285,10 +285,7 @@ impl PageRecord {
         }
         let action = PageAction::of(&entry)
             .ok_or_else(|| Refusal::new("a page action has a place and says what was done"))?;
-        if !action.is_by(
-            cx.author().map(ui::tilo_resource::MemberId::key).as_deref(),
-            cx.invoked_by().as_ref(),
-        ) {
+        if !action.is_by(cx.author(), cx.invoked_by().as_ref()) {
             return Err(Refusal::new(
                 "a page action is set down by the actor who did it",
             ));
@@ -492,12 +489,12 @@ impl PageAction {
     /// What was typed straight into the page, and what the tab's unnamed
     /// actor did, is a person's. Any other action is its actor's: the name
     /// the engine keeps `author` under.
-    fn is_by(&self, author: Option<&str>, by: Option<&Acting>) -> bool {
+    fn is_by(&self, author: Option<&tilo_resource::MemberId>, by: Option<&Acting>) -> bool {
         if self.how.0 == "input" || self.actor.0.is_empty() {
             return by.is_none_or(Acting::is_person);
         }
         author
-            .and_then(PageActor::named)
+            .and_then(|author| PageActor::of(&author.clone().into()))
             .is_some_and(|named| named.as_str() == self.actor.0)
     }
 
@@ -1054,11 +1051,19 @@ impl TabRecorder {
             // an actor on this one. So does an entry that may be another
             // session's of its name, which works from another place.
             let unknown = named && (doubted || (admitted.is_none() && self.forgot));
-            let by = named.then(|| match admitted {
-                Some(admitted) if doubted => admitted.from_device(None),
-                Some(admitted) => admitted,
-                None => ActionInvoker::admitted(&Acting::of_key(actor)),
-            });
+            let by = match (named, admitted) {
+                (false, _) => None,
+                (true, Some(admitted)) if doubted => Some(admitted.from_device(None)),
+                (true, Some(admitted)) => Some(admitted),
+                (true, None) => {
+                    // A shortened name says nobody: it is not set down as anyone's.
+                    let Some(actor) = PageActor::actor_of(actor) else {
+                        self.cursor = seq;
+                        continue;
+                    };
+                    Some(ActionInvoker::admitted(&Acting::from(actor)))
+                }
+            };
             let mut entry = listed.clone();
             if let Some(fields) = entry.as_object_mut() {
                 fields.insert("seq".into(), self.base.saturating_add(seq).into());

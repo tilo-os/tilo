@@ -79,7 +79,7 @@ impl PublishedSurface {
 
 /// Spelling of the package-primary record (route record `""`).
 const PRIMARY_RECORD_ALIAS: &str = "@tilo:package-primary";
-const MAX_RECORD_ID_BYTES: usize = 128;
+const MAX_DOCUMENT_ID_BYTES: usize = 128;
 
 /// The one canonical spelling of a live route record: `""` is the
 /// package-primary record, reserved spellings are never literal record ids,
@@ -90,7 +90,7 @@ pub fn canonical_record(route_record: &str) -> Result<String, String> {
     }
     let reserved = route_record.starts_with("@tilo:") || route_record.starts_with('*');
     if reserved
-        || route_record.len() > MAX_RECORD_ID_BYTES
+        || route_record.len() > MAX_DOCUMENT_ID_BYTES
         || !route_record.is_ascii()
         || route_record.trim() != route_record
         || route_record.bytes().any(|b| b.is_ascii_control())

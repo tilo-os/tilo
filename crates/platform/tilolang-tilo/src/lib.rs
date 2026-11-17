@@ -67,10 +67,10 @@ pub use tilolang_runtime as runtime;
 
 /// Where `meta`'s package keeps its resources for `person` (the lowercase hex of their user root
 /// key): their own record of the workspace when the app declares `records: .own`
-/// (`tilo_action_policy::member_record`), which only that person's devices read or change and
-/// every api decides as theirs alone. `None` for the workspace's record of the app, which
-/// every member reads; and for a person without a root identity, who is a member of no
-/// workspace, so nobody else reads what they keep.
+/// ([`member_record_of`]), which only that person's devices read or change and every api decides
+/// as theirs alone. `None` for the workspace's record of the app, which every member reads; and
+/// for a person without a root identity, who is a member of no workspace, so nobody else reads
+/// what they keep.
 #[must_use]
 pub fn own_record(meta: &tilolang::PackageMeta, person: &str) -> Option<String> {
     meta.own_records
@@ -78,24 +78,35 @@ pub fn own_record(meta: &tilolang::PackageMeta, person: &str) -> Option<String> 
         .flatten()
 }
 
-/// `person`'s own record of the app `app` in the workspace; `None` for a person without a root
-/// identity.
+/// `person`'s own record of the app `app` in the workspace, of the app's package kind
+/// (`tl.<app>`), which a package declaring `records: .own` keeps each member's own; `None` for a
+/// person without a root identity.
 #[must_use]
 pub fn member_record_of(app: &str, person: &str) -> Option<String> {
-    let id = tilo_action_policy::member_record_id(&person.to_ascii_lowercase(), app);
-    tilo_action_policy::member_record(&id)
-        .is_some()
-        .then_some(id)
+    collab_types::OwnRecord::of_person(&person.to_ascii_lowercase(), &format!("tl.{app}"))
+        .map(|own| own.record_id())
 }
 
-/// Whether `person` reaches what the record `record` holds: a member's own record
-/// ([`member_record_of`]) is that person's alone, whatever their role in the workspace, as every api
-/// decides it; any other record is the workspace policy's to decide. An agent reaches it as the
-/// person it acts for; an invoker acting for nobody reaches no one's own record.
+/// Whether the app `app`'s manifest declares its records each member's own (`records: .own`),
+/// as the build carries it or the package's surface marks it.
 #[must_use]
-pub fn reaches(record: Option<&str>, person: Option<&str>) -> bool {
-    match record.and_then(tilo_action_policy::member_record) {
-        Some((owner, _)) => person.is_some_and(|person| person.eq_ignore_ascii_case(owner)),
-        None => true,
+pub fn keeps_own_records(app: &str) -> bool {
+    collab_types::own_kinds(app).contains(&format!("tl.{app}"))
+}
+
+/// Whether `person` reaches what the record `record` of the app `app` holds: in an app whose
+/// manifest declares its records each member's own (`records: .own`), only the person's own
+/// record ([`member_record_of`]), whatever their role in the workspace, as every api decides it;
+/// in any other app, whatever the workspace policy decides. An agent reaches it as the person it
+/// acts for; an invoker acting for nobody reaches no one's own record.
+#[must_use]
+pub fn reaches(app: &str, record: Option<&str>, person: Option<&str>) -> bool {
+    if !keeps_own_records(app) {
+        return true;
     }
+    record.is_none_or(|record| {
+        person
+            .and_then(|person| member_record_of(app, person))
+            .is_some_and(|own| own == record)
+    })
 }

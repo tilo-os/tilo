@@ -73,6 +73,7 @@ impl StatePeer {
                 cluster_id: self.core.workspace.clone(),
                 record_id: record.into(),
                 envelope: Box::new(envelope),
+                own: self.core.own_write(app, record, &source),
             },
             now,
             true,
@@ -101,6 +102,7 @@ impl StatePeer {
             cluster_id,
             record_id,
             envelope,
+            own,
         } = message
         else {
             return Err("not a document message".into());
@@ -111,6 +113,7 @@ impl StatePeer {
         {
             return Err("transport author or document workspace mismatch".into());
         }
+        self.core.learn_own(&app_id, &record_id, own.as_ref());
         // A piece of a compaction that spans several ops changes nothing on its
         // own: it is gathered, and the compaction is admitted once it is whole.
         let envelope = if collab_types::is_compaction_piece(&envelope)
@@ -192,6 +195,7 @@ impl StatePeer {
                     cluster_id,
                     record_id,
                     envelope,
+                    own: own.clone(),
                 },
                 Held {
                     retained_replay,
@@ -246,6 +250,12 @@ impl StatePeer {
             .channel
             .artifact_records
             .insert(envelope.artifact, route.record.clone());
+        if let Some(own) = self.core.own_write(&route.app, &route.record, &source) {
+            candidate
+                .channel
+                .artifact_owners
+                .insert(envelope.artifact, own.person());
+        }
         candidate.channel.workspace.clone_from(&self.core.workspace);
         let mut validated_channel = candidate.channel.clone();
         validated_channel.grants.clone_from(&member.policy.grants);
@@ -311,6 +321,7 @@ impl StatePeer {
                         cluster_id,
                         record_id: route.record,
                         envelope,
+                        own: own.clone(),
                     },
                     Held {
                         retained_replay,
@@ -364,6 +375,7 @@ impl StatePeer {
                             cluster_id,
                             record_id: route.record,
                             envelope,
+                            own: own.clone(),
                         },
                         Held {
                             retained_replay,
@@ -412,6 +424,7 @@ impl StatePeer {
                     cluster_id,
                     record_id: route.record,
                     envelope,
+                    own: own.clone(),
                 },
                 Held {
                     retained_replay,
@@ -452,6 +465,7 @@ impl StatePeer {
                         cluster_id,
                         record_id: route.record,
                         envelope,
+                        own: own.clone(),
                     },
                     Held {
                         retained_replay,
@@ -469,6 +483,7 @@ impl StatePeer {
                         cluster_id,
                         record_id: route.record,
                         envelope,
+                        own: own.clone(),
                     },
                     Held {
                         retained_replay,
@@ -539,6 +554,7 @@ impl StatePeer {
                     cluster_id,
                     record_id: route.record,
                     envelope,
+                    own: own.clone(),
                 },
                 Held {
                     retained_replay,
@@ -568,6 +584,7 @@ impl StatePeer {
                         cluster_id,
                         record_id: route.record,
                         envelope,
+                        own: own.clone(),
                     },
                     Held {
                         retained_replay,

@@ -20,7 +20,7 @@ fn text(doc: &AutoCommit, key: &str) -> Option<String> {
 
 /// The workspace's copy of `want`, as another device wrote it: its saved
 /// document.
-fn written_elsewhere(want: &RecordCheckout, body: &str) -> Vec<u8> {
+fn written_elsewhere(want: &DocumentCheckout, body: &str) -> Vec<u8> {
     let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
     let store = owners.open(PACKAGE, WORKSPACE).unwrap();
     store
@@ -36,7 +36,7 @@ fn written_elsewhere(want: &RecordCheckout, body: &str) -> Vec<u8> {
 
 /// What the page's replication does with a record the host sent and no
 /// window holds open: it keeps it in the page's storage and tells the store.
-fn arrives(memory: &MemoryStore, store: &RecordStore, want: &RecordCheckout, bytes: Vec<u8>) {
+fn arrives(memory: &MemoryStore, store: &RecordStore, want: &DocumentCheckout, bytes: Vec<u8>) {
     let key = durable_store::StorageKey::document(PACKAGE, WORKSPACE, want.id.storage_key());
     memory.write(&key, WriteOp::Replace(bytes), None).unwrap();
     store.note_kept();
@@ -61,7 +61,7 @@ tilo_test_env::scenario! {
     // here.
     {
         let (memory, store) = page();
-        let want = RecordCheckout::new(RecordId::workspace_default(), RecordKind::new("note"));
+        let want = DocumentCheckout::new(DocumentId::workspace_default(), ResourceType::new("note"));
         let theirs = written_elsewhere(&want, "the workspace's");
 
         // What a list checks for every record it could name asks for nothing.
@@ -104,8 +104,8 @@ tilo_test_env::scenario! {
     // answer for one record says nothing of another.
     {
         let (_memory, store) = page();
-        let new = RecordCheckout::new(RecordId::window_default(7), RecordKind::new("note"));
-        let other = RecordCheckout::new(RecordId::window_default(8), RecordKind::new("note"));
+        let new = DocumentCheckout::new(DocumentId::window_default(7), ResourceType::new("note"));
+        let other = DocumentCheckout::new(DocumentId::window_default(8), ResourceType::new("note"));
         assert!(matches!(
             store.try_open_record(&new),
             Err(RecordOpenError::Arriving)
@@ -142,9 +142,9 @@ tilo_test_env::scenario! {
     // never waits, and never starts one in its place.
     {
         let (_memory, store) = page();
-        let theirs = RecordCheckout::new(
-            RecordId::of_member(&"b0".repeat(32), "mail.mailbox").unwrap(),
-            RecordKind::new("mail.mailbox"),
+        let theirs = DocumentCheckout::new(
+            DocumentId::of_member(&"b0".repeat(32), "mail.mailbox").unwrap(),
+            ResourceType::new("mail.mailbox"),
         );
         assert!(matches!(
             store.try_open_record(&theirs),
@@ -176,7 +176,7 @@ tilo_test_env::scenario! {
     {
         let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
         let store = owners.open(PACKAGE, WORKSPACE).unwrap();
-        let want = RecordCheckout::new(RecordId::workspace_default(), RecordKind::new("note"));
+        let want = DocumentCheckout::new(DocumentId::workspace_default(), ResourceType::new("note"));
         assert!(matches!(
             store.try_open_record(&want),
             Err(RecordOpenError::MissingRecord)

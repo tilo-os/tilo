@@ -3,7 +3,7 @@
 use super::*;
 use crate::TileSource;
 use crate::navigation::{ChromeEffect, LayoutEffect, Verb};
-use crate::surface::tests::{one_window_shell, shell_with};
+use crate::surface::tests::{in_view, one_window_shell, play_frames, shell_with, tabbed_shell};
 use crate::surface::{DesktopHandle, DesktopSurface};
 use crate::surface::{WorkspaceShare, WorkspaceShares};
 use std::cell::RefCell;
@@ -515,6 +515,31 @@ fn a_window_moves_to_another_strip_by_its_name() {
             .collect()
     });
     assert_eq!(strips, vec![StripId(90)], "the window is there now");
+}
+
+/// With one strip, a window that shares it is offered a new strip below, and choosing it leaves
+/// the move for the host that makes the strip; a window alone there is offered no strip at all.
+#[test]
+fn a_window_sharing_the_only_strip_is_offered_a_new_one() {
+    let (_surface, handle) = shell(2);
+    let route = first_route(&handle);
+    let rows = handle.window_menu(route.tab);
+    let strips = row(&rows, MOVE_TO_STRIP).expect("the strip submenu shows");
+    assert_eq!(ids(&strips.children), [MOVE_TO_NEW_STRIP]);
+    assert_eq!(strips.children[0].label, "New strip");
+
+    handle
+        .choose_window_menu(route.tab, MOVE_TO_NEW_STRIP, None)
+        .expect("the row is offered, so it is chosen");
+    assert_eq!(handle.take_new_strip_moves(), vec![route.tab]);
+    assert!(handle.take_new_strip_moves().is_empty(), "taken once");
+
+    let (_surface, alone) = shell(1);
+    let route = first_route(&alone);
+    assert!(
+        row(&alone.window_menu(route.tab), MOVE_TO_STRIP).is_none(),
+        "a window alone in the only strip has nowhere to go"
+    );
 }
 
 /// A window moves into another workspace, by that workspace's name.
@@ -1307,70 +1332,69 @@ fn only_a_host_windows_tab_offers_a_name() {
     assert_eq!(shown(&frame), ("Build".to_owned(), true));
 }
 
-/// Split right takes the tab out into a window of its own, right after the one it was in.
+/// Split right takes the tab out into a window of its own right after the one it was in, and Move
+/// to a new window takes it to the strip's end. Either way the strip shows the new window, past the
+/// display's edge too.
 #[test]
-fn split_right_splits_a_tab_into_the_window_beside_it() {
-    let (surface, handle) = one_window_shell(2);
-    let mut frame = present(surface);
-    let route = first_route(&handle);
-    let rows = handle.window_menu(route.tab);
-    assert!(row(&rows, SPLIT_RIGHT).is_some());
-    handle
-        .choose_window_menu(route.tab, SPLIT_RIGHT, None)
-        .unwrap();
-    settle(&mut frame);
-    let groups: Vec<(u64, Vec<TabId>)> = handle.read(|tree| {
-        tree.workspaces[0].strips[0]
-            .window_groups
-            .iter()
-            .map(|group| (group.id, group.tabs.iter().map(|tab| tab.id).collect()))
-            .collect()
-    });
-    assert_eq!(
-        groups.len(),
-        2,
-        "the strip holds the source and the new window"
+fn a_tab_taken_out_gets_a_window_of_its_own_in_view() {
+    let (surface, handle) = tabbed_shell(3, 5);
+    handle.set_viewport_width(1440.0);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1440, 900),
+        ui::theme::Theme::dark(),
     );
-    assert_eq!(groups[0].0, route.group, "the source stays where it was");
+    frame.relayout();
+    let route = first_route(&handle);
+    assert!(handle.focus_tab(route.tab));
+    play_frames(&mut frame, 60);
+    assert!(
+        !in_view(&frame, tab_at(&handle, 5)),
+        "the strip's end is out of sight"
+    );
+    let groups = |handle: &DesktopHandle| -> Vec<(u64, Vec<TabId>)> {
+        handle.read(|tree| {
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .map(|group| (group.id, group.tabs.iter().map(|tab| tab.id).collect()))
+                .collect()
+        })
+    };
+    let tabs = groups(&handle)[0].1.clone();
+
+    handle
+        .choose_window_menu(tabs[0], SPLIT_RIGHT, None)
+        .unwrap();
+    play_frames(&mut frame, 60);
+    let now = groups(&handle);
     assert_eq!(
-        groups[1].1,
-        vec![route.tab],
-        "the tab has a window to itself"
+        now[0],
+        (route.group, vec![tabs[1], tabs[2]]),
+        "the source stays where it was"
+    );
+    assert_eq!(
+        now[1].1,
+        vec![tabs[0]],
+        "the tab has a window to itself beside it"
     );
     assert_eq!(
         handle.read(|tree| tree.active_group.get(&route.strip).copied()),
-        Some(groups[1].0),
+        Some(now[1].0),
         "and the strip shows it"
     );
-}
 
-/// Move to a new window takes the tab to a window of its own at the strip's end.
-#[test]
-fn a_tab_moves_to_a_new_window_at_the_strips_end() {
-    let (surface, handle) = one_window_shell(3);
-    let mut frame = present(surface);
-    let route = first_route(&handle);
-    let rows = handle.window_menu(route.tab);
-    assert!(row(&rows, NEW_GROUP).is_some());
-    handle
-        .choose_window_menu(route.tab, NEW_GROUP, None)
-        .unwrap();
-    settle(&mut frame);
-    let groups: Vec<(u64, Vec<TabId>)> = handle.read(|tree| {
-        tree.workspaces[0].strips[0]
-            .window_groups
-            .iter()
-            .map(|group| (group.id, group.tabs.iter().map(|tab| tab.id).collect()))
-            .collect()
-    });
-    assert_eq!(groups.len(), 2);
-    assert_eq!(groups[0].0, route.group);
-    assert_eq!(groups[0].1.len(), 2, "the other tabs stay together");
+    handle.choose_window_menu(tabs[1], NEW_GROUP, None).unwrap();
+    play_frames(&mut frame, 60);
+    let now = groups(&handle);
+    assert_eq!(now[0].1, vec![tabs[2]], "the other tab stays in its window");
     assert_eq!(
-        groups.last().map(|(_, tabs)| tabs.as_slice()),
-        Some([route.tab].as_slice()),
-        "the tab is in a window of its own at the end"
+        now.last().map(|(_, tabs)| tabs.clone()),
+        Some(vec![tabs[1]]),
+        "the tab is at the end"
     );
+    assert!(in_view(&frame, tabs[1]), "and the strip shows it there");
 }
 
 /// A tabbed window offers closing the tab and closing the window; closing the window takes every
@@ -1423,8 +1447,8 @@ fn a_close_says_what_closed_and_its_undo_reopens_it() {
     let (surface, handle) = one_window_shell(1);
     let mut frame = present(surface);
     let route = first_route(&handle);
-    let said = handle.acknowledger();
-    assert!(said.current(ui::time::now()).is_none());
+    let said = handle.notice();
+    assert!(said.borrow().get().is_none());
 
     handle
         .choose_window_menu(route.tab, CLOSE_WINDOW, None)
@@ -1434,22 +1458,26 @@ fn a_close_says_what_closed_and_its_undo_reopens_it() {
         handle.read(|tree| tree.workspaces[0].strips[0].window_groups.is_empty()),
         "the strip's last window closed"
     );
-    let shown = said.current(ui::time::now()).expect("the close is said");
-    assert!(shown.text().ends_with("closed"), "{:?}", shown.text());
-    assert_eq!(shown.action(), Some("Undo"));
+    let shown = said.borrow().get().cloned().expect("the close is said");
+    assert!(shown.text.ends_with("closed"), "{:?}", shown.text);
+    let undo = &shown.actions[0];
+    assert_eq!((undo.name.as_str(), undo.icon.as_str()), ("Undo", "undo-2"));
+    let (since, gone) = said.borrow().span().expect("it is up");
+    assert_eq!(
+        gone - since,
+        ui::widget::toast::ACTION_NOTICE_LIFETIME,
+        "it stays long enough to reach Undo"
+    );
 
-    assert!(said.press_action(), "Undo is there to press");
+    assert!(handle.press_notice(&undo.id), "Undo is there to press");
     settle(&mut frame);
     assert_eq!(
         handle.read(|tree| tree.workspaces[0].strips[0].window_groups.len()),
         1,
         "Undo reopens the window"
     );
-    assert!(
-        said.current(ui::time::now()).is_none(),
-        "and the confirmation goes"
-    );
-    assert!(!said.press_action(), "an Undo is pressed once");
+    assert!(said.borrow().get().is_none(), "and the notice goes");
+    assert!(!handle.press_notice(&undo.id), "an Undo is pressed once");
 }
 
 /// A window running an app that controls the desktop offers to end that,

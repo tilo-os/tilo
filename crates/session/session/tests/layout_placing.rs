@@ -1,7 +1,7 @@
 //! Showing a resource is an action on the person's layout, never on the
 //! resource (shell.md §8, "The canvas composes views; it opens nothing").
 //!
-//! An layout entry names a resource and a view: the `place` action puts a
+//! A layout entry names a resource and a view: the `place` action puts a
 //! resource on the canvas as one of its published views at a point, and the
 //! entry's `shows` follows from the resource's app. Text typed on the canvas
 //! runs the one `find` the palette and an agent's `tilo` tool use, and the top
@@ -124,7 +124,7 @@ fn session() -> Session {
 
 /// The person at this device, as the session's own seat reads it: the identity it holds names them.
 fn person() -> String {
-    tilo_session::identity::seated_person(&options())
+    tilo_session::identity::own_person(&options())
 }
 
 fn step(session: &mut Session) {

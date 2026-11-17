@@ -11,7 +11,7 @@ use tilo_app::prelude::*;
 use tilo_app::{RemoteActions, RemoteActionsGuard};
 use tilo_reference::link::{
     AppId, HostOrigin, Link, LinkSecrets, LinkTarget, Mode, RecordSegment, ResourceAddress, Scope,
-    WebEntry,
+    WebEntries, WebEntry,
 };
 
 const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
@@ -211,13 +211,47 @@ tilo_test_env::scenario! {
             param_names(published, "share-invite-link"),
             ["view", "start", "end", "unit", "mode", "role", "expires_in"]
         );
+        // A tag declares no view of its own, but the view opens it as an
+        // item: the framework's item view is a view, so it too has a link.
         let tag_id = app.state().tags.ids().next().cloned().unwrap();
         let tag = tilo_resource::items::item_resource_id::<Notebook>("tags", &tag_id);
         let tag = find(&resources, &tag).expect("the tag is published");
-        assert!(
-            !tag.actions.iter().any(|spec| spec.id.starts_with("share-")),
-            "a resource without a view has no link"
+        assert_eq!(
+            tag.views
+                .iter()
+                .map(|view| view.id.as_str())
+                .collect::<Vec<_>>(),
+            ["item"]
         );
+        assert_eq!(param_names(tag, "share-link"), ["view", "mode"]);
+    }
+
+    phase an_items_link_names_the_item_it_opens_not_its_record;
+    // The item view the app's own opener gives an item is also what a link
+    // opens: the link names the item, so whoever opens it lands on the item
+    // rather than on the record it is kept in.
+    {
+        let (_host, _guard) = serve(Some(ENTRY));
+        let mut app = TestApp::<NotebookApp>::new().unwrap();
+        app.invoke(Notebook::TAG.with("draft")).unwrap();
+        let tag_id = app.state().tags.ids().next().cloned().unwrap();
+        let tag = tilo_resource::items::item_resource_id::<Notebook>("tags", &tag_id);
+
+        let answer = app
+            .call_on(&tag, "share-link", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        let url = answer["url"].as_str().expect("a link");
+        let entries = WebEntries::new(vec![WebEntry::new(ENTRY).unwrap()]);
+        let (link, damaged) = Link::parse_or_workspace(url, &entries).unwrap();
+        assert!(damaged.is_none(), "{url}");
+        assert_eq!(link.target.app, Some(AppId::parse(NotebookApp::ID).unwrap()));
+        assert_eq!(
+            link.target.resource.as_ref().map(|resource| resource.id.as_str()),
+            Some(tag.as_str()),
+            "the link names the tag, not the notebook"
+        );
+        assert_eq!(link.target.view, None, "the item view is the primary view");
     }
 
     phase share_link_asks_the_host_and_renders_the_link_under_its_entry;

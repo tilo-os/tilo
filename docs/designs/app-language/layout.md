@@ -140,7 +140,7 @@ rather than only its first frame.
 ## 7. On the platform
 
 The primitives are shared ui-core layout widgets (`Stack`, `Row`, `Grid`, `Split`, `Page`,
-`Layers`, `Scroll`), usable from Rust apps too, built on Taffy. `split` decides its arrangement
+`Layers`, `Scroll`), usable from Rust apps too, built on Taffy. `split` decides its layout
 during layout, so collapsing needs no re-evaluation.
 
 ## 8. Example

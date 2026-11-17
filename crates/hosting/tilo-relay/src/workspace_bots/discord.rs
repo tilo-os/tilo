@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use tilo_agent_participant::AppCatalogue;
+use tilo_agent_session::AppCatalogue;
 use tilo_resource::Replica;
 use tilo_user_identity::DeviceCert;
 

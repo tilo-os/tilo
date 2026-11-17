@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::{Acting, ActionAddress, ActionInvoker, InvocationUpdate, InvokerDevice};
+use ui::tilo_actions::{
+    Acting, ActionAddress, ActionInvoker, Actor, InvocationUpdate, InvokerDevice,
+};
 use ui::tilo_resource::history;
 use ui::tilo_resource::{Effect as _, Invoke};
 use ui::webview::test_engine::TestEngine;
@@ -40,6 +42,14 @@ fn ada() -> String {
     "ad".repeat(32)
 }
 
+fn by_ada() -> Actor {
+    Actor::from(ui::tilo_actions::MemberId::person(ada()))
+}
+
+fn by_agent(id: &str) -> Actor {
+    Actor::from(ui::tilo_actions::MemberId::agent(id))
+}
+
 /// Ada's Browser on one of her devices, showing the page, with `engine` as
 /// the engine of its tab.
 fn open(engine: &Arc<TestEngine>) -> App {
@@ -51,15 +61,15 @@ fn open(engine: &Arc<TestEngine>) -> App {
     app
 }
 
-/// An agent the action API admitted, by its principal.
+/// An agent the action API admitted, by its id.
 fn agent(principal: &str) -> ActionInvoker {
-    ActionInvoker::admitted(&Acting::of_key(principal))
+    ActionInvoker::admitted(&Acting::agent(principal))
 }
 
 /// An agent the action API admitted to act for Ada, by its principal: what
 /// the API of a record of Ada's own takes actions from, beside Ada.
 fn agent_for_ada(principal: &str) -> ActionInvoker {
-    ActionInvoker::admitted(&Acting::of_key(principal)).acting_for(ada())
+    ActionInvoker::admitted(&Acting::agent(principal)).acting_for(ada())
 }
 
 /// Ada's laptop, another of her devices, as the MCP server of the device
@@ -224,7 +234,7 @@ fn form_sent(seq: u64) -> Value {
 /// Ada's and Ben's agents fill, choose and send, each action set down by
 /// the engine as it ends.
 fn two_agents_answer_the_form(app: &mut App, engine: &TestEngine) {
-    let (ada, ben) = (agent("agent:ada"), agent("agent:ben"));
+    let (ada, ben) = (agent("ada"), agent("ben"));
     engine_sets_down(engine, &email_filled(1));
     act(app, Some(&ada), &fill("d1e2", "ada@example.org")).expect("the fill answers");
     engine_sets_down(engine, &country_chosen(2));
@@ -272,7 +282,7 @@ fn held(record: &PersonRecord<PageRecord>, tab: &str) -> Vec<(u64, String, Strin
 
 /// One step of the record's history: who made the change, how many actions
 /// of `tab` the record held after it, and the newest of them.
-fn steps(record: &PersonRecord<PageRecord>, tab: &str) -> Vec<(String, usize, String)> {
+fn steps(record: &PersonRecord<PageRecord>, tab: &str) -> Vec<(Actor, usize, String)> {
     record
         .record()
         .read(|doc| {
@@ -280,7 +290,14 @@ fn steps(record: &PersonRecord<PageRecord>, tab: &str) -> Vec<(String, usize, St
             history::versions(&mut doc)
                 .into_iter()
                 .filter_map(|version| {
-                    let author = version.context.as_ref()?.invoker.as_ref()?.acting.by.key();
+                    let author = version
+                        .context
+                        .as_ref()?
+                        .invoker
+                        .as_ref()?
+                        .acting
+                        .by
+                        .clone();
                     let then = history::read_at::<PageRecord>(&mut doc, &[version.hash])
                         .expect("a past version of the record reads");
                     let page = then.page(tab, 0);
@@ -299,7 +316,7 @@ fn steps(record: &PersonRecord<PageRecord>, tab: &str) -> Vec<(String, usize, St
 
 /// Read the tab's record through the page's own action, as a reviewer does.
 fn review(app: &mut App, since: Option<u64>) -> Value {
-    let reviewer = agent("agent:rev");
+    let reviewer = agent("rev");
     act(
         app,
         Some(&reviewer),
@@ -341,17 +358,9 @@ fn what_two_agents_did_is_the_record_in_order_under_their_names() {
     assert_eq!(
         steps(&record, &tab),
         [
-            (
-                "agent:ada".to_owned(),
-                1,
-                "Filled textbox \"Email\"".to_owned()
-            ),
-            ("agent:ben".to_owned(), 2, "Chose Belgium".to_owned()),
-            (
-                "agent:ada".to_owned(),
-                3,
-                "Clicked button \"Send\"".to_owned()
-            ),
+            (by_agent("ada"), 1, "Filled textbox \"Email\"".to_owned()),
+            (by_agent("ben"), 2, "Chose Belgium".to_owned()),
+            (by_agent("ada"), 3, "Clicked button \"Send\"".to_owned()),
         ]
     );
 
@@ -381,19 +390,19 @@ fn what_two_agents_did_is_the_record_in_order_under_their_names() {
             (5, String::new(), "click".to_owned()),
         ]
     );
-    let authors: Vec<String> = steps(&record, &tab)
+    let authors: Vec<Actor> = steps(&record, &tab)
         .into_iter()
         .map(|(author, ..)| author)
         .collect();
-    let person = ada();
+    let person = by_ada();
     assert_eq!(
         authors,
         [
-            "agent:ada",
-            "agent:ben",
-            "agent:ada",
-            person.as_str(),
-            person.as_str()
+            by_agent("ada"),
+            by_agent("ben"),
+            by_agent("ada"),
+            person.clone(),
+            person
         ],
         "the typing and the person's own click are the person's changes"
     );
@@ -444,10 +453,10 @@ fn an_agent_from_another_device_is_set_down_with_the_device_it_was_admitted_from
     let mut app = open(&engine);
     let laptop = laptop();
     let unnamed = InvokerDevice::certified([0x40; 32], "");
-    let first = agent_on("agent:task-a1", &laptop);
-    let second = agent_on("agent:task-a2", &laptop);
-    let third = agent_on("agent:task-d1", &unnamed);
-    let here = agent("agent:task-b1");
+    let first = agent_on("task-a1", &laptop);
+    let second = agent_on("task-a2", &laptop);
+    let third = agent_on("task-d1", &unnamed);
+    let here = agent("task-b1");
     // The engine is told a device by nobody, and one it lists is nothing a
     // api verified: here it says the agent on this device is on the laptop.
     let mut forged = field_filled(4, "agent:task-b1", "Arrival");
@@ -634,7 +643,7 @@ fn the_record_is_still_read_after_the_engine_started_again() {
     // The new engine sets its first action down at its own place 1. In the
     // tab's record it stands after the three before it, and that is the
     // place its answer names.
-    let ben = agent("agent:ben");
+    let ben = agent("ben");
     let again = json!({"seq": 1, "time_ms": 1_700_000_000_100_u64, "actor": "agent:ben",
         "action": "click", "ok": true, "message": "Clicked link \"Orders\"",
         "url": "https://shop.test/sent", "target": {"role": "link", "name": "Orders"}});
@@ -775,7 +784,7 @@ fn a_secret_filled_into_the_page_is_never_written() {
     const CARD: &str = "4929-1234-5678-9012";
     let engine = TestEngine::new();
     let mut app = open(&engine);
-    let ada = agent("agent:ada");
+    let ada = agent("ada");
     let secret = |text: &str| BrowserEffect::FillPageSecret {
         element: "d1e5".into(),
         text: text.into(),
@@ -940,14 +949,14 @@ fn what_a_person_types_is_set_down_in_its_place_as_the_persons() {
         record.with(|state| state.page(&tab, 4).entries),
         [next, more]
     );
-    let authors: Vec<String> = steps(&record, &tab)
+    let authors: Vec<Actor> = steps(&record, &tab)
         .into_iter()
         .map(|(author, ..)| author)
         .collect();
-    let person = ada();
+    let person = by_ada();
     assert_eq!(
         authors[3..],
-        [person.as_str(), "agent:ben", person.as_str()],
+        [person.clone(), by_agent("ben"), person],
         "what was typed is the person's change, among the agents' own"
     );
 
@@ -997,7 +1006,7 @@ fn what_a_person_types_is_set_down_in_its_place_as_the_persons() {
     // the person's is refused, and the record is as it was.
     let forged = json!({"seq": 8, "actor": "", "how": "input", "ok": true,
         "target": {"role": "textbox", "name": "Passport number"}, "text": "X0000000"});
-    let refused = set_down(&record, Some(&agent("agent:mallory")), &tab, forged).unwrap_err();
+    let refused = set_down(&record, Some(&agent("mallory")), &tab, forged).unwrap_err();
     assert!(refused.contains("the actor who did it"), "{refused}");
     assert_eq!(held(&record, &tab).len(), 7);
 }
@@ -1066,7 +1075,7 @@ fn what_the_window_held_is_set_down_with_who_answered() {
     // The page posts on its own and an agent keeps the page as it is.
     let first = engine_holds(&engine, 4, 1);
     app.settle();
-    let rev = agent_for_ada("agent:rev");
+    let rev = agent_for_ada("rev");
     act(
         &mut app,
         Some(&rev),
@@ -1102,19 +1111,14 @@ fn what_the_window_held_is_set_down_with_who_answered() {
         [first, kept, second, left],
         "each is kept as the engine set it down, in its place"
     );
-    let authors: Vec<String> = steps(&record, &tab)
+    let authors: Vec<Actor> = steps(&record, &tab)
         .into_iter()
         .map(|(author, ..)| author)
         .collect();
-    let person = ada();
+    let person = by_ada();
     assert_eq!(
         authors[3..],
-        [
-            person.as_str(),
-            "agent:rev",
-            person.as_str(),
-            person.as_str()
-        ],
+        [person.clone(), by_agent("rev"), person.clone(), person],
         "the agent's answer is the agent's change, and the rest the person's"
     );
     let answered_for: Vec<Option<String>> = record
@@ -1159,7 +1163,7 @@ fn what_the_window_held_is_set_down_with_who_answered() {
     // the person's allow is refused, and the record is as it was.
     let forged = json!({"seq": 8, "actor": "", "how": "hold", "action": "allow", "ok": true,
         "message": "POST https://orders.test", "to_url": "https://orders.test"});
-    let refused = set_down(&record, Some(&agent("agent:mallory")), &tab, forged).unwrap_err();
+    let refused = set_down(&record, Some(&agent("mallory")), &tab, forged).unwrap_err();
     assert!(refused.contains("the actor who did it"), "{refused}");
     assert_eq!(held(&record, &tab).len(), 7);
 }
@@ -1171,7 +1175,7 @@ fn what_the_window_held_is_set_down_with_who_answered() {
 #[test]
 fn an_entry_of_a_secret_field_says_it_was_set_and_keeps_none_of_its_text() {
     let (_app, record) = quiet_window();
-    let by = agent("agent:ada");
+    let by = agent("ada");
     let password = json!({"role": "textbox", "name": "Password"});
     set_down(
         &record,
@@ -1264,7 +1268,7 @@ fn clicked(seq: u64) -> Value {
 #[test]
 fn an_entry_is_kept_by_what_the_record_keeps_of_one() {
     let (_app, record) = quiet_window();
-    let by = agent("agent:ada");
+    let by = agent("ada");
     let long = "é".repeat(400);
     set_down(
         &record,
@@ -1331,10 +1335,10 @@ fn an_action_is_written_only_as_the_actor_who_did_it() {
     let typed = json!({"seq": 1, "actor": "", "how": "input", "action": "input", "ok": true,
         "target": {"role": "textbox", "name": "Passport number"}, "text": "P1234567"});
     let own = json!({"seq": 1, "actor": "", "action": "click", "ok": true});
-    let long = format!("agent:{}", "x".repeat(120));
+    let long = "x".repeat(120);
     let by_long = |seq: u64| {
         let mut entry = clicked(seq);
-        entry["actor"] = PageActor::named(&long)
+        entry["actor"] = PageActor::of(&ui::tilo_actions::MemberId::agent(&long).into())
             .expect("a long principal names an actor")
             .as_str()
             .into();
@@ -1342,7 +1346,7 @@ fn an_action_is_written_only_as_the_actor_who_did_it() {
     };
 
     let (_app, record) = quiet_window();
-    let mallory = agent("agent:mallory");
+    let mallory = agent("mallory");
     for forged in [clicked(1), typed.clone(), own.clone(), by_long(1)] {
         let refused = set_down(&record, Some(&mallory), "tab-a", forged.clone()).unwrap_err();
         assert!(
@@ -1355,7 +1359,7 @@ fn an_action_is_written_only_as_the_actor_who_did_it() {
     // The agent that acted is who its action is written as, under the name
     // the engine keeps it by: its principal, shortened when the engine takes
     // no longer one.
-    set_down(&record, Some(&agent("agent:ada")), "tab-a", clicked(1)).unwrap();
+    set_down(&record, Some(&agent("ada")), "tab-a", clicked(1)).unwrap();
     set_down(&record, Some(&agent(&long)), "tab-b", by_long(1)).unwrap();
 
     // What a person typed and what they did at the window is written as
@@ -1382,8 +1386,8 @@ fn an_action_names_only_the_device_its_actor_was_admitted_from() {
         entry
     };
     let from_laptop = on(&laptop.id, "Studio laptop");
-    let here = agent("agent:ada");
-    let there = agent_on("agent:ada", &laptop);
+    let here = agent("ada");
+    let there = agent_on("ada", &laptop);
     let own = json!({"seq": 1, "actor": "", "action": "click", "ok": true,
         "device": laptop.id, "device_name": "Studio laptop"});
 
@@ -1424,7 +1428,7 @@ fn an_action_names_only_the_device_its_actor_was_admitted_from() {
 #[test]
 fn a_tab_keeps_its_newest_actions_and_older_ones_stay_in_history() {
     let (_app, record) = quiet_window();
-    let by = agent("agent:ada");
+    let by = agent("ada");
     let over = 3;
     let total = MAX_TAB_ACTIONS as u64 + over;
     let mut first_full = Vec::new();
@@ -1475,7 +1479,7 @@ fn a_tab_keeps_its_newest_actions_and_older_ones_stay_in_history() {
 #[test]
 fn the_record_keeps_the_tabs_that_acted_last() {
     let (_app, record) = quiet_window();
-    let by = agent("agent:ada");
+    let by = agent("ada");
     for tab in 0..=MAX_TABS as u64 {
         // Each tab acts a little later than the one before it.
         let mut entry = clicked(1);
@@ -1523,7 +1527,7 @@ fn refusal(answer: Result<Option<Value>, String>) -> String {
 fn nobody_at_the_api_adds_to_the_record() {
     let engine = TestEngine::new();
     let mut app = open(&engine);
-    let (ada_agent, ben) = (agent_for_ada("agent:ada"), agent_for_ada("agent:ben"));
+    let (ada_agent, ben) = (agent_for_ada("ada"), agent_for_ada("ben"));
     engine_sets_down(&engine, &email_filled(1));
     act(&mut app, Some(&ada_agent), &fill("d1e2", "ada@example.org")).expect("the fill answers");
     app.settle();
@@ -1587,11 +1591,7 @@ fn nobody_at_the_api_adds_to_the_record() {
     );
     assert_eq!(
         steps(&record, &tab),
-        [(
-            "agent:ada".to_owned(),
-            1,
-            "Filled textbox \"Email\"".to_owned()
-        )]
+        [(by_agent("ada"), 1, "Filled textbox \"Email\"".to_owned())]
     );
 
     // A reviewer reads the record as before.
@@ -1618,11 +1618,11 @@ fn nobody_at_the_api_adds_to_the_record() {
             (2, "agent:ben".to_owned(), "select".to_owned()),
         ]
     );
-    let authors: Vec<String> = steps(&record, &tab)
+    let authors: Vec<Actor> = steps(&record, &tab)
         .into_iter()
         .map(|(author, ..)| author)
         .collect();
-    assert_eq!(authors, ["agent:ada", "agent:ben"]);
+    assert_eq!(authors, [by_agent("ada"), by_agent("ben")]);
 }
 
 /// The form the page at [`PAGE`] asks, as the engine reads it.
@@ -1673,7 +1673,7 @@ fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
     for _ in 0..3 {
         app.settle();
     }
-    let intake = agent_for_ada("agent:intake");
+    let intake = agent_for_ada("intake");
 
     // The agent answers the form through the form's own action.
     let answered = json!({"seq": 1, "time_ms": 1_700_000_000_001_u64, "actor": "agent:intake",
@@ -1792,7 +1792,7 @@ fn a_sign_ins_password_is_never_written() {
     const ASKER: &str = "https://shop.test";
     let engine = TestEngine::new();
     let mut app = open(&engine);
-    let ada = agent("agent:ada");
+    let ada = agent("ada");
     engine.push_event(ui::webview::WebViewEvent::HttpAuth(
         ui::webview::HttpAuthChallenge {
             id: 4,

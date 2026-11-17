@@ -16,6 +16,8 @@ pub(super) enum RowOp {
     },
     Width(StripId, GroupId, WindowWidth),
     ToggleMaximized(StripId, GroupId),
+    /// A window the strip scrolls to once it has laid it out.
+    Reveal(StripId, GroupId),
     /// A launched window, already in the tree at `index` of `strip` , standing over the shell
     /// beside it when `float` .
     Open {

@@ -499,7 +499,7 @@ mod tests {
             );
         }
 
-        phase extend_keeps_a_non_overlapping_user_arrangement;
+        phase extend_keeps_a_non_overlapping_user_placement;
         {
             let outputs = laptop_and_monitor();
             let mut base = DisplayConfig::default();
@@ -600,7 +600,7 @@ mod tests {
             );
         }
 
-        phase extend_keeps_an_arrangement_that_is_edge_to_edge_in_logical_size;
+        phase extend_keeps_a_placement_that_is_edge_to_edge_in_logical_size;
         {
             let outputs = vec![
                 output("eDP-1", true, &[mode(1920, 1080, 60_000)]),

@@ -11,7 +11,7 @@ use std::rc::Rc;
 use crate::core::{Args, Core, HResult, trap};
 use crate::engine::Wasm;
 use crate::handles::{FrameKind, ViewState};
-use crate::ids::Principal;
+use crate::ids::{Actor, AppId};
 use crate::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 use crate::registry::Package;
 use crate::render::Offer;
@@ -447,7 +447,7 @@ impl Core {
     /// where the viewer only looks.
     fn viewer_import(&self) -> HResult<Option<Wasm>> {
         let who = self.looking()?;
-        self.ret_h(Value::Principal(crate::ids::Principal::new(who)))
+        self.ret_h(Value::Actor(who))
     }
 
     /// A version of `of` as a `host.Version`: who, when, what, the run, its kind, the
@@ -491,22 +491,21 @@ impl Core {
             .as_ref()
             .and_then(|a| a.icon.clone())
             .map(|icon| Box::new(Value::Text(icon)));
-        let mine = v.run.is_none() && self.looking_now().as_deref() == Some(v.who.as_str());
-        let actor = self.actor(&v.who, mine);
+        let who = self.made_by(&v, of);
+        let looking = self.looking_now();
+        let mine = v.run.is_none() && looking.as_ref() == Some(&who);
+        let actor = self.actor(&who, mine);
         // Who proposed the action the person accepted, by the name the workspace calls them.
-        let suggested = v.suggested_by.as_ref().map_or_else(String::new, |who| {
-            let who = Principal::new(who.clone());
-            self.names
-                .borrow()
-                .as_ref()
-                .map_or_else(|| who.0.clone(), |host| host.name(&who))
-        });
+        let suggested = v
+            .suggested_by
+            .as_ref()
+            .map_or_else(String::new, |who| self.unnamed(who));
         let changes = match &info {
-            Some(info) => self.changes_value(&v, of, info, self.looking_now().as_deref())?,
+            Some(info) => self.changes_value(&v, of, info, looking.as_ref())?,
             None => Vec::new(),
         };
         Ok(Value::Tuple(vec![
-            Value::Principal(Principal::new(v.who)),
+            Value::Actor(who),
             Value::Text(v.at),
             Value::Text(self.action_label(&v.action)),
             Value::Opt(run),
@@ -575,7 +574,7 @@ impl Core {
         &self,
         v: &crate::store::Version,
         of: &ResourceRef,
-        viewer: &str,
+        viewer: &Actor,
     ) -> String {
         let info = self.type_of_ref(&of.ty).ok().map(|(_, info)| info);
         if v.count > 1 {
@@ -677,7 +676,7 @@ impl Core {
             let named = field_of_sentence(&param.name);
             // A proposal is read against nothing: as a change that sets the value.
             let nothing = self
-                .change_shown(&ty, &Value::none(), looking.as_deref())
+                .change_shown(&ty, &Value::none(), looking.as_ref())
                 .unwrap_or_else(|_| Value::none());
             let verbs = crate::did::said(&field, &named, &nothing, arg);
             let fills: Vec<(String, String)> = verbs
@@ -691,7 +690,7 @@ impl Core {
             };
             let voices = self.word_args(verbs.key, &fills, &source);
             let value = match verbs.shows {
-                crate::did::Shows::After => self.change_shown(&ty, arg, looking.as_deref()).ok(),
+                crate::did::Shows::After => self.change_shown(&ty, arg, looking.as_ref()).ok(),
                 _ => None,
             };
             out.push(Says {
@@ -737,9 +736,21 @@ impl Core {
 
     /// What the workspace calls `who`, as a sentence names them: the person looking as the
     /// platform's word for them, anyone else by their name.
-    pub(crate) fn name_of(&self, who: &Principal) -> String {
-        let mine = self.looking_now().as_deref() == Some(who.0.as_str());
-        self.actor(&who.0, mine)
+    pub(crate) fn name_of(&self, who: &Actor) -> String {
+        let mine = self.looking_now().as_ref() == Some(who);
+        self.actor(who, mine)
+    }
+
+    /// Who made the version `v` of `of`: its actor, or for a change the platform made that
+    /// names no one, the app whose resource it is.
+    pub(crate) fn made_by(&self, v: &crate::store::Version, of: &ResourceRef) -> Actor {
+        v.who.clone().unwrap_or_else(|| {
+            Actor::App(
+                self.type_of_ref(&of.ty)
+                    .map(|(pkg, _)| AppId::from(pkg.meta.app.as_str()))
+                    .unwrap_or_default(),
+            )
+        })
     }
 
     /// Each field the version `v` of `of` changed, as a `host.Change`: its name, its name in
@@ -752,7 +763,7 @@ impl Core {
         v: &crate::store::Version,
         of: &ResourceRef,
         info: &crate::registry::TypeInfo,
-        viewer: Option<&str>,
+        viewer: Option<&Actor>,
     ) -> HResult<Vec<Value>> {
         if v.fields.is_empty() || v.change.is_empty() {
             return Ok(Vec::new());
@@ -840,11 +851,11 @@ impl Core {
 
     /// Who made a version, as a sentence names them: the person looking as the platform's word
     /// for them, anyone else by the name the avatar beside it shows.
-    pub(crate) fn actor(&self, who: &str, mine: bool) -> String {
+    pub(crate) fn actor(&self, who: &Actor, mine: bool) -> String {
         if mine {
             return self.word("tilolang-you", "You");
         }
-        self.named(&Principal::new(who.to_owned()))
+        self.named(who)
     }
 
     /// What several people are called, as a sentence names them: "Bo", "Bo and Scout", "Bo, Scout
@@ -886,12 +897,20 @@ impl Core {
 
     /// What the host calls `who`, and that a view showing it read it: the window calling someone
     /// something else runs again the boundaries that show a name, and no others.
-    pub(crate) fn named(&self, who: &Principal) -> String {
+    pub(crate) fn named(&self, who: &Actor) -> String {
         self.read_person();
         self.names
             .borrow()
             .as_ref()
-            .map_or_else(|| who.0.clone(), |host| host.name(who))
+            .map_or_else(|| who.id().to_owned(), |host| host.name(who))
+    }
+
+    /// What the host calls `who`, without noting that the running view read it.
+    fn unnamed(&self, who: &Actor) -> String {
+        self.names
+            .borrow()
+            .as_ref()
+            .map_or_else(|| who.id().to_owned(), |host| host.name(who))
     }
 
     /// Note that the code running shows something only the window knows, when it draws a view: a
@@ -908,7 +927,7 @@ impl Core {
         &self,
         ty: &tilolang::types::Ty,
         value: &Value,
-        viewer: Option<&str>,
+        viewer: Option<&Actor>,
     ) -> HResult<Value> {
         use tilolang::types::Ty;
         let one = |kind: &str, value: Value, icon: Option<String>| {
@@ -925,18 +944,15 @@ impl Core {
             }
             (Ty::Date, Value::Text(day)) => one("date", Value::Text(day.clone()), None),
             (Ty::Time, Value::Text(at)) => one("time", Value::Text(at.clone()), None),
-            (Ty::Principal, Value::Principal(who)) => {
+            (Ty::Actor, Value::Actor(who)) => {
                 // A person is named as a sentence names them: the person looking as the word
                 // for them ("assigned it to you"), anyone else by their name.
-                let name = if viewer == Some(who.0.as_str()) {
+                let name = if viewer == Some(who) {
                     self.word("tilolang-you-lower", "you")
                 } else {
-                    self.names
-                        .borrow()
-                        .as_ref()
-                        .map_or_else(|| who.0.clone(), |host| host.name(who))
+                    self.unnamed(who)
                 };
-                one("principal", Value::Principal(who.clone()), Some(name))
+                one("actor", Value::Actor(who.clone()), Some(name))
             }
             (_, Value::Bool(flag)) => one("bool", Value::Bool(*flag), None),
             (_, Value::Int(_) | Value::Float(_)) => one("number", value.clone(), None),
@@ -1096,11 +1112,11 @@ impl Core {
             let Some(last) = step.last() else {
                 continue;
             };
-            let who = Value::Principal(Principal::new(last.who.clone()));
+            let made_by = self.made_by(last, at);
             let at_time = Value::Text(last.at.clone());
             let run = Value::Opt(last.run.as_ref().map(|run| Box::new(run_value(run))));
-            let mine =
-                last.run.is_none() && self.looking_now().as_deref() == Some(last.who.as_str());
+            let mine = last.run.is_none() && self.looking_now().as_ref() == Some(&made_by);
+            let who = Value::Actor(made_by);
             let opens = above.as_ref().is_none_or(|above| opens_visit(above, last));
             let latest = above.is_none();
             above = Some(last.clone());
@@ -1186,7 +1202,7 @@ impl Core {
 
     /// Who is looking, when someone is: [`Self::looking`] in a view or an action, `None` in
     /// code no one is looking through (a function an agent's query runs).
-    pub(crate) fn looking_now(&self) -> Option<String> {
+    pub(crate) fn looking_now(&self) -> Option<Actor> {
         let frames = self.frames.borrow();
         let top = frames.deciding()?;
         match &top.kind {
@@ -1199,25 +1215,24 @@ impl Core {
     }
 
     /// Who is looking: the person a view shows to, or the invoker of the action running.
-    pub(crate) fn looking(&self) -> HResult<String> {
+    pub(crate) fn looking(&self) -> HResult<Actor> {
         let frames = self.frames.borrow();
         let Some(frame) = frames.deciding() else {
             return trap("unseen: only a view or an action has someone looking");
         };
         Ok(match &frame.kind {
-            FrameKind::View(view) => view.viewer.0.clone(),
+            FrameKind::View(view) => view.viewer.clone(),
             FrameKind::Action(state) => state
                 .invocations
                 .last()
                 .map_or(&state.invoker, |inv| &inv.who)
-                .0
                 .clone(),
             _ => return trap("unseen: only a view or an action has someone looking"),
         })
     }
 
     /// `person`'s seen mark of `resource`, as the runtime holds it.
-    pub(crate) fn seen_mark(&self, person: &str, resource: &str) -> Option<SeenMark> {
+    pub(crate) fn seen_mark(&self, person: &Actor, resource: &str) -> Option<SeenMark> {
         let key = crate::seen::seen_key(person, resource);
         mark_of(self.view_states.borrow().get(&key))
     }
@@ -1228,7 +1243,7 @@ impl Core {
     /// showed is the messages in it: items are stored flat by id (convergence.md, "Items"), so
     /// the collection holding one names its holder, never the path down to it. Reading what a
     /// record was made from reads the record, as a task's page shows the comments under it.
-    pub(crate) fn seen_mark_of_tree(&self, person: &str, at: &ResourceRef) -> Option<SeenMark> {
+    pub(crate) fn seen_mark_of_tree(&self, person: &Actor, at: &ResourceRef) -> Option<SeenMark> {
         let mut at = at.clone();
         // A record is made from one record and held by a few containers (a board's card, a
         // card's comment): the walk up ends either way in a few steps.
@@ -1257,7 +1272,7 @@ impl Core {
     /// The versions of `at` `person` has not seen.
     pub(crate) fn unseen_of(
         &self,
-        person: &str,
+        person: &Actor,
         at: &ResourceRef,
     ) -> Result<Vec<crate::store::Version>, crate::store::StoreError> {
         let versions = self.store.borrow().versions(at)?;
@@ -1270,7 +1285,7 @@ impl Core {
     /// answered by the index's newest version of the resource without its log.
     pub(crate) fn newest_unseen_of(
         &self,
-        person: &str,
+        person: &Actor,
         at: &ResourceRef,
     ) -> Result<Option<crate::store::Version>, crate::store::StoreError> {
         let Some(newest) = self.store.borrow().newest(at)? else {
@@ -1286,7 +1301,7 @@ impl Core {
     /// [`Self::unread_items`], which is where its "New messages" divider stands.
     pub(crate) fn first_unseen_of(
         &self,
-        person: &str,
+        person: &Actor,
         at: &ResourceRef,
         field: &str,
         item: &str,
@@ -1311,7 +1326,7 @@ impl Core {
     /// came before it.
     pub(crate) fn unread_items(
         &self,
-        person: &str,
+        person: &Actor,
         at: &ResourceRef,
         field: &str,
         item: &str,
@@ -1428,7 +1443,7 @@ impl Core {
     /// for a resource that holds no collection of records: nothing of it is an item.
     pub(crate) fn unread_count_of(
         &self,
-        person: &str,
+        person: &Actor,
         at: &ResourceRef,
     ) -> Result<Option<i64>, crate::store::StoreError> {
         let Some((field, item)) = self.item_collection_of(at) else {
@@ -1447,7 +1462,7 @@ impl Core {
     /// `coll` reads nothing of it; a mark that names another line read further.
     pub(crate) fn seen_by_of(
         &self,
-        looking: &str,
+        looking: &Actor,
         coll: &ResourceRef,
         at: &ResourceRef,
     ) -> Result<Vec<crate::members::Member>, crate::store::StoreError> {
@@ -1458,13 +1473,13 @@ impl Core {
         let resource = coll.id_string();
         let mut read = Vec::new();
         for member in self.read_members() {
-            let who = member.who();
-            if who.0.eq_ignore_ascii_case(looking) {
+            let who = Actor::Member(member.id.clone());
+            if who == *looking {
                 continue;
             }
             // Every member's mark is read, so the view runs again when any of them reads on.
-            self.note_seen_read(&who.0, &resource);
-            let Some(mark) = self.seen_mark(&who.0, &resource) else {
+            self.note_seen_read(&who, &resource);
+            let Some(mark) = self.seen_mark(&who, &resource) else {
                 continue;
             };
             if versions.iter().any(|version| version.change == mark.change) {
@@ -1486,7 +1501,7 @@ impl Core {
             .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
         // What the answer is made of: `m`'s own versions, noted as read by the answer itself.
         self.read_versions_of(&at.target);
-        self.ret_h(crate::members::principals(read.iter()))
+        self.ret_h(crate::members::actors(read.iter()))
     }
 
     /// How many of the items of `at`'s collection `field` (of `item`) name `person` in their
@@ -1499,7 +1514,7 @@ impl Core {
     /// index would answer it in one read; none is kept yet.)
     pub(crate) fn mentions_of(
         &self,
-        person: &str,
+        person: &Actor,
         at: &ResourceRef,
         field: &str,
         item: &str,
@@ -1559,7 +1574,11 @@ impl Core {
                 let Ok(crate::store::FieldValue::Rich(rich)) = store.read(&candidate, &spec) else {
                     continue;
                 };
-                if rich.mentions(person) {
+                if person
+                    .member_id()
+                    .and_then(crate::ids::MemberId::person_id)
+                    .is_some_and(|person| rich.mentions(person))
+                {
                     found = found.saturating_add(1);
                     break;
                 }
@@ -1569,7 +1588,7 @@ impl Core {
     }
 
     /// The runs `person` reviewed, as the runtime holds them.
-    pub(crate) fn seen_runs(&self, person: &str) -> Vec<String> {
+    pub(crate) fn seen_runs(&self, person: &Actor) -> Vec<String> {
         match self
             .view_states
             .borrow()
@@ -1587,7 +1606,7 @@ impl Core {
     /// `at`, the person's mark of it or the runs they reviewed move.
     pub(crate) fn unseen_read(
         &self,
-        person: &str,
+        person: &Actor,
         at: &ResourceRef,
     ) -> HResult<Vec<crate::store::Version>> {
         for key in [
@@ -1613,7 +1632,7 @@ impl Core {
     /// is later or earlier than. Whether the mark moved.
     pub(crate) fn mark_seen(
         &self,
-        person: &str,
+        person: &Actor,
         at: &ResourceRef,
     ) -> Result<bool, crate::store::StoreError> {
         let newest_item = self.newest_item_version(at);
@@ -1642,7 +1661,7 @@ impl Core {
         self.seen_writes
             .borrow_mut()
             .push(crate::seen::SeenWrite::Resource {
-                person: person.to_owned(),
+                person: person.clone(),
                 resource,
                 mark: Some(mark),
             });
@@ -1658,7 +1677,7 @@ impl Core {
     /// The store could not read the versions of one of them.
     pub(crate) fn mark_all_seen(
         &self,
-        person: &str,
+        person: &Actor,
         resources: &[String],
     ) -> Result<usize, crate::store::StoreError> {
         let mut before = Vec::with_capacity(resources.len());
@@ -1673,7 +1692,7 @@ impl Core {
             }
         }
         *self.seen_undo.borrow_mut() = Some(crate::seen::SeenUndo {
-            person: person.to_owned(),
+            person: person.clone(),
             before,
         });
         Ok(marked)
@@ -1681,11 +1700,11 @@ impl Core {
 
     /// Give back what the last catch-up took away: every mark it moved, as it was. Whether
     /// anything was given back; what the host is handed to keep says so too.
-    pub(crate) fn undo_seen(&self, person: &str) -> bool {
+    pub(crate) fn undo_seen(&self, person: &Actor) -> bool {
         let Some(undo) = self.seen_undo.borrow_mut().take() else {
             return false;
         };
-        if undo.person != person {
+        if undo.person != *person {
             return false;
         }
         for (resource, mark) in undo.before {
@@ -1701,7 +1720,7 @@ impl Core {
             self.seen_writes
                 .borrow_mut()
                 .push(crate::seen::SeenWrite::Resource {
-                    person: person.to_owned(),
+                    person: person.clone(),
                     resource,
                     mark,
                 });
@@ -1768,7 +1787,7 @@ impl Core {
     }
 
     /// The runs `person` reviewed are `runs` now.
-    pub(crate) fn set_seen_runs(&self, person: &str, runs: &[String]) {
+    pub(crate) fn set_seen_runs(&self, person: &Actor, runs: &[String]) {
         let key = crate::seen::runs_key(person);
         let mut sorted = runs.to_vec();
         sorted.sort();
@@ -1885,7 +1904,7 @@ impl Core {
 
     /// Record, in a view's frame, that it read `person`'s seen mark of `resource`: it runs
     /// again when the mark moves.
-    pub(crate) fn note_seen_read(&self, person: &str, resource: &str) {
+    pub(crate) fn note_seen_read(&self, person: &Actor, resource: &str) {
         let key = crate::seen::seen_key(person, resource);
         let (generation, value) = {
             let states = self.view_states.borrow();
@@ -2359,7 +2378,7 @@ impl Core {
         // run on it now, as the conditions its subject and place decide say: a menu leaves out
         // what cannot apply, and a control for what cannot run stands disabled with the reason.
         // An action the person's standing denies them (a viewer's change) stands disabled too.
-        let viewer = self.viewer_here();
+        let viewer = self.viewer_here()?;
         let mut applies = true;
         let mut available = true;
         let mut why = String::new();
@@ -2449,7 +2468,7 @@ impl Core {
         &self,
         action: &str,
         subject: &RefValue,
-        viewer: &Principal,
+        viewer: &Actor,
     ) -> HResult<Option<String>> {
         self.refusal_reading(action, subject, viewer)
             .map(|(reason, _)| reason)
@@ -2462,7 +2481,7 @@ impl Core {
         &self,
         action: &str,
         subject: &RefValue,
-        viewer: &Principal,
+        viewer: &Actor,
     ) -> HResult<(Option<String>, Reading)> {
         self.decided(
             action,
@@ -2479,7 +2498,7 @@ impl Core {
         &self,
         action: &str,
         subject: &RefValue,
-        viewer: &Principal,
+        viewer: &Actor,
     ) -> HResult<(Option<String>, Reading)> {
         self.decided(
             action,
@@ -2496,7 +2515,7 @@ impl Core {
         &self,
         action: &str,
         subject: &RefValue,
-        viewer: &Principal,
+        viewer: &Actor,
     ) -> HResult<(Option<Presentation>, Reading)> {
         let (pkg, presents) = {
             let registry = self.registry.borrow();
@@ -2512,9 +2531,8 @@ impl Core {
         self.frames.borrow_mut().push(
             pkg.hash.clone(),
             FrameKind::View(ViewState {
-                viewer: viewer.clone(),
                 decides: true,
-                ..ViewState::default()
+                ..ViewState::of(viewer.clone())
             }),
         );
         // The presentation runs in a frame of its own, as a requirement does, so a failure
@@ -2557,7 +2575,7 @@ impl Core {
         &self,
         action: &str,
         args: &[Value],
-        viewer: &Principal,
+        viewer: &Actor,
         which: Decides,
     ) -> HResult<(Option<String>, Reading)> {
         let (pkg, params, export) = {
@@ -2586,9 +2604,8 @@ impl Core {
         self.frames.borrow_mut().push(
             pkg.hash.clone(),
             FrameKind::View(ViewState {
-                viewer: viewer.clone(),
                 decides: true,
-                ..ViewState::default()
+                ..ViewState::of(viewer.clone())
             }),
         );
         let given = args.get(..params.len()).unwrap_or(args);
@@ -2634,12 +2651,12 @@ impl Core {
     }
 
     /// The person the code running is for: whom an action offered now would be offered to.
-    fn viewer_here(&self) -> Principal {
+    fn viewer_here(&self) -> HResult<Actor> {
         let frames = self.frames.borrow();
         match frames.deciding().map(|f| &f.kind) {
-            Some(FrameKind::View(vs)) => vs.viewer.clone(),
-            Some(FrameKind::Action(state)) => state.invoker.clone(),
-            _ => Principal::new(String::new()),
+            Some(FrameKind::View(vs)) => Ok(vs.viewer.clone()),
+            Some(FrameKind::Action(state)) => Ok(state.invoker.clone()),
+            _ => trap("an action is offered only in a view or an action"),
         }
     }
 
@@ -2650,12 +2667,7 @@ impl Core {
             let frames = self.frames.borrow();
             match frames.deciding().map(|f| &f.kind) {
                 Some(FrameKind::View(vs)) => (vs.space, vs.window.clone(), vs.viewer.clone(), 1),
-                _ => (
-                    crate::space::Space::default(),
-                    String::new(),
-                    Principal::new(String::new()),
-                    1,
-                ),
+                _ => return trap("`present` draws only in a view"),
             }
         };
         let target = self.view_target(view).map_err(|e| e.to_string())?;
@@ -2717,7 +2729,7 @@ fn run_value(run: &crate::store::Run) -> Value {
 /// other into one step, and the changes of one run into one.
 fn step_facts(version: &crate::store::Version) -> StepFacts<'_> {
     StepFacts {
-        who: Some(version.who.as_str()),
+        who: version.who.as_ref().map(Actor::id),
         run: version.run.as_ref().map(|run| run.id.as_str()),
         ..StepFacts::default()
     }
@@ -2755,7 +2767,7 @@ impl Core {
                 .collect::<Vec<_>>()
                 .join(", "),
             Value::Tuple(parts) => match parts.as_slice() {
-                [Value::Text(kind), _, Value::Opt(Some(name))] if kind == "principal" => {
+                [Value::Text(kind), _, Value::Opt(Some(name))] if kind == "actor" => {
                     said_value(name)
                 }
                 [Value::Text(kind), held, _] if kind == "date" || kind == "time" => {
@@ -2769,7 +2781,7 @@ impl Core {
                 [_, held, _] => said_value(held),
                 _ => String::new(),
             },
-            Value::Principal(who) => self.name_of(who),
+            Value::Actor(who) => self.name_of(who),
             other => said_value(other),
         }
     }
@@ -2780,7 +2792,7 @@ fn said_value(value: &Value) -> String {
         Value::Text(text) => text.clone(),
         Value::Int(n) => n.to_string(),
         Value::Float(x) => x.to_string(),
-        Value::Principal(who) => who.0.clone(),
+        Value::Actor(who) => who.id().to_owned(),
         _ => String::new(),
     }
 }
@@ -2818,7 +2830,7 @@ mod tests {
             "Time",
             "Duration",
             "std.Identifier",
-            "Principal",
+            "Actor",
             "Thing",
             "Option<Thing>",
             "Option<Duration>",

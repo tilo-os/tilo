@@ -11,7 +11,7 @@
 
 use automerge::AutoCommit;
 use tilolang_runtime::origin::OriginWrite;
-use tilolang_runtime::{InvokeOutcome, Principal, Value};
+use tilolang_runtime::{Actor, InvokeOutcome, Value};
 use tilolang_tilo::record::DynValue;
 
 use crate::fixtures::Replica;
@@ -173,7 +173,10 @@ fn choose(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     match r
         .host
         .runtime()
-        .invoke_action(&Principal::new("ada"), (id.as_str(), args))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (id.as_str(), args),
+        )
         .unwrap()
     {
         InvokeOutcome::Done(value) => value,
@@ -587,7 +590,11 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
         let mut view = r
             .host
             .runtime()
-            .open_view(&Principal::new("ada"), &shell, vec![layout])
+            .open_view(
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+                &shell,
+                vec![layout],
+            )
             .unwrap();
         // A desktop's output: 1280 by 800, where the bar has room for the window's commands.
         view.set_space("", tilolang_runtime::Space::from_rem(80.0, 50.0));
@@ -676,7 +683,7 @@ fn a_window_is_named_by_its_window_and_app_never_an_id() {
         .host
         .runtime()
         .open_view(
-            &Principal::new("ada"),
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             &front,
             vec![layout, Value::Bool(false)],
         )
@@ -901,7 +908,10 @@ fn scenario(r: &Replica, app: &str, name: &str) -> Value {
     match r
         .host
         .runtime()
-        .invoke_action(&Principal::new("ada"), (action.as_str(), vec![]))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (action.as_str(), vec![]),
+        )
         .unwrap()
     {
         InvokeOutcome::Done(value) => value,
@@ -930,7 +940,11 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
     let view = r
         .host
         .runtime()
-        .open_view(&Principal::new("ada"), &shell, vec![layout])
+        .open_view(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            &shell,
+            vec![layout],
+        )
         .unwrap();
     let tree = format!("{:?}", view.tree());
     // Each note's place is the notes app's own editor, drawn inline (its body's input, which
@@ -971,7 +985,11 @@ fn resources_standing_as_content_stand_on_the_spaces_canvas() {
     let view = r
         .host
         .runtime()
-        .open_view(&Principal::new("ada"), &shell, vec![layout])
+        .open_view(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            &shell,
+            vec![layout],
+        )
         .unwrap();
     let tree = format!("{:?}", view.tree());
     // The scenario's strip stands on the canvas, so its places do: four notes as their editor,

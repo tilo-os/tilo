@@ -24,7 +24,7 @@ pub struct TreeEntry {
     /// Whether this device holds the content the tree names. A file whose bytes have not arrived yet
     /// reads as empty; it is not empty, just not known.
     pub known: bool,
-    pub record: Option<fs_protocol::FileRecordId>,
+    pub record: Option<fs_protocol::FileDocumentId>,
     pub posix: PosixAttrs,
     pub lease: Option<WriteLease>,
     /// The tenancy the current version was written in, and who held the lease in that epoch.
@@ -62,7 +62,7 @@ fn lease_of(
     ns: &crate::namespace::Namespace,
     ino: u64,
 ) -> (Option<WriteLease>, Option<VersionFence>, Option<[u8; 32]>) {
-    let Some(record) = ns.record_id_for(ino) else {
+    let Some(record) = ns.document_id_for(ino) else {
         return (None, None, None);
     };
     let Some(lease) = ns.write_lease(record) else {
@@ -76,7 +76,7 @@ fn lease_of(
 }
 
 fn posix_of(ns: &crate::namespace::Namespace, ino: u64, dir: bool) -> PosixAttrs {
-    ns.record_id_for(ino)
+    ns.document_id_for(ino)
         .and_then(|r| ns.posix_attrs(r))
         .unwrap_or_else(|| PosixAttrs::default_for(dir))
 }
@@ -139,7 +139,7 @@ impl QuickFS {
     fn set_posix(&self, ino: u64, attrs: PosixAttrs, dir: bool) -> Result<(), i32> {
         {
             let mut ns = self.ns();
-            let record = ns.record_id_for(ino).ok_or(EIO)?;
+            let record = ns.document_id_for(ino).ok_or(EIO)?;
             let current = ns
                 .posix_attrs(record)
                 .unwrap_or_else(|| PosixAttrs::default_for(dir));
@@ -379,7 +379,7 @@ impl QuickFS {
                         attr.map_or(0, |a| a.size),
                         mtime_ms,
                         known,
-                        ns.record_id_for(ino),
+                        ns.document_id_for(ino),
                         posix_of(&ns, ino, kind == FileType::Directory),
                         lease_of(&ns, ino),
                     )
@@ -479,7 +479,7 @@ impl QuickFS {
             size: attr.size,
             mtime_ms,
             known,
-            record: ns.record_id_for(ino),
+            record: ns.document_id_for(ino),
             posix: posix_of(&ns, ino, attr.kind == FileType::Directory),
             lease: lease_of(&ns, ino).0,
             fence: lease_of(&ns, ino).1,
@@ -640,12 +640,12 @@ impl QuickFS {
         let components = path_components(rel).ok()?;
         let ino = self.ino_at(&components)?;
         let ns = self.ns();
-        ns.write_lease(ns.record_id_for(ino)?)
+        ns.write_lease(ns.document_id_for(ino)?)
     }
 
     pub fn lease_holder_of(&self, record: [u8; 16], epoch: u64) -> Option<[u8; 32]> {
         self.ns().lease_holder(
-            fs_protocol::FileRecordId(uuid::Uuid::from_bytes(record)),
+            fs_protocol::FileDocumentId(uuid::Uuid::from_bytes(record)),
             epoch,
         )
     }
@@ -680,7 +680,7 @@ impl QuickFS {
         let ino = self.ino_at(&components).ok_or(None)?;
         let (record, current, authority) = {
             let ns = self.ns();
-            let record = ns.record_id_for(ino).ok_or(None)?;
+            let record = ns.document_id_for(ino).ok_or(None)?;
             (record, ns.write_lease(record), ns.lease_authority())
         };
         let now = now_ms();
@@ -749,7 +749,7 @@ impl QuickFS {
     pub fn arbitrate_lease_requests(
         &self,
         ttl: std::time::Duration,
-        answered: &mut std::collections::HashSet<(fs_protocol::FileRecordId, [u8; 32], u64)>,
+        answered: &mut std::collections::HashSet<(fs_protocol::FileDocumentId, [u8; 32], u64)>,
     ) -> Vec<(std::path::PathBuf, WriteLease)> {
         let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
         let mut granted = Vec::new();
@@ -769,7 +769,7 @@ impl QuickFS {
                 };
                 if ns.put_write_lease(record, &lease) {
                     let path = ns
-                        .ino_for_record_id(record)
+                        .ino_for_document_id(record)
                         .and_then(|ino| ns.path_for(ino))
                         .map(|p| std::path::PathBuf::from(p.trim_start_matches('/')))
                         .unwrap_or_default();
@@ -790,7 +790,7 @@ impl QuickFS {
 
     fn take_lease(
         &self,
-        record: fs_protocol::FileRecordId,
+        record: fs_protocol::FileDocumentId,
         me: [u8; 32],
         ttl: std::time::Duration,
         granted: bool,
@@ -829,7 +829,7 @@ impl QuickFS {
         let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
         let taken = {
             let mut ns = self.ns();
-            let record = ns.record_id_for(ino).ok_or(None)?;
+            let record = ns.document_id_for(ino).ok_or(None)?;
             let current = ns.write_lease(record);
             let lease = WriteLease::take(current, me, now_ms(), ttl_ms).map_err(Some)?;
             if current == Some(lease) {
@@ -856,7 +856,7 @@ impl QuickFS {
         };
         {
             let mut ns = self.ns();
-            let Some(record) = ns.record_id_for(ino) else {
+            let Some(record) = ns.document_id_for(ino) else {
                 return;
             };
             match ns.write_lease(record) {
@@ -884,7 +884,7 @@ impl QuickFS {
             .filter_map(|(record, lease)| {
                 let path = {
                     let ns = self.ns();
-                    let ino = ns.ino_for_record_id(record)?;
+                    let ino = ns.ino_for_document_id(record)?;
                     ns.path_for(ino)?
                 };
                 let rel = std::path::PathBuf::from(path.trim_start_matches('/'));

@@ -10,7 +10,7 @@ use ui::tilo_resource::{
 // The verbs' argument structs, named apart from the verbs' own generated
 // parameter types.
 use crate::actions::{
-    AddLayer as NewLayer, Align as Alignment, Arrange as Arrangement, Draw as DrawShapes,
+    AddLayer as NewLayer, Align as Alignment, Arrange as ArrangeArgs, Draw as DrawShapes,
     EditLayer as LayerEdit, EditMarks as MarkEdit, NewArtwork as BlankArtwork,
     Open as PictureToOpen, OpenArtwork as SavedArtwork, Paint as PaintStrokes,
     RemoveLayer as LayerRemoval, RemoveMarks as MarkRemoval, RemoveMedium as MediumRemoval,
@@ -780,7 +780,7 @@ impl Artwork {
     /// Bring marks to the front or back of their layer, one step forward or
     /// backward, or directly above or below another mark or group.
     #[action]
-    pub fn arrange(&mut self, #[param(flatten)] arrange: Arrangement) -> Result<(), Refusal> {
+    pub fn arrange(&mut self, #[param(flatten)] arrange: ArrangeArgs) -> Result<(), Refusal> {
         let art = self.as_read();
         crate::actions::arrange_marks(self, &art, &arrange)
     }

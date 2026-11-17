@@ -288,6 +288,12 @@ pub(super) struct PeerCore {
     pub(super) exact_selected: bool,
     // Transient native cut context is never part of the durable DTO.
     pub(super) native_cut_publisher: Option<[u8; 32]>,
+    /// The members' own records among `documents`, each with its kind and
+    /// person, as the writes that named them said
+    /// ([`collab_types::OwnRecord`]): what every write of one carries again.
+    /// Learnt from the writes and from the apps that keep them; never
+    /// persisted.
+    pub(super) own: BTreeMap<Route, collab_types::OwnRecord>,
 }
 impl Clone for PeerCore {
     fn clone(&self) -> Self {
@@ -305,6 +311,7 @@ impl Clone for PeerCore {
             exact_admissions: self.exact_admissions.clone(),
             exact_selected: self.exact_selected,
             native_cut_publisher: self.native_cut_publisher,
+            own: self.own.clone(),
         }
     }
 }
@@ -325,6 +332,51 @@ impl std::fmt::Display for CertificateLookupError {
     }
 }
 impl PeerCore {
+    /// The member's own record `app`'s `record` is, as a write of it said;
+    /// `None` when none said so.
+    pub(super) fn own_of(&self, app: &str, record: &str) -> Option<collab_types::OwnRecord> {
+        self.own
+            .get(&Route {
+                app: app.to_owned(),
+                record: record.to_owned(),
+            })
+            .cloned()
+    }
+
+    /// The member's own record `app`'s `record` is, for a write the device
+    /// `author` signs: as a write of it said, or, for the author's person, of
+    /// a kind the app's manifest declares each member's own
+    /// ([`collab_types::OwnRecord::recognise`]).
+    pub(super) fn own_write(
+        &self,
+        app: &str,
+        record: &str,
+        author: &[u8; 32],
+    ) -> Option<collab_types::OwnRecord> {
+        self.own_of(app, record).or_else(|| {
+            let person = self.certificates.get(author)?.as_ref().user_public_key;
+            collab_types::OwnRecord::recognise(app, record, person)
+        })
+    }
+
+    /// Take `own` as what `app`'s `record` is, when it names that record.
+    pub(super) fn learn_own(
+        &mut self,
+        app: &str,
+        record: &str,
+        own: Option<&collab_types::OwnRecord>,
+    ) {
+        if let Some(own) = own.filter(|own| own.names(record)) {
+            self.own.insert(
+                Route {
+                    app: app.to_owned(),
+                    record: record.to_owned(),
+                },
+                own.clone(),
+            );
+        }
+    }
+
     pub(super) fn certificate_typed(
         &self,
         source: &[u8; 32],

@@ -31,8 +31,8 @@ use crate::disk_key::DiskKey;
 /// Refuses an invalid root identity or unencodable storage key.
 #[wasm_bindgen]
 pub fn browser_accounts_key(root: &str) -> Result<String, JsValue> {
-    let kind = ui::record::RecordKind::new("tilo.accounts");
-    if ui::record::RecordId::of_member(root, kind.as_str()).is_none() {
+    let kind = ui::record::ResourceType::new("tilo.accounts");
+    if ui::record::DocumentId::of_member(root, kind.as_str()).is_none() {
         return Err(error("invalid root identity"));
     }
     let key = DiskKey::Document {
@@ -60,7 +60,7 @@ pub fn project_browser_accounts(root: &str, origin: &str, bytes: &[u8]) -> Resul
         ui::automerge::LoadOptions::new().on_partial_load(ui::automerge::OnPartialLoad::Error),
     )
     .map_err(error)?;
-    let kind = ui::record::RecordKind::new("tilo.accounts");
+    let kind = ui::record::ResourceType::new("tilo.accounts");
     let id = ui::record::person::record_id(&kind);
     let home = ui::record::home(&doc);
     if ui::record::identity(&doc).is_none_or(|found| found.id != id || found.kind != kind)

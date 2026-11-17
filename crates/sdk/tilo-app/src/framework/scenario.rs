@@ -100,7 +100,7 @@ pub(crate) struct Run {
 #[derive(Default)]
 pub(crate) struct Launched {
     /// The record selected by the host for this launch.
-    pub(crate) record: Option<ui_core::record::RecordId>,
+    pub(crate) record: Option<ui_core::record::DocumentId>,
     pub(crate) arguments: Vec<String>,
     pub(crate) options: Vec<ui_core::application::LaunchOption>,
     pub(crate) file: Option<ui_core::application::OpenFile>,
@@ -237,7 +237,7 @@ impl Run {
             .open(arguments))
     }
 
-    pub(crate) fn for_participant(mut self, me: Option<&str>) -> Self {
+    pub(crate) fn for_participant(mut self, me: Option<&tilo_resource::MemberId>) -> Self {
         self.people = super::People::new(me);
         self
     }
@@ -293,7 +293,7 @@ impl Answers {
 
 /// A version of the resource another person wrote before the capture.
 struct Version<R: Resource> {
-    author: String,
+    author: tilo_resource::MemberId,
     at_ms: i64,
     invoke: Invoke<R>,
 }
@@ -306,7 +306,7 @@ pub struct Fixture<R: Resource> {
     /// The participant the capture's window reads as
     /// ([`RecordEnv::me`](super::RecordEnv::me)), for a scene with
     /// something of their own in it.
-    person: String,
+    person: tilo_resource::MemberId,
     values: HashMap<TypeId, Rc<dyn Any>>,
     /// What the record starts with, written before the versions.
     start: Option<Start>,
@@ -322,12 +322,12 @@ type Start = Box<dyn Fn(&mut Doc) -> Result<(), String>>;
 impl<R: Resource> Fixture<R> {
     pub(crate) fn new(
         scenario: Option<&str>,
-        person: &str,
+        person: &tilo_resource::MemberId,
         content: Option<tilo_content::ContentStore>,
     ) -> Self {
         Self {
             scenario: scenario.map(str::to_owned),
-            person: person.to_owned(),
+            person: person.clone(),
             values: HashMap::new(),
             start: None,
             history: Vec::new(),
@@ -346,7 +346,7 @@ impl<R: Resource> Fixture<R> {
     /// its own ([`RecordEnv::me`](super::RecordEnv::me)). A scene that holds
     /// something of the person's own — a seat at the table, an issue
     /// assigned to them — stages it for them.
-    pub fn person(&self) -> &str {
+    pub fn person(&self) -> &tilo_resource::MemberId {
         &self.person
     }
 
@@ -441,9 +441,9 @@ impl<R: Resource> Fixture<R> {
     /// change does over sync, attributed to them in history and on no one's
     /// undo stack here. Versions are written in the order given, before the
     /// scenario's own actions.
-    pub fn version(&mut self, author: &str, at_ms: i64, invoke: Invoke<R>) {
+    pub fn version(&mut self, author: tilo_resource::MemberId, at_ms: i64, invoke: Invoke<R>) {
         self.history.push(Version {
-            author: author.to_owned(),
+            author,
             at_ms,
             invoke,
         });
@@ -521,7 +521,7 @@ fn write_version<R: Resource>(
     let encoded = tilo_resource::encode::<R>(&action).map_err(|error| error.to_string())?;
     let mut context = tilo_actions::ActionContext::for_resource(R::KIND, R::KIND, R::LABEL)
         .with_change(action.change_kind())
-        .with_host_actor(&tilo_actions::Acting::of_key(&version.author), None);
+        .with_host_actor(&tilo_actions::Acting::member(version.author.clone()), None);
     if let Some(described) = action.describe(doc).or_else(|| {
         tilo_actions::Described::of_published(
             &encoded,
@@ -536,7 +536,7 @@ fn write_version<R: Resource>(
         base_heads: doc.get_heads().iter().map(|head| head.0).collect(),
         timestamp: version.at_ms.div_euclid(1000),
         locus: action.locus(),
-        actor: Some(version.author.as_bytes().to_vec()),
+        actor: Some(version.author.actor_bytes()),
         context: Some(context),
     };
     tilo_actions::replay(doc, &envelope, registry).map_err(|error| error.to_string())

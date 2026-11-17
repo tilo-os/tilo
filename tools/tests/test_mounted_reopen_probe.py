@@ -100,7 +100,7 @@ class MountedReopenProbeTests(unittest.TestCase):
             self.assertEqual(json.loads((saved / 'receipt.json').read_text())['exit_code'], 1)
 
     def test_the_fixture_keeps_failure_evidence(self):
-        fixture = (ROOT / 'crates/agent/agent-participant/tests/mounted_resource/driver.mjs').read_text()
+        fixture = (ROOT / 'crates/agent/agent-session/tests/mounted_resource/driver.mjs').read_text()
         self.assertIn('130_000', fixture)
         self.assertIn("assert.equal(await tab.evaluate(entryOutcome), 'open'", fixture)
         self.assertIn('} catch (error) {', fixture)

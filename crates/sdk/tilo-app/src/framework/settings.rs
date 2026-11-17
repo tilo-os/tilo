@@ -153,7 +153,7 @@ pub(crate) struct Hosted {
     /// what they may do.
     pub(crate) records: Option<(
         ui_core::record::RecordStore,
-        String,
+        tilo_resource::MemberId,
         ui_core::permissions::LivePermissions,
     )>,
     /// The records every app of the workspace opens, and the window's wake
@@ -256,7 +256,7 @@ impl ViewStorage {
     /// first use, its actions reading that record from `base_state`.
     pub(crate) fn chain_beside<P: super::Chained>(
         &self,
-        base: &ui_core::record::RecordId,
+        base: &ui_core::record::DocumentId,
         base_state: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
     ) -> Option<Rc<super::chain::ChainState<P>>> {
         super::controls::opened_record::<P>();
@@ -280,7 +280,7 @@ impl ViewStorage {
     /// someone the window knows as `me`.
     pub(crate) fn chain_action(
         &self,
-        me: Option<&str>,
+        me: Option<&tilo_resource::MemberId>,
         payload: &[u8],
         live: &mut ui_core::widget::Edits<'_>,
     ) -> Result<tilo_actions::ActionOutput, String> {
@@ -422,7 +422,7 @@ impl ViewStorage {
     /// the window knows as `me`.
     pub(crate) fn record_action(
         &self,
-        me: Option<&str>,
+        me: Option<&tilo_resource::MemberId>,
         payload: &[u8],
     ) -> Result<tilo_actions::ActionOutput, String> {
         let me = self
@@ -485,7 +485,7 @@ impl ViewStorage {
         let api = if let Some(person) = &self.person {
             person.open_section(kind)
         } else {
-            let api = Rc::new(SectionApi::new(kind, String::new(), Vec::new()));
+            let api = Rc::new(SectionApi::new(kind, None, Vec::new()));
             self.section_apis
                 .borrow_mut()
                 .push(Rc::clone(&api) as Rc<dyn RecordApi>);
