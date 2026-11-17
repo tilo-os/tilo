@@ -1,4 +1,4 @@
-//! What a participant does about a fire time, given the progress the
+//! What a key holder does about a fire time, given the progress the
 //! workspace keeps: on time once, a missed time once when the trigger catches
 //! up (never once per period), and a moment once however late.
 

@@ -163,7 +163,7 @@ struct LiveBoard: View {
 
 /// The drawing's lock screen, laid out from the very notices the app hands the system. The
 /// system draws the real ones its own way; this board says what they hold, in the drawing's
-/// arrangement, so the two can be held side by side.
+/// order, so the two can be held side by side.
 struct LockScreenBoard: View {
     var body: some View {
         let told = [Drawing.mainChat[3], Drawing.reminder].compactMap { item in

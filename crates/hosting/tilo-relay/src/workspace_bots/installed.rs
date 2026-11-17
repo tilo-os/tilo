@@ -59,7 +59,7 @@ use tilo_automation::grant::OUTBOX_FIELD;
 use tilo_lock::MutexRecover as _;
 /// How long the runner waits with nothing to do before it looks again.
 const IDLE: Duration = Duration::from_secs(30);
-/// How long a participant holds a bot schedule's lease before another may
+/// How long a key holder holds a bot schedule's lease before another may
 /// take it: three idle looks, so a runner that is alive keeps it.
 const SCHEDULE_LEASE: Duration = Duration::from_secs(90);
 /// How little of that deadline is left when a live holder pushes it out
@@ -234,7 +234,7 @@ pub struct BotRunner {
     state_file: PathBuf,
     /// Where the runner reads the time, for its schedules' fire times.
     clock: Arc<dyn tilo_clock::Clock>,
-    /// The next fire time of the schedules this participant holds, ms since
+    /// The next fire time of the schedules this key holder holds, ms since
     /// the epoch, so its idle wait ends at it.
     next_schedule_ms: Option<i64>,
     /// The emoji pictures already kept for the connectors, by address.
@@ -643,13 +643,13 @@ impl BotRunner {
 
     /// The firings of the bot's triggers on the clock whose fire time has
     /// come by `now_ms`, each fire time answered once. The progress is the
-    /// workspace's, not this host's: every participant reads the latest fire
+    /// workspace's, not this host's: every key holder reads the latest fire
     /// time any of them answered, so a schedule carries on across a restart
-    /// and from one participant to the next, and a time missed while none ran
+    /// and from one key holder to the next, and a time missed while none ran
     /// is caught up once when the trigger asks to and never once per period; a
-    /// moment that passed while every participant was down fires once, however
+    /// moment that passed while every key holder was down fires once, however
     /// late, and never again. This device fires a trigger only while it holds
-    /// that trigger's lease in the workspace; another participant takes the
+    /// that trigger's lease in the workspace; another key holder takes the
     /// lease over once this one stops renewing it.
     async fn schedule_firings(&mut self, now_ms: i64) -> Vec<Firing> {
         let installation = self.bot.installation.clone();
@@ -679,7 +679,7 @@ impl BotRunner {
             if !self.hold_schedule_lease(&lease, now).await {
                 continue;
             }
-            // Read the merged state once more: a participant that claimed the
+            // Read the merged state once more: a key holder that claimed the
             // same term is visible now, and only its ranking's winner fires.
             let Some(state) = self.workspaces.state(&workspace).await else {
                 continue;

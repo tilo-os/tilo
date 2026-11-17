@@ -99,7 +99,7 @@ class SearchRowsAreTheAnswer(unittest.TestCase):
 
 
 class Desktop:
-    """A session's answers, as `Session.launch` reads them: the windows the desk
+    """A session's answers, as `Session.launch` reads them: the windows the desktop
     shows, and the invokes the desktop is asked for."""
 
     def __init__(self, windows, opened=(), refusal=None):

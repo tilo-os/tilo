@@ -7,7 +7,7 @@
 # source documents to ~/Documents/Trial/Sources (with empty Out and Submission
 # folders beside them), and runs the mock portal as a systemd user service on
 # http://127.0.0.1:8471/. Run it again to update the pack; it keeps the
-# participant's outputs and the portal's state. reset.sh starts a fresh
+# tester's outputs and the portal's state. reset.sh starts a fresh
 # attempt. Needs python3 3.9 or newer and nothing else.
 set -euo pipefail
 

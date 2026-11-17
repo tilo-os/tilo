@@ -250,7 +250,7 @@ set -e
 grep -Fq 'airplay plugin-discovery failed: openh264enc is not available' "$work/stderr"
 
 # Discovery succeeds for a stub; initialization failure or no decoded frames
-# must stop before either network participant starts.
+# must stop before either side starts on the network.
 write_gst_ok
 for codec in stub empty; do
   write_codec "$codec"

@@ -79,6 +79,7 @@ paths = [
     "apps/mail/tests/oauth_credentials.rs",
     "crates/system/account-credentials/tests/oauth_capabilities.rs",
     "docs/windows-compatibility.md",
+    "os/dev/write-verified-installer-media.py",
 ]
 
 [[allow]]

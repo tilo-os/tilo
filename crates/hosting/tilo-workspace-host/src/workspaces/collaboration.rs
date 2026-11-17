@@ -1093,7 +1093,7 @@ impl Workspaces {
     /// Write `change` into `workspace`'s own state as `device`, this host's
     /// own device, and publish it to the workspace's members. A lease or a
     /// bot's schedule progress belongs there: it is the workspace's state
-    /// whichever participant holds the workspace, so a group of desktops with
+    /// whichever key holder holds the workspace, so a group of desktops with
     /// no server keeps it as a hosted workspace does. The receiver decides the
     /// change against `device`'s grants as any member's write; a governor's
     /// device may make any undoable change.

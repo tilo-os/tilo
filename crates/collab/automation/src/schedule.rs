@@ -132,9 +132,9 @@ impl<'a> Timed<'a> {
     }
 }
 
-/// What one participant should do about a trigger on the clock now, given
-/// the last fire time any participant answered: the progress kept in the
-/// workspace, not in one host's file, so whichever participant takes the
+/// What one key holder should do about a trigger on the clock now, given
+/// the last fire time any key holder answered: the progress kept in the
+/// workspace, not in one host's file, so whichever key holder takes the
 /// trigger up next carries on where the last one stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SchedulePlan {
@@ -151,13 +151,13 @@ pub enum SchedulePlan {
     },
 }
 
-/// What `timed` asks of a participant at `now_ms`, `answered_due_ms` being the
-/// last fire time any participant answered, or `None` if none has.
+/// What `timed` asks of a key holder at `now_ms`, `answered_due_ms` being the
+/// last fire time any key holder answered, or `None` if none has.
 ///
-/// A fire time missed while every participant was down runs once when the
+/// A fire time missed while every key holder was down runs once when the
 /// trigger catches up and not at all when it skips, never once per period: the
 /// progress moves to `now_ms`, so the next fire time is the first after it
-/// however many periods passed. A moment that passed while every participant
+/// however many periods passed. A moment that passed while every key holder
 /// was down fires once, however late, and never again.
 #[must_use]
 pub fn plan(

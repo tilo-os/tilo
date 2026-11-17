@@ -229,7 +229,7 @@ PORTAL_ANSWERS = {
     },
 }
 
-# Where the trial lives on the desktop, relative to the participant's home.
+# Where the trial lives on the desktop, relative to the tester's home.
 TRIAL_DIR = "Documents/Trial"
 SOURCES = "Sources"
 OUT = "Out"

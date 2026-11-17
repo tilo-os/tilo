@@ -35,7 +35,7 @@ fn the_record_answers_a_read_with_what_each_server_is_set_to() {
 fn a_servers_configuration_is_typed_actions_with_history() {
     let mut record = enrolled();
     record
-        .apply(Servers::HOLD_WORKSPACE.with((device(), WORKSPACE.into(), PARTICIPANT.into())))
+        .apply(Servers::HOLD_WORKSPACE.with((device(), WORKSPACE.into(), KEY_HOLDER.into())))
         .unwrap();
     record
         .apply(Servers::SET_APPETITE.with((device(), 500, true, 2)))
@@ -52,7 +52,7 @@ fn a_servers_configuration_is_typed_actions_with_history() {
     let state = record.state().unwrap();
     let server = state.active(&[7; 32]).unwrap();
     assert_eq!(server.label, "Attic");
-    assert_eq!(server.holding(WORKSPACE), Some(PARTICIPANT));
+    assert_eq!(server.holding(WORKSPACE), Some(KEY_HOLDER));
     assert_eq!(
         (server.storage_gb, server.compute, server.machines),
         (500, true, 2)

@@ -1,10 +1,10 @@
-//! Which participant device does one piece of work in a workspace.
+//! Which key-holding device does one piece of work in a workspace.
 //!
 //! State merges by itself; a side effect does not. A lease names the device
 //! doing a piece of work, with a deadline it keeps pushing out while it
 //! works. The lease is a resource of the workspace's own state, so a group of
 //! desktops holding a workspace has it with no server: whoever wants the work
-//! writes its own claim, and every participant reads the same claim set.
+//! writes its own claim, and every key holder reads the same claim set.
 //!
 //! Claims are per device, never one shared register, so two devices that claim
 //! at the same time both keep their row after a merge and nothing is lost.

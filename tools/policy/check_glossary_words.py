@@ -3,9 +3,10 @@
 
 The glossary's "Not used" section lists the words that name nothing in Tilo:
 old names of renamed things and vague metaphors. This check reads that list,
-so adding a word there is enough, and finds each word and its plural in Rust
-(identifiers, comments and literals), Markdown, Fluent catalogues, tilolang
-sources and TOML keys. A word counts as a whole word or as one part of an
+so adding a word there is enough, and finds each word and its plural in Rust,
+Swift, Kotlin, JavaScript, TypeScript, Python and shell sources (identifiers,
+comments and literals), Markdown, Fluent catalogues, tilolang sources and TOML
+keys. Vendored and minified files are not judged. A word counts as a whole word or as one part of an
 identifier: `room_id`, `RoomId` and `ROOM_ID` count, `bathroom`, `gateway`
 and `outstanding` do not.
 
@@ -19,7 +20,8 @@ and a commit that removes some lowers the count (the pre-commit hook recounts
 the index, writes the counts and stages them). That never raises a count by
 what the tree already held: uses that arrived unjudged (a commit made before
 its base had this check, then rebased onto it) stay above the baseline, where
-judging the tree names their word, until they are renamed. A word the baseline
+judging the tree names their word and lists the uses added since the baseline
+was last written, until they are renamed. A word the baseline
 does not list has no uses at all.
 
     check_glossary_words.py            judge the tree
@@ -46,7 +48,10 @@ GLOSSARY = "docs/glossary.md"
 ALLOWED = "tools/policy/glossary_words_allowed.toml"
 BASELINE = "tools/policy/glossary_words_baseline.txt"
 SCRIPT = "tools/policy/check_glossary_words.py"
-SCANNED = ("*.rs", "*.md", "*.ftl", "*.tl", "*.toml")
+SCANNED = (
+    "*.rs", "*.md", "*.ftl", "*.tl", "*.toml",
+    "*.swift", "*.kt", "*.kts", "*.js", "*.mjs", "*.cjs", "*.ts", "*.py", "*.sh",
+)
 SUFFIXES = tuple(pattern[1:] for pattern in SCANNED)
 # Files that name the words to say they are not used.
 NOT_JUDGED = (GLOSSARY, ALLOWED, BASELINE, SCRIPT, "tools/tests/test_glossary_words.py")
@@ -153,7 +158,13 @@ class Allowed:
 
 
 def judged_path(path: str) -> bool:
-    return path.endswith(SUFFIXES) and not path.startswith("vendor/") and path not in NOT_JUDGED
+    return (
+        path.endswith(SUFFIXES)
+        and not path.startswith("vendor/")
+        and "/node_modules/" not in path
+        and not path.endswith(".min.js")
+        and path not in NOT_JUDGED
+    )
 
 
 def git(*args: str, env: dict | None = None, check: bool = True) -> bytes:
@@ -177,7 +188,7 @@ def hits(matcher: Matcher, allowed: Allowed, where: list[str], paths: list[str] 
     (`--cached`) or a commit, in `paths` or every scanned file."""
     env = None
     if paths is None:
-        pathspecs = [*SCANNED, ":!vendor/"]
+        pathspecs = [*SCANNED, ":!vendor/", ":!*/node_modules/*", ":!*.min.js"]
     else:
         pathspecs = [path for path in paths if judged_path(path)]
         if not pathspecs:
@@ -248,30 +259,77 @@ def describe(found: list[Hit], word: str, limit: int = 40) -> list[str]:
     return lines
 
 
+def new_uses(before: list[Hit], after: list[Hit]) -> list[Hit]:
+    """The uses in `after` that `before` does not have, by file and line text."""
+    old = Counter((hit.path, hit.word, hit.text) for hit in before)
+    added = []
+    for hit in after:
+        if old[(hit.path, hit.word, hit.text)]:
+            old[(hit.path, hit.word, hit.text)] -= 1
+        else:
+            added.append(hit)
+    return added
+
+
+def added_since_baseline(matcher: Matcher, allowed: Allowed) -> list[Hit]:
+    """The uses in the working tree that the commit which last wrote the
+    baseline did not have."""
+    base = git("log", "-1", "--format=%H", "HEAD", "--", BASELINE).decode().strip()
+    if not base:
+        return []
+    names = [
+        name
+        for name in git("diff", "--name-only", "--no-renames", "-z", base).decode().split("\0")
+        if name
+    ]
+    return new_uses(hits(matcher, allowed, [base], names), hits(matcher, allowed, [], names))
+
+
 def judge_tree() -> int:
     words, matcher, allowed = setup(None)
     found = hits(matcher, allowed, [], None)
     counts = Counter(hit.word for hit in found)
     baseline = read_baseline(show(None, BASELINE))
-    failed = False
+    over = [word for word in words if counts[word] > baseline.get(word, 0)]
+    added = added_since_baseline(matcher, allowed) if over else []
     for word in words:
         have, may = counts[word], baseline.get(word, 0)
         if have > may:
-            failed = True
             if may:
-                print(f"'{word}': {have} uses, {may} allowed; the new ones are not listed here, "
-                      f"run `{SCRIPT} --list {word}` or judge the commit with --staged",
-                      file=sys.stderr)
+                print(f"'{word}': {have} uses, {may} allowed; added since the baseline was last "
+                      f"written:", file=sys.stderr)
+                print("\n".join(describe(added, word)), file=sys.stderr)
             else:
                 print(f"'{word}' is not used (docs/glossary.md):", file=sys.stderr)
                 print("\n".join(describe(found, word)), file=sys.stderr)
         elif have < may:
             print(f"'{word}': {have} uses, the baseline still allows {may}; "
                   f"run `{SCRIPT} --update`", file=sys.stderr)
-    if failed:
+    if over:
         print(f"Name the thing with the glossary's word; a use that means something outside "
               f"Tilo goes in {ALLOWED}.", file=sys.stderr)
-    return 1 if failed else 0
+    return 1 if over else 0
+
+
+def head_counts() -> Counter:
+    """`HEAD`'s tree as `HEAD`'s check counts it: its script, glossary and
+    exceptions, so a commit that widens the check raises the counts by what
+    it newly counts."""
+    source = show("HEAD", SCRIPT)
+    if source is None:
+        _, matcher, allowed = setup("HEAD")
+        return Counter(hit.word for hit in hits(matcher, allowed, ["HEAD"], None))
+    name = "check_glossary_words_at_head"
+    module = type(sys)(name)
+    module.__file__ = str(ROOT / SCRIPT)
+    sys.modules[name] = module
+    try:
+        exec(compile(source, SCRIPT, "exec"), module.__dict__)
+        module.ROOT = ROOT
+        _, matcher, allowed = module.setup("HEAD")
+        return Counter(hit.word for hit in module.hits(matcher, allowed, ["HEAD"], None))
+    finally:
+        del sys.modules[name]
 
 
 def judge_staged() -> int:
@@ -300,15 +358,7 @@ def judge_staged() -> int:
         # A word new to the glossary starts at its count.
         if word in head_words and delta[word] > 0:
             failed = True
-            old = Counter((hit.path, hit.text) for hit in before if hit.word == word)
-            new = []
-            for hit in staged_hits:
-                if hit.word != word:
-                    continue
-                if old[(hit.path, hit.text)]:
-                    old[(hit.path, hit.text)] -= 1
-                else:
-                    new.append(hit)
+            new = new_uses(before, staged_hits)
             print(f"'{word}' is not used (docs/glossary.md); this commit adds uses:",
                   file=sys.stderr)
             print("\n".join(describe(new, word)), file=sys.stderr)
@@ -326,10 +376,7 @@ def judge_staged() -> int:
         if recount:
             # What counts may have changed. A count rises by what this commit
             # itself makes count: the index against HEAD's tree as HEAD counted it.
-            _, head_matcher, head_allowed = setup("HEAD")
-            head_total = Counter(
-                hit.word for hit in hits(head_matcher, head_allowed, ["HEAD"], None)
-            )
+            head_total = head_counts()
             grown = Counter({word: total[word] - head_total[word] for word in words})
         for word in words:
             # A word new to the glossary starts at its count. Any other keeps

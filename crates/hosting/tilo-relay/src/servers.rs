@@ -3,7 +3,7 @@
 //! The admin workspace is an ordinary workspace whose only member is the
 //! person. Each server is one of their devices and takes part in it. Its
 //! [`SERVERS`] record says, per server, what that server should be: its name,
-//! which workspaces it holds and how (an encrypted store or a participant that
+//! which workspaces it holds and how (an encrypted store or a key holder that
 //! takes work), how much it offers (storage, compute, machines), which update
 //! channel it follows and when it may restart for maintenance, how it unlocks
 //! after a boot, and whether it was retired. Every change is a typed action on
@@ -32,9 +32,9 @@ const ADMIN_WORKSPACE_NAME: &str = "Servers";
 /// What a server holds a workspace as: an encrypted store that keeps and
 /// forwards what it cannot read.
 pub const STORE: &str = "store";
-/// What a server holds a workspace as: a participant that holds the keys and
+/// What a server holds a workspace as: a key holder, which holds the keys and
 /// takes the workspace's work.
-pub const PARTICIPANT: &str = "participant";
+pub const KEY_HOLDER: &str = "key-holder";
 /// The ways a server unlocks after a boot: an owner's device approves it, its
 /// TPM unseals its keys, or someone types a passphrase at it.
 pub const UNLOCK_POLICIES: [&str; 3] = ["owner-device", "tpm", "passphrase"];
@@ -79,7 +79,7 @@ pub struct Server {
 /// How a server holds one workspace.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Holding {
-    /// [`STORE`] or [`PARTICIPANT`].
+    /// [`STORE`] or [`KEY_HOLDER`].
     pub mode: String,
 }
 
@@ -152,7 +152,7 @@ impl Servers {
         Ok(())
     }
 
-    /// Have a server hold a workspace as `mode` ([`STORE`] or [`PARTICIPANT`]).
+    /// Have a server hold a workspace as `mode` ([`STORE`] or [`KEY_HOLDER`]).
     #[action(external)]
     pub fn hold_workspace(
         &mut self,
@@ -163,9 +163,9 @@ impl Servers {
         if uuid::Uuid::parse_str(&workspace).is_err() {
             return Err(Refusal::new("not a workspace id"));
         }
-        if mode != STORE && mode != PARTICIPANT {
+        if mode != STORE && mode != KEY_HOLDER {
             return Err(Refusal::new(
-                "a server holds a workspace as store or participant",
+                "a server holds a workspace as store or key holder",
             ));
         }
         let server = self.server(&device)?;

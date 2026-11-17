@@ -97,7 +97,7 @@ def prepare(runtime, notices, destination):
         'source_build': receipt, 'factory': log['factory'],
         'admission_required': 'Existing immutable image provenance; root-owned package files; '
                               'exact native pins; compatible CPU; signed model catalogue and '
-                              'participant licence acceptance. This candidate grants none.',
+                              'a person's licence acceptance. This candidate grants none.',
     }
     path = provenance / 'manifest.json'
     path.write_text(json.dumps(manifest, indent=2) + '\n')

@@ -160,7 +160,7 @@ def joined(
             stand_in(session, workspace)
         yield host, peer, workspace, link
     except Exception:
-        # Both desks as they stood when a step failed.
+        # Both desktops as they stood when a step failed.
         for session in (host, peer):
             with contextlib.suppress(Exception):
                 session.snapshot(out / f"{session.tag}-failed.png")

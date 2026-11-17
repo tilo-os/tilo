@@ -857,7 +857,7 @@ def menu_complete(session: Session, title: str) -> dict:
     session.click_named(complete)
     after = until(f"{title!r} completed from its menu in Tasks' history",
                   lambda: (lambda t: t if t > before else None)(history_total(session, "tasks")), 15)
-    # The desk names what the window's last frame drew: the menu is gone from the frame the
+    # The window list names what the window's last frame drew: the menu is gone from the frame the
     # window draws after the press, which a slow renderer may draw after the history grew.
     until(f"{title!r}'s menu to close after {complete}",
           lambda: not any(target["name"] == complete for target in session.targets()), 5)

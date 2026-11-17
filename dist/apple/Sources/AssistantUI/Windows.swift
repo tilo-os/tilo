@@ -205,7 +205,7 @@ public struct MacWindow: View {
 #endif
 
 #if os(iOS)
-/// The iPhone's arrangement of the same views: the conversation first, the sidebar one step
+/// The iPhone's order of the same views: the conversation first, the sidebar one step
 /// back, the Tasks panel as a sheet over the conversation.
 public struct PhoneRoot: View {
     @Environment(AssistantModel.self) private var model

@@ -27,7 +27,7 @@ fn shown(app: &mut TestApp<SheetsShell>, sheet: &str) -> (Value, Value) {
     (read["rows"].clone(), read["formulas"].clone())
 }
 
-/// The same read on a replica: a participant with no app at all.
+/// The same read on a replica: a device with no app at all.
 fn read(book: &Replica<Workbook>, sheet: &str) -> (Value, Value) {
     let state = book.state().unwrap();
     let content = Workbook::read_content(&state, book.doc(), Some(sheet)).unwrap();
@@ -537,7 +537,7 @@ fn a_sort_keeps_references_on_their_addresses_and_says_which() {
     assert!(unread.get("references").is_none(), "{unread}");
 }
 
-/// Two participants at once: one inserts a row above the data while the other, who does not
+/// Two members at once: one inserts a row above the data while the other, who does not
 /// have that row yet, writes formulas that read the data from the summary. Both end with the
 /// same workbook; every formula that was there follows the row for both. A formula written
 /// meanwhile is held as its writer wrote it: its text names cells by position, and no change its

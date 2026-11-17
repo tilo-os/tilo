@@ -1,17 +1,17 @@
 //! How far a bot's schedules have been answered, kept in the workspace so
-//! whichever participant runs the bot carries on from there.
+//! whichever key holder runs the bot carries on from there.
 //!
 //! A bot is installed in the workspace, not on a host: its schedules are the
-//! workspace's work, and which participant fires one is the lease's call
+//! workspace's work, and which key holder fires one is the lease's call
 //! ([`super::leases`]). What must not be a host's own file is the progress:
-//! each participant that fires a schedule records the fire time it answered
-//! under its own device, and every participant reads the latest answer of
+//! each key holder that fires a schedule records the fire time it answered
+//! under its own device, and every key holder reads the latest answer of
 //! them. A missed fire time is derived from that answer
 //! ([`tilo_automation::schedule::plan`]), so it is caught up once whichever
 //! device takes over and however long no device ran, never once per period.
 //!
 //! Rows are per device, like lease claims: a device writes only its own row,
-//! so two participants never overwrite each other and the answer after a merge
+//! so two key holders never overwrite each other and the answer after a merge
 //! is the latest row. A program updated to another trigger starts its own
 //! times: rows name the trigger they answered, and one that does not match the
 //! installed trigger is not an answer to it.
@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 /// Key of the bots' answered fire times in the workspace's own document: a map
 /// from each installation to a map from each trigger index to a map from each
-/// participant device key (hex) to its answer.
+/// key holder's device key (hex) to its answer.
 pub const BOT_SCHEDULES_KEY: &str = "bot_schedules_v1";
 
 /// What one device answered for one trigger: which trigger it answered, and
@@ -82,9 +82,9 @@ fn answered_of(
 }
 
 impl PeerWorkspace<'_> {
-    /// The latest fire time any participant answered for the schedule at
+    /// The latest fire time any key holder answered for the schedule at
     /// `trigger` of `installation`'s program, `mark` being its
-    /// [`trigger_mark`]; `None` when no participant has seen it before.
+    /// [`trigger_mark`]; `None` when no key holder has seen it before.
     #[must_use]
     pub fn bot_schedule_answered(
         self,

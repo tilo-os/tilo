@@ -122,7 +122,7 @@ def directory(path):
             os.close(fd)
             fd = next_fd
         info = os.fstat(fd)
-        require(not info.st_mode & 0o022, 'public asset directory is writable by another principal')
+        require(not info.st_mode & 0o022, 'public asset directory is writable by another user')
         return fd
     except BaseException:
         os.close(fd)

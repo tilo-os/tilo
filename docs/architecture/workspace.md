@@ -63,14 +63,14 @@ always resolve alike; a passed-over device carries its reason.
 A piece of the workspace's work that must happen once — a bot's scheduled
 trigger, an automation only one device should run — is taken under a lease kept
 in the workspace's own state, so a group of desktops with no server has it. A
-participant that wants the work writes its own claim with a deadline it pushes
+key holder that wants the work writes its own claim with a deadline it pushes
 out while it works; claims rank by placement and the best live one of the
-latest term holds. Two participants that claim after a partition keep both
+latest term holds. Two key holders that claim after a partition keep both
 claims until the merge, then agree on one winner on every device; the loser
 withdraws its claim and stops. A claim is over only a minute past its deadline,
 so devices whose clocks differ by less than that never disagree about whether
 the lease is free. What the work got to is workspace state too: a bot's
-schedule keeps the fire time it answered, so whichever participant holds the
+schedule keeps the fire time it answered, so whichever key holder holds the
 lease carries on from it and a time missed while none ran is caught up once.
 
 A host is not a different kind of node. "Workspace hosting" is a device with
@@ -212,7 +212,7 @@ their devices, takes part. Its id follows from the person's root, so every
 server finds the same one; a server enrolled into the person's identity makes
 it where it holds none and enters itself on its first start. One document of
 kind `tilo.servers` holds each server's desired configuration: its name, which
-workspaces it holds and as what (store or participant), what it offers
+workspaces it holds and as what (store or key holder), what it offers
 (storage, compute, machines), its update channel and daily maintenance window,
 how it unlocks after a boot, and whether it was retired. Every change is a
 typed action on that document, so it has history and an author, and a server

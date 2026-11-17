@@ -67,6 +67,10 @@ class TreeTests(unittest.TestCase):
             words.BASELINE: baseline,
             "apps/chat/src/lib.rs": "struct Channel;\n",
             "crates/a/src/lib.rs": "// The host and its host_key.\nfn open_room() {}\n",
+            "dist/apple/Sources/A.swift": "let entry = 1\n",
+            "tools/a.py": "entry = 1\n",
+            "vendor/b/b.js": "const door = 1;\n",
+            "web/c.min.js": "const door = 1;\n",
         }
         for name, text in files.items():
             (root / name).parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +168,39 @@ class TreeTests(unittest.TestCase):
         self.git(root, "add", ".")
         self.assertEqual(self.run_mode(words.judge_staged)[0], 0)
         self.assertEqual(self.staged_baseline(root), words.BASELINE_HEADER + "room 1\n")
+
+    def test_judges_tilos_own_sources_in_every_language(self):
+        root = self.repository(words.BASELINE_HEADER + "room 1\nhost 1\n")
+        (root / "dist/apple/Sources/A.swift").write_text("let doorOffer = 1\n")
+        (root / "tools/a.py").write_text("GATE = 1\n")
+        code, out = self.run_mode(words.judge_tree)
+        self.assertEqual(code, 1)
+        self.assertIn("dist/apple/Sources/A.swift:1: let doorOffer = 1", out)
+        self.assertIn("tools/a.py:1: GATE = 1", out)
+        self.assertNotIn("vendor/", out)
+        self.assertNotIn(".min.js", out)
+
+    def test_the_tree_names_the_uses_added_since_the_baseline(self):
+        root = self.repository(words.BASELINE_HEADER + "room 1\nhost 1\n")
+        self.commit_unjudged(root)
+        code, out = self.run_mode(words.judge_tree)
+        self.assertEqual(code, 1)
+        self.assertIn("crates/b/src/lib.rs:1: fn other_room() {}", out)
+        self.assertNotIn("open_room", out)
+
+    def test_widening_the_check_raises_a_count_by_what_it_newly_counts(self):
+        root = self.repository(words.BASELINE_HEADER + "room 1\nhost 1\n")
+        source = SCRIPT.read_text()
+        (root / words.SCRIPT).parent.mkdir(parents=True, exist_ok=True)
+        (root / words.SCRIPT).write_text(source.replace('"*.py", ', ""))
+        (root / "tools/a.py").write_text("room = 1\n")
+        self.git(root, "add", ".")
+        self.git(root, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+                 "commit", "-q", "-m", "a check that skips Python")
+        (root / words.SCRIPT).write_text(source)
+        self.git(root, "add", ".")
+        self.assertEqual(self.run_mode(words.judge_staged)[0], 0)
+        self.assertEqual(self.staged_baseline(root), words.BASELINE_HEADER + "room 2\nhost 1\n")
 
 
 if __name__ == "__main__":
