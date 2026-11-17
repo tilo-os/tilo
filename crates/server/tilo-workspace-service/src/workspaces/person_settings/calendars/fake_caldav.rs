@@ -23,6 +23,12 @@
 //! anywhere: the server keeps whom it would have written to
 //! ([`Server::mailed`]).
 //!
+//! An entry is known by its `UID`. Written over by one under another `UID`,
+//! it is refused (RFC 4791, 5.3.2.1, `no-uid-conflict`). A server that does
+//! not keep that rule ([`Server::takes_another_uid`]) reads what it is given
+//! as another event: the one it held is removed and the one it holds now is
+//! new, each by its table.
+//!
 //! A test changes a calendar as another client would ([`Server::put`],
 //! [`Server::remove`]), and reads what a client left on it
 //! ([`Server::held`]) and everything it was asked ([`Server::requests`]).
@@ -62,6 +68,9 @@ struct State {
     /// Everyone the server wrote to by itself, in order: what it sent and
     /// the address it went to.
     mailed: Vec<String>,
+    /// Whether an entry is written over by one under another `UID`: a server
+    /// that keeps RFC 4791's `no-uid-conflict` says no.
+    any_uid: bool,
 }
 
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -220,6 +229,18 @@ fn read(ics: &str) -> Read {
     read
 }
 
+/// The `UID` the entry `ics` goes by: its first, since the parts of one entry
+/// go by one.
+fn uid_it_goes_by(ics: &str) -> Option<String> {
+    ics.replace("\r\n ", "").lines().find_map(|line| {
+        let (property, value) = line.split_once(':')?;
+        let property = property.split(';').next().unwrap_or(property);
+        property
+            .eq_ignore_ascii_case("UID")
+            .then(|| value.trim().to_owned())
+    })
+}
+
 /// What RFC 6638's tables have a server send somebody an entry's organiser
 /// invites, by who wrote to them in the entry as it was (`None`: it did not
 /// name them, or there was no entry) and in the entry as it is now (`None`:
@@ -326,6 +347,7 @@ impl State {
             token: 1,
             syncs: true,
             mailed: Vec::new(),
+            any_uid: false,
         }
     }
 
@@ -511,6 +533,7 @@ impl State {
         };
         let next = self.token.saturating_add(1);
         let account = self.address();
+        let any_uid = self.any_uid;
         let Some(calendar) = self.calendars.get_mut(&slug) else {
             return Reply::status(404);
         };
@@ -521,6 +544,19 @@ impl State {
             return Reply::status(412);
         }
         let text = request.body_text();
+        // RFC 4791, 5.3.2.1: an entry is not written over by one under
+        // another UID.
+        let another = calendar
+            .entries
+            .get(&name)
+            .is_some_and(|kept| uid_it_goes_by(&kept.ics) != uid_it_goes_by(&text));
+        if another && !any_uid {
+            return Reply::status(403).header("Content-Type", XML).body(format!(
+                "<d:error {NAMESPACES}><c:no-uid-conflict><d:href>{}</d:href>\
+                 </c:no-uid-conflict></d:error>",
+                escaped(path)
+            ));
+        }
         let was = calendar.entries.insert(
             name.clone(),
             Kept {
@@ -531,8 +567,18 @@ impl State {
         calendar.changes.push((next, name));
         self.token = next;
         let old = was.as_ref().map(|kept| kept.ics.as_str());
-        self.mailed
-            .extend(sent(account.as_deref(), old, Some(&text), true));
+        if another {
+            // To a server that takes it, another UID is another event: the
+            // one it held is removed (RFC 6638, 3.2.1.3 and 3.2.2.4) and the
+            // one it holds now is new (3.2.1.1).
+            self.mailed
+                .extend(sent(account.as_deref(), old, None, true));
+            self.mailed
+                .extend(sent(account.as_deref(), None, Some(&text), true));
+        } else {
+            self.mailed
+                .extend(sent(account.as_deref(), old, Some(&text), true));
+        }
         Reply::status(if was.is_none() { 201 } else { 204 }).header("ETag", &etag(next))
     }
 
@@ -666,6 +712,12 @@ impl Server {
         lock(&self.state).syncs = false;
     }
 
+    /// Take an entry written over by one under another `UID` from now on, as
+    /// a server does that does not keep RFC 4791's `no-uid-conflict`.
+    pub fn takes_another_uid(&self) {
+        lock(&self.state).any_uid = true;
+    }
+
     /// Put `ics` into `slug` as the entry `name`, as another client would.
     pub fn put(&self, slug: &str, name: &str, ics: &str) {
         let mut state = lock(&self.state);
@@ -729,7 +781,7 @@ impl Server {
 mod tests {
     use test_http::Request;
 
-    use super::{Calendar, State, base64};
+    use super::{Calendar, Server, State, base64, lock};
 
     const ADA: &str = "ada@example.test";
     const BO: &str = "bo@example.test";
@@ -1016,5 +1068,81 @@ mod tests {
         asked(&mut state, "DELETE", &[], "");
         assert!(!holds(&state), "the server let the entry go");
         assert_eq!(state.mailed, NOBODY, "an organiser the client answers");
+    }
+
+    /// Ada's one entry as the server keeps it.
+    fn text_it_keeps(state: &State) -> String {
+        state
+            .calendars
+            .get("work")
+            .and_then(|calendar| calendar.entries.get("a.ics"))
+            .map(|kept| kept.ics.clone())
+            .unwrap_or_default()
+    }
+
+    /// Her entry under the `UID` another event goes by.
+    fn under_another_uid(text: &str) -> String {
+        text.replace("UID:a\r\n", "UID:b\r\n")
+    }
+
+    /// RFC 4791, 5.3.2.1 (`no-uid-conflict`): an entry is not written over by
+    /// one under another `UID`. The server keeps what it held and sends
+    /// nothing; under its own `UID` the entry is taken as before.
+    #[test]
+    fn an_entry_written_over_under_another_uid_is_refused() {
+        let mut state = server();
+        asked(&mut state, "PUT", &[], &inviting(Some(SERVER)));
+        state.mailed.clear();
+        asked(
+            &mut state,
+            "PUT",
+            &[],
+            &under_another_uid(&inviting(Some(CLIENT))),
+        );
+        assert_eq!(
+            text_it_keeps(&state),
+            inviting(Some(SERVER)),
+            "what it held stays"
+        );
+        assert_eq!(state.mailed, NOBODY, "a refused entry sends nothing");
+        asked(&mut state, "PUT", &[], &inviting(Some(SERVER)));
+        assert_eq!(state.mailed, request(), "under its own UID it is taken");
+    }
+
+    /// A server that does not keep that rule reads an entry under another
+    /// `UID` as another event: the one it held is removed (RFC 6638, 3.2.1.3)
+    /// and the one it holds now is new (3.2.1.1). Whoever it wrote to is told
+    /// the event is off and is invited to it again; a line marked for the
+    /// client sends nothing either way.
+    #[test]
+    fn a_server_that_takes_another_uid_removes_what_it_held_and_creates_what_it_holds() {
+        let mut state = server();
+        state.any_uid = true;
+        asked(&mut state, "PUT", &[], &inviting(Some(SERVER)));
+        state.mailed.clear();
+        let other = under_another_uid(&inviting(Some(SERVER)));
+        asked(&mut state, "PUT", &[], &other);
+        assert_eq!(text_it_keeps(&state), other, "it took the entry");
+        assert_eq!(
+            state.mailed,
+            [format!("CANCEL to {BO}"), format!("REQUEST to {BO}")]
+        );
+
+        let mut state = server();
+        state.any_uid = true;
+        asked(&mut state, "PUT", &[], &inviting(Some(CLIENT)));
+        asked(
+            &mut state,
+            "PUT",
+            &[],
+            &under_another_uid(&inviting(Some(CLIENT))),
+        );
+        assert_eq!(state.mailed, NOBODY, "the same with the line marked");
+
+        // A server keeps the rule until a test tells it otherwise.
+        let told = Server::start(ADA, PASSWORD);
+        assert!(!lock(&told.state).any_uid);
+        told.takes_another_uid();
+        assert!(lock(&told.state).any_uid);
     }
 }
