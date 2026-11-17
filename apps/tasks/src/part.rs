@@ -100,6 +100,67 @@ impl IssuePart {
         self.last_number()
     }
 
+    /// Make the issue `issue` says, as `create` does, and answer its id.
+    fn make(&mut self, cx: &mut ActionCx, issue: NewIssue) -> Result<Id, Refusal> {
+        let NewIssue {
+            title,
+            parent,
+            body,
+            status,
+            assignee,
+            url,
+            project: _,
+            priority,
+            estimate,
+            due_ms,
+            labels,
+            origin,
+            rank,
+            goal,
+        } = issue;
+        check_estimate(estimate)?;
+        let origin = Origin::checked_option(origin)?;
+        let assignee = checked_assignee(assignee)?;
+        let author = Some(author(cx)?);
+        let author_name = cx.acting_name();
+        let number = self.next_number();
+        let mut kept_labels = tilo_resource::Set::new();
+        for label in labels.unwrap_or_default() {
+            let label = label.trim();
+            if !label.is_empty() {
+                kept_labels.insert(label.to_owned());
+            }
+        }
+        let given = given_to_agent(assignee.as_ref(), author.as_ref(), cx.now_ms());
+        let issue = Issue {
+            number,
+            rank: rank.unwrap_or_default(),
+            title: title.into_string(),
+            body: RichText::from_markdown(body.unwrap_or_default()),
+            status: status.unwrap_or_default(),
+            assignee,
+            url: url
+                .map(|url| url.trim().to_owned())
+                .filter(|url| !url.is_empty())
+                .or_else(|| origin.as_ref().and_then(|origin| origin.url.clone())),
+            parent: parent.map(|parent| Id::from_raw(parent.as_str().to_owned())),
+            author,
+            author_name,
+            created_ms: cx.now_ms(),
+            area: goal,
+            priority: priority.and_then(Priority::level),
+            estimate,
+            due_ms,
+            labels: kept_labels,
+            origin,
+            assigned_by: given.0,
+            assigned_ms: given.1,
+            ..Issue::default()
+        };
+        let id = cx.id();
+        Ok(self.issues.push(id, issue))
+    }
+
     /// What system search finds of the part: each issue, by its number,
     /// title, description and labels.
     #[must_use]
@@ -246,64 +307,7 @@ impl IssuePart {
         cx: &mut ActionCx,
         #[param(flatten)] issue: NewIssue,
     ) -> Result<(), Refusal> {
-        let NewIssue {
-            title,
-            parent,
-            body,
-            status,
-            assignee,
-            url,
-            project: _,
-            priority,
-            estimate,
-            due_ms,
-            labels,
-            origin,
-            rank,
-            goal,
-        } = issue;
-        check_estimate(estimate)?;
-        let origin = Origin::checked_option(origin)?;
-        let assignee = checked_assignee(assignee)?;
-        let author = Some(author(cx)?);
-        let author_name = cx.acting_name();
-        let number = self.next_number();
-        let mut kept_labels = tilo_resource::Set::new();
-        for label in labels.unwrap_or_default() {
-            let label = label.trim();
-            if !label.is_empty() {
-                kept_labels.insert(label.to_owned());
-            }
-        }
-        let given = given_to_agent(assignee.as_ref(), author.as_ref(), cx.now_ms());
-        let issue = Issue {
-            number,
-            rank: rank.unwrap_or_default(),
-            title: title.into_string(),
-            body: RichText::from_markdown(body.unwrap_or_default()),
-            status: status.unwrap_or_default(),
-            assignee,
-            url: url
-                .map(|url| url.trim().to_owned())
-                .filter(|url| !url.is_empty())
-                .or_else(|| origin.as_ref().and_then(|origin| origin.url.clone())),
-            parent: parent.map(|parent| Id::from_raw(parent.as_str().to_owned())),
-            author,
-            author_name,
-            created_ms: cx.now_ms(),
-            area: goal,
-            priority: priority.and_then(Priority::level),
-            estimate,
-            due_ms,
-            labels: kept_labels,
-            origin,
-            assigned_by: given.0,
-            assigned_ms: given.1,
-            ..Issue::default()
-        };
-        let id = cx.id();
-        self.issues.push(id, issue);
-        Ok(())
+        self.make(cx, issue).map(drop)
     }
 
     /// Start counting this part's numbers on from `before`, the highest
@@ -311,6 +315,43 @@ impl IssuePart {
     #[action(step = "create", housekeeping, writes = issues)]
     pub fn start(&mut self, before: u64) {
         self.before = self.before.max(before);
+    }
+
+    /// Create issues
+    ///
+    /// Several issues in one step, in the order given, each as `create`
+    /// takes it. An issue may be a sub-issue of one made in the same step:
+    /// its `under` names that one's `key`, or its place in the list.
+    ///
+    /// # Errors
+    /// Refuses the whole list, naming the entry, when `create` would refuse
+    /// one of its issues, or one stands under an issue that does not come
+    /// before it in the list.
+    #[action(step = "create", audience = "agents", writes = issues)]
+    pub fn create_many(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param(
+            "The issues, in order, each as `create` takes it. `key` names an issue within this call, and `under` is the key, or the place counted from 1, of the issue earlier in the list it is a sub-issue of"
+        )]
+        issues: Vec<crate::model::ListedIssue>,
+    ) -> Result<(), Refusal> {
+        many::check_count(issues.len())?;
+        let under = many::nesting(&issues)?;
+        let mut made: Vec<Id> = Vec::with_capacity(issues.len());
+        for (at, (listed, under)) in issues.into_iter().zip(under).enumerate() {
+            let title = listed.title.as_str().to_owned();
+            many::check_listed(&listed).map_err(|refusal| many::entry(at, &title, refusal))?;
+            let mut issue = listed.into_new();
+            if let Some(parent) = under.and_then(|place| made.get(place)) {
+                issue.parent = Some(Ref::from(parent));
+            }
+            let id = self
+                .make(cx, issue)
+                .map_err(|refusal| many::entry(at, &title, refusal))?;
+            made.push(id);
+        }
+        Ok(())
     }
 
     /// Rename an issue: its title, as the board and its page show it.
@@ -580,7 +621,7 @@ impl IssuePart {
     ///
     /// # Errors
     /// Refuses a goal that is not a resource, or an estimate over 1000.
-    #[action(item = issues, step = "edit", audience = "people", writes = issues)]
+    #[action(item = issues, step = "edit", writes = issues)]
     pub fn plan(
         &mut self,
         issue: &Id,
@@ -1108,6 +1149,20 @@ impl<'a> Held<'a> {
     }
 }
 
+/// The project or area `project` names, as an issue keeps it.
+///
+/// # Errors
+/// Refuses a name the tracker has no project or area of.
+fn goal_named(tracker: &Tracker, project: &Ref) -> Result<Area, String> {
+    let area = tracker
+        .area_named(project.as_str())
+        .map_err(|refusal| refusal.to_string())?;
+    let named = tracker
+        .area(&area)
+        .ok_or_else(|| Tracker::no_area().to_string())?;
+    Ok(crate::model::area_goal(&area, &named.name))
+}
+
 /// Fill in, where `action` is invoked, what it reads of the tracker's
 /// projects and of every issue held there, and refuse what they do not
 /// allow: a parent that is not an issue, a project the tracker does not
@@ -1135,15 +1190,7 @@ pub fn prepare(
     };
     let goal = |project: Option<&Ref>| -> Result<Option<Area>, String> {
         project
-            .map(|project| {
-                let area = tracker
-                    .area_named(project.as_str())
-                    .map_err(|refusal| refusal.to_string())?;
-                let named = tracker
-                    .area(&area)
-                    .ok_or_else(|| Tracker::no_area().to_string())?;
-                Ok(crate::model::area_goal(&area, &named.name))
-            })
+            .map(|project| goal_named(tracker, project))
             .transpose()
     };
     match &mut action.operation {
@@ -1184,6 +1231,31 @@ pub fn prepare(
                 },
             );
             *before = named_before.map(Ref::from);
+        }
+        IssuePartAction::CreateMany(listed) => {
+            many::prepare_create(&mut listed.issues, tracker, &held)?;
+        }
+        // What `assign` and `comment` refuse of their arguments is refused
+        // here too, where every part is held, naming the issue: several of
+        // them invoked as one group are then written to every part they
+        // name or to none.
+        IssuePartAction::Assign(issue_part::Assign { issue, assignee }) => {
+            checked_assignee(assignee.clone())
+                .map_err(|refusal| format!("{}: {refusal}", held.reads_as(issue)))?;
+        }
+        IssuePartAction::Comment(issue_part::Comment {
+            issue,
+            text,
+            origin,
+        }) => {
+            if text.as_str().chars().count() > MAX_MESSAGE_CHARS {
+                return Err(format!(
+                    "{}: This message is too long",
+                    held.reads_as(issue)
+                ));
+            }
+            Origin::checked_option(origin.clone())
+                .map_err(|refusal| format!("{}: {refusal}", held.reads_as(issue)))?;
         }
         _ => {}
     }
@@ -1249,6 +1321,15 @@ impl Held<'_> {
         Err(format!("no issue named {asked}; issues: {holds}"))
     }
 
+    /// How a refusal names the issue `id`: its number and title, or the id
+    /// as written when no part held here keeps it.
+    fn reads_as(&self, id: &Id) -> String {
+        self.get(id).map_or_else(
+            || id.as_str().to_owned(),
+            |issue| format!("#{} {}", issue.number, issue.title),
+        )
+    }
+
     /// The issue numbered `number`, if one is.
     fn issue_number(&self, number: u64) -> Option<(&Id, &Issue)> {
         self.0
@@ -1297,6 +1378,8 @@ pub fn part_for(
     let newest = || new_part(parts.last().map(|(index, part)| (*index, &**part)));
     match &action.operation {
         IssuePartAction::Create(_) => Ok(newest()),
+        // A list of new issues stays together, so it is one step.
+        IssuePartAction::CreateMany(listed) => Ok(many::part_for_new(&listed.issues, parts)),
         other => match item_of(other) {
             Some(issue) => holding(issue),
             None => Ok(parts.last().map_or(0, |(index, _)| *index)),
@@ -1372,6 +1455,9 @@ pub fn item_of(action: &IssuePartAction) -> Option<&Id> {
     }
 }
 
+mod listing;
+mod many;
+
 #[cfg(test)]
 mod tests;
 
@@ -1409,4 +1495,14 @@ impl ui::framework::Chained for IssuePart {
     /// The list and the board show every issue, so a window holds every
     /// part; a part bounds what one change costs, not what is held.
     const HELD_WHOLE: bool = true;
+
+    const LISTED: &'static [&'static str] = listing::LISTED;
+
+    fn prepare_read(
+        filter: &mut serde_json::Map<String, serde_json::Value>,
+        tracker: &Tracker,
+        parts: &[(u64, Rc<Self>)],
+    ) -> Result<(), String> {
+        listing::prepare_read(filter, tracker, parts)
+    }
 }

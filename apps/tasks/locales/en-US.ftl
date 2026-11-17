@@ -107,6 +107,7 @@ tasks-message-step = Ran
 ## History
 
 tasks-create = Created { $title }
+tasks-create-many = Created issues
 tasks-move-under = Moved { $item }
 tasks-assign = Assigned { $item }
 tasks-place = Moved { $item } on the board
@@ -140,6 +141,7 @@ tasks-issues-issues-noun = { $count ->
    *[other] issues
 }
 tasks-issues-create = New issue
+tasks-issues-create-many = New issues
 tasks-issues-rename = Rename issue
 tasks-issues-move-under = Move issue
 tasks-issues-assign = Assign issue

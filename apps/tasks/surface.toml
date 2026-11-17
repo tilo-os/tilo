@@ -222,6 +222,14 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "create-many"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issues", type = { list = { named = "ListedIssue" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { assignee = { type = ["string", "null"] }, body = { type = ["string", "null"] }, due_ms = { type = ["integer", "null"] }, estimate = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, goal = { type = ["object", "null"], additionalProperties = false, properties = { app = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, resource = { type = "string" } }, required = ["resource", "app", "kind", "label"] }, key = { type = ["string", "null"] }, labels = { type = ["array", "null"], items = { type = "string" } }, origin = { type = ["object", "null"], additionalProperties = false, properties = { author = { type = "string" }, created_ms = { type = ["integer", "null"] }, handle = { type = ["string", "null"] }, reference = { type = ["string", "null"] }, source = { type = "string" }, updated_ms = { type = ["integer", "null"] }, url = { type = ["string", "null"] } }, required = ["author", "source"] }, parent = { type = ["string", "null"], minLength = 1 }, priority = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "none" }, { type = "string", const = "urgent" }, { type = "string", const = "high" }, { type = "string", const = "medium" }, { type = "string", const = "low" }] }] }, project = { type = ["string", "null"], minLength = 1 }, rank = { type = ["string", "null"] }, status = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] }] }, title = { type = "string", minLength = 1, pattern = "\\S" }, under = { type = ["string", "null"] }, url = { type = ["string", "null"] } }, required = ["title"] } } },
+]
+
+[[resources.verbs]]
 id = "rename"
 field = "title"
 kind = "undoable"
@@ -483,6 +491,27 @@ fields = [
   { name = "kind", type = "text" },
   { name = "resource", type = "text" },
   { name = "record", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "ListedIssue"
+fields = [
+  { name = "key", type = { option = "text" } },
+  { name = "under", type = { option = "text" } },
+  { name = "title", type = "text" },
+  { name = "parent", type = { option = "text" } },
+  { name = "body", type = { option = "text" } },
+  { name = "status", type = { option = { named = "Status" } } },
+  { name = "assignee", type = { option = "text" } },
+  { name = "url", type = { option = "text" } },
+  { name = "project", type = { option = "text" } },
+  { name = "priority", type = { option = { named = "Priority" } } },
+  { name = "estimate", type = { option = "int" } },
+  { name = "due_ms", type = { option = "int" } },
+  { name = "labels", type = { option = { list = "text" } } },
+  { name = "origin", type = { option = { named = "Origin" } } },
+  { name = "rank", type = { option = "text" } },
+  { name = "goal", type = { option = { named = "Area" } } },
 ]
 
 [[resources.types]]
