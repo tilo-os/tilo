@@ -66,6 +66,9 @@ pub struct Caller {
     // The name an agent goes by, from the key its person certified for it
     // (`Self::named`): presentation only, what History names it by.
     pub(super) agent_name: Option<String>,
+    // What the agent's own record bounds it to on its turn (`Self::on_turn`), narrowing the
+    // grants a delegated agent acts with; empty follows the default.
+    pub(super) bound: Vec<tilo_action_policy::Rule>,
 }
 
 impl Caller {
@@ -83,6 +86,7 @@ impl Caller {
             within: within::Within::NONE,
             turn: None,
             agent_name: None,
+            bound: Vec::new(),
         }
     }
 
@@ -100,6 +104,7 @@ impl Caller {
             within: within::Within::NONE,
             turn: None,
             agent_name: None,
+            bound: Vec::new(),
         }
     }
 
@@ -116,6 +121,7 @@ impl Caller {
             within: within::Within::NONE,
             turn: None,
             agent_name: None,
+            bound: Vec::new(),
         }
     }
 
@@ -135,6 +141,7 @@ impl Caller {
             within: within::Within::NONE,
             turn: None,
             agent_name: None,
+            bound: Vec::new(),
         }
     }
 
@@ -159,6 +166,7 @@ impl Caller {
             within: within::Within::NONE,
             turn: None,
             agent_name: None,
+            bound: Vec::new(),
         }
     }
 
@@ -184,6 +192,7 @@ impl Caller {
             within: within::Within::NONE,
             turn: Some(turn),
             agent_name: None,
+            bound: Vec::new(),
         }
     }
 
@@ -207,6 +216,7 @@ impl Caller {
             within: within::Within::NONE,
             turn: None,
             agent_name: None,
+            bound: Vec::new(),
         }
     }
 
@@ -322,6 +332,23 @@ impl Caller {
         self.agent_name.as_deref()
     }
 
+    /// The agent this person's own device handed its session to ([`Self::delegated_to`]) acts
+    /// inside `turn`, held to `bound`, the rules its own record narrows it to: the host that runs
+    /// the agent for the person and admitted the turn's cause sets it, never a payload. Changes
+    /// nothing for a caller that is not such an agent.
+    #[must_use]
+    pub fn on_turn(
+        mut self,
+        turn: tilo_action_policy::turn::Turn,
+        bound: Vec<tilo_action_policy::Rule>,
+    ) -> Self {
+        if self.session_delegated && self.acting.is_agent() {
+            self.turn = Some(turn);
+            self.bound = bound;
+        }
+        self
+    }
+
     /// The person whose own device handed this connection to its agent
     /// ([`Self::delegated_to`]), as that device is admitted: the person the
     /// agent acts for, on the same device, whose current standing bounds
@@ -343,6 +370,7 @@ impl Caller {
             session_delegated: false,
             turn: None,
             agent_name: None,
+            bound: Vec::new(),
             ..self.clone()
         })
     }
@@ -412,7 +440,7 @@ impl Caller {
         if !self.session_delegated {
             return Vec::new();
         }
-        tilo_action_policy::roles::agent_grants(workspace, agent, person, &[])
+        tilo_action_policy::roles::agent_grants(workspace, agent, person, &self.bound)
     }
 
     /// The run this caller's actions are part of, as the host that admitted it

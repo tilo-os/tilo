@@ -18,6 +18,7 @@
 //! verbs below, so both use one definition of every type, verb and typed
 //! action argument.
 
+mod asks;
 mod effect;
 mod goal;
 mod issue;
@@ -25,6 +26,7 @@ mod record;
 pub mod search;
 mod tracker_area;
 
+pub use asks::{IssueAsk, agent_asks};
 pub use effect::{NOTE_KIND, NOTES, TasksEffect};
 pub use goal::Area;
 pub use issue::{

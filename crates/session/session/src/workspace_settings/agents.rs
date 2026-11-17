@@ -251,7 +251,11 @@ impl Agents {
                     mine,
                     status: keeper_line(names, workspace, record, &agent.keeper),
                     spend: spend_line(agent),
-                    model: model_line(&config, &agent.id.0, agent.model.as_deref()),
+                    model: if agent.on_host {
+                        t("workspace-settings-agent-on-host")
+                    } else {
+                        model_line(&config, &agent.id.0, agent.model.as_deref())
+                    },
                 }
             })
             .collect();
@@ -752,6 +756,14 @@ impl Agents {
                 mcp_client: mcp_client.map(str::to_owned),
             }))
             .map_err(|error| error.to_string())?;
+        if RUNS_ON_HOST && mcp_client.is_none() {
+            record
+                .invoke(&Record::SET_AGENT_ON_HOST.with(actions::SetAgentOnHost {
+                    agent: Id::from_raw(id.clone()),
+                    on_host: true,
+                }))
+                .map_err(|error| error.to_string())?;
+        }
         Ok((id, name.as_str().to_owned()))
     }
 

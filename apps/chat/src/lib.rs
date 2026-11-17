@@ -91,6 +91,7 @@ mod scrollback;
 mod share_grants;
 mod shared_resources;
 mod sidebar;
+pub mod summons;
 mod timeline;
 pub mod transcript;
 pub mod views;

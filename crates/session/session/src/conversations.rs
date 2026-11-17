@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use chat::summons::{person_of, unanswered};
 use tilo_action_policy::WorkspacePolicy;
 use tilo_action_policy::turn::Turn;
 use tilo_app::framework::WorkspaceRecord;
@@ -774,24 +775,6 @@ fn message_of(resource: &str) -> Option<String> {
     bare.then(|| resource.to_owned())
 }
 
-/// Whether `reply` has yet to answer its summons: absent, or still working. A reply without work is
-/// a plain answer; one that keeps work is going until its work ends.
-fn unanswered(reply: Option<&chat::record::Message>) -> bool {
-    reply.is_none_or(|reply| {
-        reply.work.as_ref().is_some_and(|work| {
-            let streamed = work
-                .stream
-                .as_ref()
-                .is_some_and(|stream| stream.finish.is_some());
-            !streamed
-                && work
-                    .state
-                    .as_ref()
-                    .is_none_or(|transition| !transition.state.finished())
-        })
-    })
-}
-
 /// Every summons whose reply has no item Chat's window publishes yet: the person's messages an
 /// agent in the conversation has not answered, and that no held message of the part answers. The
 /// reply each names is the one its id and the agent's derive (`chat::record::reply_id`), so this
@@ -883,20 +866,8 @@ fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
     spec
 }
 
-/// The person a message's author names, when it names one: a member key that is a person
-/// ([`MemberId::key`], what a conversation's fields keep). A message a person posted summons its
-/// conversation's agent, and the run answers for the person it names; software names nobody.
-fn person_of(author: &MemberId) -> Option<String> {
-    author
-        .person_id()
-        .filter(|person| !person.is_empty())
-        .map(str::to_owned)
-}
-
-/// The turns `chat` 's conversations in `workspace` give, read from `part` 's messages, each with
-/// what its agent is called.
-/// A conversation the pass has no message for is none: a direct conversation exists only as the id
-/// its messages carry ([`chat::Chat::direct_id`]).
+/// The turns `chat` 's conversations in `workspace` give, read from `part` 's messages
+/// ([`chat::summons::summonses`]), each with what its agent is called.
 fn turns(
     workspace: &str,
     chat: &chat::Chat,
@@ -904,98 +875,54 @@ fn turns(
     person: &str,
     agent_names: &chat::projection::AgentNames,
 ) -> Vec<(AgentTurn, String)> {
-    let mut conversations: Vec<Id> = Vec::new();
-    for (_, message) in part.messages.iter() {
-        if !conversations.contains(&message.channel) {
-            conversations.push(message.channel.clone());
-        }
-    }
-    let mut turns = Vec::new();
-    for id in &conversations {
-        // An archived conversation takes no message, and one the record does not list is a direct
-        // conversation the record derives from its id.
-        if chat
-            .channels
-            .get(id)
-            .is_some_and(|conversation| conversation.archived)
-        {
-            continue;
-        }
-        let messages: Vec<(&Id, &chat::record::Message)> = part
-            .messages
-            .iter()
-            .filter(|(_, message)| message.channel == *id)
-            .collect();
-        for member in chat.conversation_members(id) {
-            if member.is_person() {
-                continue;
-            }
-            let agent = member.id().to_owned();
-            // The person's newest message the agent has not answered: the reply its id and the
-            // agent's derive, which only the agent's answer to that message carries. An agent's
-            // reply that is still working (its work is not finished) leaves the turn going, so a
-            // runner that records "taken" before it acts is not read as having answered. A
-            // message a person asked again (`chat`'s `retry`) is in a later attempt, whose reply
-            // is absent yet: its turn goes again, and the answer is a reply of its own.
-            let summons = messages
-                .iter()
-                .copied()
-                .filter(|(message_id, message)| {
-                    (!message.text.trim().is_empty() || !message.attachments.is_empty())
-                        && person_of(&message.author).is_some()
-                        && unanswered(part.messages.get(&chat::record::reply_id_at(
-                            message_id,
-                            &member,
-                            message.attempts,
-                        )))
-                })
-                .max_by_key(|(message_id, message)| (message.ts, message_id.as_str()));
-            let Some((message_id, message)) = summons else {
-                continue;
-            };
-            let Some(starter) = person_of(&message.author) else {
-                continue;
-            };
-            // The conversation's address in the workspace, as the shell and the apps name it, and
-            // the message's own beneath it.
-            let address = format!("{}/channels/{id}", chat::Chat::KIND);
-            let (instruction, subject) = request(message);
+    chat::summons::summonses(chat, part)
+        .into_iter()
+        .filter_map(|summons| {
+            let message = part.messages.get(&summons.message)?;
+            let address = summons.address();
+            let (instruction, subject) = chat::summons::request(message);
             // What came before it in the conversation, oldest first: "what did I ask you
             // before?" and "move the reminder to Friday" are understood through it.
-            let mut earlier: Vec<&chat::record::Message> = messages
+            let conversation = &summons.conversation;
+            let mut earlier: Vec<&chat::record::Message> = part
+                .messages
                 .iter()
-                .map(|(_, earlier)| *earlier)
+                .map(|(_, earlier)| earlier)
+                .filter(|earlier| &earlier.channel == conversation)
                 .filter(|earlier| earlier.ts < message.ts && !earlier.text.trim().is_empty())
                 .collect();
             earlier.sort_by_key(|earlier| earlier.ts);
             let instruction = with_conversation(instruction, &earlier);
             let name = agent_names
-                .get(&agent)
+                .get(&summons.agent)
                 .cloned()
-                .unwrap_or_else(|| agent.clone());
-            turns.push((
+                .unwrap_or_else(|| summons.agent.clone());
+            Some((
                 AgentTurn {
-                    session: session_of(workspace, &address, &agent),
-                    agent,
-                    author: starter,
-                    turn: Turn::new(address.clone(), message_id.to_string()),
+                    session: session_of(workspace, &address, &summons.agent),
+                    agent: summons.agent.clone(),
+                    author: summons.person.clone(),
+                    turn: Turn::new(address.clone(), summons.message.to_string()),
                     // A person's Retry asks again for the same message, and that is a turn of its
                     // own: the one they gave up on reads as replaced, and the broker hands the agent
                     // the new one.
-                    attempt: message.attempts,
+                    attempt: summons.attempt,
                     request: runtime_collab::TurnRequest {
-                        message: format!("{address}/messages/{message_id}"),
-                        title: chat.display_names(id, Some(&MemberId::person(person)), agent_names),
+                        message: format!("{address}/messages/{}", summons.message),
+                        title: chat.display_names(
+                            &summons.conversation,
+                            Some(&MemberId::person(person)),
+                            agent_names,
+                        ),
                         instruction,
                         subject,
                         spend: None,
                     },
                 },
                 name,
-            ));
-        }
-    }
-    turns
+            ))
+        })
+        .collect()
 }
 
 /// The agent session `agent` answers the turns of the conversation at `conversation` in
@@ -1058,50 +985,6 @@ fn with_conversation(instruction: String, earlier: &[&chat::record::Message]) ->
         out.push_str(&line);
     }
     out
-}
-
-/// What a message asks of the agents it summons: its words, and what it carries as the records
-/// they name — the first of them the run's subject, which the agent acts on through that record's
-/// own actions, and every other one said beside the words. A file or words quoted from nowhere are
-/// said as what they are.
-fn request(message: &chat::record::Message) -> (String, Option<tilo_actions::SelectionSubject>) {
-    let mut subject = None;
-    // A reply that answers a run of another message is asked with the words it quotes above its
-    // own: the reply's quote is the conversation's record of what it means, so an answer to "yes,
-    // that one" names what "that one" is without the agent opening the record it acts in.
-    let mut instruction = message
-        .quoted
-        .as_ref()
-        .filter(|quoted| !quoted.text.trim().is_empty())
-        .map_or_else(
-            || message.text.trim().to_owned(),
-            |quoted| format!("> {}\n\n{}", quoted.text.trim(), message.text.trim()),
-        );
-    for attached in &message.attachments {
-        let named = attached.subject();
-        if subject.is_none() && named.is_some() {
-            subject = named;
-            continue;
-        }
-        let line = match (named, attached) {
-            (Some(named), _) => format!(
-                "It also carries {:?} ({} `{}`, in `{}`).",
-                attached.label(),
-                named.resource.kind,
-                named.resource.id,
-                named.app_id
-            ),
-            (None, tilo_reference::Attached::Text { text, .. }) => {
-                format!("It quotes: {text:?}.")
-            }
-            (None, _) => format!("It carries the file {:?}.", attached.label()),
-        };
-        if !instruction.is_empty() {
-            instruction.push('\n');
-        }
-        instruction.push_str(&line);
-    }
-    (instruction, subject)
 }
 
 #[cfg(test)]

@@ -991,11 +991,13 @@ fn app_catalogue(
     Arc::new(move || catalogue().placing(placed).placing(linux))
 }
 
-/// Start `cfg`'s relay serving its workspaces' records to pages, without agents:
+/// Start `cfg`'s relay serving its workspaces' records to pages, without the agent supervisor:
 /// the host mounts a record of an app in `catalogue` (this machine's
 /// registry when `None`) and runs an action on it for whoever the workspace's
 /// policy lets ask, as it does beside agents in [`start`]. Its workspaces'
-/// reporters may have `feedback_reviewer` look over their reports.
+/// reporters may have `feedback_reviewer` look over their reports. Answers the relay and the
+/// action service it serves the records with, which the agents the host runs for its workspaces
+/// ([`crate::workspace_agents`]) act through.
 ///
 /// # Errors
 /// Why the relay did not start.
@@ -1006,7 +1008,7 @@ pub async fn start_serving_records(
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     shell: Option<Arc<HostShells>>,
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
-) -> Result<Relay, RelayError> {
+) -> Result<(Relay, WorkspaceActions), RelayError> {
     let host_cert = identity.device_cert.clone();
     let catalogue = app_catalogue(catalogue, browsers.as_ref());
     cfg.services.app_serving = true;
@@ -1024,7 +1026,7 @@ pub async fn start_serving_records(
         web_entry,
         (feedback_reviewer, shell, browsers),
     )?;
-    Ok(relay)
+    Ok((relay, plane.actions.clone()))
 }
 
 /// The workspaces of `workspaces` that hold a notebook: those whose notes a pass brings into

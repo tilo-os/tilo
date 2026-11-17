@@ -206,8 +206,9 @@ impl Agents {
                         spent_micros: agent.spent_on(&day),
                     },
                 );
-                // An MCP agent connects on its own; the keeper's device runs every other one.
-                if agent.mcp_client.is_none() && agent.keeper == person {
+                // An MCP agent connects on its own and the workspace's host runs the agents made to
+                // run there; the keeper's device runs every other one.
+                if agent.mcp_client.is_none() && !agent.on_host && agent.keeper == person {
                     kept.push(Kept {
                         workspace: workspace.clone(),
                         id: agent.id.0.clone(),

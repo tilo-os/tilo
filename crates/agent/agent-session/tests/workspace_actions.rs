@@ -92,6 +92,9 @@ mod governed_agent;
 #[path = "workspace_actions/governed_sealed.rs"]
 mod governed_sealed;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_agent_turns.rs"]
+mod hosted_agent_turns;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_browser.rs"]
 mod hosted_browser;
 #[cfg(test)]

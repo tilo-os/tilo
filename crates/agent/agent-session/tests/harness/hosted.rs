@@ -155,6 +155,39 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
     }
 }
 
+/// [`serving_records`], with the action service it serves the records with: what the agents the
+/// host runs for its workspaces act through.
+pub async fn serving_records_with_actions(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    catalogue: impl Fn() -> AppCatalogue + Send + Sync + 'static,
+) -> (
+    Relay,
+    tilo_agent_session::workspace_actions::WorkspaceActions,
+) {
+    let cfg = tilo_relay::RelayConfig {
+        state_root: state.join("relay"),
+        packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
+        ..Default::default()
+    };
+    tilo_relay::agents::start_serving_records(
+        cfg,
+        RelayIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: host.key.clone(),
+            device_cert: host.cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        Some(Arc::new(catalogue)),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap()
+}
+
 /// Start a host for `root`'s person on `host`'s device as tilo.sh's relay
 /// runs (`--workspace-records`): no agents, its workspaces' records served to
 /// their devices, each action run in the record's own app worker here,
@@ -186,6 +219,7 @@ pub async fn serving_records(
     )
     .await
     .unwrap()
+    .0
 }
 
 /// The laptop: a root holder answering every agent request with the agent's

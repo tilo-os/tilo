@@ -10,6 +10,7 @@ pub mod session_api;
 pub mod task_hosts;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_hosts;
+mod turn;
 
 pub use images::MediaReader;
 use images::{IMAGES, MAX_IMAGE_BYTES, MAX_IMAGES, image_mime, take_images};

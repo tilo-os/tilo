@@ -473,6 +473,16 @@ relay_env() {
       "TILO_WORKSPACES_BOTS=$bots_path/discord-bridge.json guild=1000 server=Tilo mirror-channels=yes"
     )
   fi
+  # The model the agents a workspace made to run on its server work with, as
+  # production's TILO_AGENT_MODEL names it: TILO_SH_AGENT_MODEL (with
+  # TILO_SH_AGENT_MODEL_NAME and TILO_SH_AGENT_API_KEY), e.g.
+  # anthropic:https://api.anthropic.com. Without it the agents answer that
+  # the server runs no model.
+  if [[ -n ${TILO_SH_AGENT_MODEL:-} ]]; then
+    env+=("TILO_AGENT_MODEL=$TILO_SH_AGENT_MODEL")
+    [[ -z ${TILO_SH_AGENT_MODEL_NAME:-} ]] || env+=("TILO_AGENT_MODEL_NAME=$TILO_SH_AGENT_MODEL_NAME")
+    [[ -z ${TILO_SH_AGENT_API_KEY:-} ]] || env+=("TILO_AGENT_API_KEY=$TILO_SH_AGENT_API_KEY")
+  fi
   # A workspace's programs and its Browser run in its VM on this stack's own
   # VM host, when it is up: where to place a workspace, which device holds it,
   # and the ledger its page actions are counted in.
