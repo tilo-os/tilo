@@ -752,6 +752,7 @@ mod tests {
         let seen = std::sync::Arc::clone(&asked);
         let listener = std::os::unix::net::UnixListener::bind(&socket).expect("the helper");
         std::thread::spawn(move || {
+            use std::io::Write as _;
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
                 let mut line = String::new();
@@ -769,7 +770,6 @@ mod tests {
                         .into(),
                 })
                 .expect("an answer");
-                use std::io::Write as _;
                 let _ = stream.write_all(&refused);
                 let _ = stream.write_all(b"\n");
             }
