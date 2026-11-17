@@ -1156,7 +1156,16 @@ impl Workspaces {
             expires_at_ns: join.grant().expires_at_ns,
             inviter: join.inviter().map(|inviter| Inviter {
                 user_public_key: inviter.user_public_key,
-                name: inviter.name.clone(),
+                // An invitation signed before the workspace knew a name for
+                // who asked (a link made early, before they named themselves)
+                // is answered under the name the workspace shows them now:
+                // the card that opens it names a person, never "someone".
+                name: if inviter.name.trim().is_empty() {
+                    self.member_name_by_root(&workspace, inviter.user_public_key)
+                        .unwrap_or_default()
+                } else {
+                    inviter.name.clone()
+                },
             }),
             members: self.people(&workspace).people(),
             administrator: join.administrator(),
