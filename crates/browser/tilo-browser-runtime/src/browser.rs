@@ -3291,13 +3291,13 @@ impl Mount {
                     && self
                         .checkout
                         .as_ref()
-                        .is_some_and(|c| c.id.as_str() == target.document)
+                        .is_some_and(|c| c.id.as_str() == target.record)
                 {
                     self.frame
                         .published_action_locus(
                             target.instance,
                             &target.app,
-                            &target.document,
+                            &target.record,
                             &tilo_actions::ActionAddress::new(&target.resource, &target.action),
                         )
                         .map(|r| [r.x0, r.y0, r.width(), r.height()])
