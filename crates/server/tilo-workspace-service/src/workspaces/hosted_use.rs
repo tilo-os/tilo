@@ -50,9 +50,18 @@
 //! answer is carried out at most once.
 //!
 //! Another use by reference (a key added to a web call, a variable handed
-//! to a command, a page's password field) is one more arm of [`Use`]: what
-//! it wants of the vault and how it is carried out. The refusals, the
-//! asking and the leave are the same for every use.
+//! to a command) is one more arm of [`Use`]: what it wants of the vault and
+//! how it is carried out. The refusals, the asking and the leave are the
+//! same for every use.
+//!
+//! A page's field is the one use whose secret is not used inside this
+//! server: the page is in a window, and only its engine writes into it. So
+//! the text is released to whoever sends it on to that window
+//! ([`Workspaces::release_for_turn`]), for the one site the window's engine
+//! says its page is at, through the same refusals, the same asking and the
+//! same leave. A person's "allow" fills nothing by itself, since the page
+//! may be gone by then: it lets that agent's next fill of that item at that
+//! site through, once.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -66,7 +75,7 @@ use tilo_actions::remote::ActionCallError::{
 };
 use tilo_actions::remote::person_accounts::{self, AddMailWithItem};
 use tilo_actions::remote::person_models::{self, SetKeyFromItem};
-use tilo_actions::remote::person_vault::{self, ItemRef};
+use tilo_actions::remote::person_vault::{self, FillPage, ItemRef};
 use tilo_actions::remote::{
     Caller, CatalogueRow, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
@@ -217,6 +226,95 @@ pub(super) struct Uses {
     calls: web_call::AllowedOnce,
     pub(super) prover: std::sync::RwLock<std::sync::Arc<dyn tilo_account_probe::AccountTester>>,
     asks: Mutex<Option<Vec<OpenAsk>>>,
+    /// What people allowed for one fill of a page and no more, until each is
+    /// spent or too old. Kept in memory alone: after a restart they are asked
+    /// again.
+    once: Mutex<Vec<OnceLeave>>,
+}
+
+/// A person's "allow" for one fill: `agent` may fill what `item` keeps into
+/// a page at `site` once, until `until_ns`.
+struct OnceLeave {
+    person: String,
+    workspace: String,
+    agent: String,
+    item: String,
+    site: String,
+    until_ns: u64,
+}
+
+/// How long a person's "allow" for one fill is good.
+const ONCE_LEAVE_NS: u64 = 15 * 60 * 1_000_000_000;
+/// The most such allows this server keeps at a time: the newest of them.
+const MAX_ONCE_LEAVES: usize = 64;
+
+/// The kind of field a released text is for, in the words a window's engine
+/// knows it by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageField {
+    /// A login's password: only a password field takes it.
+    Password,
+    /// A code generator's code of this moment.
+    Code,
+    /// A kept value.
+    Value,
+}
+
+impl PageField {
+    /// The engine's word for it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::Code => "code",
+            Self::Value => "value",
+        }
+    }
+}
+
+/// A text this server released for one site, for whoever sends it on to the
+/// window that holds that site's page. It prints nothing of the text, and
+/// what holds it is wiped when it is dropped.
+#[derive(Debug)]
+pub enum PageText {
+    /// What a login or a value keeps.
+    Item(vault_items::Released),
+    /// A code generator's code of this moment.
+    Code(vault_items::Code),
+}
+
+impl PageText {
+    /// The text, for the one write into the page.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Item(released) => released.secret.as_str(),
+            Self::Code(code) => code.digits(),
+        }
+    }
+
+    /// The kind of field it is for.
+    #[must_use]
+    pub fn field(&self) -> PageField {
+        match self {
+            Self::Item(released) => match released.kind {
+                vault_items::ItemKind::Value => PageField::Value,
+                _ => PageField::Password,
+            },
+            Self::Code(_) => PageField::Code,
+        }
+    }
+}
+
+/// How a page fill a hosted turn asked for went.
+#[derive(Debug)]
+pub enum TurnRelease {
+    /// The text, for the page at the site it was released for.
+    Released(PageText),
+    /// Its person is asked first, and this server keeps what was asked.
+    Asks(Box<OpenAsk>),
+    /// Its person was asked the same before and has not answered yet.
+    Waits,
 }
 
 impl Default for Uses {
@@ -227,6 +325,7 @@ impl Default for Uses {
                 tilo_account_probe::LiveAccountTester,
             )),
             asks: Mutex::default(),
+            once: Mutex::default(),
         }
     }
 }
@@ -394,6 +493,73 @@ impl Use {
                 web_call::send(workspaces.call_reach(), root, call, by, purpose).await
             }
         }
+    }
+}
+
+/// The item and the site a page fill names. A text is written only into a
+/// page that arrived over https.
+fn page_wanted(fill: &FillPage) -> Result<(ItemId, Place), String> {
+    let item = ItemId::parse(fill.item.id())
+        .ok_or_else(|| vault_items::ItemError::NotFound.to_string())?;
+    let site = Place::parse(&fill.site).map_err(|error| error.to_string())?;
+    if site.scheme() != "https" {
+        return Err("A vault item is filled only into a page that arrived over https".to_owned());
+    }
+    Ok((item, site))
+}
+
+/// The kind of field an item of `kind` fills, when it fills one.
+fn page_field(kind: vault_items::ItemKind) -> Result<PageField, String> {
+    match kind {
+        vault_items::ItemKind::Login => Ok(PageField::Password),
+        vault_items::ItemKind::CodeGenerator => Ok(PageField::Code),
+        vault_items::ItemKind::Value => Ok(PageField::Value),
+        vault_items::ItemKind::Key | vault_items::ItemKind::SshKey => {
+            Err("Only a login, a code generator or a value is filled into a page".to_owned())
+        }
+    }
+}
+
+/// Hand out what the item `item` fills a page's field at `site` with, for
+/// `by`: a code generator's code of this moment, else what the item keeps.
+/// The use is written down first, as every use is.
+fn page_text(
+    root: &Path,
+    item: &ItemId,
+    kind: vault_items::ItemKind,
+    site: &Place,
+    by: &str,
+) -> Result<PageText, String> {
+    let mut items = VaultItems::open_in(root).map_err(|error| error.to_string())?;
+    match kind {
+        vault_items::ItemKind::CodeGenerator => items.code_at(item, site, by).map(PageText::Code),
+        kind => items
+            .use_as(item, kind, std::slice::from_ref(site), by)
+            .map(PageText::Item),
+    }
+    .map_err(|error| error.to_string())
+}
+
+/// What a person is shown of the site a page fill names: its name, and its
+/// origin whole.
+fn shown_site(target: &RemoteActionTarget, arguments: &Map<String, Value>) -> Option<Value> {
+    if *target != person_vault::page_target() {
+        return None;
+    }
+    let origin = arguments.get("site")?.as_str()?;
+    Some(json!({"name": site_name(origin), "origin": origin}))
+}
+
+/// The name in the origin `origin`: without its scheme and its port.
+fn site_name(origin: &str) -> &str {
+    let named = origin.split_once("://").map_or(origin, |(_, rest)| rest);
+    match named.rsplit_once(':') {
+        Some((name, port))
+            if !port.is_empty() && port.bytes().all(|digit| digit.is_ascii_digit()) =>
+        {
+            name
+        }
+        _ => named,
     }
 }
 
@@ -731,12 +897,17 @@ impl Workspaces {
         .chars()
         .take(32)
         .collect();
+        let mut shown = Map::new();
+        shown.insert("ask".into(), json!(ask));
+        shown.insert("item".into(), json!({"kind": kind, "belongsTo": belongs}));
+        // A page's field: its person is shown where, by the site's name and
+        // by its origin whole.
+        if let Some(site) = shown_site(&request.target, &arguments) {
+            shown.insert("site".into(), site);
+        }
         let detail = json!({
             "draft": tilo_actions::Draft::render(&described, &arguments),
-            "use": {
-                "ask": ask,
-                "item": {"kind": kind, "belongsTo": belongs},
-            },
+            "use": shown,
         });
         let kept = OpenAsk {
             ask,
@@ -898,6 +1069,12 @@ impl Workspaces {
         if answer == UseAnswer::No {
             return Ok(None);
         }
+        if target == person_vault::page_target() {
+            return self
+                .page_answered(&root, &using, kept, answer)
+                .map(Some)
+                .map_err(refused);
+        }
         let wanted = Use::read(&target, &kept.arguments)?;
         let word = person_vault::use_word(&target);
         let always = answer == UseAnswer::Always && wanted.takes_leave();
@@ -976,5 +1153,158 @@ impl Workspaces {
         let placed = &self.inner.host.environments;
         let now_ns = tilo_clock::unix_now_ns();
         runtime.person_device(&person, |device| placed.of(device, now_ns).is_some())
+    }
+}
+
+impl Workspaces {
+    /// Release what the item `fill` names keeps, for the page at the site
+    /// `fill` names, to whoever sends it on to that page's window, for
+    /// `turn`. `invocation` is the page action that asked.
+    ///
+    /// Released at once where the item keeps a leave for this agent, this
+    /// use and this site, or its person allowed this agent one fill of it
+    /// there, which is spent by this. Otherwise nothing is released: the
+    /// server keeps what was asked, with `asked_in`, and answers
+    /// [`TurnRelease::Asks`] with what to show the person. The use is written
+    /// down before anything is handed out.
+    ///
+    /// # Errors
+    /// As [`Self::use_for_turn`], and the vault's own refusals: no such item
+    /// in that person's vault, a site it does not belong to or that did not
+    /// arrive over https, an item that is no login, code generator or value.
+    pub async fn release_for_turn(
+        &self,
+        turn: &HostedTurn<'_>,
+        fill: &FillPage,
+        invocation: tilo_actions::InvocationId,
+        asked_in: Value,
+    ) -> Result<TurnRelease, ActionCallError> {
+        let target = person_vault::page_target();
+        let using = self.turn_uses_for(turn, &target).await?;
+        let root = self.person_settings_root(&using.person);
+        let (item, site) = page_wanted(fill).map_err(refused)?;
+        let word = person_vault::use_word(&target);
+        // What the fill would be refused for is said before anyone is asked,
+        // and the vault is closed again before anything is waited for.
+        let (kind, stands) = {
+            let items = VaultItems::open_in(&root).map_err(|error| refused(error.to_string()))?;
+            let facts = items
+                .belongs_at(&item, &site)
+                .map_err(|error| refused(error.to_string()))?;
+            page_field(facts.kind).map_err(refused)?;
+            let stands = items
+                .stands(&item, std::slice::from_ref(&site), &using.agent, &word)
+                .map_err(|error| refused(error.to_string()))?;
+            (facts.kind, stands)
+        };
+        if stands || self.once_allowed(&using, &item, &site) {
+            return page_text(&root, &item, kind, &site, &using.name)
+                .map(TurnRelease::Released)
+                .map_err(refused);
+        }
+        let reason = fill.reason.trim();
+        let mut arguments = Map::new();
+        arguments.insert("site".into(), json!(site.as_str()));
+        arguments.insert("item".into(), json!(fill.item.to_string()));
+        if !reason.is_empty() {
+            arguments.insert("reason".into(), json!(reason));
+        }
+        let request = InvokeRequest {
+            invocation,
+            target,
+            argument: InvokeArgument::Json(arguments.clone()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let asked = self.ask_first(
+            &root,
+            using,
+            (&request, arguments),
+            (kind, vec![site.to_string()]),
+            (reason.to_owned(), asked_in),
+        )?;
+        Ok(match asked {
+            TurnUse::Asks(open) => TurnRelease::Asks(open),
+            TurnUse::Done(_) | TurnUse::Waits => TurnRelease::Waits,
+        })
+    }
+
+    /// What a person's allow of the page fill kept under `kept` comes to.
+    /// Nothing is filled here. [`UseAnswer::Always`] is the item's own leave,
+    /// read and taken back like any; an allow for once lets that agent's next
+    /// fill of that item at that site through.
+    fn page_answered(
+        &self,
+        root: &Path,
+        using: &KeepersTurn,
+        kept: &OpenAsk,
+        answer: UseAnswer,
+    ) -> Result<Value, String> {
+        let fill: FillPage = serde_json::from_value(Value::Object(kept.arguments.clone()))
+            .map_err(|_| "What was asked does not read as a page to fill".to_owned())?;
+        let (item, site) = page_wanted(&fill)?;
+        let mut items = VaultItems::open_in(root).map_err(|error| error.to_string())?;
+        let facts = items
+            .belongs_at(&item, &site)
+            .map_err(|error| error.to_string())?;
+        page_field(facts.kind)?;
+        let allowed = if answer == UseAnswer::Always {
+            items
+                .let_always(
+                    &item,
+                    std::slice::from_ref(&site),
+                    (&using.agent, &using.name),
+                    &person_vault::use_word(&kept.target()),
+                )
+                .map_err(|error| error.to_string())?;
+            "always"
+        } else {
+            self.allow_once(using, &item, &site);
+            "once"
+        };
+        Ok(json!({"allowed": allowed, "site": site.as_str()}))
+    }
+
+    /// Keep a person's allow for one fill by `using` of `item` at `site`.
+    fn allow_once(&self, using: &KeepersTurn, item: &ItemId, site: &Place) {
+        let now = tilo_clock::unix_now_ns();
+        let mut once = self.inner.vault_uses.once.lock_recover();
+        once.retain(|leave| leave.until_ns > now);
+        if once.len() >= MAX_ONCE_LEAVES {
+            once.remove(0);
+        }
+        once.push(OnceLeave {
+            person: hex::encode(using.person),
+            workspace: using.workspace.clone(),
+            agent: using.agent.clone(),
+            item: item.as_str().to_owned(),
+            site: site.as_str().to_owned(),
+            until_ns: now.saturating_add(ONCE_LEAVE_NS),
+        });
+    }
+
+    /// Whether `using` holds its person's allow for one fill of `item` at
+    /// `site`: it is spent by being found.
+    fn once_allowed(&self, using: &KeepersTurn, item: &ItemId, site: &Place) -> bool {
+        let now = tilo_clock::unix_now_ns();
+        let person = hex::encode(using.person);
+        let mut once = self.inner.vault_uses.once.lock_recover();
+        once.retain(|leave| leave.until_ns > now);
+        let found = once.iter().position(|leave| {
+            leave.person == person
+                && leave.workspace == using.workspace
+                && leave.agent == using.agent
+                && leave.item == item.as_str()
+                && leave.site == site.as_str()
+        });
+        let Some(index) = found else {
+            return false;
+        };
+        once.remove(index);
+        true
     }
 }

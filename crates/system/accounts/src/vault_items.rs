@@ -820,6 +820,18 @@ impl VaultItems {
         Ok(sealed.facts(id.clone()))
     }
 
+    /// What is safe to say of the item `id` names, where it belongs to
+    /// `place`: its kind among the rest. Refused anywhere else, as every use
+    /// there is. Nothing is handed out and nothing is written down: it is
+    /// for whoever must choose a use by the item's kind before it asks.
+    pub fn belongs_at(&self, id: &ItemId, place: &Place) -> Result<ItemFacts, ItemError> {
+        let sealed = self.sealed(id)?;
+        if !sealed.places.contains(place) {
+            return Err(ItemError::WrongPlace);
+        }
+        Ok(sealed.facts(id.clone()))
+    }
+
     /// Whether `by` may use the item `id` names for `using` at every one of
     /// `places` without its person being asked: one leave of theirs
     /// ([`Self::let_always`]) names that agent and that use and covers all
@@ -1647,5 +1659,39 @@ mod tests {
         assert_eq!(leaves.len(), MAX_LEAVES);
         assert_eq!(leaves[0].by, "agent-4");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// What an item is is said only where it belongs, and saying it uses
+    /// nothing.
+    #[test]
+    fn what_an_item_is_is_said_only_where_it_belongs() {
+        let root = root();
+        let mut items = VaultItems::open_in(&root).unwrap();
+        let kept = items.add(login(&["https://example.com"])).unwrap();
+        let said = items
+            .belongs_at(&kept.id, &place("https://example.com"))
+            .unwrap();
+        assert_eq!(said.kind, ItemKind::Login);
+        assert_eq!(said.id, kept.id);
+        for elsewhere in [
+            "https://login.example.com",
+            "http://example.com",
+            "https://example.com:8443",
+        ] {
+            assert_eq!(
+                items.belongs_at(&kept.id, &place(elsewhere)).err(),
+                Some(ItemError::WrongPlace),
+                "{elsewhere}"
+            );
+        }
+        let nobody = ItemId::parse(&"0".repeat(32)).unwrap();
+        assert_eq!(
+            items
+                .belongs_at(&nobody, &place("https://example.com"))
+                .err(),
+            Some(ItemError::NotFound)
+        );
+        assert!(items.uses(&kept.id).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
