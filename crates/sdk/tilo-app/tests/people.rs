@@ -122,6 +122,25 @@ fn the_people_a_page_offers_are_the_workspaces_members_and_agents() {
 }
 
 #[test]
+fn the_person_at_the_window_is_offered_after_a_reload() {
+    // A restored window hears the workspace's member list and its agents before its board
+    // says who is here: the person at the window is one of them either way.
+    let mut app = TestApp::<PeopleApp>::in_workspace(WORKSPACE).unwrap();
+    let me = MemberId::person(person('1'));
+    let presence = app.harness().presence_mut();
+    presence.set_self_member(me.clone(), "Jolly Hedgehog");
+    presence.set_workspace_members([me]);
+    presence.set_display_name(MemberId::agent("planner"), "Planner");
+    app.settle();
+    let shown = app.texts().join(" ");
+    assert!(
+        shown.contains("Jolly Hedgehog"),
+        "the person at the window: {shown}"
+    );
+    assert!(shown.contains("Planner"), "the workspace's agent: {shown}");
+}
+
+#[test]
 fn the_person_picker_lays_one_row_out_per_member() {
     let mut fixture = fixture();
     fixture

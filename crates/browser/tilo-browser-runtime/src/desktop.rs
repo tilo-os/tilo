@@ -430,10 +430,13 @@ pub(crate) struct Shared {
     pub workspace: String,
     /// The workspace's agents, as Chat's agents resource names each: an agent is a member of
     /// the workspace like a person is, so a page names it to its windows whether or not a
-    /// device of its works here now. `None` for a page in no workspace.
+    /// device of its works here now. `None` until the workspace delivers the document: the
+    /// page asks again each frame (`Mount::place_agents`).
     pub agents: Option<
         tilo_app::framework::WorkspaceResource<tilo_app::tilo_workspace_agent::WorkspaceAgents>,
     >,
+    /// The owners the workspace's documents open through, by the app that keeps each.
+    pub owners: Option<ResourceOwners>,
 }
 
 impl Shared {
@@ -1923,6 +1926,7 @@ fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -
     let mut shared = Shared {
         resource_actions,
         requests,
+        owners: Some(inputs.owners.clone()),
         peer: inputs.peer,
         workspace: inputs.workspace.clone(),
         ..Shared::default()

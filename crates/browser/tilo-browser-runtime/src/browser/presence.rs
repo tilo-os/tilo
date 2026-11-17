@@ -76,6 +76,7 @@ impl Mount {
         let people = crate::shell::here_people(&desktop.here, &desktop.shared, &tree);
         let mut here = desktop.here.borrow_mut();
         let own = here.own_user().map(str::to_owned);
+        let own_label = here.own_label().map(str::to_owned);
         // A host serves workspaces for people and is nobody in them itself: the person its own
         // device acts for is no row of a list of the workspace's people, unless it is this
         // page's own.
@@ -94,6 +95,19 @@ impl Mount {
                         .map(|person| MemberId::person(person.clone())),
                 );
             }
+            // This page's own person is one of the workspace's members: its list names them, so
+            // a window shows them as themselves after a reload too, not only once the board
+            // says who is here.
+            if let Some(own) = own.as_deref() {
+                let name = named
+                    .get(own)
+                    .cloned()
+                    .or_else(|| own_label.clone())
+                    .unwrap_or_default();
+                if !name.trim().is_empty() {
+                    presence.set_self_member(MemberId::person(own), name);
+                }
+            }
             // Everyone the workspace lists is named as its governance calls them, here or not:
             // a change someone made while away reads as theirs, never as their key. Who is here
             // is then named as their presence says, as everywhere else.
@@ -111,9 +125,25 @@ impl Mount {
     /// Name the workspace's agents as the agents resource names them, and forget each the
     /// resource retired, so an app's people list offers exactly those it keeps now.
     fn place_agents(&mut self) {
-        let Some(desktop) = &self.desktop else {
+        let Some(desktop) = &mut self.desktop else {
             return;
         };
+        if desktop.shared.agents.is_none() {
+            // The resource arrives after the page does: open it again until the store has it,
+            // as the windows' own resources are opened again when they arrive.
+            let shared = &mut desktop.shared;
+            let opened = shared.owners.as_ref().and_then(|owners| {
+                crate::page_agents::open(
+                    owners,
+                    &shared.stores,
+                    &shared.workspace,
+                    desktop.author.clone(),
+                )
+            });
+            if opened.is_some() {
+                shared.agents = opened;
+            }
+        }
         let Some(resource) = &desktop.shared.agents else {
             return;
         };
