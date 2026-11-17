@@ -31,7 +31,7 @@ use tilo_desktop_model::TileContent;
 use tilo_desktop_policy::{DesktopPolicy, Window};
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
 use tilo_session::app_tabs::ServiceLinks;
-use tilo_session::apps::Apps;
+use tilo_session::apps::{Apps, LaunchState};
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{AppActions, AppLists, Launches, Lists, Options, Session};
 use ui::floating_surface::{
@@ -265,6 +265,163 @@ fn an_app_that_stops_on_its_own_leaves_a_notice_in_its_place() {
                 .any(|child| child.kind == WINDOW_KIND && child.label.contains("Probe"))
         })
     });
+}
+
+/// The launcher the session starts `PROBE` through, recording the pid of each start: a stand-in
+/// that lives until its test drops it, ending as `end` says when it does.
+fn probe_launcher(
+    home: &tilo_test_env::TestHome,
+    started: &Path,
+    end: &str,
+) -> tilo_test_env::StandIn {
+    tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$$\" >> '{started}'\nhold\n{end}",
+            started = started.display(),
+        ),
+    )
+    .unwrap()
+}
+
+/// The pid the launcher recorded for its last start, once it has written it: the file is made
+/// before the number is written, so a file that is there is not yet a file that says anything.
+fn recorded_pid(started: &Path) -> Option<u32> {
+    fs::read_to_string(started)
+        .ok()
+        .and_then(|text| text.lines().next().map(str::trim).map(str::to_owned))
+        .filter(|pid| !pid.is_empty())
+        .and_then(|pid| pid.parse().ok())
+}
+
+/// A window of `app` made by the process `pid`, as the compositor maps it once its app shows it.
+fn window_of(id: u64, app: &str, pid: u32) -> Window {
+    Window {
+        pid: Some(pid),
+        ..window(id, app)
+    }
+}
+
+#[test]
+fn a_window_a_launchs_own_process_maps_says_the_launch_opened() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("starts");
+    let (mut session, apps, _launches, _launcher) = probe_session(&mut home, &started);
+    session.step(Duration::from_millis(1)).unwrap();
+    let (workspace, _) = front_workspace(&session);
+    apps.start(
+        &tilo_app_launch::Launch::Package {
+            app: PROBE.to_owned(),
+            open: None,
+        },
+        &apps.workspace_named(&workspace),
+    )
+    .expect("the app is asked for");
+    let pid = crate::common::wait_for(&mut session, "the app runs", |_| recorded_pid(&started));
+    assert_eq!(
+        apps.launch_state(PROBE, &workspace),
+        Some(LaunchState::Arriving),
+        "the launch is asked for, and no window of it has come"
+    );
+
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window_of(11, PROBE, pid)).unwrap());
+    until(&mut session, "the launch opened", |_| {
+        apps.launch_state(PROBE, &workspace) == Some(LaunchState::Landed)
+    });
+}
+
+#[test]
+fn an_app_that_ends_before_its_window_could_open_says_why() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    installed_probe_package(&mut home);
+    // The app says why it cannot come and goes, before any window of it appears.
+    let launcher = tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        "echo 'the display refused this app' >&2\nexit 1\n",
+    )
+    .unwrap();
+    let (mut session, apps, _launches) = session_through(&home, &launcher, None);
+    session.step(Duration::from_millis(1)).unwrap();
+    let (workspace, _) = front_workspace(&session);
+    apps.start(
+        &tilo_app_launch::Launch::Package {
+            app: PROBE.to_owned(),
+            open: None,
+        },
+        &apps.workspace_named(&workspace),
+    )
+    .expect("the app is asked for");
+
+    let state = crate::common::wait_for(&mut session, "the launch could not open", |_| {
+        apps.launch_state(PROBE, &workspace)
+            .filter(|state| matches!(state, LaunchState::CouldNotOpen { .. }))
+    });
+    assert_eq!(
+        state,
+        LaunchState::CouldNotOpen {
+            why: "the display refused this app".to_owned()
+        },
+        "the app's own last word is why its window did not come"
+    );
+    let shown = session.accessible_labels().join("\n");
+    assert!(
+        shown.contains("Probe could not open"),
+        "the tab says the app could not open: {shown}"
+    );
+    assert!(
+        shown.contains("the display refused this app"),
+        "with what the app said: {shown}"
+    );
+}
+
+#[test]
+fn an_app_whose_window_came_and_then_ended_stopped_and_did_not_fail_to_open() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    installed_probe_package(&mut home);
+    let started = home.home().join("starts");
+    let launcher = probe_launcher(&home, &started, "exit 3\n");
+    let (mut session, apps, _launches) = session_through(&home, &launcher, None);
+    session.step(Duration::from_millis(1)).unwrap();
+    let (workspace, _) = front_workspace(&session);
+    apps.start(
+        &tilo_app_launch::Launch::Package {
+            app: PROBE.to_owned(),
+            open: None,
+        },
+        &apps.workspace_named(&workspace),
+    )
+    .expect("the app is asked for");
+    let pid = crate::common::wait_for(&mut session, "the app runs", |_| recorded_pid(&started));
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window_of(11, PROBE, pid)).unwrap());
+    until(&mut session, "the launch opened", |_| {
+        apps.launch_state(PROBE, &workspace) == Some(LaunchState::Landed)
+    });
+
+    // The app ends now: its window came before it did, so its end is an app that stopped.
+    drop(launcher);
+    until(&mut session, "the notice is shown", |session| {
+        session
+            .accessible_labels()
+            .join("\n")
+            .contains("Probe stopped working")
+    });
+    assert_eq!(
+        apps.launch_state(PROBE, &workspace),
+        Some(LaunchState::Landed),
+        "it opened: its end is no window that failed to arrive"
+    );
+    let shown = session.accessible_labels().join("\n");
+    assert!(
+        !shown.contains("could not open"),
+        "an app whose window came did not fail to open: {shown}"
+    );
 }
 
 /// A window of `app` the compositor mapped, its bar saying the app's own id: the window of an app
@@ -1260,9 +1417,13 @@ fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, St
         .expect("the launcher recorded its pid")
         .parse()
         .expect("a pid");
+    // The window is the app's: its process is the launcher the session started, which a launch
+    // reads as its own window having arrived.
+    let mut mapped = window(11, PROBE);
+    mapped.pid = Some(pid);
     session
         .desktop()
-        .with_policy(|policy| policy.map(window(11, PROBE)).unwrap());
+        .with_policy(|policy| policy.map(mapped).unwrap());
     until(session, "the app's window is on the session", |session| {
         groups(session) == vec![vec![PROBE_NAME.to_owned()]]
     });

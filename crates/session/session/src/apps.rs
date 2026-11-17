@@ -29,6 +29,8 @@ use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_desktop_surface::outcome::{Closed, Outcome};
 
+mod launch;
+
 use crate::agents::Kept;
 use crate::search::AppActions;
 
@@ -93,9 +95,9 @@ struct State {
     /// its app on.
     x11: Option<tilo_compositor::X11Displays>,
     spawner: Spawner,
-    /// The launches running now, by the id the spawner gave each: what a crash notice's Reopen asks
-    /// for again.
-    running: BTreeMap<u64, String>,
+    /// Each launch this session started, by the id the spawner gave it: how far it got, so its
+    /// end is decided from what happened to the launch itself.
+    launched: BTreeMap<u64, Launching>,
     /// The `tilo-launcher` every app starts through, a package or one of the machine's own; `None`
     /// when none is installed, and then no app can start.
     launcher: Option<PathBuf>,
@@ -115,9 +117,6 @@ struct State {
     /// The compositor drew its first frame with no GPU to import from: its apps were pinned to the
     /// software renderer it draws with ([`Apps::follow_render_node`]).
     software: bool,
-    /// Each process started for a window someone asked for that has shown none yet: its app and
-    /// when it was started. One that ends while still here never opened, however it ended.
-    launched: BTreeMap<u64, (String, std::time::Instant)>,
     /// The session's launch records, once it has lent them: what its broker admits a connection by,
     /// and so what each launch it makes is written into.
     launches: Option<std::sync::Arc<crate::Launches>>,
@@ -172,6 +171,58 @@ struct WindowAsk {
     tool_context: Option<String>,
 }
 
+/// How far a launch this session started has got, as everything that waits for its window reads
+/// it: `arriving` while no window of it has come, `landed` once one has, and `could-not-open`
+/// with what the app said instead. The page names its windows' states by the same words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LaunchState {
+    /// Asked for, and no window of this launch has appeared yet.
+    Arriving,
+    /// A window this launch's own process made appeared: it opened.
+    Landed,
+    /// The launch ended before any window of it appeared: `why` is the app's own last word, when
+    /// it said one.
+    CouldNotOpen { why: String },
+}
+
+/// A launch this session started, and how far it got: what its end is decided from, rather than
+/// from what the shell happens to show of the app.
+#[derive(Clone, Debug)]
+struct Launching {
+    /// The app as this launch asked for it: what a notice's Reopen asks again.
+    asked: String,
+    /// The app's package id or desktop-file id, as the shell names the app.
+    app: String,
+    /// The workspace it was launched into.
+    workspace: String,
+    /// The process this launch started: a window names the launch it belongs to by descent from
+    /// it ([`tilo_app_launch::links::ancestry`]).
+    pid: Option<u32>,
+    /// The tab the shell held for this launch's window, when it held one: where a launch that
+    /// could not open says so.
+    instance: Option<u64>,
+    /// When it was started, for the log of a launch that could not open.
+    started: std::time::Instant,
+    /// How far it got.
+    got: Got,
+}
+
+/// How far a launch got.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Got {
+    /// It was started with no window to show, for an action that shows nothing: no window of it
+    /// will ever come, and its end is no window that failed to arrive.
+    Windowless,
+    /// Its window has not appeared yet.
+    Arriving,
+    /// A window of its own process appeared.
+    Landed,
+    /// It ended, after opening: an app that closed.
+    Closed,
+    /// It ended before any window of it appeared: `why` is what the app said.
+    CouldNotOpen { why: String },
+}
+
 /// An agent this device started, as the record of it the launch pass keeps.
 struct AgentProcess {
     /// The name and model it was started with: a change to either is what starts it again, so a
@@ -220,7 +271,7 @@ impl Apps {
                 environment,
                 x11: None,
                 spawner: Spawner::new(wake.clone()),
-                running: BTreeMap::new(),
+                launched: BTreeMap::new(),
                 launcher,
                 identity: None,
                 person: String::new(),
@@ -228,7 +279,6 @@ impl Apps {
                 authority_at: None,
                 render_node: None,
                 software: false,
-                launched: BTreeMap::new(),
                 launches: None,
                 links: None,
                 me: Weak::new(),
@@ -1089,179 +1139,6 @@ impl Apps {
         }
     }
 
-    /// The apps that ended since the last pass: one that chose to end leaves its window behind and
-    /// is gone; one that crashed gets a notice in the place it had, offering it again.
-    fn follow_ended(&self) {
-        self.forget_shown();
-        let ended = self.state.borrow().spawner.events();
-        for event in ended {
-            // An agent has no window and no place of its own on the shell: its end is logged, and
-            // the record's next change starts it again rather than this pass starting it in a loop.
-            if let Some((workspace, agent)) = self.agent_ended(event.id) {
-                tracing::warn!(
-                    %agent,
-                    %workspace,
-                    end = %event.end,
-                    "an agent stopped"
-                );
-                continue;
-            }
-            // The launch is over: its link retires with it, so the app's next window there starts a
-            // process again.
-            self.state.borrow_mut().held.remove(&event.id);
-            let lived = self
-                .state
-                .borrow_mut()
-                .launched
-                .remove(&event.id)
-                .map(|(_, at)| at.elapsed());
-            // An app that ended without ever showing a window never opened, however long it ran
-            // and however it ended, and whether or not a tab waits for it: the person asked for
-            // something that did not come, and is told so with the app's own reason.
-            let at_once = lived.is_some() && !self.shows_a_window(&event);
-            // An app that ended cleanly before its window came never opened either, and is told
-            // as one that crashed: the tab the person asked for it in would otherwise wait on a
-            // window that is not coming, with nothing logged of why.
-            if !event.end.crashed() && !at_once && !self.waits_for_window(&event) {
-                self.state.borrow_mut().running.remove(&event.id);
-                tracing::info!(app = %event.app, "an app closed");
-                continue;
-            }
-            if at_once {
-                tracing::warn!(
-                    app = %event.app,
-                    lived_ms = lived.map_or(0, |lived| lived.as_millis()),
-                    end = %event.end,
-                    stderr = %event.said.stderr.join(" | "),
-                    "an app could not open: it ended without ever showing a window"
-                );
-            } else {
-                tracing::warn!(app = %event.app, end = %event.end, "an app stopped");
-            }
-            // What the app itself said before it ended, at warn beside the end: a launch that never
-            // opened is otherwise a warning with no reason in it, and the app's own account is the
-            // only one there is.
-            for said in &event.said.stderr {
-                tracing::warn!(
-                    target: tilo_startup_metrics::APP_OUTPUT_TARGET,
-                    app = %event.app,
-                    stream = "stderr",
-                    "{}",
-                    tilo_app_launch::output::line(&event.app, "stderr", said)
-                );
-            }
-            // Reopen asks for the app the way it was asked for this time: a host app by its desktop
-            // id, a Tilo app by its package id.
-            let asked = self.state.borrow_mut().running.remove(&event.id);
-            if asked.is_none() {
-                tracing::warn!(app = %event.app, "a stopped app this session did not start");
-            }
-            // An app the session closed for memory did not stop working: the notice says which it
-            // was, so the person does not read a closing they caused as a crash.
-            let closed = match event.end.memory() {
-                Some(Cause::Kernel) => Closed::Memory,
-                Some(Cause::Runaway) => Closed::Runaway,
-                None => Closed::Crashed,
-            };
-            if let Some(desktop) = self.desktop.borrow().clone() {
-                let asked = asked.unwrap_or_else(|| event.app.clone());
-                // A launch that ended before its window came never opened,
-                // and says that in the tab the person asked for it in: what
-                // stopped in front of them is a window that did not arrive,
-                // not one that went.
-                let waited = desktop.with_policy(|policy| {
-                    policy
-                        .anchor_for(&asked)
-                        .filter(|(tab, ..)| policy.holds_a_place(*tab))
-                        .map(|(tab, ..)| tab)
-                });
-                // The reason is the app's own last word when it said one: "it closed before its
-                // window came" names no cause the person or an agent can act on.
-                let why = event
-                    .said
-                    .stderr
-                    .last()
-                    .filter(|_| at_once)
-                    .cloned()
-                    .unwrap_or_else(|| tilo_desktop_surface::i18n::t("answer-why-not-opened"));
-                if let Some(tab) = waited {
-                    self.could_not_open(Some(tab), &asked, &why);
-                    continue;
-                }
-                let notice = desktop.with_policy(|policy| {
-                    if at_once {
-                        let answer = not_opened(policy, &asked, &why);
-                        policy.not_opened(&asked, &event.title, answer)
-                    } else {
-                        policy.stopped(&asked, &event.title, closed)
-                    }
-                });
-                if let Err(error) = notice {
-                    tracing::warn!(%error, app = %event.app, "no notice for the app");
-                }
-                // The notice is a shell command like any other: the shell carries it out, and lays
-                // its tab out, on its next pass.
-                desktop.with_widgets(WidgetHost::relayout);
-            }
-        }
-    }
-
-    /// Whether the person still waits for the window of the launch that ended with `event`: the
-    /// shell holds a place for it that no window filled.
-    /// Forget the launches whose app has a window on the shell now, in front or not: they opened,
-    /// and their end is an app closing.
-    fn forget_shown(&self) {
-        if self.state.borrow().launched.is_empty() {
-            return;
-        }
-        let Some(desktop) = self.desktop.borrow().clone() else {
-            return;
-        };
-        let mut state = self.state.borrow_mut();
-        let State {
-            launched, running, ..
-        } = &mut *state;
-        desktop.with_policy(|policy| {
-            launched.retain(|id, (app, _)| {
-                !(policy.has_window(app)
-                    || running
-                        .get(id)
-                        .is_some_and(|asked| policy.has_window(asked)))
-            });
-        });
-    }
-
-    /// Whether a window of the app `event` ended in is on the shell, in front or not: one another
-    /// process of it shows, as when a second launch hands its ask to the running one and leaves.
-    fn shows_a_window(&self, event: &tilo_app_launch::Event) -> bool {
-        let asked = self.state.borrow().running.get(&event.id).cloned();
-        self.desktop.borrow().clone().is_some_and(|desktop| {
-            desktop.with_policy(|policy| {
-                policy.has_window(&event.app)
-                    || asked
-                        .as_deref()
-                        .is_some_and(|asked| policy.has_window(asked))
-            })
-        })
-    }
-
-    fn waits_for_window(&self, event: &tilo_app_launch::Event) -> bool {
-        let asked = self
-            .state
-            .borrow()
-            .running
-            .get(&event.id)
-            .cloned()
-            .unwrap_or_else(|| event.app.clone());
-        self.desktop.borrow().clone().is_some_and(|desktop| {
-            desktop.with_policy(|policy| {
-                policy
-                    .anchor_for(&asked)
-                    .is_some_and(|(tab, ..)| policy.holds_a_place(tab))
-            })
-        })
-    }
-
     /// What a launch does about the app maybe already showing in `workspace`: start it,
     /// start it into the tab a saved window of it waits in, or raise the window it has or
     /// the place one is on its way to. A launch is decided against the tabs the shell has
@@ -1474,7 +1351,7 @@ impl Apps {
             return;
         }
         let launch = match self.agent_plan(kept) {
-            Ok(planned) => match self.spawn(&planned, None, &kept.workspace, None, None) {
+            Ok(planned) => match self.spawn(&planned, None, &kept.workspace, None, None, None) {
                 Ok(launch) => Some(launch),
                 Err(error) => {
                     tracing::warn!(
@@ -1625,26 +1502,18 @@ impl Apps {
         };
         let mut planned = self.planned_or_failed(launch, workspace, new_window, instance, timed)?;
         tilo_startup_metrics::launch_phase(app, "planned");
-        // The window this launch starts is the one the shell asked for: a
-        // process has no link open to it yet, so its launch says which item
-        // it opens (`ui::window_link::REVEAL_ENV`).
-        if let Some(reveal) = reveal.filter(|_| !hosted) {
-            planned
-                .env
-                .insert(ui::window_link::REVEAL_ENV.to_owned(), reveal.to_owned());
-        }
-        // The tool this launch opens is told what to show: only a package is given it.
-        if let (Some(context), Kind::Package) =
-            (self.state.borrow().tool_context.clone(), planned.kind)
-        {
-            planned
-                .env
-                .insert(runtime_portal::tools::TOOL_CONTEXT_ENV.to_owned(), context);
-        }
+        self.told_what_to_show(&mut planned, reveal, hosted);
         let asked = launch.id();
         let Some(links) = links else {
             return self
-                .spawn(&planned, Some(&asked), &workspace.id, None, Some(timed))
+                .spawn(
+                    &planned,
+                    Some(&asked),
+                    &workspace.id,
+                    instance,
+                    None,
+                    Some(timed),
+                )
                 .map(|_| true);
         };
         // The app's own window, on nothing or on a file or a link, is one its running process
@@ -1654,7 +1523,7 @@ impl Apps {
         let alone: Box<dyn Fn() -> StartAlone> = if hosted {
             self.start_again(launch, workspace, instance, reveal)
         } else {
-            Box::new(self.start_alone(&planned, &asked, &workspace.id, timed))
+            Box::new(self.start_alone(&planned, &asked, &workspace.id, instance, timed))
         };
         let reserved = links.route_or_reserve(
             &planned.app,
@@ -1692,7 +1561,14 @@ impl Apps {
         }
         tilo_startup_metrics::launch_phase(app, "routed");
         let link = links.hold(&planned.app, &workspace.id);
-        let started = self.spawn(&planned, Some(&asked), &workspace.id, link, Some(timed));
+        let started = self.spawn(
+            &planned,
+            Some(&asked),
+            &workspace.id,
+            instance,
+            link,
+            Some(timed),
+        );
         if started.is_ok()
             && let Some(reservation) = reservation
         {
@@ -1709,6 +1585,26 @@ impl Apps {
             tracing::error!(%error, app = %planned.app, "a hosted window's instance runs nowhere");
         }
         started.map(|_| true)
+    }
+
+    /// Tell the process `planned` starts what its window shows: the item the shell asked for, and
+    /// the tool a service asked it to open.
+    fn told_what_to_show(&self, planned: &mut Planned, reveal: Option<&str>, hosted: bool) {
+        // The window this launch starts is the one the shell asked for: a process has no link
+        // open to it yet, so its launch says which item it opens (`ui::window_link::REVEAL_ENV`).
+        if let Some(reveal) = reveal.filter(|_| !hosted) {
+            planned
+                .env
+                .insert(ui::window_link::REVEAL_ENV.to_owned(), reveal.to_owned());
+        }
+        // The tool this launch opens is told what to show: only a package is given it.
+        if let (Some(context), Kind::Package) =
+            (self.state.borrow().tool_context.clone(), planned.kind)
+        {
+            planned
+                .env
+                .insert(runtime_portal::tools::TOOL_CONTEXT_ENV.to_owned(), context);
+        }
     }
 
     /// How `launch` starts in `workspace`: a window of its own when `new_window`, in the tab
@@ -1798,7 +1694,14 @@ impl Apps {
             return Ok(());
         };
         let link = links.hold(&planned.app, &workspace.id);
-        self.spawn(&planned, Some(&launch.id()), &workspace.id, link, None)?;
+        self.spawn(
+            &planned,
+            Some(&launch.id()),
+            &workspace.id,
+            None,
+            link,
+            None,
+        )?;
         // The launch holds its link from its start: the reservation is spent, not given up.
         reservation.launched();
         Ok(())
@@ -1811,6 +1714,7 @@ impl Apps {
         planned: &Planned,
         asked: &str,
         workspace: &str,
+        instance: Option<u64>,
         timed: u64,
     ) -> impl Fn() -> StartAlone {
         let me = self.state.borrow().me.clone();
@@ -1826,9 +1730,14 @@ impl Apps {
                 let Some(apps) = me.upgrade() else {
                     return;
                 };
-                if let Err(error) =
-                    apps.spawn(&planned, Some(&asked), &workspace, None, Some(timed))
-                {
+                if let Err(error) = apps.spawn(
+                    &planned,
+                    Some(&asked),
+                    &workspace,
+                    instance,
+                    None,
+                    Some(timed),
+                ) {
                     tracing::warn!(%error, app = %planned.app, "an app did not start");
                 }
             })
@@ -1870,13 +1779,15 @@ impl Apps {
 
     /// Start `planned` with the link `link` , which the launch holds until it ends, and write it
     /// down as a launch of this session before the app can reach a service of it. A service asked
-    /// as nothing has no window to offer again. `timed` is the launch timing of the request that
-    /// led here, which an agent start of no person's ask begins for itself.
+    /// as nothing has no window to offer again. `instance` is the tab the shell held for its
+    /// window, when it held one. `timed` is the launch timing of the request that led here, which
+    /// an agent start of no person's ask begins for itself.
     fn spawn(
         &self,
         planned: &Planned,
         asked: Option<&str>,
         workspace: &str,
+        instance: Option<u64>,
         link: Option<HeldLink>,
         timed: Option<u64>,
     ) -> Result<u64, ApiError> {
@@ -1919,13 +1830,31 @@ impl Apps {
             tilo_startup_metrics::launch_spawned(timed, started.pid);
         }
         if let Some(asked) = asked {
-            state.running.insert(started.id, asked.to_owned());
+            // This launch's ask replaces the last one of the same app in the same workspace, once
+            // that one ended: what a caller reads is how the app's latest launch went.
+            state.launched.retain(|_, launch| {
+                !(launch.app == planned.app
+                    && launch.workspace == workspace
+                    && matches!(launch.got, Got::Closed | Got::CouldNotOpen { .. }))
+            });
             // A launch with no window to show (an action's run) is not one that could fail to open.
-            if !windowless {
-                state
-                    .launched
-                    .insert(started.id, (planned.app.clone(), std::time::Instant::now()));
-            }
+            let got = if windowless {
+                Got::Windowless
+            } else {
+                Got::Arriving
+            };
+            state.launched.insert(
+                started.id,
+                Launching {
+                    asked: asked.to_owned(),
+                    app: planned.app.clone(),
+                    workspace: workspace.to_owned(),
+                    pid: Some(started.pid),
+                    instance,
+                    started: std::time::Instant::now(),
+                    got,
+                },
+            );
         }
         if let Some(link) = link {
             state.held.insert(started.id, link);
@@ -2658,16 +2587,49 @@ mod tests {
         desktop
     }
 
-    /// What the desktop shows after `end` ended the app `asked` , which this session started as
-    /// `running` .
+    /// Record that this session started launch `id` of `app` as process `pid`, `lived` ago, and
+    /// how far it got: what [`Apps::spawn`] writes when it starts an app, without a process here.
+    fn record_launch(
+        apps: &Apps,
+        id: u64,
+        app: &str,
+        pid: Option<u32>,
+        instance: Option<u64>,
+        lived: std::time::Duration,
+        got: Got,
+    ) {
+        let started = std::time::Instant::now()
+            .checked_sub(lived)
+            .expect("the clock reads past the launch");
+        apps.state.borrow_mut().launched.insert(
+            id,
+            Launching {
+                asked: app.to_owned(),
+                app: app.to_owned(),
+                workspace: WORKSPACE.to_owned(),
+                pid,
+                instance,
+                started,
+                got,
+            },
+        );
+    }
+
+    /// What the desktop shows after `end` ended the app `asked` , which this session started with
+    /// a window that came.
     fn showed_after(end: End) -> Vec<String> {
         let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
         let desktop = shell();
         apps.attach(desktop.clone());
-        apps.state
-            .borrow_mut()
-            .running
-            .insert(1, "example.Canvas".to_owned());
+        record_launch(
+            &apps,
+            1,
+            "example.Canvas",
+            None,
+            None,
+            std::time::Duration::ZERO,
+            Got::Landed,
+        );
         apps.state.borrow().spawner.report(Event {
             id: 1,
             app: "example.Canvas".to_owned(),
@@ -2705,10 +2667,17 @@ mod tests {
         desktop.with_widgets(WidgetHost::relayout);
         let asked = desktop.take_launches();
         assert_eq!(asked.len(), 1, "the person asked for Canvas");
-        apps.state
-            .borrow_mut()
-            .running
-            .insert(1, "example.Canvas".to_owned());
+        // The launch was asked for the tab the shell held for it, and ended before its window
+        // came.
+        record_launch(
+            &apps,
+            1,
+            "example.Canvas",
+            None,
+            asked[0].tab,
+            std::time::Duration::ZERO,
+            Got::Arriving,
+        );
         apps.state.borrow().spawner.report(Event {
             id: 1,
             app: "example.Canvas".to_owned(),
@@ -2753,13 +2722,7 @@ mod tests {
     /// `apps` started the app `example.Canvas` as process `id`, `lived` ago, and it ended as `end`
     /// saying `said` on stderr.
     fn canvas_ended(apps: &Apps, id: u64, lived: std::time::Duration, end: End, said: &str) {
-        let at = std::time::Instant::now()
-            .checked_sub(lived)
-            .expect("the clock reads past the launch");
-        let mut state = apps.state.borrow_mut();
-        state.running.insert(id, "example.Canvas".to_owned());
-        state.launched.insert(id, ("example.Canvas".to_owned(), at));
-        drop(state);
+        record_launch(apps, id, "example.Canvas", None, None, lived, Got::Arriving);
         apps.state.borrow().spawner.report(Event {
             id,
             app: "example.Canvas".to_owned(),
@@ -2815,29 +2778,35 @@ mod tests {
         let desktop = shell();
         apps.attach(desktop.clone());
         let lived = std::time::Duration::from_secs(30);
-        let at = std::time::Instant::now()
-            .checked_sub(lived)
-            .expect("the clock reads past the launch");
-        apps.state
-            .borrow_mut()
-            .running
-            .insert(1, "example.Canvas".to_owned());
-        apps.state
-            .borrow_mut()
-            .launched
-            .insert(1, ("example.Canvas".to_owned(), at));
+        // A process no longer running stands for the launch's: only its descent matters here.
+        let pid = 4_242;
+        record_launch(
+            &apps,
+            1,
+            "example.Canvas",
+            Some(pid),
+            None,
+            lived,
+            Got::Arriving,
+        );
         let window = Window {
             id: 11,
             app_id: Some("example.Canvas".into()),
             title: Some("Canvas".into()),
+            pid: Some(pid),
             ..Window::default()
         };
         desktop
             .with_policy(|policy| policy.map(window))
             .expect("the window maps");
         texts(&desktop);
-        // The session's pass sees the window on the shell.
+        // The session's pass reads the window the desktop placed as this launch's own.
         apps.follow_ended();
+        assert_eq!(
+            apps.launch_state("example.Canvas", WORKSPACE),
+            Some(LaunchState::Landed),
+            "a window of the launch's own process appeared"
+        );
         desktop.with_policy(|policy| policy.unmap(11));
         texts(&desktop);
         apps.state.borrow().spawner.report(Event {

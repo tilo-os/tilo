@@ -68,6 +68,17 @@ pub struct Window {
 /// launched it knows.
 pub type LaunchWorkspaces = Rc<dyn Fn(u32, &str) -> Option<String>>;
 
+/// A window the desktop gave a place since the session last read them: what a launch learns a
+/// window of its own arrived from, rather than from what the shell shows of its app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mapped {
+    /// The window the compositor mapped.
+    pub window: u64,
+    /// The process that made it, when the compositor knew one: how the launch it belongs to is
+    /// found.
+    pub pid: Option<u32>,
+}
+
 /// Where the windows are as of the surface's last layout pass.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Placement {
@@ -419,6 +430,9 @@ pub struct DesktopPolicy {
     /// Windows the desktop has given a tab, so a tab gone without
     /// [`Self::unmap`] is one the person closed.
     placed: BTreeSet<u64>,
+    /// The windows given a place since the session last took them ([`Self::take_mapped`]): the one
+    /// place a launch's window arriving is recorded.
+    mapped: Vec<Mapped>,
     /// The dialogs, oldest first, each with the window it belongs to.
     floating: BTreeMap<u64, Option<u64>>,
     /// The displays, primary first, a mirror set as one.
@@ -488,6 +502,7 @@ impl DesktopPolicy {
             notes,
             places: BTreeMap::new(),
             placed: BTreeSet::new(),
+            mapped: Vec::new(),
             floating: BTreeMap::new(),
             displays: Vec::new(),
             cards: cards::Placements::new(),
@@ -733,20 +748,6 @@ impl DesktopPolicy {
         })
     }
 
-    /// Whether `app` has a window on the shell, in front or not, on any workspace: one the
-    /// compositor mapped and the shell gave a tab, not a tab held for a window still to come.
-    #[must_use]
-    pub fn has_window(&self, app: &str) -> bool {
-        self.handle.read(|tree| {
-            tabs(tree).any(|tab| match &tab.tile {
-                TileContent::Foreign { app_id, .. } => {
-                    app_ids_match(&tilo_desktop_model::AppId::new(app_id), app)
-                }
-                _ => false,
-            })
-        })
-    }
-
     /// Give `window` its place: a dialog ([`floating::floats`]) floats over the window it
     /// belongs to; any other gets a tab beside the focused window of the shown strip,
     /// where it takes focus. One whose app asked to open beside a tab of its own takes
@@ -770,15 +771,27 @@ impl DesktopPolicy {
         if floating::floats(&window, display) {
             let parent = window.parent.filter(|parent| self.holds(*parent));
             self.floating.insert(window.id, parent);
+            self.note_mapped(Mapped {
+                window: window.id,
+                pid: window.pid,
+            });
             return Ok(());
         }
         let id = window.id;
+        let mapped = Mapped {
+            window: id,
+            pid: window.pid,
+        };
         let elsewhere = self.launched_elsewhere(&window);
         // A window of an app that asked for another one right after a tab of
         // its own takes the tab held for it there, from the moment it maps.
         if let Some(held) = self.take_held(window.app_id.as_deref().unwrap_or_default())
             && self.bind_held(&window, held)
         {
+            self.note_mapped(Mapped {
+                window: window.id,
+                pid: window.pid,
+            });
             return Ok(());
         }
         let launch = format!("{LAUNCH_PREFIX}{id}");
@@ -812,6 +825,7 @@ impl DesktopPolicy {
         placed.inspect_err(|_| {
             self.arriving.borrow_mut().remove(&id);
         })?;
+        self.note_mapped(mapped);
         // Launched into a workspace that is not in front (an agent's, a service's): its tab goes
         // there, so the workspace in front shows only its own windows and the other holds its own.
         if let Some(slot) = elsewhere {
@@ -819,6 +833,22 @@ impl DesktopPolicy {
             self.carry_launched();
         }
         Ok(())
+    }
+
+    /// Write down that `window` got a place, once: the session reads these to tell each launch
+    /// whose window appeared from whose never did ([`Self::take_mapped`]).
+    fn note_mapped(&mut self, window: Mapped) {
+        if self.mapped.contains(&window) {
+            return;
+        }
+        self.mapped.push(window);
+    }
+
+    /// The windows given a place since this was last taken, oldest first: a launch reads whether
+    /// its own window arrived from here, keyed by the process that made it.
+    #[must_use]
+    pub fn take_mapped(&mut self) -> Vec<Mapped> {
+        std::mem::take(&mut self.mapped)
     }
 
     /// Move each window launched into a workspace that is not in front into that workspace, once
