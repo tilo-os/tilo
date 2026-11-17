@@ -32,7 +32,7 @@ class Element {
 
 /** The parts of the entry a page turned away fills in (index.html,
  * `#arrival-refusal`): its words, and the field a link is pasted into. */
-const DOOR = ['arrival-refusal', 'arrival-refusal-heading', 'arrival-refusal-body', 'arrival-invite', 'arrival-invite-toggle',
+const ENTRY_PARTS = ['arrival-refusal', 'arrival-refusal-heading', 'arrival-refusal-body', 'arrival-invite', 'arrival-invite-toggle',
   'arrival-invite-link', 'arrival-invite-error'];
 
 // Run the real page wiring and workspace actions. Replace only the booted
@@ -42,14 +42,14 @@ const DOOR = ['arrival-refusal', 'arrival-refusal-heading', 'arrival-refusal-bod
 // the person this tab has open, and `kept` the one this browser keeps
 // whether or not a tab opened them (`keptIdentity`). `join` stands for
 // joining through a host's entry (`joinViaHost`) where a test says what the
-// host answers; without one the page's own join runs. `door` gives the page
-// the entry's own parts (`DOOR`), as index.html has them. `profile` is what
+// host answers; without one the page's own join runs. `entryParts` gives the page
+// the entry's own parts (`ENTRY_PARTS`), as index.html has them. `profile` is what
 // the host keeps of the person a pairing link names (`{display_name}`, or
 // `null` for none), and `whose` what the person presses on the card that says
 // whose device this becomes: `'go'`, `'stop'`, or a function told the card
 // that answers which.
 async function fixture({boot, remembered = [], own = false, search = '', session = {}, local = {}, member = null, entry = null, scope = null,
-  pair = async () => { throw new Error('this fixture pairs no device'); }, identity = {userPublicKey: USER}, kept = null, join = null, door = false,
+  pair = async () => { throw new Error('this fixture pairs no device'); }, identity = {userPublicKey: USER}, kept = null, join = null, entryParts = false,
   profile = null, whose = 'go'} = {}) {
   const values = new Map(Object.entries(local));
   let assigned = null;
@@ -69,7 +69,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     // A card is found by its kind, as the page looks for the one a new card replaces.
     querySelector: selector => document.body.children.find(card => selector === `[data-card="${card.dataset.card}"]`) ?? null,
     getElementById: id => id === 'status' ? status : id === 'surface' ? new Element('canvas')
-      : id.startsWith('arrival-failure') || (door && DOOR.includes(id)) ? (screen[id] ??= new Element(id)) : null};
+      : id.startsWith('arrival-failure') || (entryParts && ENTRY_PARTS.includes(id)) ? (screen[id] ??= new Element(id)) : null};
   const appendToBody = document.body.append.bind(document.body);
   document.body.append = (...nodes) => {
     appendToBody(...nodes);
@@ -166,9 +166,9 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   const {startEntryPage} = module;
   // A page that cannot get in throws its cause on, to the console.
   // The entry listens on the window for a link followed while it shows.
-  if (door) globalThis.window = globalThis;
+  if (entryParts) globalThis.window = globalThis;
   const failure = await startEntryPage({mode: 'desktop'}).then(() => null, error => error)
-    .finally(() => { if (door) delete globalThis.window; });
+    .finally(() => { if (entryParts) delete globalThis.window; });
   await tick();
   return {calls, shown, diagnostics, page, prepared, mounted: globalThis.__entryPageFixture.mounted, listeners, session: stored, failure, at: () => assigned, screen, module};
 }
@@ -842,7 +842,7 @@ test('the entry’s link field takes a pairing link and an invitation’s short 
   // `invite`, so it answered “That isn’t an invite link”, as it did to the
   // short link the invite sheet hands over.
   const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
-  const turnedAway = () => fixture({door: true, boot: async ({deps}) => {
+  const turnedAway = () => fixture({entryParts: true, boot: async ({deps}) => {
     deps.onScope({scope: {kind: 'workspace', host: ORIGIN, workspace: 'current'}, entry: {base: 'https://web.example/', home}});
     throw Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'invitation-only'});
   }});

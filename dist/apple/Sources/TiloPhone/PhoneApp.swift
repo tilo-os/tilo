@@ -18,8 +18,8 @@ final class PhoneAppDelegate: UIResponder, UIApplicationDelegate {
                                       icon: UIApplicationShortcutIcon(systemImageName: symbol), userInfo: nil)
         }
         var items = [action(.dictate, .dictate, "mic"), action(.openLink, .openLink, "link")]
-        // The way in is in the site's door. These two reach it from anywhere, also where a
-        // page shows no door the app knows.
+        // The way in is in the site's entry page. These two reach it from anywhere, also where a
+        // page shows no entry page the app knows.
         if RootViewController.readsCodes { items.insert(action(.scanCode, .scanCode, "qrcode.viewfinder"), at: 1) }
         application.shortcutItems = items
         return true

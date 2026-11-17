@@ -57,7 +57,7 @@ public struct PageNotice: Equatable, Sendable {
     }
 }
 
-/// Where the page stands at its site's door, in the page's own word for it
+/// Where the page stands at its site's entry page, in the page's own word for it
 /// (`document.documentElement.dataset.entry`): `open` once it is in, `refused` when the host
 /// turned it away, `failed` when it could not get there.
 public struct PageEntry: Equatable, Sendable {
@@ -77,7 +77,7 @@ public struct PageEntry: Equatable, Sendable {
     }
 }
 
-/// A way to bring a link in at the site's door that only the system has.
+/// A way to bring a link in at the site's entry page that only the system has.
 public enum WayIn: String, CaseIterable, Sendable, Equatable {
     /// Read the code another device shows, with the camera.
     case scan
@@ -85,10 +85,10 @@ public enum WayIn: String, CaseIterable, Sendable, Equatable {
     case paste
 }
 
-/// What the shell offers at a closed door: one sentence that says where a code and a link
-/// come from, and a button for each way this device has. The page shows it in the door's own
-/// column, drawn as the door draws its own controls (`Bridge`).
-public struct DoorOffer: Equatable, Sendable {
+/// What the shell offers on an entry page that refuses the device: one sentence that says where a code and a link
+/// come from, and a button for each way this device has. The page shows it on the entry page's own
+/// column, drawn as the entry page draws its own controls (`Bridge`).
+public struct WayInOffer: Equatable, Sendable {
     public struct Way: Equatable, Sendable {
         public let way: WayIn
         /// What its button says.
@@ -113,7 +113,7 @@ public struct DoorOffer: Equatable, Sendable {
 public enum PageMessage: Equatable, Sendable {
     case notify(PageNotice)
     case entry(PageEntry)
-    /// The person pressed one of the shell's ways in at the door.
+    /// The person pressed one of the shell's ways in on the entry page.
     case wayIn(WayIn)
     case withdraw(id: String)
     case askPermission
@@ -173,28 +173,28 @@ public enum ComposeOutcome: String, Sendable, Equatable {
 /// a `type: 'text'` one a field, and the `click` event then carries `action` and `reply`.
 ///
 /// To the shell it is `__tiloShell`: `permission(state)`, `chosen(id, action, reply)`,
-/// `closed(id)` and `compose(words)`. It also tells the shell where the page stands at its
-/// site's door, which the page writes on its root element.
+/// `closed(id)` and `compose(words)`. It also tells the shell where the page stands on its
+/// site's entry page, which the page writes on its root element.
 ///
-/// At a closed door it shows the shell's `DoorOffer` in the door itself. The page's door is
+/// On an entry page that refuses the device it shows the shell's `WayInOffer` on that page. The entry page is
 /// plain markup in one dark look, set in the system's type, and it scrolls; a native bar
 /// under it followed the system's appearance and stood apart. So the offer is put into the
-/// door's own column as markup with the door's measures and colours: a button for each way,
-/// and the sentence under them. It stands first among what the door offers someone who
-/// already has something (`#arrival-refusal .refusal-alt` in the entry page), under the
+/// entry page's own column as markup with the entry page's measures and colours: a button for each way,
+/// and the sentence under them. It stands first among what the entry page offers someone who
+/// already has something (`#arrival-refusal .refusal-alt` on the entry page), under the
 /// actions of the screen for a refusal of another kind (`#arrival-failure`), and under the
 /// status line on a page that has neither, such as the page that shows one app. A press is told to the shell
 /// (`way-in`), and what the shell has to say of a link it refuses is shown under the buttons
 /// (`refused(words)`). The offer goes when the page is in, and while a pairing is under way.
 ///
-/// A door that draws these options itself marks its element `data-way-in`, reads what this
+/// An entry page that draws these options itself marks its element `data-way-in`, reads what this
 /// device has from `__tiloShell.ways` and calls `__tiloShell.wayIn(way)`; nothing is added
-/// to such a door.
+/// to such an entry page.
 public enum Bridge {
     /// The message handler the page's side posts to.
     public static let name = "tiloShell"
 
-    public static func script(origin: String, permission: NoticePermission, offer: DoorOffer? = nil) -> String {
+    public static func script(origin: String, permission: NoticePermission, offer: WayInOffer? = nil) -> String {
         source
             .replacingOccurrences(of: "%ORIGIN%", with: literal(origin))
             .replacingOccurrences(of: "%PERMISSION%", with: literal(permission.rawValue))
@@ -202,7 +202,7 @@ public enum Bridge {
     }
 
     /// `offer` as a JavaScript object literal.
-    static func literal(_ offer: DoorOffer) -> String {
+    static func literal(_ offer: WayInOffer) -> String {
         let said: [String: Any] = ["said": offer.said,
                                    "ways": offer.ways.map { ["way": $0.way.rawValue, "label": $0.label] }]
         let encoded = try? JSONSerialization.data(withJSONObject: said, options: [.sortedKeys])
@@ -327,15 +327,15 @@ public enum Bridge {
         }, 0);
       }, true);
 
-      // Where the page stands at its site's door.
+      // Where the page stands at its site's entry page.
       const root = document.documentElement;
       if (root) {
-        const door = () => tell('entry', {state: cut(root.dataset.entry, 32), pairing: Boolean(root.dataset.pairingCode)});
-        new MutationObserver(door).observe(root, {attributes: true, attributeFilter: ['data-entry', 'data-pairing-code']});
+        const entry = () => tell('entry', {state: cut(root.dataset.entry, 32), pairing: Boolean(root.dataset.pairingCode)});
+        new MutationObserver(entry).observe(root, {attributes: true, attributeFilter: ['data-entry', 'data-pairing-code']});
       }
 
       // The way in. While the site keeps this device out, what only the system can do for
-      // the person stands in the door's own column, drawn as the door draws its own controls.
+      // the person stands on the entry page's own column, drawn as the entry page draws its own controls.
       const offer = %OFFER%;
       const ways = Object.freeze(offer ? offer.ways.map(one => one.way) : []);
       const wayIn = way => {
@@ -343,9 +343,9 @@ public enum Bridge {
         tell('way-in', {way});
         return true;
       };
-      // The door's measures and colours (index.html of the entry page): a control's height
+      // The entry page's measures and colours (index.html of the entry page): a control's height
       // and corner, the raised fill of a second choice, its focus ring, and under the
-      // controls a note in the door's quiet tone, as under its own wait list.
+      // controls a note on the entry page's quiet tone, as under its own wait list.
       const look = `
         .tilo-shell-way-in { box-sizing: border-box; display: grid; justify-items: center; gap: 10px; width: 100%; margin: 0 0 20px; padding: 0; text-align: center; font: 13px/1.5 system-ui, sans-serif; color: #7f7f89; }
         .tilo-shell-way-in > p { margin: 0; font-size: 13px; line-height: 1.5; color: #7f7f89; text-wrap: balance; }
@@ -412,7 +412,7 @@ public enum Bridge {
         }
         group.append(row, said, problem);
       };
-      // Under the status line, on a page whose door is that line alone.
+      // Under the status line, on a page whose entry page is that line alone.
       const under = () => {
         if (!group?.isConnected || group.dataset.place !== 'alone') return;
         const line = document.getElementById('status');
@@ -430,7 +430,7 @@ public enum Bridge {
         const others = 'refusal' in root.dataset && document.querySelector('#arrival-refusal .refusal-alt');
         const actions = 'failure' in root.dataset && document.querySelector('#arrival-failure .failure-actions');
         if (others) {
-          group.dataset.place = 'door';
+          group.dataset.place = 'refusal';
           if (others.firstElementChild !== group) others.prepend(group);
         } else if (actions) {
           group.dataset.place = 'failure';

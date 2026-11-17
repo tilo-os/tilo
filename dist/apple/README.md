@@ -73,7 +73,7 @@ bundle today. A bundle whose `Info.plist` has
 (`ShellSettings.swift`). The page it opens is the one-app page, which has no desktop. Beyond
 that the web view is held to it (`PageHost.swift`, `SitePolicy.isOwn`):
 
-- The way in may lead anywhere in the site, because that is how a person gets in: its door,
+- The way in may lead anywhere in the site, because that is how a person gets in: its entry page,
   an invitation, a pairing link made on a desktop.
 - Once the page says the person is in, an address of the site that is not the app's own page
   goes to the system's browser, like any address that is not Tilo's. That is where "Open in
@@ -119,25 +119,25 @@ browser key that WebKit wraps with a key from the app's keychain, so a person wh
 stays in for as long as the app keeps its signature and its data. Getting in is the site's own
 flow (an invitation, a pairing link, its sign-in); nothing hands a native identity to a page.
 
-**The way in, in the site's door.** While the site keeps a device out, its page shows a door:
+**The way in, on the site's entry page.** While the site keeps a device out, it shows its entry page:
 what the site says to someone it does not know, and what such a person can do. What only the
-system can do for them stands in that door, not beside the page: "Scan code" on a phone and
+system can do for them stands on that page, not beside the page: "Scan code" on a phone and
 "Paste link", for the code and the link that "Pair a new device" shows on a device where the
 person is signed in, with one sentence under them that says so. An invitation's link is
-pasted the same way. The door is the page's own markup, in one dark look and the system's
+pasted the same way. The entry page is the page's own markup, in one dark look and the system's
 type, and it scrolls; a native bar under it followed the system's appearance and looked like
-a strip stuck to a web page. So the script puts the two buttons into the door's own column,
-with the door's measures and colours (`Bridge.swift` says where in each of the page's doors,
+a strip stuck to a web page. So the script puts the two buttons into the entry page's own column,
+with the entry page's measures and colours (`Bridge.swift` says where on each of the entry pages,
 and why). A press comes back to the shell, which only then asks for the camera, or reads the
 clipboard. A link is taken out of whatever is written around it; a link into another site is
-refused in the door, under the buttons, with the name of the site the app opens. A link the
+refused on the entry page, under the buttons, with the name of the site the app opens. A link the
 site's own computer made under a name only it can use is read as the site's (see "One
-site"). The page says where it stands at the door on its root element (`data-entry`): the
+site"). The page writes where it stands on its root element (`data-entry`): the
 buttons go once it is in and while a device of the person's is being asked to approve this
 one, and a person who came in by a link is taken back to where the app starts.
 
 A link is also opened from the File menu on the Mac, by a long press on the phone's icon,
-which offers the scan too, or by sharing it to the app. A door that draws these options
+which offers the scan too, or by sharing it to the app. An entry page that draws these options
 itself marks its element `data-way-in` and asks the shell through `__tiloShell.wayIn`; the
 shell then adds nothing.
 
@@ -510,11 +510,11 @@ and name each native part above.
 Checked with no window: the tests (the settings and what a build of one app is held to, the
 policy, the hand-over, the sentences against their catalogue and under both apps' names, the
 script against a page that speaks as Tilo's does, and the web view of a one-app build against
-pages that leave the app, and the way in against pages that stand at the door as Tilo's
+pages that leave the app, and the way in against pages that show the entry page as Tilo's
 do), the Mac apps' `--check` in their real signature and sandbox, and
 the iPhone apps' in a simulator.
 
-`DoorShots` in the tests takes pictures of a site's door as the apps show it, with nothing on
+`EntryPageShots` in the tests takes pictures of a site's entry page as the apps show it, with nothing on
 screen, when it is asked to (`TILO_SHOTS_DIR`, `TILO_SHOTS_SITE`).
 
 Not checked by anything here, because it needs a window or the system's own interface: how

@@ -1,9 +1,9 @@
 import ShellCore
 import XCTest
 
-/// What the shell offers at the site's door, as it reaches the page and as a press comes back.
-final class DoorOfferTests: XCTestCase {
-    func testAPressAtTheDoorIsHeardAsTheWayItNames() {
+/// What the shell offers at the site's entry page, as it reaches the page and as a press comes back.
+final class WayInOfferTests: XCTestCase {
+    func testAPressOnTheEntryPageIsHeardAsTheWayItNames() {
         XCTAssertEqual(PageMessage(body: ["kind": "way-in", "way": "scan"]), .wayIn(.scan))
         XCTAssertEqual(PageMessage(body: ["kind": "way-in", "way": "paste"]), .wayIn(.paste))
         // A way the system does not have is nothing to act on.
@@ -15,8 +15,8 @@ final class DoorOfferTests: XCTestCase {
 
     func testTheScriptCarriesWhatTheDeviceOffersAsData() throws {
         // Whatever a sentence holds, it reaches the page as words and never as code.
-        let offer = DoorOffer(said: "The “code”</script> and `${link}` come\\ from\nthere.",
-                              ways: [DoorOffer.Way(.scan, "Scan \"code\""), DoorOffer.Way(.paste, "Paste link")])
+        let offer = WayInOffer(said: "The “code”</script> and `${link}` come\\ from\nthere.",
+                              ways: [WayInOffer.Way(.scan, "Scan \"code\""), WayInOffer.Way(.paste, "Paste link")])
         let script = Bridge.script(origin: "https://tilo.sh", permission: .notAsked, offer: offer)
         XCTAssertFalse(script.contains("%OFFER%"))
         let line = try XCTUnwrap(script.split(separator: "\n").first { $0.contains("const offer = ") })
@@ -29,7 +29,7 @@ final class DoorOfferTests: XCTestCase {
         XCTAssertTrue(Bridge.script(origin: "https://tilo.sh", permission: .notAsked).contains("const offer = null;"))
     }
 
-    func testTheSentencesAtTheDoorSayWhereACodeAndALinkComeFrom() {
+    func testTheSentencesOnTheEntryPageSayWhereACodeAndALinkComeFrom() {
         // One sentence each, under the buttons that name what happens.
         for words in [Words.wayInMac, Words.wayInPhone] {
             let said = words.said(as: "Tilo Shell")

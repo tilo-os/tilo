@@ -470,7 +470,7 @@ final class BridgeTests: XCTestCase {
                       NoticeAction(id: "say", title: "Reply", kind: .text, placeholder: "Message")])))
     }
 
-    func testTheShellOffersAWayInOnlyAtAClosedDoor() {
+    func testTheShellOffersAWayInOnlyOnARefusingEntryPage() {
         XCTAssertEqual(PageMessage(body: ["kind": "entry", "state": "refused", "pairing": false]),
                        .entry(PageEntry(state: "refused")))
         XCTAssertTrue(PageEntry(state: "refused").wantsWayIn)

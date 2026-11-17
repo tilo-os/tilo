@@ -19,9 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var statusLine: NSMenuItem?
     private var problem: ProblemView?
     private var hint: HintView?
-    /// The site keeps this Mac out, and the page shows the way in at its door.
-    private var atDoor = false
-    /// The person is following a link from the door, and belongs where the app starts once in.
+    /// The site keeps this Mac out, and the page shows the way in at its entry page.
+    private var refused = false
+    /// The person is following a link from the entry page, and belongs where the app starts once in.
     private var returnsToStart = false
     private var settings: SettingsWindow?
     private var dictation: DictationPanel?
@@ -76,13 +76,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         host?.view.removeFromSuperview()
         host = nil
         arrived = false
-        atDoor = false
+        refused = false
         let window = window ?? makeWindow()
         self.window = window
         switch ShellSettings.load() {
         case .success(let settings):
-            // A Mac reads no code: its one way in is the link, which the page offers at its door.
-            let offer = DoorOffer(said: Words.wayInMac.said, ways: [DoorOffer.Way(.paste, Words.pasteLink.said)])
+            // A Mac reads no code: its one way in is the link, which the page offers at its entry page.
+            let offer = WayInOffer(said: Words.wayInMac.said, ways: [WayInOffer.Way(.paste, Words.pasteLink.said)])
             let host = PageHost(settings: settings, permission: permission, offer: offer,
                                 inspectable: UserDefaults.standard.bool(forKey: "TiloInspect"))
             host.delegate = self
@@ -113,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     /// The page fills the window. Nothing of the app stands beside it: the way in at the
-    /// site's door is in the door.
+    /// site's entry page is on that page.
     private func place(_ page: NSView, in window: NSWindow) {
         guard let content = window.contentView else { return }
         page.translatesAutoresizingMaskIntoConstraints = false
@@ -161,11 +161,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         follow(link)
     }
 
-    /// Say why a link was not followed: in the door while the page offers the way in there,
+    /// Say why a link was not followed: on the entry page while the page offers the way in there,
     /// where the person pressed, and as a sheet anywhere else.
     private func refuse(_ words: String) {
         Task {
-            guard let host, atDoor, await host.say(atDoor: words) else { return say(words) }
+            guard let host, refused, await host.say(onEntryPage: words) else { return say(words) }
             showWindow(nil)
             if let window {
                 NSAccessibility.post(element: window, notification: .announcementRequested,
@@ -174,10 +174,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
-    /// Open a link into the site. From the door it is the way in, and the person belongs
+    /// Open a link into the site. From the entry page it is the way in, and the person belongs
     /// where the app starts afterwards; from anywhere else it is what they asked to see.
     private func follow(_ link: URL) {
-        returnsToStart = atDoor
+        returnsToStart = refused
         showWindow(nil)
         show(nil)
         host?.open(link)
@@ -319,11 +319,11 @@ extension AppDelegate: PageHostDelegate {
             hint?.removeFromSuperview()
             hint = nil
         case .wayIn(let way):
-            // Pressed in the door. A Mac's one way is the link in the clipboard.
-            guard atDoor, way == .paste else { return }
+            // Pressed on the entry page. A Mac's one way is the link in the clipboard.
+            guard refused, way == .paste else { return }
             openLinkFromClipboard(nil)
         case .entry(let entry):
-            atDoor = entry.wantsWayIn
+            refused = entry.wantsWayIn
             guard entry.state == "open", returnsToStart else { return }
             returnsToStart = false
             Task {

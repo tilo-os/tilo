@@ -5,24 +5,24 @@ import ShellCore
 import WebKit
 import XCTest
 
-/// Pictures of a site's door as the apps show it, for a person to look at. They are taken
+/// Pictures of a site's entry page as the apps show it, for a person to look at. They are taken
 /// with nothing on screen, and only when asked for:
 ///
-///     TILO_SHOTS_DIR=/tmp/door TILO_SHOTS_SITE=http://tilo.localhost:24120 swift test --filter DoorShots
+///     TILO_SHOTS_DIR=/tmp/entry TILO_SHOTS_SITE=http://tilo.localhost:24120 swift test --filter EntryPageShots
 ///
-/// The site is opened as a device it has never seen, which stands at its door. Nothing is
+/// The site is opened as a device it has never seen, which stands at its entry page. Nothing is
 /// kept and nobody is signed in. The pictures are the Mac's web view at a Mac window's size
 /// and at an iPhone's width; an iPhone's own come from a simulator.
 @MainActor
-final class DoorShots: XCTestCase {
-    func testPicturesOfTheDoor() async throws {
+final class EntryPageShots: XCTestCase {
+    func testPicturesOfTheEntryPage() async throws {
         let asked = ProcessInfo.processInfo.environment
         guard let folder = asked["TILO_SHOTS_DIR"], let site = asked["TILO_SHOTS_SITE"] else {
             throw XCTSkip("taken when TILO_SHOTS_DIR names a folder and TILO_SHOTS_SITE a Tilo site")
         }
-        let paste = DoorOffer.Way(.paste, Words.pasteLink.said)
-        let mac = DoorOffer(said: Words.wayInMac.said, ways: [paste])
-        let phone = DoorOffer(said: Words.wayInPhone.said, ways: [DoorOffer.Way(.scan, Words.scanCode.said), paste])
+        let paste = WayInOffer.Way(.paste, Words.pasteLink.said)
+        let mac = WayInOffer(said: Words.wayInMac.said, ways: [paste])
+        let phone = WayInOffer(said: Words.wayInPhone.said, ways: [WayInOffer.Way(.scan, Words.scanCode.said), paste])
         // The site as a whole, and the page that shows one app.
         let whole = try ShellSettings(site: site)
         let oneApp = try ShellSettings(site: site, app: "so.tilo.assistant", alone: true)
@@ -37,7 +37,7 @@ final class DoorShots: XCTestCase {
         try await picture("narrow-refused-link", of: whole, phone, narrow, into: folder, saying: refusal)
     }
 
-    private func picture(_ name: String, of settings: ShellSettings, _ offer: DoorOffer, _ size: CGSize,
+    private func picture(_ name: String, of settings: ShellSettings, _ offer: WayInOffer, _ size: CGSize,
                          into folder: String, saying refusal: String? = nil) async throws {
         // A window that is never shown: a web view draws for a picture once it is in one.
         let frame = CGRect(origin: .zero, size: size)
@@ -50,12 +50,12 @@ final class DoorShots: XCTestCase {
         for _ in 0..<1800 where heard.entry?.wantsWayIn != true {
             try await Task.sleep(for: .milliseconds(100))
         }
-        // A picture of anything but the door would say nothing of it.
+        // A picture of anything but the entry page would say nothing of it.
         guard heard.entry?.wantsWayIn == true else { return XCTFail("\(name): the site did not keep this device out") }
         try await Task.sleep(for: .seconds(2))
         if let refusal {
-            let said = await host.say(atDoor: refusal)
-            XCTAssertTrue(said, "\(name): the door shows no way in to say it under")
+            let said = await host.say(onEntryPage: refusal)
+            XCTAssertTrue(said, "\(name): the entry page shows no way in to say it under")
             try await Task.sleep(for: .milliseconds(300))
         }
         let shot = try await host.view.takeSnapshot(configuration: WKSnapshotConfiguration())

@@ -4,18 +4,18 @@ import ShellCore
 import WebKit
 import XCTest
 
-/// The way in at the site's door, against pages that stand at the door as Tilo's do. The
-/// shell draws nothing beside the page: what a device offers is shown in the door itself.
+/// The way in at the site's entry page, against pages that show the entry page as Tilo's do. The
+/// shell draws nothing beside the page: what a device offers is shown on the entry page itself.
 /// No window is opened and nothing is fetched.
 @MainActor
-final class DoorTests: PageCase {
+final class EntryPageTests: PageCase {
     private static let site = "https://tilo.test"
-    private static let phone = DoorOffer(said: "Scan the code or paste the link that “Pair a new device” gives.",
-                                         ways: [DoorOffer.Way(.scan, "Scan code"), DoorOffer.Way(.paste, "Paste link")])
-    private static let mac = DoorOffer(said: "Paste the link that “Pair a new device” gives.",
-                                       ways: [DoorOffer.Way(.paste, "Paste link")])
+    private static let phone = WayInOffer(said: "Scan the code or paste the link that “Pair a new device” gives.",
+                                         ways: [WayInOffer.Way(.scan, "Scan code"), WayInOffer.Way(.paste, "Paste link")])
+    private static let mac = WayInOffer(said: "Paste the link that “Pair a new device” gives.",
+                                       ways: [WayInOffer.Way(.paste, "Paste link")])
 
-    private func show(_ page: String, offer: DoorOffer?, width: CGFloat = 1100, at address: String = "https://tilo.test/") async throws {
+    private func show(_ page: String, offer: WayInOffer?, width: CGFloat = 1100, at address: String = "https://tilo.test/") async throws {
         host = PageHost(settings: try ShellSettings(site: Self.site), permission: .notAsked, offer: offer,
                         keepsData: false, frame: CGRect(x: 0, y: 0, width: width, height: 760))
         seen = Seen()
@@ -24,7 +24,7 @@ final class DoorTests: PageCase {
         try await until("the page arrives") { self.seen.arrivals == 1 }
     }
 
-    /// The entry page's door in small (`web/index.html`): the screen for someone who came
+    /// The entry page's entry page in small (`web/index.html`): the screen for someone who came
     /// without an invitation, the screen for a refusal of another kind, and the status line,
     /// each shown by what the page writes on its root element.
     private static func entryPage(drawsItsOwn: Bool = false) -> String {
@@ -67,7 +67,7 @@ final class DoorTests: PageCase {
         """#.replacingOccurrences(of: "OWN", with: drawsItsOwn ? #"<div data-way-in><button type="button">Scan</button></div>"# : "")
     }
 
-    /// The page that shows one app (`web/app/index.html`): its door is the status line alone.
+    /// The page that shows one app (`web/app/index.html`): its entry page is the status line alone.
     private static let oneAppPage = #"""
     <!doctype html><title>Tilo</title>
     <style>
@@ -87,12 +87,12 @@ final class DoorTests: PageCase {
     </script>
     """#
 
-    func testAtAClosedDoorTheWaysInStandInTheDoorItself() async throws {
+    func testOnARefusingEntryPageTheWaysInStandInThePageItself() async throws {
         // As wide as an iPhone.
         try await show(Self.entryPage(), offer: Self.phone, width: 402)
         try await expect("group() === null", true)
         try await run("refuse('refusal')")
-        // First among what the door offers someone who already has something.
+        // First among what the entry page offers someone who already has something.
         try await expect("document.querySelector('#arrival-refusal .refusal-alt').firstElementChild === group()", true)
         // The sentence, with the name of the other device's control kept in one piece.
         try await expect("group().querySelector('p').textContent",
@@ -104,7 +104,7 @@ final class DoorTests: PageCase {
         [...group().querySelectorAll('button')].every(press => press.type === 'button' && !press.disabled
           && press.querySelector('svg').getAttribute('aria-hidden') === 'true')
         """, true)
-        // In the door's column, edge to edge with it, and nothing wider than the screen.
+        // On the entry page's column, edge to edge with it, and nothing wider than the screen.
         try await expect("""
         (() => {
           const column = box(document.querySelector('.refusal-alt')), own = box(group());
@@ -148,14 +148,14 @@ final class DoorTests: PageCase {
         try await until("the press is heard") { self.seen.ways == [.paste] }
     }
 
-    func testALinkThatIsRefusedIsSaidInTheDoor() async throws {
+    func testALinkThatIsRefusedIsSaidOnTheEntryPage() async throws {
         try await show(Self.entryPage(), offer: Self.phone, width: 402)
-        // No door, no place to say it: the words are the app's to say.
-        let early = await host.say(atDoor: "The clipboard holds no link into https://tilo.test.")
+        // No entry page, no place to say it: the words are the app's to say.
+        let early = await host.say(onEntryPage: "The clipboard holds no link into https://tilo.test.")
         XCTAssertFalse(early)
         try await run("refuse('refusal')")
         try await expect("group() !== null", true)
-        let said = await host.say(atDoor: "The clipboard holds no link into https://tilo.test.")
+        let said = await host.say(onEntryPage: "The clipboard holds no link into https://tilo.test.")
         XCTAssertTrue(said)
         try await expect("group().querySelector('[role=alert]').textContent", "The clipboard holds no link into https://tilo.test.")
         try await expect("box(group().querySelector('[role=alert]')).top >= box(group().querySelector('button')).bottom", true)
@@ -174,7 +174,7 @@ final class DoorTests: PageCase {
         """, true)
     }
 
-    func testOnAPageWhoseDoorIsALineTheWaysInStandUnderThatLine() async throws {
+    func testOnAPageWhoseEntryIsALineTheWaysInStandUnderThatLine() async throws {
         try await show(Self.oneAppPage, offer: Self.phone, width: 402, at: "https://tilo.test/app/#/me/so.tilo.assistant")
         try await run("refuse('Lounge is invite-only for now. Ask someone in it for an invite link, then open it here.')")
         try await expect("group().parentNode === document.body", true)
@@ -194,21 +194,21 @@ final class DoorTests: PageCase {
         try await expect("group() === null", true)
     }
 
-    func testADoorThatDrawsTheWaysInItselfIsLeftAlone() async throws {
+    func testAnEntryPageThatDrawsTheWaysInItselfIsLeftAlone() async throws {
         try await show(Self.entryPage(drawsItsOwn: true), offer: Self.phone, width: 402)
         try await run("refuse('refusal')")
         try await Task.sleep(for: .milliseconds(150))
         try await expect("group() === null", true)
-        // Such a door reads what this device has, and asks for it by name.
+        // Such an entry page reads what this device has, and asks for it by name.
         try await expect("__tiloShell.ways.join(' ')", "scan paste")
         try await expect("[__tiloShell.wayIn('paste'), __tiloShell.wayIn('open'), __tiloShell.wayIn()].join(' ')", "true false false")
-        try await until("the door's own press is heard") { self.seen.ways == [.paste] }
+        try await until("the entry page's own press is heard") { self.seen.ways == [.paste] }
         // The shell has no place of its own there to say a refusal in.
-        let said = await host.say(atDoor: "No link.")
+        let said = await host.say(onEntryPage: "No link.")
         XCTAssertFalse(said)
     }
 
-    func testAShellWithNothingToOfferLeavesTheDoorAsItIs() async throws {
+    func testAShellWithNothingToOfferLeavesTheEntryPageAsItIs() async throws {
         try await show(Self.entryPage(), offer: nil)
         try await run("refuse('refusal')")
         try await Task.sleep(for: .milliseconds(150))

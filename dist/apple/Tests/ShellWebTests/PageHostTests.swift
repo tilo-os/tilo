@@ -152,10 +152,10 @@ final class PageHostTests: PageCase {
         try await expect("pasted.length", 0)
     }
 
-    func testTheShellHearsWhereThePageStandsAtTheDoor() async throws {
+    func testTheShellHearsWhereThePageStandsAtTheEntry() async throws {
         // As web/entry-page.mjs writes it on the page's root element.
         try await run("document.documentElement.dataset.entry = 'refused'")
-        try await until("the closed door is told") { self.seen.entry?.wantsWayIn == true }
+        try await until("the refusal is told") { self.seen.entry?.wantsWayIn == true }
         try await run("document.documentElement.dataset.pairingCode = '4821'")
         try await until("pairing under way is told") { self.seen.entry == PageEntry(state: "refused", pairing: true) }
         try await run("delete document.documentElement.dataset.pairingCode; document.documentElement.dataset.entry = 'open'")
@@ -243,7 +243,7 @@ final class OneAppTests: PageCase {
         try await until("the page arrives") { self.seen.arrivals == arrival }
     }
 
-    /// As web/entry-page.mjs says it once the person is past the site's door.
+    /// As web/entry-page.mjs says it once the person is past the site's entry page.
     private func getIn() async throws {
         try await run("document.documentElement.dataset.entry = 'open'")
         try await until("getting in is told") { self.seen.entry == PageEntry(state: "open") }
