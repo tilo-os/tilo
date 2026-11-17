@@ -371,15 +371,15 @@ impl WorkspaceAgents {
     read_content = WorkspaceAgents::read_document
 )]
 impl WorkspaceAgents {
-    /// Make an agent: a name people read (at most 64 characters), the member who keeps
-    /// it (whoever asks when none is named), and optionally a model as `provider/model`
-    /// and the colour it is drawn in.
+    /// Make an agent: a name people read (at most 64 characters), and optionally a model as
+    /// `provider/model` and the colour it is drawn in. Whoever makes it keeps it: a keeper it
+    /// names is refused unless it is the one who makes it.
     #[action]
     pub fn create_agent(
         &mut self,
         cx: &mut ActionCx,
         #[param("Its name, as people read it")] name: NonBlank,
-        #[param("Who keeps it: a member's id; none for whoever makes it")] keeper: Option<String>,
+        #[param("Who keeps it: whoever makes it, and no one else")] keeper: Option<String>,
         #[param("Its id: one already in use elsewhere; none to mint one")] id: Option<String>,
         #[param("The model it plans with, as provider/model; none for the keeper's default")]
         model: Option<String>,
@@ -395,11 +395,22 @@ impl WorkspaceAgents {
             )));
         }
         let name = clean_name(&name)?;
+        // Whoever makes an agent keeps it. The keeper pays for its work with their own model and
+        // answers for what it does, so nobody is made one by a name somebody else wrote.
         let me = author(cx)?;
-        let keeper = match keeper.as_deref().map(str::trim) {
-            None | Some("") => me,
-            Some(keeper) => person(keeper)?,
-        };
+        let named = keeper
+            .as_deref()
+            .map(str::trim)
+            .filter(|named| !named.is_empty());
+        if let Some(named) = named
+            && named != me
+            && person(named)? != me
+        {
+            return Err(Refusal::new(
+                "an agent is kept by whoever makes it: its keeper makes it themselves",
+            ));
+        }
+        let keeper = me;
         let id = match id.as_deref().map(str::trim) {
             None | Some("") => cx.id().to_string(),
             Some(id) => {
