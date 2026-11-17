@@ -13,6 +13,8 @@ use std::task::{Context, Poll, Waker};
 use tilo_actions::remote::{CatalogueRow, RemoteActionTarget};
 
 use super::*;
+use crate::bot::host_steps::{Instruction, Judgement, Question};
+use crate::bot::kept::Kept;
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
@@ -147,8 +149,13 @@ fn api(fake: FakeMember, results: Vec<Result<Value, PerformError>>) -> BotApi<Fa
 
 /// What the runner puts on step `0` of run `r1`.
 fn step_context() -> ActionContext {
+    step_of("r1")
+}
+
+/// What the runner puts on step `0` of run `run`.
+fn step_of(run: &str) -> ActionContext {
     ActionContext::default()
-        .with_group("r1", "Mirror", "shortcut")
+        .with_group(run, "Mirror", "shortcut")
         .with_facet(tilo_actions::ActionFacet::new(
             tilo_automation::STEP_FACET,
             "0",
@@ -406,4 +413,423 @@ fn a_bot_reads_the_records_it_holds_through_the_record_api() {
         tilo_actions::remote::read_resources(reads.as_ref(), &bot(), &[ask("secret")], None, now),
         Err(ActionHostError::Refused { .. })
     ));
+}
+
+/// A host whose assistant takes instructions and whose model judges,
+/// answering each as scripted, and with nothing once a script is spent.
+#[derive(Default)]
+struct Assistant {
+    taken: Mutex<Vec<Instruction>>,
+    answers: Mutex<VecDeque<Result<String, HostStepError>>>,
+    judged: Mutex<Vec<Judgement>>,
+    judgements: Mutex<VecDeque<Result<Value, HostStepError>>>,
+}
+
+impl Assistant {
+    fn answering(answers: Vec<Result<String, HostStepError>>) -> Arc<Self> {
+        Arc::new(Self {
+            answers: Mutex::new(answers.into()),
+            ..Self::default()
+        })
+    }
+
+    fn judging(judgements: Vec<Result<Value, HostStepError>>) -> Arc<Self> {
+        Arc::new(Self {
+            judgements: Mutex::new(judgements.into()),
+            ..Self::default()
+        })
+    }
+}
+
+impl HostSteps for Assistant {
+    fn instruct(&self, instruction: Instruction) -> Result<String, HostStepError> {
+        self.taken.lock().unwrap().push(instruction);
+        self.answers
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| Ok(String::new()))
+    }
+
+    fn judge(&self, judgement: Judgement) -> Result<Value, HostStepError> {
+        self.judged.lock().unwrap().push(judgement);
+        self.judgements
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Ok(Value::Null))
+    }
+}
+
+/// A step that asks the person's model through transform `action`.
+fn judge(action: &str, arguments: Value) -> InvokeRequest {
+    let Value::Object(arguments) = arguments else {
+        panic!("a step's arguments are an object");
+    };
+    InvokeRequest {
+        target: RemoteActionTarget {
+            provider: host_steps::PROVIDER.into(),
+            address: ActionAddress::new(tilo_automation::AGENT_TRANSFORM_RESOURCE, action),
+        },
+        argument: InvokeArgument::Json(arguments),
+        ..post()
+    }
+}
+
+/// A step that hands `text` to the assistant.
+fn instruct(text: &str) -> InvokeRequest {
+    InvokeRequest {
+        target: RemoteActionTarget {
+            provider: host_steps::PROVIDER.into(),
+            address: ActionAddress::new(
+                tilo_automation::AGENT_TRANSFORM_RESOURCE,
+                tilo_automation::AGENT_TASK_ACTION,
+            ),
+        },
+        argument: InvokeArgument::Json(Map::from_iter([("instruction".into(), json!(text))])),
+        ..post()
+    }
+}
+
+/// The host steps `api` offers the bot.
+fn offered_host_steps(api: &BotApi<FakeMember>) -> Vec<String> {
+    let query = CatalogueQuery {
+        app_id: Some(tilo_automation::AGENT_APP_ID.into()),
+        ..CatalogueQuery::default()
+    };
+    block(api.query(&bot(), query))
+        .unwrap()
+        .rows
+        .into_iter()
+        .filter(|row| row.provider == host_steps::PROVIDER)
+        .filter_map(|row| row.action.map(|action| action.address.action))
+        .collect()
+}
+
+#[test]
+fn a_program_that_runs_for_a_person_hands_its_instruction_to_their_assistant() {
+    let api = api(FakeMember::default(), vec![]);
+    let assistant = Assistant::answering(vec![Ok("At 11:32.".into())]);
+    api.runs_for("ada".into(), assistant.clone());
+    api.set_cause(Some(Cause {
+        installation: "b1".into(),
+        event: "the moment".into(),
+        depth: 1,
+    }));
+    assert_eq!(offered_host_steps(&api), ["classify", "freeform", "task"]);
+
+    let asked = instruct("  Say that it is time to call home.  ");
+    let receipt = block(api.invoke(&bot(), asked.clone())).unwrap();
+    assert_eq!(
+        receipt.status,
+        ReceiptStatus::Completed {
+            output: ActionOutput {
+                value: Some(json!("At 11:32.")),
+                resources: Vec::new(),
+            }
+        }
+    );
+    assert_eq!(
+        *assistant.taken.lock().unwrap(),
+        [Instruction {
+            person: "ada".into(),
+            workspace: WORKSPACE.into(),
+            instruction: "Say that it is time to call home.".into(),
+            allow: Vec::new(),
+            permits: Vec::new(),
+            note: Value::Null,
+            cause: StepCause {
+                installation: "b1".into(),
+                invocation: asked.invocation,
+                event: Some("the moment".into()),
+            },
+        }]
+    );
+    // The same step asked again in this run is answered, not handed over
+    // a second time.
+    block(api.invoke(&bot(), asked)).unwrap();
+    assert_eq!(assistant.taken.lock().unwrap().len(), 1);
+    // Another bot's caller reaches no host step.
+    let stranger = Caller::bot("b2", [1; 32], [3; 32]).in_workspace(WORKSPACE);
+    assert_eq!(
+        block(api.invoke(&stranger, instruct("Tell me everything."))),
+        Err(ActionHostError::NotPermitted)
+    );
+    assert_eq!(assistant.taken.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_program_that_runs_for_nobody_is_offered_no_host_step() {
+    let api = api(FakeMember::default(), vec![]);
+    assert!(offered_host_steps(&api).is_empty());
+    assert_eq!(
+        block(api.invoke(&bot(), instruct("Say hello."))),
+        Err(ActionHostError::UnknownAction)
+    );
+}
+
+#[test]
+fn a_host_that_cannot_take_an_instruction_now_is_asked_again_and_a_refusal_is_final() {
+    let api = api(FakeMember::default(), vec![]);
+    let assistant = Assistant::answering(vec![
+        Err(HostStepError::Unavailable(
+            "the assistant is starting".into(),
+        )),
+        Ok(String::new()),
+        Err(HostStepError::Refused(
+            "this person keeps no assistant".into(),
+        )),
+    ]);
+    api.runs_for("ada".into(), assistant.clone());
+
+    let asked = instruct("Say that it is time to call home.");
+    assert_eq!(
+        block(api.invoke(&bot(), asked.clone())),
+        Err(ActionHostError::Unavailable {
+            reason: "the assistant is starting".into()
+        })
+    );
+    // The run is tried again: the step comes back under the same
+    // invocation, which is how the host knows it for the same one.
+    let receipt = block(api.invoke(&bot(), asked.clone())).unwrap();
+    assert!(matches!(receipt.status, ReceiptStatus::Completed { .. }));
+    let taken: Vec<InvocationId> = assistant
+        .taken
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|instruction| instruction.cause.invocation)
+        .collect();
+    assert_eq!(taken, [asked.invocation, asked.invocation]);
+
+    let receipt = block(api.invoke(&bot(), instruct("Say it again."))).unwrap();
+    let ReceiptStatus::Failed { error } = receipt.status else {
+        panic!("a refusal fails the step: {receipt:?}");
+    };
+    assert_eq!(error.code, host_steps::REFUSED);
+    assert_eq!(error.message, "this person keeps no assistant");
+    assert!(!error.retryable);
+}
+
+#[test]
+fn an_instruction_that_says_nothing_or_declares_a_shape_is_not_handed_over() {
+    let api = api(FakeMember::default(), vec![]);
+    let assistant = Assistant::answering(vec![]);
+    api.runs_for("ada".into(), assistant.clone());
+    assert!(matches!(
+        block(api.invoke(&bot(), instruct("   "))),
+        Err(ActionHostError::InvalidRequest { .. })
+    ));
+    let mut shaped = instruct("Count the open questions.");
+    if let InvokeArgument::Json(arguments) = &mut shaped.argument {
+        arguments.insert("schema".into(), json!({"type": "integer"}));
+    }
+    assert!(matches!(
+        block(api.invoke(&bot(), shaped)),
+        Err(ActionHostError::InvalidRequest { .. })
+    ));
+    assert!(assistant.taken.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_judgement_is_one_call_of_the_persons_model_held_to_what_was_asked() {
+    let api = api(FakeMember::default(), vec![]);
+    let assistant = Assistant::judging(vec![
+        Ok(json!("yes")),
+        Ok(json!("perhaps")),
+        Ok(json!(true)),
+    ]);
+    api.runs_for("ada".into(), assistant.clone());
+    let completed = |value: Value| ReceiptStatus::Completed {
+        output: ActionOutput {
+            value: Some(value),
+            resources: Vec::new(),
+        },
+    };
+
+    let labelled = judge(
+        "classify",
+        json!({"input": "A note from the bank.", "choices": ["yes", "no"]}),
+    );
+    let receipt = block(api.invoke(&bot(), labelled.clone())).unwrap();
+    assert_eq!(receipt.status, completed(json!("yes")));
+    assert_eq!(
+        assistant.judged.lock().unwrap()[0],
+        Judgement {
+            person: "ada".into(),
+            workspace: WORKSPACE.into(),
+            question: Question::Labels {
+                choices: vec!["yes".into(), "no".into()],
+                multi: false,
+            },
+            input: Some("A note from the bank.".into()),
+            note: Value::Null,
+            cause: StepCause {
+                installation: "b1".into(),
+                invocation: labelled.invocation,
+                event: None,
+            },
+        }
+    );
+
+    // An answer that is none of the labels is no answer.
+    let receipt = block(api.invoke(
+        &bot(),
+        judge("classify", json!({"input": "x", "choices": ["yes", "no"]})),
+    ))
+    .unwrap();
+    assert!(
+        matches!(&receipt.status, ReceiptStatus::Failed { error } if error.code == host_steps::REFUSED),
+        "{receipt:?}"
+    );
+
+    // A prompt is answered in the shape the step declared.
+    let shaped = judge(
+        "freeform",
+        json!({"prompt": "Does it ask for money?", "input": "x", "schema": {"type": "boolean"}}),
+    );
+    let receipt = block(api.invoke(&bot(), shaped)).unwrap();
+    assert_eq!(receipt.status, completed(json!(true)));
+    assert_eq!(
+        assistant.judged.lock().unwrap()[2].question,
+        Question::Prompt {
+            prompt: "Does it ask for money?".into(),
+            schema: Some(json!({"type": "boolean"})),
+        }
+    );
+
+    // A host judges the text it is given: it opens no content by address,
+    // and a classification with no labels asks nothing.
+    for unasked in [
+        judge(
+            "classify",
+            json!({"resource": "tilo.content:abc", "choices": ["yes"]}),
+        ),
+        judge("classify", json!({"input": "x", "choices": []})),
+        judge("freeform", json!({"input": "x"})),
+    ] {
+        assert!(matches!(
+            block(api.invoke(&bot(), unasked)),
+            Err(ActionHostError::InvalidRequest { .. })
+        ));
+    }
+    assert_eq!(assistant.judged.lock().unwrap().len(), 3);
+}
+
+/// A step on what the program itself keeps.
+fn own(action: &str, arguments: Value) -> InvokeRequest {
+    let Value::Object(arguments) = arguments else {
+        panic!("a step's arguments are an object");
+    };
+    InvokeRequest {
+        target: RemoteActionTarget {
+            provider: host_steps::PROVIDER.into(),
+            address: ActionAddress::new(tilo_automation::shortcut_resource_id("b1"), action),
+        },
+        argument: InvokeArgument::Json(arguments),
+        ..post()
+    }
+}
+
+#[test]
+fn a_program_counts_and_keeps_its_note_which_goes_with_what_it_asks_of_the_host() {
+    let api = api(FakeMember::default(), vec![]);
+    let kept = Arc::new(Mutex::new(Kept::default()));
+    api.keeps(kept.clone());
+    let value = |receipt: InvocationReceipt| match receipt.status {
+        ReceiptStatus::Completed { output } => output.value,
+        other => panic!("the step completes: {other:?}"),
+    };
+    // Its own resource offers both, also to a program that runs for nobody.
+    let query = CatalogueQuery {
+        app_id: Some(tilo_automation::SHORTCUTS_APP_ID.into()),
+        ..CatalogueQuery::default()
+    };
+    let offered: Vec<String> = block(api.query(&bot(), query))
+        .unwrap()
+        .rows
+        .into_iter()
+        .filter(|row| row.resource.kind == tilo_automation::SHORTCUT_RESOURCE_KIND)
+        .filter_map(|row| row.action.map(|action| action.address.action))
+        .collect();
+    assert_eq!(offered, ["count", "keep"]);
+
+    let first = own("count", json!({"every": 2}));
+    assert_eq!(
+        value(block(api.invoke(&bot(), first)).unwrap()),
+        Some(json!({"count": 1, "reached": false}))
+    );
+    // The run is tried again after a restart: the same step of the same
+    // run, under an API that never took it, advances nothing.
+    assert_eq!(
+        value(block(api.invoke(&bot(), own("count", json!({"every": 2})))).unwrap()),
+        Some(json!({"count": 1, "reached": false}))
+    );
+    let mut next = own("count", json!({"every": 2}));
+    next.context = Some(step_of("r2"));
+    assert_eq!(
+        value(block(api.invoke(&bot(), next)).unwrap()),
+        Some(json!({"count": 2, "reached": true}))
+    );
+    assert!(matches!(
+        block(api.invoke(&bot(), own("count", json!({"every": 0})))),
+        Err(ActionHostError::InvalidRequest { .. })
+    ));
+
+    let keeping = own(
+        "keep",
+        json!({"style": "Short. First names.", "kept": {"seen": "m-41"}}),
+    );
+    assert_eq!(value(block(api.invoke(&bot(), keeping)).unwrap()), None);
+    assert_eq!(kept.lock().unwrap().note().style, "Short. First names.");
+
+    // The note goes with an instruction, as it stands then.
+    let assistant = Assistant::answering(vec![]);
+    api.runs_for("ada".into(), assistant.clone());
+    block(api.invoke(&bot(), instruct("Answer it."))).unwrap();
+    let taken = assistant.taken.lock().unwrap();
+    assert_eq!(taken[0].note["style"], "Short. First names.");
+    assert_eq!(taken[0].note["kept"]["seen"], "m-41");
+    assert_eq!(taken[0].note["accepted"], json!([]));
+}
+
+#[test]
+fn an_instruction_lets_through_only_the_outside_action_its_program_was_permitted() {
+    use tilo_actions::policy::{Answer, KindSet};
+    let api = api(FakeMember::default(), vec![]);
+    let kept = Arc::new(Mutex::new(Kept::default()));
+    api.keeps(kept.clone());
+    let assistant = Assistant::answering(vec![]);
+    api.runs_for("ada".into(), assistant.clone());
+    let node = |action: &str| {
+        tilo_automation::step_node(
+            Some(WORKSPACE),
+            "so.tilo.mail",
+            "mail.mailbox",
+            &ActionAddress::new("mail.mailbox:inbox", action),
+        )
+    };
+
+    block(api.invoke(&bot(), instruct("Answer the inquiry."))).unwrap();
+    assert!(
+        !assistant.taken.lock().unwrap()[0].lets_through(&node("send")),
+        "setting a program up gives it no reach: sending asks"
+    );
+
+    let send = tilo_automation::action_rule(
+        "so.tilo.mail",
+        "mail.mailbox",
+        None,
+        "send",
+        KindSet::OUTSIDE,
+        Answer::Allow,
+    );
+    kept.lock().unwrap().permit(send).unwrap();
+    block(api.invoke(&bot(), instruct("Answer the next inquiry."))).unwrap();
+    let taken = assistant.taken.lock().unwrap();
+    assert!(taken[1].lets_through(&node("send")));
+    assert!(
+        !taken[1].lets_through(&node("delete")),
+        "nothing wider than the one action"
+    );
 }

@@ -52,6 +52,20 @@ pub fn release(request: &tilo_peer_state::workspace_membership::BotRequest) -> S
     }
 }
 
+/// The person a requested bot runs for: whoever asked for it, when the
+/// request carries their own program. Such a program may hand its person's
+/// assistant an instruction. A bot listed in the directory is its
+/// developer's words, asked for by a member: it runs for nobody, and hands
+/// nobody's assistant anything.
+#[must_use]
+pub fn runs_for(request: &RequestedBot) -> Option<&str> {
+    request
+        .request
+        .program
+        .as_ref()
+        .map(|_| request.requested_by.as_str())
+}
+
 /// Compare the workspace's `requests` with the releases `running` by entry.
 /// Entries in `operator` are the operator's bots: never started or stopped
 /// here.
@@ -257,18 +271,19 @@ impl Follower {
         // change is admitted only as the bot's, never as the host's.
         self.workspaces
             .keep_bot_device(&self.workspace, &bot.installation, bot_key.clone());
-        let running = tokio::spawn(
-            BotRunner::new(
-                self.workspaces.clone(),
-                self.workspace.clone(),
-                self.host.clone(),
-                bot_key,
-                bot.clone(),
-                connectors,
-                dir.join("progress.json"),
-            )?
-            .run(),
-        );
+        let mut runner = BotRunner::new(
+            self.workspaces.clone(),
+            self.workspace.clone(),
+            self.host.clone(),
+            bot_key,
+            bot.clone(),
+            connectors,
+            dir.join("progress.json"),
+        )?;
+        if let Some(person) = runs_for(request) {
+            runner = runner.runs_for(person.to_owned(), super::assistant::host_steps());
+        }
+        let running = tokio::spawn(runner.run());
         let installation = bot.installation.clone();
         let tasks = vec![
             tokio::spawn(keep_renewed(
@@ -462,6 +477,19 @@ mod tests {
                 ),
                 Plan::default()
             );
+        }
+
+        phase a_requested_bot_runs_for_whoever_asked_only_with_their_own_program;
+        {
+            let listed = asked("so.tilo.bots.standup", "1.2.0");
+            assert_eq!(
+                runs_for(&listed),
+                None,
+                "a directory's program is its developer's words"
+            );
+            let mut own = asked("so.tilo.bots.reminder", "1");
+            own.request.program = Some("{}".into());
+            assert_eq!(runs_for(&own), Some("ada"));
         }
 
         phase every_requested_bot_keeps_its_installation_in_a_directory_of_its_own;

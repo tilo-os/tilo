@@ -7,13 +7,19 @@
 //! replicas of the workspace's records, and what a run changed is published by
 //! the governor signed by the bot's own device, so every member admits it
 //! as the bot's. An outbox entry a step queues is handed to the connector's
-//! worker. A schedule's fire time comes round on this host too: it fires the
-//! bot the same way, and no member's device runs a bot installed here.
+//! worker. A schedule's fire time and a trigger's one moment come round on
+//! this host too: each fires the bot the same way, and no member's device
+//! runs a bot installed here.
 //!
-//! Cursors, the queue and each schedule's next fire time are kept in the
+//! Cursors, the queue and each clock trigger's next fire time are kept in the
 //! installation's state file, so a restarted host carries on after the last
-//! change and event it took in; a firing that runs again reuses its run id,
-//! and the API answers the steps already in history instead of repeating them.
+//! change and event it took in, and answers a moment that passed while it was
+//! down once; a firing that runs again reuses its run id, and the API answers
+//! the steps already in history instead of repeating them.
+//!
+//! What the program itself keeps between its runs, its counts and its note,
+//! is in a file beside that one ([`super::kept`]), written whenever it
+//! changes.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -29,18 +35,20 @@ use serde_json::{Map, Value};
 use tilo_actions::remote::{Caller, Pending};
 use tilo_agent_session::bot::api::{BotApi, OutboxSpec, PerformError, Performer};
 use tilo_agent_session::bot::held::HeldDocuments;
+use tilo_agent_session::bot::host_steps::{HostSteps, Keeps};
 use tilo_agent_session::{AppCatalogue, ReplicaActor};
 use tilo_automation::dispatch::queue::{DeadLetter, Finished, FiringQueue};
 use tilo_automation::dispatch::{Armed, ConnectorEvent, Event, Firer, Firing, ScheduleEvent};
 use tilo_automation::run::{AskRequest, ConfirmationRequest, InvocationHooks};
-use tilo_automation::schedule::{MISSED_AFTER_MS, next_fire_time};
+use tilo_automation::schedule::Timed;
 use tilo_automation::{
-    CatchUp, InvocationMode, InvocationRequest, InvocationTrigger, Shortcut, TriggerSpec,
+    InvocationMode, InvocationRequest, InvocationTrigger, Shortcut, TriggerSpec,
 };
 use tilo_connector::ConnectorProcess;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::DeviceCert;
 
+use super::kept::KeptFile;
 use crate::workspaces::{MemberMark, Workspaces};
 use tilo_content::{ContentStore, WorkspaceStores};
 
@@ -56,6 +64,10 @@ const WORKSPACE_INPUT: &str = "workspace";
 /// name with its picture's content address, the picture kept in the
 /// content store its connectors read, so an op may attach it.
 const EMOJI_INPUT: &str = "emoji";
+/// The input a program declares to be told its own note: what it is for,
+/// how its person wants it done, the examples kept, and what its last run
+/// kept for this one.
+const NOTE_INPUT: &str = "note";
 /// How many dead letters an installation keeps, newest last.
 pub const DEAD_LETTERS_KEPT: usize = 200;
 
@@ -114,7 +126,8 @@ struct Progress {
     /// Event log sequence read up to, by connector app id.
     connectors: BTreeMap<String, u64>,
     queue: FiringQueue,
-    /// The next fire time of each schedule trigger, by its index.
+    /// The next fire time of each trigger on the clock (a schedule, a
+    /// moment), by its index.
     #[serde(default)]
     schedules: BTreeMap<usize, Scheduled>,
     /// Firings that will not run again on their own, newest last.
@@ -126,14 +139,16 @@ struct Progress {
     members: Option<BTreeMap<String, MemberMark>>,
 }
 
-/// One of the bot's schedules, as the host answered its fire times.
+/// One of the bot's triggers on the clock, as the host answered its fire
+/// times.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Scheduled {
-    /// The trigger as installed. A program updated to another schedule
-    /// starts its own times rather than inheriting the old one's.
+    /// The trigger as installed. A program updated to another schedule or
+    /// moment starts its own times rather than inheriting the old one's.
     trigger: TriggerSpec,
-    /// The first fire time the host has not answered, ms since the epoch.
-    next_fire_ms: i64,
+    /// The first fire time the host has not answered, ms since the epoch:
+    /// none once the trigger has no more, as a moment the host answered.
+    next_fire_ms: Option<i64>,
 }
 
 impl Progress {
@@ -215,6 +230,8 @@ pub struct BotRunner {
     apps: BTreeSet<String>,
     held: Arc<Mutex<HeldDocuments>>,
     api: Arc<BotApi<HeldDocuments>>,
+    /// What the program keeps between its runs: its counts and its note.
+    keeps: Arc<KeptFile>,
     connectors: BTreeMap<String, Arc<ConnectorProcess>>,
     progress: Progress,
     state_file: PathBuf,
@@ -301,6 +318,8 @@ impl BotRunner {
             outboxes,
         ));
         let progress = read_progress(&state_file)?;
+        let keeps = Arc::new(KeptFile::open(state_file.with_extension("kept.json"))?);
+        api.keeps(Arc::clone(&keeps) as Arc<dyn Keeps>);
         Ok(Self {
             workspaces,
             workspace,
@@ -312,6 +331,7 @@ impl BotRunner {
             apps,
             held,
             api,
+            keeps,
             connectors,
             progress,
             state_file,
@@ -321,6 +341,24 @@ impl BotRunner {
             #[cfg(test)]
             refuse_after: Mutex::new(None),
         })
+    }
+
+    /// Run the bot for `person` (hex root): the steps of its program that
+    /// ask the host itself, an instruction to that person's assistant, are
+    /// answered through `steps` for them. A bot the operator installed runs
+    /// for nobody and is offered none.
+    #[must_use]
+    pub fn runs_for(self, person: String, steps: Arc<dyn HostSteps>) -> Self {
+        self.api.runs_for(person, steps);
+        self
+    }
+
+    /// What the bot's program keeps between its runs. A change made here,
+    /// as when a person's assistant changes the note, is kept at once and
+    /// read by the next run.
+    #[must_use]
+    pub fn kept(&self) -> Arc<KeptFile> {
+        Arc::clone(&self.keeps)
     }
 
     /// Have the workspace refuse the change published after `published` more.
@@ -395,7 +433,7 @@ impl BotRunner {
                     self.progress
                         .schedules
                         .values()
-                        .map(|kept| kept.next_fire_ms),
+                        .filter_map(|kept| kept.next_fire_ms),
                 )
                 .min()
                 .map_or(IDLE, |at| {
@@ -432,7 +470,14 @@ impl BotRunner {
     /// A record could not be read or the state file written.
     pub async fn step(&mut self) -> Result<Vec<tilo_automation::InvocationReport>, String> {
         let now = self.now_ms();
+        // A paused program answers nothing. What comes while it is paused
+        // is still taken in, so it is not answered later either; a firing
+        // it had queued before waits until it goes on.
+        let paused = self.keeps.paused();
         for firing in self.take_in(now).await? {
+            if paused {
+                continue;
+            }
             if let Some(dead) = self.progress.queue.push(firing, now) {
                 self.progress.bury(&self.bot.installation, dead);
             }
@@ -443,7 +488,7 @@ impl BotRunner {
         // refused run, one the host could not run) waits for the next pass
         // at its backoff, even when this pass outlasted the backoff, so a
         // pass never runs one firing twice.
-        while let Some(queued) = self.progress.queue.next_due(now) {
+        while let Some(queued) = self.progress.queue.next_due(now).filter(|_| !paused) {
             let firing = queued.firing.clone();
             let finished = match self.fire(&firing).await {
                 Ok(Fired::Refused(reason)) => {
@@ -472,8 +517,8 @@ impl BotRunner {
     }
 
     /// The firings caused by every record change and connector event after
-    /// the cursors, which move past them, and by every schedule fire time
-    /// that has come.
+    /// the cursors, which move past them, and by every fire time of a
+    /// trigger on the clock that has come.
     async fn take_in(&mut self, now_ms: i64) -> Result<Vec<Firing>, String> {
         let mut firings = self.schedule_firings(now_ms);
         let armed = [Armed {
@@ -572,11 +617,13 @@ impl BotRunner {
         Ok(firings)
     }
 
-    /// The firings of the bot's schedules whose fire time has come by
-    /// `now_ms`, each fire time answered once. The ledger keeps each
-    /// schedule's next fire time, so a restarted host answers a fire time it
-    /// missed only when the trigger asks to catch up, once for however many
-    /// periods passed, never once per period.
+    /// The firings of the bot's triggers on the clock whose fire time has
+    /// come by `now_ms`, each fire time answered once. The ledger keeps each
+    /// trigger's next fire time. A restarted host so answers a schedule's
+    /// time it missed only when the trigger asks to catch up, once for
+    /// however many periods passed, never once per period; and it answers a
+    /// moment that passed while it was down once, however late, and never
+    /// again.
     fn schedule_firings(&mut self, now_ms: i64) -> Vec<Firing> {
         let installation = self.bot.installation.clone();
         let shortcut = Arc::clone(&self.shortcut);
@@ -592,21 +639,25 @@ impl BotRunner {
         let mut firings = Vec::new();
         let mut live = BTreeSet::new();
         for (index, trigger) in shortcut.triggers.iter().enumerate() {
-            let TriggerSpec::Schedule { schedule, catch_up } = trigger else {
+            let Some(timed) = Timed::of(trigger) else {
                 continue;
             };
             live.insert(index);
-            let next = match self
+            // A trigger first seen starts at its first fire time: a
+            // schedule's next one; a moment itself, answered in this same
+            // pass when it has passed already.
+            let due = match self
                 .progress
                 .schedules
                 .get(&index)
                 .filter(|kept| kept.trigger == *trigger)
-                .map(|kept| kept.next_fire_ms)
             {
-                Some(due) if now_ms < due => continue,
-                Some(due) => {
-                    let missed = now_ms.saturating_sub(due) > MISSED_AFTER_MS;
-                    if !missed || *catch_up == CatchUp::RunOnce {
+                Some(kept) => kept.next_fire_ms,
+                None => timed.first_ms(now, &zone),
+            };
+            let next_fire_ms = match due {
+                Some(due) if due <= now_ms => {
+                    if timed.runs(now_ms.saturating_sub(due)) {
                         let event = ScheduleEvent {
                             workspace: workspace.clone(),
                             trigger: index,
@@ -617,18 +668,15 @@ impl BotRunner {
                                 .firings,
                         );
                     }
-                    next_fire_time(schedule, now, &zone)
+                    timed.following_ms(now, &zone)
                 }
-                None => next_fire_time(schedule, now, &zone),
-            };
-            let Some(next) = next else {
-                continue;
+                waiting => waiting,
             };
             self.progress.schedules.insert(
                 index,
                 Scheduled {
                     trigger: trigger.clone(),
-                    next_fire_ms: next.timestamp_millis(),
+                    next_fire_ms,
                 },
             );
         }
@@ -664,6 +712,9 @@ impl BotRunner {
         }
         if declares(EMOJI_INPUT) {
             inputs.insert(EMOJI_INPUT.to_owned(), self.emoji_input().await?);
+        }
+        if declares(NOTE_INPUT) {
+            inputs.insert(NOTE_INPUT.to_owned(), self.keeps.note());
         }
         Ok(inputs)
     }

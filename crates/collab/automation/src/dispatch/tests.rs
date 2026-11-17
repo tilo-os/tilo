@@ -557,3 +557,63 @@ tilo_test_env::scenario! {
         assert_eq!(verbs_of(&group), vec!["rename-channel", "post", "pin"]);
     }
 }
+
+tilo_test_env::scenario! {
+    fn a_fire_time_fires_the_trigger_it_came_round_for;
+
+    phase a_moment_fires_its_own_trigger_as_the_same_run_however_often_it_comes_round;
+    {
+        let shortcut = program(vec![
+            TriggerSpec::Schedule {
+                schedule: crate::shortcut::Schedule::Interval { seconds: 60 },
+                catch_up: crate::shortcut::CatchUp::Skip,
+            },
+            TriggerSpec::Once { at_ms: 90_000 },
+        ]);
+        let moment = ScheduleEvent {
+            workspace: "ws-1".into(),
+            trigger: 1,
+            due_ms: 90_000,
+        };
+        let out = dispatch(&as_bot("b1", &shortcut), Event::Schedule(&moment));
+        assert_eq!(out.firings.len(), 1, "only the trigger whose time came: {out:?}");
+        let firing = &out.firings[0];
+        assert_eq!(firing.trigger, TriggerSpec::Once { at_ms: 90_000 });
+        assert_eq!(firing.inputs["event"]["due_ms"], 90_000);
+        // A host that restarted before it kept the answer hands the moment
+        // over again: the run is the same one, so its steps act once.
+        let again = dispatch(&as_bot("b1", &shortcut), Event::Schedule(&moment));
+        assert_eq!(again.firings[0].invocation, firing.invocation);
+    }
+
+    phase a_schedule_fires_on_its_own_fire_time_and_other_triggers_on_none;
+    {
+        let shortcut = program(vec![
+            TriggerSpec::Schedule {
+                schedule: crate::shortcut::Schedule::Interval { seconds: 60 },
+                catch_up: crate::shortcut::CatchUp::Skip,
+            },
+            TriggerSpec::Once { at_ms: 90_000 },
+            watch_chat(ActorFilter::Anyone),
+        ]);
+        let tick = ScheduleEvent {
+            workspace: "ws-1".into(),
+            trigger: 0,
+            due_ms: 120_000,
+        };
+        let out = dispatch(&as_bot("b1", &shortcut), Event::Schedule(&tick));
+        assert_eq!(out.firings.len(), 1, "{out:?}");
+        assert_eq!(out.firings[0].trigger_index, 0);
+        // A fire time named for a trigger that waits for something else.
+        let stray = ScheduleEvent {
+            workspace: "ws-1".into(),
+            trigger: 2,
+            due_ms: 120_000,
+        };
+        assert!(
+            dispatch(&as_bot("b1", &shortcut), Event::Schedule(&stray))
+                .firings
+                .is_empty()
+        );
+    }
+}
