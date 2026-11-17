@@ -6,7 +6,6 @@
 use anyhow::{Context as _, Result, anyhow};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 /// What a login this computer cannot read says.
@@ -68,20 +67,8 @@ impl Device {
 /// # Errors
 /// The files cannot be written.
 pub fn store(dir: &Path, key: &SigningKey, device: &Device) -> Result<()> {
-    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-    std::fs::create_dir_all(dir)?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     let write = |name: &str, bytes: &[u8]| -> Result<()> {
-        let staged = dir.join(format!(".{name}.new"));
-        let _ = std::fs::remove_file(&staged);
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&staged)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&staged, dir.join(name))?;
+        tilo_files::native::atomic::write_private(&dir.join(name), bytes)?;
         Ok(())
     };
     write("key", &key.to_bytes())?;

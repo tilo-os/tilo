@@ -37,6 +37,8 @@ hex.workspace = true
 semver.workspace = true
 thiserror.workspace = true
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+# The person's block list is replaced whole, never half-written.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

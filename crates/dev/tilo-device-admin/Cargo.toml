@@ -30,6 +30,8 @@ postcard = { workspace = true, features = ["alloc"] }
 serde.workspace = true
 serde_json.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# The state file is replaced whole, never half-written.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tokio = { workspace = true, features = ["io-std", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 zeroize.workspace = true
