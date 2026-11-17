@@ -34,6 +34,10 @@
  */
 
 export const LOCK_PREFIX = 'tilo-device-key:';
+/** The prefix a page took a key's lock under before the one above. A page takes the lock
+ * under both, the older first, so a page loaded before a site's update and one loaded after
+ * it keep each other from the same key. */
+const LOCK_PREFIX_BEFORE = 'tilo-device-custody:';
 /** How many device keys (tabs open at once) a profile keeps at most. */
 export const MAX_SLOTS = 16;
 /** A slot's name within its profile: slot 0 is the profile itself. */
@@ -81,6 +85,9 @@ export const LIVE_ASK_MS = 300;
 export const OWN_SLOT_WAIT_MS = 20_000;
 const SLOT_MEMORY = 'tilo-device-slot:';
 const CHANNEL = 'tilo-device-key';
+/** Where pages ask whether a live tab holds a key, each with the prefix a key's lock is asked
+ * by there: today's, and where pages asked before. A page asks and answers on both. */
+const ASKED_ON = [[CHANNEL, LOCK_PREFIX], ['tilo-device-custody', LOCK_PREFIX_BEFORE]];
 
 /** Takes the lock `name`: `{release, held}`, or `null` when another holds it
  * (or still does once `wait` ms passed, with `wait`). `held` settles once the
@@ -101,6 +108,18 @@ async function takeLock(locks, name, wait = 0) {
   return acquired ? {release, held} : null;
 }
 
+/** Takes the lock of the key `name` under both prefixes: `{release, held}`, or `null` when
+ * another page holds it under either. */
+async function takeBoth(locks, name, wait = 0) {
+  const before = await takeLock(locks, LOCK_PREFIX_BEFORE + name, wait);
+  if (!before) return null;
+  const now = await takeLock(locks, LOCK_PREFIX + name, wait);
+  if (!now) { before.release(); return null; }
+  const held = Promise.all([now.held, before.held]);
+  held.catch(() => {});
+  return {release() { now.release(); before.release(); }, held};
+}
+
 /** The slots this page's deviceKeys hold, which it answers for while it lives. */
 const holding = new Set();
 let answering = null;
@@ -109,28 +128,44 @@ let answering = null;
  * the reload after it waits for its slot instead of taking another. */
 function answerForSlots(broadcast, events) {
   if (answering !== null || !broadcast) return;
-  try { answering = broadcast(CHANNEL); } catch { answering = false; return; }
-  // Answering keeps nothing alive by itself (Node's channels would).
-  answering.unref?.();
-  answering.onmessage = ({data}) => {
-    if (typeof data?.ask === 'string' && holding.has(data.ask)) answering.postMessage({live: data.ask});
-  };
+  answering = [];
+  try {
+    for (const [asked, prefix] of ASKED_ON) answering.push([broadcast(asked), prefix]);
+  } catch {
+    for (const [opened] of answering) opened.close?.();
+    answering = false;
+    return;
+  }
+  for (const [opened, prefix] of answering) {
+    // Answering keeps nothing alive by itself (Node's channels would).
+    opened.unref?.();
+    opened.onmessage = ({data}) => {
+      if (typeof data?.ask === 'string' && data.ask.startsWith(prefix) && holding.has(data.ask.slice(prefix.length))) opened.postMessage({live: data.ask});
+    };
+  }
   events?.addEventListener?.('pagehide', () => { holding.clear(); }, {once: true});
 }
 
 /** Whether a live tab answers that it holds the slot lock `name`. */
 async function liveHolder(broadcast, name) {
-  let channel;
-  try { channel = broadcast?.(CHANNEL); } catch { return false; }
-  if (!channel) return false;
+  const channels = [];
+  try {
+    for (const [asked, prefix] of ASKED_ON) {
+      const opened = broadcast?.(asked);
+      if (opened) channels.push([opened, prefix]);
+    }
+  } catch { /* asked on the channel that opened */ }
+  if (!channels.length) return false;
   try {
     return await new Promise(resolve => {
       const timer = setTimeout(() => resolve(false), LIVE_ASK_MS);
-      channel.onmessage = ({data}) => { if (data?.live === name) { clearTimeout(timer); resolve(true); } };
-      channel.postMessage({ask: name});
+      for (const [opened, prefix] of channels) {
+        opened.onmessage = ({data}) => { if (data?.live === prefix + name) { clearTimeout(timer); resolve(true); } };
+        opened.postMessage({ask: prefix + name});
+      }
     });
   } finally {
-    channel.close();
+    for (const [opened] of channels) opened.close();
   }
 }
 
@@ -167,11 +202,11 @@ const keepFirstSlot = (session, profile, slot) => {
  * Resolves to `{slot, release, held}`.
  */
 export async function takeSlot({profile, storage, locks, requireExisting = false, session, broadcast}) {
-  const lockName = slot => LOCK_PREFIX + slotName(profile, slot);
   const remembered = readSlot(session, profile);
   if (remembered !== null && (!requireExisting || await storage.get(keyRecord(profile, remembered)))) {
-    const lock = await takeLock(locks, lockName(remembered))
-      ?? (await liveHolder(broadcast, lockName(remembered)) ? null : await takeLock(locks, lockName(remembered), OWN_SLOT_WAIT_MS));
+    const name = slotName(profile, remembered);
+    const lock = await takeBoth(locks, name)
+      ?? (await liveHolder(broadcast, name) ? null : await takeBoth(locks, name, OWN_SLOT_WAIT_MS));
     if (lock) return {slot: remembered, ...lock};
   }
   const keyed = [];
@@ -181,7 +216,7 @@ export async function takeSlot({profile, storage, locks, requireExisting = false
   const order = [...keyed.keys()].sort((a, b) => Number(keyed[b]) - Number(keyed[a]) || a - b);
   for (const slot of order) {
     if (requireExisting && !keyed[slot]) continue;
-    const lock = await takeLock(locks, lockName(slot));
+    const lock = await takeBoth(locks, slotName(profile, slot));
     if (lock) return {slot, ...lock};
     busy = true;
   }
@@ -221,11 +256,11 @@ export async function openDeviceKey({
   const random = bytes => crypto.getRandomValues(bytes);
 
   const {slot, release: letGo, held} = await takeSlot({profile, storage, locks, requireExisting, session, broadcast});
-  const lockName = LOCK_PREFIX + slotName(profile, slot);
-  holding.add(lockName);
+  const taken = slotName(profile, slot);
+  holding.add(taken);
   answerForSlots(broadcast, events);
   keepFirstSlot(session, profile, slot);
-  const release = () => { holding.delete(lockName); letGo(); };
+  const release = () => { holding.delete(taken); letGo(); };
   try {
     let record = await storage.get(keyRecord(profile, slot));
     const created = !record;
@@ -267,7 +302,7 @@ export async function openDeviceKey({
         },
       };
     }
-    throw new DeviceKeyError('device key-corrupt', `Unknown device key kind ${record.kind}`);
+    throw new DeviceKeyError('device-key-corrupt', `Unknown device key kind ${record.kind}`);
   } catch (error) {
     release();
     throw error;
@@ -299,7 +334,18 @@ export function rememberBrowserDevice(certified, namespaces = globalThis.localSt
   } catch { /* not kept: the person's record lists this tab as a device of its own */ }
 }
 
-/** `{get, put, delete}` over one IndexedDB object store, strict durability. */
+/** The store a browser kept a device's entries in before that store had today's name. */
+const STORE_BEFORE = 'custody';
+
+/**
+ * `{get, put, delete}` over one IndexedDB object store, strict durability.
+ *
+ * A browser that entered before the store had today's name holds its device keys and its
+ * person in the older store, and they are read and written there, where they are. Another
+ * store can only be made by opening the database at a newer version, and then a page loaded
+ * before could not open the database any more, and a page of now would wait for as long as
+ * such a page is open in another tab. So the database stays at the version it has.
+ */
 export function idbStorage({indexedDB = globalThis.indexedDB, name = 'tilo-device', store = 'device-key'} = {}) {
   const open = () => new Promise((resolve, reject) => {
     const request = indexedDB.open(name, 1);
@@ -308,11 +354,14 @@ export function idbStorage({indexedDB = globalThis.indexedDB, name = 'tilo-devic
     request.onerror = () => reject(request.error);
   });
   let db;
+  let kept;
   const run = async (mode, action) => {
     db ??= await open();
+    kept ??= store === 'device-key' && !db.objectStoreNames.contains(store) && db.objectStoreNames.contains(STORE_BEFORE)
+      ? STORE_BEFORE : store;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(store, mode, {durability: 'strict'});
-      const request = action(tx.objectStore(store));
+      const tx = db.transaction(kept, mode, {durability: 'strict'});
+      const request = action(tx.objectStore(kept));
       let result;
       request.onsuccess = () => { result = request.result; };
       tx.oncomplete = () => resolve(result);

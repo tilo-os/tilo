@@ -1,6 +1,6 @@
 //! The sample workbook captures and tests open.
 
-use ui::tilo_resource::{Atom, Id, Invoke};
+use ui::tilo_resource::{Id, Invoke};
 
 use crate::model::{CellFormat, a1_to_addr};
 use crate::resource::verbs;
@@ -19,7 +19,8 @@ impl Cells {
 
     fn set(&mut self, a1: &str, raw: &str) {
         if let Some(addr) = a1_to_addr(a1) {
-            self.0.update(addr, |cell| cell.raw = Atom(raw.to_owned()));
+            self.0
+                .update(addr, |cell| cell.raw = crate::bound::Input::typed(raw));
         }
     }
 

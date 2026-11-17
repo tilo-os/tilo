@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {openDeviceKey, DeviceKeyError, MAX_SLOTS} from './device-key.mjs';
+import {openDeviceKey, idbStorage, DeviceKeyError, MAX_SLOTS} from './device-key.mjs';
 import {fakeLocks} from './testing/fake-storage.mjs';
 
 /** A tab's `sessionStorage`: its own, kept across its reloads. */
@@ -258,4 +258,155 @@ test('a browser keeps each tab device certificate once, under one id', async () 
   assert.deepEqual(kept.certs.map(one => one.device_public_key[0]), [2, 1]);
   rememberBrowserDevice('not json', namespaces);
   assert.equal(JSON.parse(namespaces.getItem(BROWSER_DEVICES)).id, kept.id);
+});
+
+/** As much of IndexedDB as `idbStorage` uses: databases by name, each at a version with its
+ * object stores. A store is made only while its database is opened at a newer version, and a
+ * transaction over a store the database does not have throws, as a browser's does. */
+function fakeDatabases(databases = new Map()) {
+  const failure = (name, message) => Object.assign(new Error(message), {name});
+  const answered = (tx, work) => {
+    const request = {};
+    queueMicrotask(() => { request.result = work(); request.onsuccess?.(); tx.oncomplete?.(); });
+    return request;
+  };
+  return {
+    databases,
+    open(name, version) {
+      const request = {};
+      queueMicrotask(() => {
+        const database = databases.get(name) ?? {version: 0, stores: new Map()};
+        databases.set(name, database);
+        if (version < database.version) {
+          request.error = failure('VersionError', 'the database is at a newer version');
+          request.onerror?.();
+          return;
+        }
+        let upgrading = false;
+        request.result = {
+          objectStoreNames: {contains: store => database.stores.has(store)},
+          createObjectStore(store) {
+            if (!upgrading) throw failure('InvalidStateError', 'a store is made in an upgrade');
+            database.stores.set(store, new Map());
+          },
+          transaction(store) {
+            const rows = database.stores.get(store);
+            if (!rows) throw failure('NotFoundError', `no store ${store}`);
+            const tx = {objectStore: () => ({
+              get: key => answered(tx, () => rows.get(key)),
+              put: (value, key) => answered(tx, () => { rows.set(key, value); }),
+              delete: key => answered(tx, () => { rows.delete(key); }),
+            })};
+            return tx;
+          },
+        };
+        if (version > database.version) {
+          upgrading = true;
+          database.version = version;
+          request.onupgradeneeded?.();
+          upgrading = false;
+        }
+        request.onsuccess?.();
+      });
+      return request;
+    },
+  };
+}
+
+/** A browser's database of its device as a page left it: version 1, with `stores`. */
+const browserWith = stores => fakeDatabases(new Map([['tilo-device', {
+  version: 1,
+  stores: new Map(Object.entries(stores).map(([store, rows]) => [store, new Map(rows)])),
+}]]));
+
+/** A device key and a person as a page keeps them, for a browser that has them already. */
+async function keptAlready() {
+  const storage = memoryStorage();
+  const made = await openDeviceKey({profile: 'p', storage, ...tab(fakeLocks(), 'then')});
+  const publicKey = made.publicKey;
+  await made.close();
+  const person = {rootPublicKey: 'ab'.repeat(32), held: 'here'};
+  return {rows: [...storage.rows, ['identity', person]], publicKey, person};
+}
+
+for (const [entered, store] of [['before the store had the name it has', 'custody'], ['after', 'device-key']]) {
+  test(`a browser that entered ${entered} finds its device key and its person where they are kept`, async () => {
+    const {rows, publicKey, person} = await keptAlready();
+    const indexedDB = browserWith({[store]: rows});
+    const storage = idbStorage({indexedDB});
+    const deviceKey = await openDeviceKey({profile: 'p', storage, ...tab(fakeLocks(), 'now'), requireExisting: true});
+    assert.equal(deviceKey.created, false, 'the device it was, not a new one');
+    assert.ok(publicKey);
+    assert.deepEqual(deviceKey.publicKey, publicKey);
+    assert.deepEqual(await storage.get('identity'), person, 'the person this browser keeps');
+    // What a page writes now is where a page loaded before reads it, in a database that page
+    // can still open: nothing was moved and the version is the one it had.
+    await storage.put('identity', {...person, held: 'elsewhere'});
+    const database = indexedDB.databases.get('tilo-device');
+    assert.deepEqual([database.version, [...database.stores.keys()]], [1, [store]]);
+    assert.equal(database.stores.get(store).get('identity').held, 'elsewhere');
+    await deviceKey.close();
+  });
+}
+
+test('a browser that never entered keeps its device key in the store of today’s name', async () => {
+  const indexedDB = fakeDatabases();
+  const storage = idbStorage({indexedDB});
+  const deviceKey = await openDeviceKey({profile: 'p', storage, ...tab(fakeLocks(), 'first')});
+  assert.equal(deviceKey.created, true);
+  const database = indexedDB.databases.get('tilo-device');
+  assert.deepEqual([database.version, [...database.stores.keys()]], [1, ['device-key']]);
+  assert.ok(database.stores.get('device-key').has('device-key:p'));
+  await deviceKey.close();
+});
+
+test('a page loaded before a site’s update and a page loaded after keep each other from the same device key', async () => {
+  const storage = memoryStorage();
+  const locks = fakeLocks();
+  const free = (owner, name) => locks.manager(owner).request(name, {mode: 'exclusive', ifAvailable: true}, lock => Boolean(lock));
+  // A page loaded before holds the first key as pages took one then: under the older prefix alone.
+  let leave;
+  const before = locks.manager('before').request('tilo-device-custody:p', {mode: 'exclusive', ifAvailable: true},
+    lock => lock && new Promise(resolve => { leave = resolve; }));
+  const now = await openDeviceKey({profile: 'p', storage, ...tab(locks, 'now')});
+  assert.deepEqual([locks.holder('tilo-device-key:p'), locks.holder('tilo-device-key:p#1')], [undefined, 'now'],
+    'the key a page loaded before holds is not taken: the next one is');
+  // A page loaded before finds the key a page of now holds taken, and so does a page of a
+  // build in between, which took a key under today's prefix alone.
+  assert.equal(await free('before-2', 'tilo-device-custody:p#1'), false);
+  assert.equal(await free('between', 'tilo-device-key:p#1'), false);
+  leave();
+  await before;
+  await now.close();
+  assert.deepEqual(locks.held(), [], 'a closed device key is held under neither prefix');
+});
+
+test('a tab asks a page loaded before a site’s update whether it holds the key the tab remembers, and answers one', async () => {
+  const storage = memoryStorage();
+  const locks = fakeLocks();
+  const page = await import('./device-key.mjs?page=after-an-update');
+  const asking = name => new BroadcastChannel(name);
+  // The tab's session remembers the first key, as after a tab was duplicated.
+  const session = memorySession();
+  const first = await page.openDeviceKey({profile: 'p', storage, locks: locks.manager('now'), session, broadcast: asking, events: new EventTarget()});
+  await first.close();
+  // A page loaded before holds that key under the older prefix and answers where pages asked then.
+  let leave;
+  const held = locks.manager('before').request('tilo-device-custody:p', {mode: 'exclusive', ifAvailable: true},
+    lock => lock && new Promise(resolve => { leave = resolve; }));
+  const before = asking('tilo-device-custody');
+  before.onmessage = ({data}) => { if (data?.ask === 'tilo-device-custody:p') before.postMessage({live: data.ask}); };
+  const started = Date.now();
+  const duplicate = await page.openDeviceKey({profile: 'p', storage, locks: locks.manager('now'),
+    session: memorySession(new Map(session.rows)), broadcast: asking, events: new EventTarget()});
+  assert.equal(locks.holder('tilo-device-key:p#1'), 'now', 'a key of its own');
+  assert.ok(Date.now() - started < page.OWN_SLOT_WAIT_MS, 'it did not wait for the page loaded before to close');
+  // The page of now answers a page loaded before that asks for the key it holds.
+  const answer = new Promise(resolve => { before.onmessage = ({data}) => { if (data?.live) resolve(data.live); }; });
+  before.postMessage({ask: 'tilo-device-custody:p#1'});
+  assert.equal(await answer, 'tilo-device-custody:p#1');
+  before.close();
+  leave();
+  await held;
+  await duplicate.close();
 });

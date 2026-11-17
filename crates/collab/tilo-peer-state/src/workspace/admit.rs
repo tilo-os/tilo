@@ -113,6 +113,9 @@ pub enum WorkspaceRefusal {
     /// ([`super::refusal_slices_kept`]).
     RefusalWriter,
     Coverage(String),
+    /// A change erases or lowers the cut of a device's removal
+    /// ([`crate::removals::monotonic`]).
+    Removals(String),
     /// The batch rewinds a durable receipt.
     Durability(String),
     /// The media policy is malformed or its transition is not permitted.
@@ -129,6 +132,7 @@ impl std::fmt::Display for WorkspaceRefusal {
             Self::WriteForbidden => f.write_str("workspace write forbidden"),
             Self::Malformed(error)
             | Self::Coverage(error)
+            | Self::Removals(error)
             | Self::Durability(error)
             | Self::Membership(error) => f.write_str(error),
             Self::DeclaredWorkspaceMismatch => f.write_str("declared workspace mismatch"),
@@ -341,6 +345,7 @@ fn checked(
         return Err(WorkspaceRefusal::RedemptionImmutable);
     }
     crate::coverage::monotonic(before, candidate).map_err(WorkspaceRefusal::Coverage)?;
+    crate::removals::monotonic(before, candidate).map_err(WorkspaceRefusal::Removals)?;
     crate::durability::monotonic(before, candidate).map_err(WorkspaceRefusal::Durability)?;
     media::validate_transition(before, candidate, media::TransitionMode::Admission)
         .map_err(WorkspaceRefusal::Media)

@@ -790,6 +790,105 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
     page.peer.close();
 }
 
+/// A person's first message to an agent starts the first part of the chat's messages, and a
+/// later one finds that part there. The server tells whoever follows its documents of the write
+/// that starts one as of every write after it, so the look that write starts takes the first
+/// message as it takes the later one, with no device of the person's on: neither waits for the
+/// server's next look at every workspace.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_first_message_is_taken_at_the_look_its_own_write_starts() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let server = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let (serving, actions) = crate::harness::hosted::serving_records_with_actions(
+        &root,
+        &server,
+        state.path(),
+        crate::common::catalogue,
+    )
+    .await;
+    let workspaces = serving.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let page = Browser::open_at(&serving, &browser, &server, &workspace).await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    make_agent(&page, &workspaces, &workspace, &person, None).await;
+    let catalogue = crate::common::catalogue();
+    let governor = workspaces.governor().clone();
+    workspaces
+        .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
+        .await
+        .unwrap();
+    workspaces
+        .author_application(&workspace, &governor, &catalogue, CHAT, "", |doc| {
+            chat::demo::introduce(doc, &person, "Ada", "A").map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = HostAgents::new(
+        workspaces.clone(),
+        actions.clone(),
+        Some(looks_then_answers(1_000, Arc::clone(&asked))),
+    );
+    let part = chat::parts::part(0);
+    assert!(
+        workspaces
+            .resource_document(&workspace, CHAT, part.as_str())
+            .await
+            .ok()
+            .flatten()
+            .is_none(),
+        "nothing was written here yet: the first message starts the part"
+    );
+
+    for text in ["what is planned?", "and who owns it?"] {
+        // What the server's agents wait on between two looks: the writes it tells of.
+        let mut told = workspaces.document_writes();
+        let message =
+            write_to_agent(&actions, &workspaces, &workspace, (&root, &browser), text).await;
+        tilo_test_env::within(
+            format!("the server to tell its followers of the write of {text:?}"),
+            async {
+                loop {
+                    let write = told.recv().await.unwrap();
+                    if write.workspace == workspace
+                        && write.app == CHAT
+                        && write.record == part.as_str()
+                    {
+                        break;
+                    }
+                }
+            },
+        )
+        .await;
+        // The look that write starts, as the server's agents make it for a write of Chat's.
+        agents.look(&workspace).await.unwrap();
+        let reply = chat::chat::reply_id(&message, &MemberId::agent(SCOUT));
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let held = conversation_part(&workspaces, &workspace).await;
+            if held
+                .messages
+                .get(&reply)
+                .is_some_and(|reply| !chat::summons::unanswered(Some(reply)))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the agent never answered {text:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    assert!(
+        agents.turns(&workspace).await.unwrap().is_empty(),
+        "each message was answered once"
+    );
+    page.peer.close();
+}
+
 /// A model that answers a turn in words, and a question asked without tools with `summary`.
 struct Summarising {
     summary: &'static str,

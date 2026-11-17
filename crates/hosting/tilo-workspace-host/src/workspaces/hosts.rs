@@ -224,8 +224,44 @@ impl Workspaces {
         self.stop_answering(workspace, device).await;
         let reached = self.reach_host(device, addr).await?;
         let member = reached.certificate.clone();
-        if member.user_public_key == host.cert.user_public_key {
-            self.enter(workspace, &member)
+        let (workspace_id, arguments) = self.hand_over(workspace, &member).await?;
+        let answer = reached.ask(HOST_WORKSPACE, arguments).await?;
+        let hosted: HostedWorkspace =
+            serde_json::from_value(answer).map_err(|error| error.to_string())?;
+        let hint: TransportHint = crate::hosted::decode_hex(&hosted.host_hint)?;
+        let address =
+            WorkspaceDeviceHintV1::from_transport_hint(&hint).map_err(|error| error.to_string())?;
+        if hint.host != member || !address.holds_keys || address.workspace_id != workspace_id {
+            return Err(
+                "the device answered an address that is not its own for the workspace".into(),
+            );
+        }
+        self.name_host(workspace, |governance, key, now| {
+            governance.author_workspace_host(&hint, key, now)
+        })
+        .await?;
+        // The host dials this device as it takes the workspace up, perhaps before
+        // its address was recorded above: a session it opened already is
+        // answered here, one it opens later when it says hello.
+        if let Some(inbound) = self.attach_session(workspace_id, device).await {
+            self.answer_host(workspace, device, inbound).await;
+        }
+        tracing::info!(%workspace, host = %hex::encode(device), person = %hex::encode(member.user_public_key), "another host holds the workspace");
+        let _ = self.inner.changes.send(workspace.to_owned());
+        Ok(hint)
+    }
+
+    /// What `workspace` is handed to the device `member` with: the workspace
+    /// as a joining member gets it and this device's own signed address,
+    /// under the workspace's id. A device of this one's own person is
+    /// admitted to the workspace as one of the owner's devices first.
+    async fn hand_over(
+        &self,
+        workspace: &str,
+        member: &DeviceCert,
+    ) -> Result<(WorkspaceId, Map<String, Value>), String> {
+        if member.user_public_key == self.inner.host.cert.user_public_key {
+            self.enter(workspace, member)
                 .await
                 .map_err(|error| error.to_string())?;
         }
@@ -259,30 +295,29 @@ impl Workspaces {
             Value::String(hex_postcard(&governor_hint)?),
         );
         arguments.insert("bootstrap".into(), Value::String(hex_postcard(&bootstrap)?));
-        let answer = reached.ask(HOST_WORKSPACE, arguments).await?;
-        let hosted: HostedWorkspace =
-            serde_json::from_value(answer).map_err(|error| error.to_string())?;
-        let hint: TransportHint = crate::hosted::decode_hex(&hosted.host_hint)?;
-        let address =
-            WorkspaceDeviceHintV1::from_transport_hint(&hint).map_err(|error| error.to_string())?;
-        if hint.host != member || !address.holds_keys || address.workspace_id != workspace_id {
-            return Err(
-                "the device answered an address that is not its own for the workspace".into(),
-            );
-        }
-        self.name_host(workspace, |governance, key, now| {
-            governance.author_workspace_host(&hint, key, now)
-        })
-        .await?;
-        // The host dials this device as it takes the workspace up, perhaps before
-        // its address was recorded above: a session it opened already is
-        // answered here, one it opens later when it says hello.
-        if let Some(inbound) = self.attach_session(workspace_id, device).await {
-            self.answer_host(workspace, device, inbound).await;
-        }
-        tracing::info!(%workspace, host = %hex::encode(device), person = %hex::encode(member.user_public_key), "another host holds the workspace");
-        let _ = self.inner.changes.send(workspace.to_owned());
-        Ok(hint)
+        Ok((workspace_id, arguments))
+    }
+
+    /// Hand `workspace` to the device `device` at `addr` as its owner's
+    /// choice of it does, but under the name `named`, and answer what that
+    /// device said: what a test asks with whether a device that is handed a
+    /// workspace takes it under any name but its own id.
+    ///
+    /// # Errors
+    ///
+    /// The device was not reached, or refused.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn hand_over_named(
+        &self,
+        workspace: &str,
+        device: [u8; 32],
+        addr: EndpointAddr,
+        named: &str,
+    ) -> Result<Value, String> {
+        let reached = self.reach_host(device, addr).await?;
+        let (_, mut arguments) = self.hand_over(workspace, &reached.certificate).await?;
+        arguments.insert("workspace".into(), Value::String(named.to_owned()));
+        reached.ask(HOST_WORKSPACE, arguments).await
     }
 
     /// Stop having the host `device` serve `workspace`, `caller`'s request: its

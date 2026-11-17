@@ -1,21 +1,23 @@
-//! Revocations the relay's workspaces carry.
+//! Revocations this holder's workspaces carry.
 //!
 //! A person's root revokes a key it made, and any device of theirs announces
-//! the signed entry in a workspace it shares with the relay (`IdentityHello`).
-//! The relay takes it from there. An entry reaches only keys its own root
-//! certified: one naming a device the relay knows certified by another root
-//! is dropped, and every list the relay keeps asks a revocation of the root
-//! that certified the key. An entry speaks for a root the relay serves, too:
-//! a root of its own person or of a member of one of its workspaces. Another
-//! root made no key here, so what it announces is dropped unread, and nobody
-//! can fill the relay's log with entries that reach nothing. Every entry the
-//! relay keeps joins its revocation log, which every handshake, session and
-//! administration entry reads, so the key is refused everywhere at once — a
-//! device of the person's, and the stand-in approver this host holds for
-//! them, which no workspace lists because a stand-in is no device. Every
-//! workspace the relay governs also writes the entries it may carry into its
-//! governance: the device leaves the workspace's access and channels, and
-//! every member's replica refuses it from the workspace's own history.
+//! the signed entry in a workspace it shares with this holder
+//! (`IdentityHello`). The holder takes it from there. An entry reaches only
+//! keys its own root certified: one naming a device the holder knows certified
+//! by another root is dropped, and every list the holder keeps asks a
+//! revocation of the root that certified the key. An entry speaks for a root
+//! the holder serves, too: a root of its own person or of a member of one of
+//! its workspaces. Another root made no key here, so what it announces is
+//! dropped unread, and nobody can fill the holder's log with entries that
+//! reach nothing. Every entry the holder keeps joins its revocation log, which
+//! every handshake, session and administration entry reads, so the key is
+//! refused everywhere at once — a device of the person's, and the stand-in
+//! approver this holder keeps for them, which no workspace lists because a
+//! stand-in is no device. Every workspace the holder governs also writes the
+//! entries it may carry into its governance, each with its cut
+//! ([`tilo_peer_state::removals`]): the device leaves the workspace's access
+//! and keys, every member's replica refuses what it signs from there on, and
+//! what the workspace had taken of it before stays the workspace's history.
 
 use tilo_lock::RwLockRecover as _;
 use tilo_user_identity::{DeviceCert, RevocationEntry, verify_revocation_entry};
@@ -74,8 +76,8 @@ impl Workspaces {
         refused
     }
 
-    /// Add `entries` to the relay's revocation log and its live list: what
-    /// this host refuses from each entry's moment on.
+    /// Add `entries` to this holder's revocation log and its live list: what
+    /// it refuses from each entry's moment on.
     ///
     /// A root signs only about the keys it made, so whose root signed a
     /// verified entry decides whose keys it reaches, and the relay keeps them
@@ -170,7 +172,10 @@ impl Workspaces {
             })
             .cloned()
             .collect::<Vec<_>>();
-        if carry.is_empty() {
+        // A removal the governance carries without its cut, one recorded
+        // before cuts were kept, is completed here by the device that governs
+        // the workspace: until then nobody decides what that device wrote.
+        if carry.is_empty() && !workspace.peer().governance().lacks_removal_cuts() {
             return Ok(());
         }
         let now = tilo_clock::wall();
@@ -291,6 +296,15 @@ mod tests {
         assert!(workspaces.revocations().refuses(&laptop));
         assert_ne!(crate::authority_epoch::current(), epoch);
         assert_eq!(workspace.lock().await.peer().revocations(), vec![own]);
+        assert!(
+            !workspace
+                .lock()
+                .await
+                .peer()
+                .governance()
+                .lacks_removal_cuts(),
+            "the removal is written with its cut, in the same step"
+        );
         drop(workspace);
         relay.shutdown().await;
     }

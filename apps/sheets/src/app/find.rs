@@ -133,11 +133,12 @@ impl SheetsApp {
             return Vec::new();
         };
         let mut found = Vec::new();
+        let lines = crate::bound::Lines::of(&self.workbook);
         for (sheet, id) in self.sheet_ids.iter().enumerate() {
-            let Some(state) = self.workbook.sheet(id) else {
+            let (Some(state), Some(layout)) = (self.workbook.sheet(id), lines.layout(id)) else {
                 continue;
             };
-            let snapshot = state.snapshot();
+            let snapshot = state.snapshot_in(&layout, &lines);
             let mut cells: Vec<(Addr, String)> = snapshot
                 .raw
                 .into_iter()
@@ -161,10 +162,11 @@ impl SheetsApp {
     fn find_cell_raw(&self, found: FoundCell) -> Option<String> {
         let id = self.sheet_ids.get(found.sheet)?;
         let sheet = self.workbook.sheet(id)?;
-        let layout = sheet.layout();
+        let lines = crate::bound::Lines::of(&self.workbook);
+        let layout = lines.layout(id)?;
         sheet
             .cell_at(&layout, found.addr)
-            .map(|cell| cell.raw.0.clone())
+            .map(|cell| cell.raw.shown(&layout, &lines).into_owned())
     }
 
     fn replaced_cell(&self, found: FoundCell, with: &str) -> Option<(usize, Addr, String)> {
@@ -193,7 +195,7 @@ impl SheetsApp {
                 })
                 .unwrap_or_default();
             let mut cell = stored;
-            cell.raw = ui::tilo_resource::Atom(raw);
+            cell.raw = crate::bound::Input::typed(raw);
             by_sheet.entry(sheet).or_default().push((addr, cell));
         }
         let mut members: Vec<Invoke<Workbook>> = Vec::new();

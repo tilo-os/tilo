@@ -16,6 +16,9 @@
 pub mod action;
 pub mod authority;
 pub mod background;
+// The bench measures with std's clocks, which a page does not have. It is a tool of the
+// command line, the examples and the tests, and never part of what a browser loads.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod bench;
 pub mod bundle;
 pub mod catalogue;

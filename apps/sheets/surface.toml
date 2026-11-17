@@ -5,7 +5,7 @@ format = 2
 [[resources]]
 kind = "sheets.workbook"
 label = "Workbook"
-version = 2
+version = 3
 fields = [
   { path = "sheets", type = { collection = { named = "Sheet" } }, stored = "collection" },
   { path = "sheets.*.name", type = "text", label = true },
@@ -21,6 +21,7 @@ fields = [
   { path = "sheets.*.charts.*.area.bottom", type = "text" },
   { path = "sheets.*.charts.*.area.right", type = "text" },
   { path = "sheets.*.hidden", type = "bool" },
+  { path = "sheets.*.cut", type = { set = "text" }, readonly = true },
   { path = "comments", type = { collection = { named = "Comment" } }, stored = "collection", unit = true },
   { path = "comments.*.anchor", type = { named = "CommentCells" }, stored = "record" },
   { path = "comments.*.anchor.sheet", type = "text", readonly = true },
@@ -113,6 +114,7 @@ params = [
   { name = "sheet", type = "text", required = true, schema = { type = "string" } },
   { name = "start", type = "text", required = true, schema = { type = "string" } },
   { name = "rows", type = { list = { list = "any" } }, required = true, schema = { type = "array", items = { type = "array", items = {} } } },
+  { name = "seen", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -122,6 +124,7 @@ returns = { schema = { type = "object" } }
 params = [
   { name = "sheet", type = "text", required = true, schema = { type = "string" } },
   { name = "cells", type = { list = { named = "CellWrite" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { bold = { type = ["boolean", "null"] }, cell = { type = "string" }, format = { type = ["string", "null"] }, input = { type = ["string", "null"] } }, required = ["cell"] } } },
+  { name = "seen", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -463,6 +466,7 @@ fields = [
   { name = "cells", type = "any" },
   { name = "charts", type = { collection = { named = "Chart" } } },
   { name = "hidden", type = "bool" },
+  { name = "cut", type = { set = "text" } },
 ]
 
 [[resources.types]]

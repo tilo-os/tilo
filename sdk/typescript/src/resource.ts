@@ -13,6 +13,7 @@
  */
 
 import { currentGroup } from "./endpoint.ts";
+import type { Invocation } from "./invocation.ts";
 import type { ActionAnswer, Event } from "./models.ts";
 import { ProtocolError } from "./errors.ts";
 import type { Workspace } from "./workspace.ts";
@@ -92,15 +93,15 @@ export function kebab(name: string): string {
   return out;
 }
 
-/** Whether a call's answer is a run to follow rather than a result: the
- * `Run` is recognised by what it is, since the module that defines it loads
- * through this one. */
-function isRun(value: unknown): value is Run {
+/** Whether a call's answer is an invocation to follow rather than a result:
+ * the `Invocation` is recognised by what it is, since the module that defines
+ * it loads through this one. */
+function isInvocation(value: unknown): value is Invocation {
   return (
     value !== null &&
     typeof value === "object" &&
-    typeof (value as Run).invocationId === "string" &&
-    typeof (value as Run).result === "function"
+    typeof (value as Invocation).invocationId === "string" &&
+    typeof (value as Invocation).result === "function"
   );
 }
 
@@ -296,7 +297,7 @@ class ResourceImpl {
     );
     // A typed call answers what the action produced, waiting for a run still
     // under way rather than handing the caller one to follow.
-    if (isRun(answer)) {
+    if (isInvocation(answer)) {
       return await answer.result();
     }
     return answer;

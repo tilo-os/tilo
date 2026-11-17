@@ -266,6 +266,7 @@ fn row_name(row: GovernanceRow) -> &'static str {
         GovernanceRow::Hosts => "the workspace's hosts",
         GovernanceRow::Log => "the workspace's operations",
         GovernanceRow::Sandbox => "the capabilities of its apps' sandboxes",
+        GovernanceRow::Removals => "the cuts of its devices' removals",
     }
 }
 

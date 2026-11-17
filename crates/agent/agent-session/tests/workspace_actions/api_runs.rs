@@ -35,8 +35,8 @@ async fn in_run(
     let pairs = [
         ("authorization", bearer.as_str()),
         ("content-type", "application/json"),
-        ("tilo-run", run.as_str()),
-        ("tilo-run-title", title),
+        ("tilo-invocation", run.as_str()),
+        ("tilo-invocation-title", title),
     ];
     let route = format!("/v1/workspaces/{workspace}/resources/{path}/actions/{action}");
     let reply = Box::pin(key.api.dispatch(

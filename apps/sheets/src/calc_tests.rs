@@ -755,8 +755,7 @@ tilo_test_env::scenario! {
                     cell: "Z1".to_owned(),
                     input: Some("=1+2".to_owned()),
                     ..CellWrite::default()
-                }],
-            }),
+                }], seen: None, }),
         )
         .unwrap();
         assert!(reader.sync(book.doc()).unwrap());

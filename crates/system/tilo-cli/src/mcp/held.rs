@@ -817,6 +817,7 @@ mod tests {
     use super::*;
     use std::io::{BufRead as _, Write as _};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// A holder whose workers are both inside a step that walks a whole folder tree still ends
     /// when it is stopped: the steps are left behind rather than waited for, which is what a
@@ -907,7 +908,7 @@ mod tests {
             .env(CHILD_LOCK, &lock)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status()
+            .status_locked()
             .unwrap();
         assert!(status.success(), "the child that took the lock failed");
         assert!(

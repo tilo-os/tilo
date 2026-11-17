@@ -150,10 +150,21 @@ impl<'peer> PeerPublication<'peer> {
         )
         .map_err(err)?;
         collab_types::verify_op(compaction).map_err(err)?;
-        self.peer
-            .authorize_document(compaction.author.as_bytes(), app, record, compaction, now)?
-            .ok_or("the compaction's app surface is not here")?;
-        Ok(())
+        match self.peer.authorize_document(
+            compaction.author.as_bytes(),
+            app,
+            record,
+            compaction,
+            now,
+        )? {
+            super::authority::Authorized::Admit { .. } => Ok(()),
+            super::authority::Authorized::Hold(crate::MissingPrerequisite::AppSurface) => {
+                Err("the compaction's app surface is not here".into())
+            }
+            super::authority::Authorized::Hold(waiting) => {
+                Err(format!("the compaction waits for {waiting}"))
+            }
+        }
     }
 
     fn document(
@@ -1107,7 +1118,7 @@ impl PeerPublicationMut<'_> {
     ) -> Result<NeighbourMsg, String> {
         let author = delegate.verifying_key().to_bytes();
         let parsed = collab_types::parse_changes(&changes).map_err(err)?;
-        let shows = self.peer.appearance_author(&author, now);
+        let shows = self.peer.appearance_author(&author, now, false);
         collab_types::check_appearances(&parsed, shows.as_ref())
             .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
         self.peer

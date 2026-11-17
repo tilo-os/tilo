@@ -1992,12 +1992,12 @@ mod tests {
                 format!("/v1/workspaces/{WORKSPACE}/resources/pdf-viewer/actions/open")
             );
             assert_eq!(action.header("prefer"), Some("wait=60"));
-            assert_eq!(action.header("tilo-run-title"), Some("pdf-viewer#open"));
+            assert_eq!(action.header("tilo-invocation-title"), Some("pdf-viewer#open"));
             assert!(
                 action
-                    .header("tilo-run")
-                    .is_some_and(|run| run == action.header("idempotency-key").unwrap_or_default()),
-                "one invocation, one run, one idempotency key"
+                    .header("tilo-invocation")
+                    .is_some_and(|id| id == action.header("idempotency-key").unwrap_or_default()),
+                "one invocation, one idempotency key"
             );
             assert_eq!(
                 serde_json::from_slice::<Value>(&action.body).unwrap(),

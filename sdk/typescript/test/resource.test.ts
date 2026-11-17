@@ -57,11 +57,11 @@ describe("a resource", () => {
     const api = new FakeApi();
     const form = await open(api).workspace("jane-doe").read(PDF);
 
-    const read = (await (form.readFormFields as () => Promise<{ fields: string[] }>)()) as {
-      fields: string[];
+    const read = (await (form.readFormFields as () => Promise<{ fields: { name: string }[] }>)()) as {
+      fields: { name: string }[];
     };
 
-    expect(read.fields).toEqual(["surname", "given_name"]);
+    expect(read.fields.map((field) => field.name)).toEqual(["surname", "given_name"]);
     expect(api.last()?.path).toBe(
       `/v1/workspaces/${WORKSPACE_ID}/resources/${PDF}/actions/read-form-fields`,
     );
@@ -93,7 +93,7 @@ describe("a generated type", () => {
 
     const answer = await form.readFormFields();
 
-    expect(answer).toEqual({ fields: ["surname", "given_name"] });
+    expect(answer.fields.map((field) => field.name)).toEqual(["surname", "given_name"]);
     expect(api.last()?.path).toContain("/actions/read-form-fields");
   });
 

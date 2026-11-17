@@ -40,6 +40,14 @@ impl StatePeer {
         envelope: &SignedOp,
         now: SystemTime,
     ) -> Result<Option<DocumentAdmission>, AdmissionError> {
+        // A device its person removed looks up nothing of its own: it writes
+        // nothing more, whatever of its past the workspace keeps.
+        if matches!(
+            self.permissions(*envelope.author.as_bytes(), now),
+            Err(super::MembershipError::Revoked)
+        ) {
+            return Err(super::MembershipError::Revoked.to_string().into());
+        }
         self.lookup_exact_document_parts(
             *envelope.author.as_bytes(),
             app,

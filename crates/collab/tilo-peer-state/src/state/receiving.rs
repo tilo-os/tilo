@@ -134,11 +134,11 @@ impl StatePeer {
         if workspace != self.core.workspace || op.author.as_bytes() != &source {
             return Err("transport author or document workspace mismatch".into());
         }
-        if self
-            .authorize_document(&source, app, record, op, now)?
-            .is_none()
-        {
-            // Held for its app surface: decided by the real admission, never a recorded one.
+        if matches!(
+            self.authorize_document(&source, app, record, op, now)?,
+            super::authority::Authorized::Hold(_)
+        ) {
+            // Held for what it waits for: decided by the real admission, never a recorded one.
             return Ok(None);
         }
         collab_types::validate_whole_document_payload_route(app, workspace, record, op)

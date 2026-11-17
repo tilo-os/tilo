@@ -418,7 +418,7 @@ export class InvocationList {
     raw: Record<string, unknown> = {},
     more: ((cursor: string) => Promise<InvocationList>) | null = null,
   ) {
-    this.invocations = arrayOf(raw.invocations).map(invocationInfoOf);
+    this.invocations = arrayOf(raw.items).map(invocationInfoOf);
     this.total = intOf(raw.total) ?? 0;
     this.waiting = intOf(raw.waiting) ?? 0;
     this.pending = raw.pending === true;

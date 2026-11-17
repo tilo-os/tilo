@@ -138,13 +138,13 @@ impl Drop for AbortOnDrop {
     }
 }
 
-/// The workspaces this host serves for its person's governing devices.
+/// The workspaces this device serves for its person's governing devices.
 pub(crate) struct Hosting {
     dir: PathBuf,
     services: WorkspaceServices,
-    /// Each served workspace's follower, by workspace. Dropping one stops the workspace's
-    /// attach session and its following.
-    served: std::sync::Mutex<HashMap<String, Served>>,
+    /// Each served workspace's follower, by the workspace's id. Dropping one stops the
+    /// workspace's attach session and its following.
+    served: std::sync::Mutex<HashMap<WorkspaceId, Served>>,
 }
 
 /// One workspace served here for its governor.
@@ -152,9 +152,24 @@ struct Served {
     /// Its follower: dropping it stops the workspace's attach session and its
     /// following.
     _follower: AbortOnDrop,
-    workspace_id: WorkspaceId,
+    /// The person whose device governs it and handed it over.
+    governor: [u8; 32],
     /// The replica its members are answered from, current with its governance.
     replica: Arc<HostedReplica>,
+}
+
+/// The workspace `request` hands over, by its id. Its name is that id
+/// spelled out and nothing else: what is kept of a workspace here is found
+/// by its id, so no text a caller wrote names a file or a served workspace.
+///
+/// # Errors
+///
+/// The request names its workspace by anything but its own id.
+fn named(request: &HostWorkspaceRequest) -> Result<WorkspaceId, String> {
+    match WorkspaceId::parse(&request.workspace) {
+        Some(id) if id == request.workspace_id => Ok(id),
+        _ => Err("a workspace is handed over under its own id and no other name".into()),
+    }
 }
 
 impl Hosting {
@@ -166,7 +181,9 @@ impl Hosting {
         }
     }
 
-    fn resource_path(&self, workspace: &str) -> PathBuf {
+    /// Where what is kept of the workspace `workspace` lies: a file named by
+    /// its id, in this folder.
+    fn resource_path(&self, workspace: WorkspaceId) -> PathBuf {
         self.dir.join(format!("{workspace}.json"))
     }
 
@@ -214,28 +231,34 @@ impl Hosting {
         request: &HostWorkspaceRequest,
         kept_for: Option<[u8; 32]>,
     ) -> Result<TransportHint, String> {
+        // Refused before anything is served or any path is made.
+        let id = named(request)?;
         let hint = self.serve(Some(caller), request, false, kept_for).await?;
         let record = HostedRecord::of(request, kept_for)?;
         let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
-        write_durably(&self.dir, &self.resource_path(&request.workspace), &bytes)?;
+        write_durably(&self.dir, &self.resource_path(id), &bytes)?;
         tracing::info!(workspace = %request.workspace, workspace_id = %request.workspace_id, "serving a workspace for its governor");
         Ok(hint)
     }
 
     /// Stop serving `workspace`, `caller`'s request: its attach session and
-    /// following end, nobody is admitted to it here any more, and this
-    /// host's record of it goes. The workspace's files stay.
+    /// following end, nobody is admitted to it here any more, and what this
+    /// device kept of it goes. The workspace's files stay.
     ///
     /// # Errors
     ///
-    /// The caller is not a device of this host's person, or the workspace's
-    /// access could not be narrowed.
+    /// The caller is not a device of this one's person, the workspace is
+    /// named by anything but its id, or its access could not be narrowed.
     pub(crate) async fn unhost_workspace(
         &self,
         caller: &DeviceCert,
         workspace: &str,
     ) -> Result<bool, String> {
-        let path = self.resource_path(workspace);
+        // Named by its id, as it was handed over: no other text is looked
+        // up among the files here.
+        let id = WorkspaceId::parse(workspace)
+            .ok_or_else(|| "a workspace is named by its id".to_owned())?;
+        let path = self.resource_path(id);
         // No record: the workspace was not hosted here. One that does not read
         // is an error, never "not hosted": that would forget the workspace while
         // it went on being served.
@@ -254,7 +277,7 @@ impl Hosting {
                 ));
             }
         };
-        // This host's own person, or the person of the host governing the
+        // This device's own person, or the person whose device governs the
         // workspace, asks it to stop.
         let governor = record
             .as_ref()
@@ -268,7 +291,7 @@ impl Hosting {
             );
         }
         let workspace_id = record.map(|request| request.workspace_id);
-        let served = self.served.lock_recover().remove(workspace).is_some();
+        let served = self.served.lock_recover().remove(&id).is_some();
         if let Some(workspace_id) = workspace_id {
             stop_serving(&self.services, workspace_id).await?;
         }
@@ -292,23 +315,18 @@ impl Hosting {
         person: &[u8; 32],
         now: SystemTime,
     ) -> Vec<tilo_relay_session::workspaces::WorkspaceListing> {
-        let served: Vec<(String, WorkspaceId, Arc<HostedReplica>)> = self
+        let served: Vec<(WorkspaceId, Arc<HostedReplica>)> = self
             .served
             .lock_recover()
             .iter()
-            .map(|(workspace, served)| {
-                (
-                    workspace.clone(),
-                    served.workspace_id,
-                    Arc::clone(&served.replica),
-                )
-            })
+            .map(|(workspace, served)| (*workspace, Arc::clone(&served.replica)))
             .collect();
         let mut listed = Vec::new();
-        for (workspace, workspace_id, replica) in served {
+        for (workspace_id, replica) in served {
             if !self.still_serves(workspace_id, &replica).await {
                 continue;
             }
+            let workspace = workspace_id.to_string();
             if let Some(one) = replica.listing_for(&workspace, workspace_id, person, now) {
                 listed.push(one);
             }
@@ -351,6 +369,7 @@ impl Hosting {
     ) -> Result<TransportHint, String> {
         let services = &self.services;
         let own = &services.cert;
+        let id = named(request)?;
         let governor = WorkspaceDeviceHintV1::from_transport_hint(&request.governor_hint)
             .map_err(|error| error.to_string())?;
         governor
@@ -365,6 +384,20 @@ impl Hosting {
         }
         if caller.is_some_and(|caller| caller.user_public_key != authority.user_public_key) {
             return Err("only the workspace's governor hands it to a host".into());
+        }
+        // A workspace held here for one governor is not taken from another:
+        // whoever made a workspace under an id this device holds would
+        // otherwise decide whom it admits to it.
+        let held = self
+            .served
+            .lock_recover()
+            .get(&id)
+            .map(|held| (held.governor, Arc::clone(&held.replica)));
+        if let Some((held_for, replica)) = held
+            && held_for != authority.user_public_key
+            && self.still_serves(id, &replica).await
+        {
+            return Err("that workspace is held here for another governor".into());
         }
         takes_it(services, kept_for, &authority, request.workspace_id)?;
         let now = tilo_clock::wall();
@@ -421,7 +454,7 @@ impl Hosting {
             services: services.clone(),
             workspace: request.workspace.clone(),
             workspace_id: request.workspace_id,
-            record: self.resource_path(&request.workspace),
+            record: self.resource_path(id),
             peer,
             replica: Arc::clone(&replica),
             named,
@@ -434,10 +467,10 @@ impl Hosting {
         follower.dial_holders();
         let task = tokio::spawn(follower.run(notices));
         self.served.lock_recover().insert(
-            request.workspace.clone(),
+            id,
             Served {
                 _follower: AbortOnDrop(task),
-                workspace_id: request.workspace_id,
+                governor: authority.user_public_key,
                 replica: Arc::clone(&replica),
             },
         );

@@ -524,6 +524,23 @@ tilo_test_env::scenario! {
             .publication_mut()
             .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
             .unwrap();
+        // The governance that takes the member's device away, as a replica that
+        // had taken nothing of the child wrote it: its cut does not name the
+        // child ([`crate::removals`]).
+        let removal = {
+            let mut removing = receiver.clone();
+            assert!(
+                removing
+                    .governance_mut()
+                    .publish_governed_revocations(
+                        &[revocation(cert.device_public_key)],
+                        &governor,
+                        now
+                    )
+                    .unwrap()
+            );
+            removing.workspace_message()
+        };
         let cut = receiver
             .begin_native_publication_cut(publisher, now)
             .unwrap()
@@ -537,9 +554,13 @@ tilo_test_env::scenario! {
                 },
                 now,
             )
+            .unwrap()
+            // Known without its cut, the removal decides nothing of the child
+            // yet: its parent lands and the child stays held.
+            .push(parent, now)
             .unwrap();
         assert!(
-            cut.push(parent, now).is_err(),
+            cut.push(removal, now).is_err(),
             "a rejected native child disappeared from the supposedly complete cut"
         );
         assert!(

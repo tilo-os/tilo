@@ -552,8 +552,7 @@ pub fn answer(
     }
     let workbook = crate::workbook::Workbook::read(doc).ok()?;
     let touched = touched_cells(changes);
-    // A delete also rewrites the formulas of other sheets that read the rows: the answer is
-    // about the sheet the rows left.
+    // The answer is about the sheet the rows left, whichever cells the delete also wrote.
     let sheet_id = reshaped_sheet(changes)
         .filter(|_| action == "delete-rows")
         .or_else(|| touched.first().map(|(sheet, _, _)| sheet.clone()))
@@ -585,6 +584,7 @@ pub fn answer(
                 "sheet": snap.name,
                 "item": sheet_id,
                 "rows": [],
+                "seen": workbook.seen(),
             }));
         };
         rest.iter()
@@ -610,6 +610,8 @@ pub fn answer(
     if let Some(fields) = content.as_object_mut() {
         // The sheet's id, so a sheet just made is addressed without a read.
         fields.insert("item".into(), sheet_id.into());
+        // And where rows and columns are now, for the caller's next write to name.
+        fields.insert("seen".into(), workbook.seen().into());
         if shown_end != end {
             fields.insert("changed".into(), range_label(start, end).into());
         }
@@ -617,15 +619,14 @@ pub fn answer(
     if shown_end != end {
         note_formula_errors(&mut content, &snap, start, end);
     }
-    let note = match action {
-        "delete-rows" => {
-            lost_references(&workbook, &touched).map(|lost| ("reference_errors", lost))
-        }
-        "sort-rows" => {
-            unmoved_references(&workbook, &sheet_key, start, end).map(|kept| ("references", kept))
-        }
-        _ => None,
-    };
+    let note =
+        match action {
+            "delete-rows" => lost_references(&workbook, &sheet_key, changes)
+                .map(|lost| ("reference_errors", lost)),
+            "sort-rows" => unmoved_references(&workbook, &sheet_key, start, end)
+                .map(|kept| ("references", kept)),
+            _ => None,
+        };
     if let (Some((key, note)), Some(fields)) = (note, content.as_object_mut()) {
         fields.insert(key.into(), note);
     }
@@ -653,31 +654,53 @@ fn named_cells(cells: Vec<String>, how: &str) -> Option<serde_json::Value> {
     Some(note)
 }
 
-/// The formulas a delete rewrote that now hold `#REF!`, on every sheet: what pointed at the
-/// deleted cells says so rather than reading the cells that slid into their place.
+/// The rows and the columns `changes` deleted, by id.
+fn deleted_lines(changes: &[automerge::Patch]) -> (Vec<String>, Vec<String>) {
+    let (mut rows, mut columns) = (Vec::new(), Vec::new());
+    for patch in changes {
+        if !matches!(patch.action, automerge::PatchAction::DeleteMap { .. }) {
+            continue;
+        }
+        if let [.., field, lines, id] = props(patch).as_slice()
+            && field == "cells"
+        {
+            match lines.as_str() {
+                "rows" => rows.push(id.clone()),
+                "columns" => columns.push(id.clone()),
+                _ => {}
+            }
+        }
+    }
+    (rows, columns)
+}
+
+/// The formulas, on every sheet, that pointed at the rows or columns `changes` deleted from
+/// sheet `sheet` and read `#REF!` now: what pointed at the deleted cells says so rather than
+/// reading the cells that slid into their place. A range that only began or ended there shrank
+/// and is left out.
 fn lost_references(
     workbook: &crate::workbook::Workbook,
-    touched: &[(String, String, String)],
+    sheet: &ui::tilo_resource::Id,
+    changes: &[automerge::Patch],
 ) -> Option<serde_json::Value> {
+    let (rows, columns) = deleted_lines(changes);
     let mut cells = Vec::new();
-    for (id, sheet) in workbook.sheets.iter() {
-        let layout = sheet.layout();
-        let mut lost: Vec<Addr> = touched
-            .iter()
-            .filter(|(on, _, _)| on == id.as_str())
-            .filter_map(|(_, row, column)| {
-                let row = ui::tilo_resource::Id::from_raw(row.clone());
-                let column = ui::tilo_resource::Id::from_raw(column.clone());
-                let raw = &sheet.cells.cell(&row, &column)?.raw.0;
-                (raw.starts_with('=') && raw.contains("#REF!"))
-                    .then(|| layout.addr(&row, &column))
-                    .flatten()
+    for (id, held) in workbook.sheets.iter() {
+        let layout = held.layout();
+        let mut lost: Vec<Addr> = held
+            .cells
+            .cells()
+            .filter(|(_, _, cell)| {
+                let raw = &cell.raw;
+                (!rows.is_empty() && raw.reads_line(id, sheet, true, &rows))
+                    || (!columns.is_empty() && raw.reads_line(id, sheet, false, &columns))
             })
+            .filter_map(|(row, column, _)| layout.addr(&row, &column))
             .collect();
         lost.sort_unstable_by_key(|(col, row)| (*row, *col));
         cells.extend(
             lost.into_iter()
-                .map(|(col, row)| format!("{}!{}", sheet.name.0, addr_to_a1(col, row))),
+                .map(|(col, row)| format!("{}!{}", held.name.0, addr_to_a1(col, row))),
         );
     }
     named_cells(
@@ -697,17 +720,20 @@ fn unmoved_references(
     end: Addr,
 ) -> Option<serde_json::Value> {
     let named = workbook.name_reaching(sorted);
+    let lines = crate::bound::Lines::of(workbook);
     let mut cells = Vec::new();
     for (id, sheet) in workbook.sheets.iter() {
         let own = id == sorted;
         if !own && named.is_none() {
             continue;
         }
-        let layout = sheet.layout();
+        let Some(layout) = lines.layout(id) else {
+            continue;
+        };
         let mut pointing: Vec<Addr> = sheet
             .cells
             .cells()
-            .filter(|(_, _, cell)| cell.raw.0.starts_with('=') && (own || cell.raw.0.contains('!')))
+            .filter(|(_, _, cell)| cell.raw.is_formula() && (own || cell.raw.text().contains('!')))
             .filter_map(|(row, column, cell)| {
                 let at = layout.addr(&row, &column)?;
                 let moved_itself =
@@ -716,7 +742,8 @@ fn unmoved_references(
                     return None;
                 }
                 let mut points = false;
-                crate::refs::each_reference(&cell.raw.0, |sheet, first, last| {
+                let shown = cell.raw.shown(&layout, &lines);
+                crate::refs::each_reference(&shown, |sheet, first, last| {
                     let reads_sorted = match sheet {
                         None => own,
                         Some(written) => {

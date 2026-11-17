@@ -17711,6 +17711,7 @@ dependencies = [
  "tilo-color-params",
  "tilo-compositor",
  "tilo-files",
+ "tilo-test-env",
  "tracing",
  "tracing-subscriber",
  "wayland-client",

@@ -278,7 +278,7 @@ async function main(): Promise<number> {
     "the agent reads the passport the backend put there",
   );
 
-  const group = await agentWorkspace.run(RUN_TITLE, async (run) => {
+  const group = await agentWorkspace.invocation(RUN_TITLE, async (invocation) => {
     await agentWorkspace.do("pdf-viewer#open");
     const imported = await agentWorkspace.do("pdf-viewer#import-pdf-content", {
       content: application,
@@ -314,7 +314,7 @@ async function main(): Promise<number> {
       typeof exported === "string" && exported.startsWith("tilo.content:"),
       `Writer exports the letter as content (${String(exported)})`,
     );
-    return run;
+    return invocation;
   });
   check(group.invocations.length > 0, `the run grouped the agent's ${group.invocations.length} calls`);
 

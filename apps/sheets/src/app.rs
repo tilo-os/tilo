@@ -22,7 +22,7 @@ use ui::widget::{AppModel, Edits, ModelPath};
 use automerge::ObjId;
 use std::rc::Rc;
 use taffy::{NodeId, TaffyTree};
-use ui::tilo_resource::{Atom, Id, Invoke};
+use ui::tilo_resource::{Id, Invoke};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Color, Fill};

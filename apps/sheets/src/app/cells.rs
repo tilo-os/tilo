@@ -26,13 +26,17 @@ impl SheetsApp {
 
         self.active_sheet = sheet;
         let state = Rc::clone(&self.workbook);
-        let current = self
-            .active_sheet_id()
-            .and_then(|id| state.sheet(&id).map(|sheet| (sheet, sheet.layout())));
+        let current = self.active_sheet_id().and_then(|id| {
+            let sheet = state.sheet(&id)?;
+            Some((id, sheet, Rc::new(sheet.layout())))
+        });
         let no_sheet = Id::default();
         let (snap, charts, comments) = match &current {
-            Some((sheet, layout)) => (
-                sheet.snapshot_in(layout),
+            Some((id, sheet, layout)) => (
+                sheet.snapshot_in(
+                    layout,
+                    &crate::bound::Lines::with(&state, id, Rc::clone(layout)),
+                ),
                 sheet.chart_snapshots(layout),
                 crate::workbook::Sheet::comment_snapshots(
                     self.sheet_ids.get(self.active_sheet).unwrap_or(&no_sheet),

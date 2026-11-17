@@ -82,7 +82,8 @@ const LEFT_BEGUN: &str = "I was interrupted while I worked on this: the server r
 const CHAT: &str = "so.tilo.chat";
 /// The app that keeps the issues.
 const TASKS: &str = "so.tilo.tasks";
-/// How long the host waits with nothing written before it looks again: what a missed wake costs.
+/// The longest the server goes without looking at every workspace, whatever is written in
+/// between: what a missed wake costs.
 const IDLE: Duration = Duration::from_secs(60);
 /// The most model turns one ask takes before the agent stops and says so.
 const MOST_TURNS: usize = 24;
@@ -311,7 +312,8 @@ impl HostAgents {
     }
 
     /// Look at every governed workspace now, then again whenever a member writes to a record an
-    /// ask or an agent is kept in, until the host stops.
+    /// ask or an agent is kept in, and at every one of them once in each [`IDLE`] whatever was
+    /// written, until the host stops.
     pub async fn run(self) {
         let mut writes = self.workspaces.document_writes();
         let mut due: BTreeSet<String> = self
@@ -321,19 +323,20 @@ impl HostAgents {
             .into_iter()
             .map(|summary| summary.workspace)
             .collect();
+        let mut whole_at = next_whole();
         loop {
             for workspace in std::mem::take(&mut due) {
                 if let Err(error) = self.look(&workspace).await {
                     tracing::debug!(%workspace, %error, "the host's agents did not look at a workspace");
                 }
             }
-            match tokio::time::timeout(IDLE, writes.recv()).await {
-                Ok(Ok(write)) => {
+            match woke(&mut writes, whole_at).await {
+                Woke::Write(write) => {
                     if write.app == CHAT || write.app == TASKS {
                         due.insert(write.workspace);
                     }
                 }
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) | Err(_) => {
+                Woke::Whole => {
                     due.extend(
                         self.workspaces
                             .list()
@@ -341,8 +344,9 @@ impl HostAgents {
                             .into_iter()
                             .map(|summary| summary.workspace),
                     );
+                    whole_at = next_whole();
                 }
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => return,
+                Woke::Closed => return,
             }
             // A burst of writes (a person typing, an agent's own steps) is read as one look.
             while let Ok(write) = writes.try_recv() {
@@ -1587,4 +1591,99 @@ fn money(micros: u64) -> String {
         micros / 1_000_000,
         (micros % 1_000_000) / 10_000
     )
+}
+
+/// What ended the wait between two looks.
+enum Woke<T> {
+    /// A member wrote this.
+    Write(T),
+    /// Every workspace is due: the time for it came, or writes were missed.
+    Whole,
+    /// Nobody is left to write.
+    Closed,
+}
+
+/// When every workspace is looked at next, counted from now.
+fn next_whole() -> tokio::time::Instant {
+    let now = tokio::time::Instant::now();
+    now.checked_add(IDLE).unwrap_or(now)
+}
+
+/// Wait for the next of `writes`, and no longer than until `whole_at`, when every workspace is
+/// looked at again. That time is moved on only by a look at all of them and never by a write,
+/// and it is read before the writes are: on a server where something is written all the time, as
+/// on a silent one, a turn whose wake was missed is found within [`IDLE`] and one pass over the
+/// workspaces.
+async fn woke<T: Clone + Send>(
+    writes: &mut tokio::sync::broadcast::Receiver<T>,
+    whole_at: tokio::time::Instant,
+) -> Woke<T> {
+    if tokio::time::Instant::now() >= whole_at {
+        return Woke::Whole;
+    }
+    match tokio::time::timeout_at(whole_at, writes.recv()).await {
+        Ok(Ok(write)) => Woke::Write(write),
+        Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) | Err(_) => Woke::Whole,
+        Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => Woke::Closed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A server where something is written all the time still looks at every workspace once in
+    /// each [`IDLE`]: a write that is there before each wait begins never puts that look off, and
+    /// no write is lost to it. With nothing written the wait ends when the time has come, and
+    /// with nobody left to write it says so.
+    #[tokio::test(start_paused = true)]
+    async fn every_workspace_is_looked_at_in_time_whatever_is_written() {
+        let written = tokio::sync::broadcast::Sender::new(8);
+        let mut writes = written.subscribe();
+        let began = tokio::time::Instant::now();
+        let mut whole_at = next_whole();
+        let mut wholes = Vec::new();
+        let mut taken = Vec::new();
+        // Five minutes with a write every ten seconds.
+        for _ in 0..30 {
+            assert!(written.send(()).is_ok(), "the wait reads what is written");
+            tokio::time::advance(Duration::from_secs(10)).await;
+            loop {
+                match woke(&mut writes, whole_at).await {
+                    Woke::Write(()) => {
+                        taken.push(began.elapsed());
+                        break;
+                    }
+                    Woke::Whole => {
+                        wholes.push(began.elapsed());
+                        whole_at = next_whole();
+                    }
+                    Woke::Closed => break,
+                }
+            }
+        }
+        assert_eq!(
+            taken.len(),
+            30,
+            "no write is lost to a look at every workspace"
+        );
+        assert_eq!(
+            wholes,
+            [60, 120, 180, 240, 300].map(Duration::from_secs),
+            "every workspace is looked at once a minute while the writes keep coming"
+        );
+
+        let silent = tokio::time::Instant::now();
+        assert!(matches!(woke(&mut writes, next_whole()).await, Woke::Whole));
+        assert_eq!(
+            silent.elapsed(),
+            IDLE,
+            "with nothing written, when its time came"
+        );
+        drop(written);
+        assert!(matches!(
+            woke(&mut writes, next_whole()).await,
+            Woke::Closed
+        ));
+    }
 }

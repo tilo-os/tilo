@@ -8,14 +8,14 @@ use ui::tilo_resource::{Id, Replica, Resource as _};
 
 use super::{CellWrite, SheetsShell, Workbook, verbs};
 
-fn call(app: &mut TestApp<SheetsShell>, id: &str, arguments: Value) -> Value {
+pub(super) fn call(app: &mut TestApp<SheetsShell>, id: &str, arguments: Value) -> Value {
     app.call(id, arguments)
         .unwrap_or_else(|error| panic!("{id}: {error}"))
         .unwrap_or(Value::Null)
 }
 
 /// A call its caller confirmed, as a delete asks.
-fn confirmed(app: &mut TestApp<SheetsShell>, id: &str, arguments: Value) -> Value {
+pub(super) fn confirmed(app: &mut TestApp<SheetsShell>, id: &str, arguments: Value) -> Value {
     app.call_confirmed(id, arguments)
         .unwrap_or_else(|error| panic!("{id}: {error}"))
         .unwrap_or(Value::Null)
@@ -83,14 +83,14 @@ fn expected(formulas: [&str; 6], shows: [&str; 6]) -> (Value, Value) {
 }
 
 #[derive(Debug)]
-enum Change {
+pub(super) enum Change {
     InsertRows { at: u32, count: u32 },
     DeleteRows(&'static [u32]),
     InsertColumns(&'static str),
     DeleteColumns(&'static [&'static str]),
 }
 
-fn change(book: &mut Replica<Workbook>, change: &Change) {
+pub(super) fn change(book: &mut Replica<Workbook>, change: &Change) {
     let sheet = Id::from_raw("Data");
     let done = match change {
         Change::InsertRows { at, count } => {
@@ -539,12 +539,9 @@ fn a_sort_keeps_references_on_their_addresses_and_says_which() {
 
 /// Two members at once: one inserts a row above the data while the other, who does not
 /// have that row yet, writes formulas that read the data from the summary. Both end with the
-/// same workbook; every formula that was there follows the row for both. A formula written
-/// meanwhile is held as its writer wrote it: its text names cells by position, and no change its
-/// writer had not seen rewrites it, so it reads the cells now at that position, one row above
-/// those its writer pointed at. The same holds for a formula on the changed sheet itself.
-/// Following the row there too needs references kept by the row's and column's ids beside the
-/// text, which is not built.
+/// same workbook; every formula that was there follows the row for both, and so does a formula
+/// written meanwhile: it is bound to the rows its writer pointed at, and reads them where they
+/// are now. `concurrent_tests` holds the other cases of two members at once.
 #[test]
 fn a_row_inserted_while_another_writes_a_formula_across_sheets() {
     let mut app = book();
@@ -557,6 +554,7 @@ fn a_row_inserted_while_another_writes_a_formula_across_sheets() {
             CellWrite::at((0, 1), "=Data!A3*10", None),
             CellWrite::at((1, 1), "=SUM(Data!A2:A4)*10", None),
         ],
+        seen: None,
     }))
     .unwrap();
     let written = read(&peer, "Summary");
@@ -584,9 +582,13 @@ fn a_row_inserted_while_another_writes_a_formula_across_sheets() {
         "the formulas both had follow the row for both"
     );
     assert_eq!(
-        (&formulas["A2"], &formulas["B2"]),
-        (&written.1["A2"], &written.1["B2"]),
-        "the formulas written meanwhile are held as written"
+        (&rows[1], &formulas["A2"], &formulas["B2"]),
+        (
+            &json!(["20", "60", "", "", "", ""]),
+            &json!("=Data!A4*10"),
+            &json!("=SUM(Data!A3:A5)*10")
+        ),
+        "the formulas written meanwhile read the cells their writer pointed at"
     );
 
     // The other way round: the row is deleted while a formula that reads it is written.
@@ -600,6 +602,7 @@ fn a_row_inserted_while_another_writes_a_formula_across_sheets() {
     peer.apply(Workbook::WRITE_CELLS.with(verbs::WriteCells {
         sheet: Id::from_raw("Summary"),
         cells: vec![CellWrite::at((0, 1), "=Data!A2*10", None)],
+        seen: None,
     }))
     .unwrap();
     app.merge_peer(peer.doc_mut()).unwrap();

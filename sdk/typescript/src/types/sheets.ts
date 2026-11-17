@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.sheets@dfe78ea182f2be65";
+export const SURFACE = "so.tilo.sheets@752f6346ae9b3383";
 
 export interface Area {
   top: string;
@@ -120,6 +120,7 @@ export interface Sheet {
   cells: unknown;
   charts: Array<tilo.Entry<Chart>>;
   hidden: boolean;
+  cut: string[];
 }
 
 export interface SheetSpec {
@@ -276,10 +277,12 @@ export interface Workbook extends tilo.Resource {
     sheet: string;
     start: string;
     rows: unknown[][];
+    seen?: string;
   }): Promise<unknown>;
   writeCells(args: {
     sheet: string;
     cells: CellWrite[];
+    seen?: string;
   }): Promise<unknown>;
   formatCells(args: {
     sheet: string;

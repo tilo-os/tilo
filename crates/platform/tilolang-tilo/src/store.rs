@@ -389,6 +389,9 @@ use listed::ListedOnce;
 mod scoped;
 mod sync;
 use scoped::{Changing, Held};
+// Its callers outside the store are an instance's own document (the `document` feature)
+// and the bench, which a page does not have.
+#[cfg(any(feature = "document", not(target_arch = "wasm32")))]
 pub(crate) use sync::apply_step;
 mod clock;
 use clock::ClockSource;

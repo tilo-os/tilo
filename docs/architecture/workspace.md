@@ -28,7 +28,11 @@ grants and history name members, never devices.
 the device key is its iroh `EndpointId`. Pairing brings the identity to a new
 device; any of the person's devices can pair another, and the devices that hold
 the identity key approve it. Revocations travel in the same hellos as
-certificates and win over them. Each device lists the certificates it holds in
+certificates and win over them. A removed device loses its future, not its
+person's past: with the removal the workspace's governance keeps where each
+resource's history stood for that device, and what it wrote up to there stays
+valid for everyone, the devices added later too
+([security](../security/architecture.md), 3.4). Each device lists the certificates it holds in
 a document of the person's own store, which only their devices are handed, so
 every device comes to know the others whichever of them it paired with; a
 certificate read there is checked as one a device shows for itself. Nothing
