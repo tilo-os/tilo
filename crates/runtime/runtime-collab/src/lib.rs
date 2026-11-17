@@ -709,6 +709,15 @@ pub struct TurnRequest {
     pub title: String,
     /// The person's words, with what they are about and the earlier conversation after them.
     pub instruction: String,
+    /// What the agent's keeper told it about how to work for them (its own instruction in the
+    /// workspace's record of its agents): said to the model before the request, beside what
+    /// every agent is told.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_instruction: Option<String>,
+    /// What the turn asks its agent to take into the conversation's running summary while it
+    /// answers ([`recall::Fold`]): the oldest messages the summary does not hold yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fold: Option<recall::Fold>,
     /// What the request is about, when the person asked about a selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<tilo_actions::SelectionSubject>,

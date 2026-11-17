@@ -328,6 +328,9 @@ struct World {
     /// Chat is closed: the workspace keeps the offers it last published, none of them
     /// a message it publishes now.
     chat_closed: bool,
+    /// The turn's message also offers Chat's `keep-summary`, as a session that answers turns
+    /// publishes it.
+    summary: bool,
 }
 
 /// How the fixture host treats a re-ask that asks to be held.
@@ -518,6 +521,7 @@ impl World {
         // A closed Chat keeps the offers it last published, as the broker retains them
         // until the app runs again.
         let live = !self.chat_closed;
+        let keeps_summary = self.summary;
         let conversation = |record: &'static str, message: &str| BrokerActionSurface {
             peer_id: CHAT_RECORD_PEER,
             provider: (!live).then(|| {
@@ -548,7 +552,29 @@ impl World {
                     Availability::Available,
                     vec![],
                 )
-            }],
+            }]
+            .into_iter()
+            .chain(keeps_summary.then(|| ExportedAction {
+                state: tilo_actions::ActionState::default(),
+                semantic_identity: None,
+                resource: format!("chat.messages/messages/{message}"),
+                resource_kind: "chat.messages".into(),
+                resource_label: "The conversation".into(),
+                ..descriptor(
+                    "keep-summary",
+                    "Keep a summary",
+                    tilo_actions::OperationKind::Document,
+                    vec![
+                        ActionParam::required("channel", ParamType::Text, "The conversation"),
+                        ActionParam::required("through", ParamType::Text, "Its last message"),
+                        ActionParam::required("through_ts", ParamType::Integer, "When"),
+                        ActionParam::required("text", ParamType::Text, "The summary"),
+                    ],
+                    Availability::Available,
+                    vec![],
+                )
+            }))
+            .collect(),
         };
         if let Some(message) = &self.chat {
             surfaces.push(conversation("chat-1", message));
@@ -637,7 +663,7 @@ impl World {
     fn apply(&mut self, action: &str, arguments: &serde_json::Map<String, Value>) -> (Value, bool) {
         // The conversation's reply takes the record; it is no step of the
         // document the run works in.
-        if action == "record-work" {
+        if action == "record-work" || action == "keep-summary" {
             return (serde_json::json!({"succeeded": {}}), false);
         }
         let nth = self.steps.iter().filter(|(seen, _)| seen == action).count();
@@ -1474,6 +1500,7 @@ fn execution_fixture(
         failure_detail: None,
         spending: None,
         web: None,
+        single_shot: Arc::new(crate::transform::GatewayModel::default()),
     };
     Fixture {
         session,
@@ -1493,6 +1520,8 @@ fn asked(title: &str) -> crate::session::Asked {
             message: "chat.workspace/channels/loop/messages/asked".into(),
             title: title.into(),
             instruction: title.into(),
+            agent_instruction: None,
+            fold: None,
             subject: None,
             spend: None,
         },
@@ -1536,6 +1565,8 @@ mod pictures;
 mod programs;
 #[path = "agent_loop/tests/spending.rs"]
 mod spending;
+#[path = "agent_loop/tests/summary.rs"]
+mod summary;
 #[path = "agent_loop/tests/text_answers.rs"]
 mod text_answers;
 #[path = "agent_loop/tests/turn_records.rs"]

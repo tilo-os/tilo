@@ -48,7 +48,7 @@ use super::{
 use crate::model::{Conversation, FirstTurn, TurnEvent};
 use crate::plan::{self, ConfirmationEvidence, Instruction};
 use crate::surface;
-use crate::tools::{self, InvokeReport, LOOP_SYSTEM, Revealed};
+use crate::tools::{self, InvokeReport, Revealed};
 use tilo_actions::task_step::TaskStep;
 
 /// Most steps a run tells the person about, per item of a request of several
@@ -1206,10 +1206,11 @@ impl Session {
                 clock_line(now.naive_local(), now.naive_utc())
             ),
         };
+        let system = tools::system_for(run.agent_instruction.as_deref());
         let mut conversation = if self.chooser.uses_neutral_protocol() {
-            Conversation::neutral_first(LOOP_SYSTEM, &first)
+            Conversation::neutral_first(&system, &first)
         } else {
-            Conversation::new(protocol, &model, LOOP_SYSTEM, &first)
+            Conversation::new(protocol, &model, &system, &first)
         };
         if let Some(selection) = self.chooser.selection() {
             conversation = conversation.budgeted_by(&selection.model);
