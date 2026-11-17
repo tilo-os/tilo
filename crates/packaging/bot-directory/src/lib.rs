@@ -368,7 +368,7 @@ mod tests {
                 "action": {"app": "so.tilo.chat", "kind": "chat.workspace", "action": "post"},
                 "resource": {"first_of_kind": "chat.workspace"},
                 "args": {"text": {"literal": "echo"}}}],
-            "triggers": [{"trigger": "record_changed", "kind": "chat.workspace"}]
+            "triggers": [{"trigger": "resource_changed", "kind": "chat.workspace"}]
         }))
         .unwrap();
         tilo_automation::program::canonical_bytes(&shortcut).unwrap()
@@ -389,7 +389,7 @@ mod tests {
                         connectors: Vec::new(),
                         apps: apps.iter().map(|app| (*app).to_owned()).collect(),
                         appearance: false,
-                        triggers: vec!["record_changed".into()],
+                        triggers: vec!["resource_changed".into()],
                     },
                 }),
             })
