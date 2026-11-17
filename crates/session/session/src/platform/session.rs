@@ -2905,9 +2905,15 @@ impl Drop for Session {
         // The shell the person left, written whatever ended the session.
         self.shared.keep_layout_now();
         // Its apps' display goes with it, and so do they: the apps outlive
-        // no session, whoever else still holds what started them.
+        // no session, whoever else still holds what started them. Only an
+        // in-place restart leaves the apps kept behind a keeper running, for
+        // the run that follows to take back.
         if let Some(launch) = &self.shared.launch {
-            launch.end_running();
+            launch.end_running(if restarting {
+                tilo_app_launch::Teardown::InPlaceRestart
+            } else {
+                tilo_app_launch::Teardown::Logout
+            });
         }
     }
 }

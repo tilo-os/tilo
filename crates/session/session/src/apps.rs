@@ -157,6 +157,9 @@ struct State {
     /// The files apps are handed, while the session serves them where a launcher binds each app's
     /// view of them: what a document a package opens reaches its sandbox through.
     documents: Option<tilo_documents::Documents>,
+    /// The app ids of the windows of the kept apps this run took back, until the restore claims
+    /// their saved tabs ([`Apps::take_kept_windows`]).
+    kept_windows: Vec<String>,
 }
 
 /// A window whose tab the session asked the shell for: the launch that starts it once the shell asks
@@ -292,6 +295,7 @@ impl Apps {
                 hosts: None,
                 connectors: None,
                 documents: None,
+                kept_windows: Vec::new(),
             }),
         }
     }
@@ -696,9 +700,65 @@ impl Apps {
             .tier_by_visibility(on_screen, own);
     }
 
-    /// The session is ending: every app it started that still runs is asked to end with it.
-    pub fn end_running(&self) {
-        self.state.borrow().spawner.end_running();
+    /// The session is ending: every app it started that still runs is asked to end with it, but
+    /// for the kept apps an in-place restart leaves running ([`tilo_app_launch::kept`]).
+    pub fn end_running(&self, teardown: tilo_app_launch::Teardown) {
+        self.state.borrow().spawner.end_running(teardown);
+    }
+
+    /// Start the apps that are not Tilo's behind `keeping`'s keeper from now on.
+    #[cfg(target_os = "linux")]
+    pub fn keep_behind(&self, keeping: tilo_app_launch::kept::Keeping) {
+        self.state.borrow_mut().spawner.keep_behind(keeping);
+    }
+
+    /// Take up what the keepers' registry holds as this run starts: after an in-place restart the
+    /// apps the run before left running are this session's launches again, as if it had started
+    /// them; after any other start what is there is left over, and ends.
+    #[cfg(target_os = "linux")]
+    pub fn take_up_kept(&self, following_restart: bool) {
+        if !following_restart {
+            self.state.borrow().spawner.clear_kept();
+            return;
+        }
+        let adopted = self.state.borrow_mut().spawner.adopt_kept();
+        let launches = self.state.borrow().launches.clone();
+        let mut state = self.state.borrow_mut();
+        for kept in adopted {
+            if let Some(launches) = &launches {
+                launches.started(kept.pid, &kept.launch.app, &kept.launch.workspace, false);
+            }
+            state.launched.insert(
+                kept.id,
+                Launching {
+                    asked: kept
+                        .launch
+                        .asked
+                        .clone()
+                        .unwrap_or_else(|| kept.launch.app.clone()),
+                    app: kept.launch.app.clone(),
+                    workspace: kept.launch.workspace.clone(),
+                    pid: Some(kept.pid),
+                    instance: None,
+                    started: std::time::Instant::now(),
+                    got: Got::Landed,
+                },
+            );
+            state.kept_windows.extend(kept.windows);
+        }
+    }
+
+    /// The app ids of the windows the kept apps this run took back show: each claims a saved tab of
+    /// its app, which waits for that window rather than starting the app again. Taken once.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn take_kept_windows(&self) -> Vec<String> {
+        std::mem::take(&mut self.state.borrow_mut().kept_windows)
+    }
+
+    /// Show the windows of the kept apps this run took back: once their saved tabs wait for them.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn attach_kept(&self) {
+        self.state.borrow().spawner.attach_kept();
     }
 
     /// Start what the desktop queued since the last pass, show what stopped, and start what a
@@ -1803,18 +1863,24 @@ impl Apps {
         // launch with no window presents none.
         let timed = (!windowless)
             .then(|| timed.unwrap_or_else(|| tilo_startup_metrics::launch_requested(&planned.app)));
-        let started = state.spawner.start_with(planned, link, &|pid| {
-            if let Some(launches) = &launches {
-                // The launcher binds the session's documents store into a package's sandbox and
-                // into nothing else, so a package is the launch whose files are answered with paths
-                // in the store.
-                if windowless {
-                    launches.started_windowless(pid, &planned.app, workspace);
-                } else {
-                    launches.started(pid, &planned.app, workspace, !planned.kind.is_host());
+        let started = state.spawner.start_with(
+            planned,
+            link,
+            &|pid| {
+                if let Some(launches) = &launches {
+                    // The launcher binds the session's documents store into a package's sandbox and
+                    // into nothing else, so a package is the launch whose files are answered with paths
+                    // in the store.
+                    if windowless {
+                        launches.started_windowless(pid, &planned.app, workspace);
+                    } else {
+                        launches.started(pid, &planned.app, workspace, !planned.kind.is_host());
+                    }
                 }
-            }
-        });
+            },
+            workspace,
+            asked,
+        );
         let started = match started {
             Ok(started) => started,
             Err(error) => {

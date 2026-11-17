@@ -801,6 +801,17 @@ fn start(
         }
     };
     watch_the_loop(backend, &mut session);
+    // The apps that are not Tilo's start behind a keeper, which this desktop attaches; after an
+    // in-place restart the ones the run before left running are taken back.
+    if let Some(keeper) = tilo_app_launch::kept::find_keeper() {
+        let connector = session.compositor().client_connector();
+        launch.keep_behind(tilo_app_launch::kept::Keeping {
+            keeper,
+            root: tilo_app_launch::kept::root(),
+            desktop: std::sync::Arc::new(move |pid| connector.connect_for(pid)),
+        });
+    }
+    launch.take_up_kept(restarting);
     // The bus the session serves its desktop services on is the one its apps reach: a launch
     // starts with a cleared environment, and a sandboxed app without it has no accessibility tree
     // and no portals.

@@ -55,7 +55,28 @@ the machinery `tilo device swap` uses on a development machine:
    two minutes, the session starts `tilo-live-update-session.service`
    (`live:session`): it merges the whole update, restarts the changed session
    services and restarts every desktop in place through `tilo-session`
-   (SIGUSR1): the login, the lock and the windows stay.
+   (SIGUSR1): the login and the lock stay, and so do the windows. A Tilo
+   app's window is reopened by the new desktop in the tab it stood in. Every
+   other app (one of the machine's own, anything the Tilo runtime does not
+   draw) was started behind an app keeper (`tilo-app-keeper`) and keeps
+   running: the keeper is that app's display and holds its windows while no
+   desktop is there. The launcher starts the keeper inside the app's scope and
+   the app as the keeper's child, and the keeper's directory under
+   `$XDG_RUNTIME_DIR/tilo-session/kept/` records the launch. The desktop that
+   ends leaves such an app untouched only when this is an in-place restart and
+   its keeper answered the desktop in that run; a logout ends it with
+   everything else. The desktop that follows takes each keeper back: it checks
+   that the app's process is the one the keeper started, counts it as a launch
+   of its own again (memory tiers, the pressure watch, its end report, ending
+   it at logout), lets the saved tab of its app wait for its window instead of
+   starting the app again, and attaches the keeper, which shows the windows'
+   last pictures at once. Nothing watches memory pressure in the seconds
+   between the two desktops; the kernel's OOM kill of the app's group is the
+   backstop, and the end is reported as a memory end from the group's events
+   once the new desktop takes it back. An app that ended while no desktop was
+   there is reported from the record its keeper left. A keeper started by an
+   older desktop that speaks another version of its interface is left running
+   and not taken back.
 5. A restarted unit that fails, or a desktop that does not become usable again
    within 60 s, puts the previous layer back, restarts the same parts again and
    marks the update failed; it then applies with the next restart of the

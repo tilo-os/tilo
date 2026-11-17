@@ -46,6 +46,8 @@ pub(crate) struct Restore {
     /// Whether the session has begun restoring at all: its first look at the layouts ran, even
     /// when there was nothing to lay out (a device with no workspace yet).
     begun: bool,
+    /// Whether the windows of the apps kept across a restart have been given their tabs and shown.
+    kept_shown: bool,
 }
 
 /// A window the person left open, and the app that opens it again.
@@ -160,6 +162,11 @@ impl Restore {
             // stay as they are.
             return;
         };
+        if self.started() && !self.kept_shown {
+            self.kept_shown = true;
+            self.claim_kept(desktop, apps.take_kept_windows());
+            apps.attach_kept();
+        }
         self.release_admitted(desktop, awaited);
         loop {
             if let Some(opening) = &self.opening {
@@ -200,6 +207,29 @@ impl Restore {
             if self.open(desktop, apps, saved) {
                 return;
             }
+        }
+    }
+
+    /// Give each window of an app that stayed running through an in-place restart (`windows`, by
+    /// the app id it shows) the saved tab of its app it stood in: the tab waits for that window,
+    /// which comes once the app is shown again, and the app is not started a second time. A saved
+    /// tab no kept window claims opens as it would have.
+    fn claim_kept(&mut self, desktop: &DesktopHost, windows: Vec<String>) {
+        for window in windows {
+            let Some(at) = self
+                .waiting
+                .iter()
+                .position(|saved| tilo_desktop_policy::app_ids_match(&window, &saved.app))
+            else {
+                continue;
+            };
+            let Some(saved) = self.waiting.remove(at) else {
+                continue;
+            };
+            desktop.with_policy(|policy| {
+                policy.note_in_tab(saved.tab, "");
+                policy.adopt(&saved.app, saved.tab);
+            });
         }
     }
 

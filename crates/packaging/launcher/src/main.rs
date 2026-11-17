@@ -309,6 +309,16 @@ struct RunHostArgs {
     /// Prefer the desktop entry's declared New Window action.
     #[arg(long)]
     new_window: bool,
+    /// Start the app behind the app keeper at this path, so its windows stay open while the
+    /// desktop restarts in place: the keeper runs in the app's scope and the app descends from it.
+    #[arg(long, requires_all = ["keep_in", "keep_as"])]
+    keeper: Option<PathBuf>,
+    /// The keeper's private directory (`--dir` of the keeper).
+    #[arg(long, requires = "keeper")]
+    keep_in: Option<PathBuf>,
+    /// What the session names this launch, handed to the keeper as given (`--launch`).
+    #[arg(long, requires = "keeper")]
+    keep_as: Option<String>,
 }
 
 /// Fold an `i32` exit code (from [`std::process::ExitStatus::code`] or
@@ -1098,7 +1108,18 @@ fn run_host(args: RunHostArgs) -> ExitCode {
         open_url,
         dry_run,
         new_window,
+        keeper,
+        keep_in,
+        keep_as,
     } = args;
+    let keep = match (keeper, keep_in, keep_as) {
+        (Some(keeper), Some(dir), Some(launch)) => Some(launcher::host::Keep {
+            keeper,
+            dir,
+            launch,
+        }),
+        _ => None,
+    };
     let env = LaunchEnv {
         wayland_socket,
         x11_display,
@@ -1143,8 +1164,15 @@ fn run_host(args: RunHostArgs) -> ExitCode {
             }
         };
     }
-    match planned.and_then(|plan| launcher::host::spawn(&plan)) {
-        Ok(status) => exit_code(status.code().unwrap_or(1)),
+    match planned.and_then(|plan| launcher::host::spawn(&plan, keep.as_ref())) {
+        Ok(status) => {
+            // A kept app's end is told as it ended: a signal that ended it ends the launcher too.
+            #[cfg(target_os = "linux")]
+            if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
+                launcher::host::end_by(signal);
+            }
+            exit_code(status.code().unwrap_or(1))
+        }
         Err(e) => {
             eprintln!("tilo-launcher: {e}");
             exit_code(e.to_exit_code())

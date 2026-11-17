@@ -71,6 +71,9 @@ pub struct ClientState {
     /// The client bound `wl_touch` : one that did not is typed on by the pointer where a finger
     /// goes down, so a tap still works.
     touch_bound: AtomicBool,
+    /// The session handed this connection to the process in [`Self::pid`] itself: a socket pair
+    /// names the session as its peer, so the pid it was handed to is the client's.
+    handed: bool,
 }
 
 impl ClientState {
@@ -2072,6 +2075,11 @@ fn root_surface(surface: &WlSurface) -> WlSurface {
 /// The process of a client, as `pid` .
 fn pid_of(client: Option<&Client>, display: &DisplayHandle) -> Option<u32> {
     let client = client?;
+    if let Some(data) = client.get_data::<ClientState>()
+        && data.handed
+    {
+        return Some(data.pid.load(Ordering::Relaxed));
+    }
     let pid = u32::try_from(client.get_credentials(display).ok()?.pid).ok()?;
     // Noted for the client, so the session hears when its process exits.
     if let Some(data) = client.get_data::<ClientState>() {
@@ -2453,6 +2461,19 @@ pub(crate) fn client_data(
         trusted,
         exited,
         output,
+        ..ClientState::default()
+    })
+}
+
+/// An untrusted client's data, for a connection the session hands to the process `pid`.
+pub(crate) fn handed_client_data(
+    pid: u32,
+    exited: Arc<std::sync::Mutex<Vec<u32>>>,
+) -> Arc<ClientState> {
+    Arc::new(ClientState {
+        exited,
+        pid: AtomicU32::new(pid),
+        handed: true,
         ..ClientState::default()
     })
 }

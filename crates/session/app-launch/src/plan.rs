@@ -452,6 +452,14 @@ impl Planned {
         ))
     }
 
+    /// Whether this launch starts behind an app keeper, so its windows stay open while the desktop
+    /// restarts in place ([`crate::kept`]): every app whose windows the Tilo runtime does not draw,
+    /// which is every app that is not a Tilo package. A package's windows are reopened instead.
+    #[must_use]
+    pub fn kept(&self) -> bool {
+        self.kind.is_host()
+    }
+
     /// One line saying what this launch starts, for a log before it starts.
     #[must_use]
     pub fn describe(&self) -> String {

@@ -725,6 +725,16 @@ impl Compositor {
         self.connect_client_as(false, None)
     }
 
+    /// What connects clients for processes the session hands a connection to, from any thread:
+    /// an app keeper is given one each time a desktop attaches it ([`ClientConnector`]).
+    #[must_use]
+    pub fn client_connector(&self) -> ClientConnector {
+        ClientConnector {
+            display: self.display.handle(),
+            exited: std::sync::Arc::clone(&self.data.state.exited),
+        }
+    }
+
     /// Connect a client the session trusts with privileged protocols (locking the session);
     /// otherwise as [`Compositor::connect_client`].
     pub fn connect_trusted_client(&mut self) -> Result<UnixStream, Error> {
@@ -2754,5 +2764,34 @@ mod display_publication_tests {
             assert_eq!(std::fs::read(&path).unwrap(), b"wayland-4");
             drop(published);
         }
+    }
+}
+
+/// Connects untrusted clients for a process the session hands the connection to.
+///
+/// A socket pair names the session as its peer, so the compositor would take every window on it
+/// for the session's own: the connection is told the process it is for, and its windows name
+/// that process as a client connected on its own would.
+#[derive(Clone)]
+pub struct ClientConnector {
+    display: smithay::reexports::wayland_server::DisplayHandle,
+    exited: std::sync::Arc<std::sync::Mutex<Vec<u32>>>,
+}
+
+impl ClientConnector {
+    /// A new connection for the process `pid`; the returned end is the client's.
+    ///
+    /// # Errors
+    /// No socket pair, or the display refused the client.
+    pub fn connect_for(&self, pid: u32) -> std::io::Result<UnixStream> {
+        let (ours, theirs) = UnixStream::pair()?;
+        self.display
+            .clone()
+            .insert_client(
+                ours,
+                state::handed_client_data(pid, std::sync::Arc::clone(&self.exited)),
+            )
+            .map_err(std::io::Error::other)?;
+        Ok(theirs)
     }
 }

@@ -41,7 +41,7 @@ impl HostError {
 /// Resolve `desktop_id` on this system and run it, unconfined.
 pub fn run_host(desktop_id: &str, env: &LaunchEnv) -> Result<ExitStatus, HostError> {
     let launch = plan_host(desktop_id, env, &locales())?;
-    spawn(&launch)
+    spawn(&launch, None)
 }
 
 /// Resolve `desktop_id` into the exact command line and environment a launch would use, without
@@ -74,20 +74,54 @@ pub fn make_runnable(path: &Path) -> Result<(), HostError> {
     Ok(desktop_entry::launch::make_runnable(path)?)
 }
 
-/// Run an already-planned launch.
-pub fn spawn(launch: &HostLaunch) -> Result<ExitStatus, HostError> {
+/// An app started behind an app keeper (`tilo-app-keeper`): the keeper is the app's Wayland
+/// display and keeps its windows open while the desktop restarts in place.
+///
+/// The launcher starts the keeper once it is in the app's scope, so the keeper is inside the
+/// scope (the group OOM kill and a logout's stop end both) and the app descends from it (a
+/// window's process is traced back to this launch). The launcher stays as their parent until the
+/// keeper ends, relaying what both write: the session reading those streams goes away in a
+/// restart, and a write into a pipe nobody reads would end the app.
+#[derive(Clone, Debug)]
+pub struct Keep {
+    /// The keeper program.
+    pub keeper: std::path::PathBuf,
+    /// The keeper's private directory.
+    pub dir: std::path::PathBuf,
+    /// What the session names this launch, handed to the keeper as given.
+    pub launch: String,
+}
+
+/// Run an already-planned launch, behind a keeper when `keep` names one.
+pub fn spawn(launch: &HostLaunch, keep: Option<&Keep>) -> Result<ExitStatus, HostError> {
     crate::chromium_frame::prepare(launch);
     // A launcher already inside an app's cgroup (an app running a program of its own) stays in it and
     // asks the manager for nothing.
     let busctl = Path::new(scope::BUSCTL);
     let ask_manager = busctl.is_file() && !crate::app_cgroup::current_is_app_cgroup();
-    spawn_with(launch, ask_manager.then_some(busctl), scope::JOIN_TIMEOUT)
+    spawn_with(
+        launch,
+        ask_manager.then_some(busctl),
+        scope::JOIN_TIMEOUT,
+        keep,
+    )
+}
+
+/// End this process by `signal`, as the app it launched ended: its default action, whatever this
+/// process set for it.
+pub fn end_by(signal: i32) {
+    // SAFETY: resetting a signal to its default action and raising it take plain integers.
+    unsafe {
+        libc::signal(signal, libc::SIG_DFL);
+        libc::raise(signal);
+    }
 }
 
 fn spawn_with(
     launch: &HostLaunch,
     busctl: Option<&Path>,
     scope_join_timeout: Duration,
+    keep: Option<&Keep>,
 ) -> Result<ExitStatus, HostError> {
     // Deliberately on stderr and unconditional: a launch that skips the sandbox says so where the
     // compositor's log, journal and a developer's terminal will all see it.
@@ -117,6 +151,9 @@ fn spawn_with(
             launch.desktop_id
         );
     }
+    if let Some(keep) = keep {
+        return spawn_kept(launch, keep);
+    }
     let mut cmd = launch.to_command();
     cmd.stdin(Stdio::null());
     configure_host_launch_session(&mut cmd);
@@ -127,6 +164,95 @@ fn spawn_with(
     child.wait().map_err(|source| HostError::Spawn {
         program: launch.program.display().to_string(),
         source,
+    })
+}
+
+/// Run `launch` behind the keeper `keep` names, and answer how the app ended as the keeper
+/// recorded it (the keeper's own status when it recorded nothing: the app never started).
+fn spawn_kept(launch: &HostLaunch, keep: &Keep) -> Result<ExitStatus, HostError> {
+    use std::os::unix::process::ExitStatusExt as _;
+    let failed = |source| HostError::Spawn {
+        program: keep.keeper.display().to_string(),
+        source,
+    };
+    let cmd = launch.to_command();
+    let program = cmd.get_program().to_owned();
+    let args: Vec<std::ffi::OsString> = cmd.get_args().map(ToOwned::to_owned).collect();
+    let mut keeper = Command::new(&keep.keeper);
+    keeper
+        .arg("--dir")
+        .arg(&keep.dir)
+        .arg("--launch")
+        .arg(&keep.launch)
+        .arg("--")
+        .arg(program)
+        .args(args)
+        .env_clear()
+        .envs(
+            cmd.get_envs()
+                .filter_map(|(key, value)| Some((key, value?))),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    drop(cmd);
+    configure_host_launch_session(&mut keeper);
+    // The keeper and its app end with this launcher: what ends the launch (a logout's signal on a
+    // host that gave it no scope) ends what it started.
+    // SAFETY: prctl is async-signal-safe and the closure captures nothing.
+    unsafe {
+        keeper.pre_exec(|| {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = keeper.spawn().map_err(failed)?;
+    let relays = [
+        child.stdout.take().map(|out| relay(out, std::io::stdout)),
+        child.stderr.take().map(|err| relay(err, std::io::stderr)),
+    ];
+    let status = child.wait().map_err(failed)?;
+    for relay in relays.into_iter().flatten() {
+        let _ = relay.join();
+    }
+    let ended = std::fs::read(keep.dir.join("ended"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let raw = ended.as_ref().and_then(|end| {
+        if let Some(code) = end
+            .pointer("/exited/code")
+            .and_then(serde_json::Value::as_i64)
+        {
+            return i32::try_from(code).ok().map(|code| (code & 0xff) << 8);
+        }
+        end.pointer("/signalled/signal")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|signal| i32::try_from(signal).ok())
+    });
+    Ok(raw.map_or(status, ExitStatus::from_raw))
+}
+
+/// Copy what `from` says to this process's own stream until it ends. A stream nobody reads any
+/// more (the session went away) loses what is written, and `from` is still read to its end.
+fn relay<R, W>(mut from: R, to: fn() -> W) -> std::thread::JoinHandle<()>
+where
+    R: std::io::Read + Send + 'static,
+    W: std::io::Write + 'static,
+{
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        loop {
+            match from.read(&mut buffer) {
+                Ok(0) => return,
+                Ok(read) => {
+                    let _ = to().write_all(buffer.get(..read).unwrap_or_default());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return,
+            }
+        }
     })
 }
 
@@ -210,6 +336,50 @@ mod tests {
             }
         }
 
+        phase a_kept_launch_runs_the_app_behind_its_keeper_and_ends_as_the_app_did;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let dir = tempfile::tempdir().expect("scratch directory");
+            let entry = dir.path().join("org.example.Kept.desktop");
+            std::fs::write(
+                &entry,
+                "[Desktop Entry]\nType=Application\nName=Kept\nExec=sh -c \"exit 7\"\n",
+            )
+            .expect("write the entry");
+            let launch = plan_host_file(&entry, &LaunchEnv::default(), &[]).expect("the entry plans");
+            // A keeper that records what it was handed, runs the app, and records how it ended as
+            // the real one does.
+            let keeper = dir.path().join("keeper");
+            std::fs::write(
+                &keeper,
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.argv\"\nshift 5\n\"$@\"\n\
+                 printf '{\"exited\":{\"code\":%s}}' $? > \"$KEPT/ended\"\nexit 0\n",
+            )
+            .expect("write the keeper");
+            std::fs::set_permissions(&keeper, std::fs::Permissions::from_mode(0o755))
+                .expect("runnable");
+            let kept = dir.path().join("kept");
+            std::fs::create_dir(&kept).expect("the keeper's directory");
+            let mut launch = launch;
+            launch.env.insert("KEPT".into(), kept.display().to_string());
+            let keep = Keep {
+                keeper,
+                dir: kept.clone(),
+                launch: "{\"app\":\"org.example.Kept\"}".into(),
+            };
+            let status = spawn_with(&launch, None, Duration::from_millis(20), Some(&keep))
+                .expect("the launch runs");
+            assert_eq!(status.code(), Some(7), "the app's end, not the keeper's");
+            let argv = std::fs::read_to_string(dir.path().join("keeper.argv")).expect("handed");
+            let argv: Vec<&str> = argv.lines().collect();
+            assert_eq!(
+                argv.get(..5),
+                Some(&["--dir", kept.to_str().unwrap_or_default(), "--launch", "{\"app\":\"org.example.Kept\"}", "--"][..]),
+                "the keeper is told its directory and the launch, then the app's command"
+            );
+        }
+
         phase a_refused_or_unjoined_scope_never_costs_the_launch;
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -238,7 +408,7 @@ mod tests {
             };
             {
                 let busctl = stand_in("accepting-busctl", 0);
-                let status = spawn_with(&launch, Some(&busctl), Duration::from_millis(20))
+                let status = spawn_with(&launch, Some(&busctl), Duration::from_millis(20), None)
                     .expect("the launch runs");
                 assert_eq!(
                     status.code(),
@@ -259,7 +429,7 @@ mod tests {
             }
             {
                 let busctl = stand_in("refusing-busctl", 1);
-                let status = spawn_with(&launch, Some(&busctl), Duration::from_millis(20))
+                let status = spawn_with(&launch, Some(&busctl), Duration::from_millis(20), None)
                     .expect("the launch runs");
                 assert_eq!(status.code(), Some(7));
                 assert!(
@@ -276,7 +446,7 @@ mod tests {
             }
             {
                 let status =
-                    spawn_with(&launch, None, Duration::from_millis(20)).expect("the launch runs");
+                    spawn_with(&launch, None, Duration::from_millis(20), None).expect("the launch runs");
                 assert_eq!(status.code(), Some(7));
             }
         }
