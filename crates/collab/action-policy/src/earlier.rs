@@ -1,7 +1,7 @@
 //! The ids apps were published under before (`app so.tilo.lang.tasks "Tasks" (previously:
 //! so.tilo.lang.todo)`): the one lookup every place that keeps an app id reads through.
 //!
-//! What was kept under an earlier id (records, grants, windows, references) stays as written and
+//! What was kept under an earlier id (documents, grants, windows, references) stays as written and
 //! is the renamed app's: a grant on `app:so.tilo.lang.todo` covers `app:so.tilo.lang.tasks`,
 //! `tl.so.tilo.lang.todo.TodoItem` is the kind `tl.so.tilo.lang.tasks.TodoItem`. Nothing is
 //! rewritten.
@@ -60,9 +60,9 @@ impl EarlierIds {
         self.by_app.get(app).map_or(&[], Vec::as_slice)
     }
 
-    /// The id whose record and channel `app` keeps using (`<workspace>#app:<id>`): its earliest id,
-    /// the first it lists, else its own. A renamed app opens the record it had, wherever and
-    /// under whatever it was written; nothing is copied to a record of its new id.
+    /// The id whose document and channel `app` keeps using (`<workspace>#app:<id>`): its earliest id,
+    /// the first it lists, else its own. A renamed app opens the document it had, wherever and
+    /// under whatever it was written; nothing is copied to a document of its new id.
     #[must_use]
     pub fn documents_under<'a>(&'a self, app: &'a str) -> &'a str {
         self.of(app).first().map_or(app, String::as_str)

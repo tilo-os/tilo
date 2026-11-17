@@ -359,7 +359,7 @@ impl WorkspacePolicy {
     }
 
     /// Whether `person` is blocked: their own grants deny every kind on the
-    /// whole workspace. A blocked member stays on record (history keeps naming
+    /// whole workspace. A blocked member stays listed (history keeps naming
     /// them) but holds nothing; the owner is never blocked.
     #[must_use]
     pub fn is_blocked(&self, person: &str) -> bool {

@@ -807,7 +807,7 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
 ///    needs a new agent key.
 ///
 /// A member still admits an agent's ops by its delegation's workspaces and
-/// expiry only: the app scope of its record is enforced by the turn's action API.
+/// expiry only: the app scope of its resource is enforced by the turn's action API.
 pub mod agent_policy {
     use crate::Role;
 
@@ -829,15 +829,15 @@ pub mod agent_policy {
 }
 
 /// The authority an agent's turn carries in `workspace`: the preset of
-/// [`agent_policy::ROLE_CAP`], narrowed by the bound the agent's record keeps
+/// [`agent_policy::ROLE_CAP`], narrowed by the bound the agent's resource keeps
 /// (`bound`; empty follows the default, which is the cap's own). The agent acts
 /// with its person's grants bounded by them, so it changes what its person may
-/// change, never more than the cap allows, never more than its record bounds it
+/// change, never more than the cap allows, never more than its resource bounds it
 /// to, and never the workspace's governance.
 ///
 /// This is the only place an agent's authority is made: an action API or a receiver
 /// hands it the person whose message caused the turn, and the bound it holds
-/// for the agent's record ([`crate::turn::authority`]).
+/// for the agent's resource ([`crate::turn::authority`]).
 #[must_use]
 pub fn agent_grants(workspace: &str, agent: &str, person: &str, bound: &[Rule]) -> Vec<Grant> {
     let grantee = Grantee::agent(agent.to_owned());
@@ -869,8 +869,8 @@ pub const SESSION_APP: &str = "shell";
 /// settings, which is a panel of the session's rather than an app of its own.
 pub const DEVICE_PANEL: &str = "so.tilo.quick-settings";
 
-/// The app a workspace's files are the record of: the tree every device
-/// holding the workspace mounts or mirrors, published as this app's record.
+/// The app a workspace's files are the resource of: the tree every device
+/// holding the workspace mounts or mirrors, published as this app's resource.
 pub use tilo_app_id::apps::FILE_EXPLORER as FILES_APP;
 
 /// The kind the session publishes its own resources under: the compositor's

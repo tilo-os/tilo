@@ -1,4 +1,4 @@
-//! A person, by their root public key: the one id every record, roster and
+//! A person, by their root public key: the one id every resource, roster and
 //! grant spells the same way.
 //!
 //! A person's id is the lowercase hex of their root public key and nothing
@@ -52,7 +52,7 @@ impl PersonId {
         Ok(Self(id.to_owned()))
     }
 
-    /// The root public key `root`, as the id every record spells.
+    /// The root public key `root`, as the id every resource spells.
     #[must_use]
     pub fn from_root(root: [u8; 32]) -> Self {
         Self(hex::encode(root))
@@ -204,7 +204,7 @@ mod tests {
             assert_eq!(PersonId::parse("agent:helper"), Err(PersonIdError::Prefixed));
             assert!(
                 serde_json::from_str::<PersonId>("\"person:7a\"").is_err(),
-                "a record carrying the prefixed spelling does not read as a person"
+                "a resource carrying the prefixed spelling does not read as a person"
             );
         }
     }

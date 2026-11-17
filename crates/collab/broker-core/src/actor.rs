@@ -437,7 +437,7 @@ impl BrokerActor {
                 kind: need.kind,
                 privileged: need.privileged,
                 attended: action.contract.is_attended(),
-                record: record.as_ref(),
+                resource: record.as_ref(),
                 ceiling: self.ceiling,
             },
             &tilo_desktop_model::context_at(now),

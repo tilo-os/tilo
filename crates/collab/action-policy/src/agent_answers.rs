@@ -7,7 +7,7 @@
 //! person started takes the agent delegation's answer
 //! ([`crate::roles::agent_grants`]), which is [`default_answer`], the
 //! default a person sees before choosing; an agent acting inside a turn is
-//! decided the same way, bounded by the cap its record narrows.
+//! decided the same way, bounded by the cap its resource narrows.
 //!
 //! An action whose contract asks for confirmation (it sends, publishes or
 //! deletes for good) keeps asking an agent's person even where an

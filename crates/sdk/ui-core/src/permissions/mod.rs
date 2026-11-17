@@ -1359,7 +1359,7 @@ pub fn admit_in_window(
         tilo_action_policy::Invoked {
             answer,
             attended: action.contract.is_attended(),
-            record: None,
+            resource: None,
         },
         asker,
     );

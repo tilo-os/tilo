@@ -1601,7 +1601,7 @@ tilo_test_env::scenario! {
     {
         use tilo_action_policy::Standing;
         let workspace = workspace_with_members(&[(BOB, Role::Viewer)]);
-        let records = TreePath::workspace("r").app("notes").action("append");
+        let resources = TreePath::workspace("r").app("notes").action("append");
         let set_role = roles::governance_action("r", governance::SET_ROLE);
         let owner_agent = Standing::new(
             workspace.clone(),
@@ -1609,7 +1609,7 @@ tilo_test_env::scenario! {
         )
         .granted(roles::agent_grants("r", "scribe", ALICE, &[]));
         assert_eq!(
-            owner_agent.answer(&records, ActionKind::Undoable, &cx()),
+            owner_agent.answer(&resources, ActionKind::Undoable, &cx()),
             Answer::Allow
         );
         assert_eq!(
@@ -1627,11 +1627,11 @@ tilo_test_env::scenario! {
         )
         .granted(roles::agent_grants("r", "scribe", BOB, &[]));
         assert_eq!(
-            viewer_agent.answer(&records, ActionKind::Undoable, &cx()),
+            viewer_agent.answer(&resources, ActionKind::Undoable, &cx()),
             Answer::Deny
         );
         assert_eq!(
-            viewer_agent.answer(&records, ActionKind::Read, &cx()),
+            viewer_agent.answer(&resources, ActionKind::Read, &cx()),
             Answer::Allow
         );
     }

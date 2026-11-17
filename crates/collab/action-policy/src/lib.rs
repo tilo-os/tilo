@@ -12,7 +12,7 @@
 //! allowed only when every node of the tree allows it
 //! ([`Authority::of_acting`]), and [`admit_invocation`] is the one admission of an
 //! invocation every route that runs actions takes: the desktop's broker and a
-//! host running a hosted workspace's records alike.
+//! host running a hosted workspace's documents alike.
 //!
 //! Roles are presets of grants on a workspace ([`roles`]); membership, roles
 //! and grants change only through the workspace's governance actions

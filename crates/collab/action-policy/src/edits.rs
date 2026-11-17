@@ -2,8 +2,8 @@
 //!
 //! Every action API decides it the same way, from the edit alone: no app code is
 //! needed to read a field edit. Removing an item of a collection asks, as a
-//! delete verb does, unless the record publishes that collection's removals
-//! as quiet. Any edit of a field the record publishes as guarded asks: one
+//! delete verb does, unless the resource publishes that collection's removals
+//! as quiet. Any edit of a field the resource publishes as guarded asks: one
 //! whose change can weaken the person's security or expose them. A field
 //! that weakens only one way ([`Weaker`]) asks only for a change that way.
 //! Otherwise setting, splicing, adding, upserting an item by its key, moving
@@ -174,7 +174,7 @@ pub fn weakening_edit(
 /// One step of a field edit's path, as the decision reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditStep<'a> {
-    /// A field of a record, by its key.
+    /// A field of a resource, by its key.
     Field(&'a str),
     /// An item, an entry or a cell, whichever it is.
     Item,

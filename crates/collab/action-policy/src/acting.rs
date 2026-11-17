@@ -123,10 +123,10 @@ pub struct Invocation<'a> {
     pub privileged: bool,
     /// Whether it needs its person attending.
     pub attended: bool,
-    /// The node of the record it changes, decided as well where it is one:
-    /// so a person restricted on one record cannot change it through an
+    /// The node of the resource it changes, decided as well where it is one:
+    /// so a person restricted on one resource cannot change it through an
     /// action they may otherwise take.
-    pub record: Option<&'a TreePath>,
+    pub resource: Option<&'a TreePath>,
     /// How far the invocation it continues was admitted to reach, when it
     /// continues one: what goes further asks first.
     pub ceiling: Option<Reach>,
@@ -172,10 +172,10 @@ pub fn admit_invocation(
         invocation.ceiling,
         cx,
     );
-    let record = invocation.record.map(|record| {
+    let resource = invocation.resource.map(|resource| {
         answer_at(
             authority,
-            (record, invocation.kind, false),
+            (resource, invocation.kind, false),
             invocation.ceiling,
             cx,
         )
@@ -185,7 +185,7 @@ pub fn admit_invocation(
         Invoked {
             answer,
             attended: invocation.attended,
-            record,
+            resource,
         },
         asker,
     )?;

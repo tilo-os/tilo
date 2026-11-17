@@ -232,7 +232,7 @@ impl<'g> Party<'g> {
     }
 
     fn decide_grants(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
-        // A member's own record is that person's alone, whatever the workspace's
+        // A member's own document is that person's alone, whatever the workspace's
         // grants or owner say ([`Context::with_own_resource`]). A delegation, known
         // by no person, is decided by its grants as anywhere else.
         if let Some(member) = cx.owner_of(node)

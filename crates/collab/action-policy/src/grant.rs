@@ -408,8 +408,8 @@ pub struct Context<'a> {
     /// renamed app (`crate::earlier`). `None` reads what this process registered
     /// (`crate::earlier::register`).
     pub earlier: Option<&'a EarlierIds>,
-    /// A member's own record the decision is about, as the write or window that
-    /// names it says: `(record, person)`, the record's id and the person whose
+    /// A member's own document the decision is about, as the write or window that
+    /// names it says: `(resource, person)`, the resource's id and the person whose
     /// own it is. Only that person decides anything in it, whatever their role
     /// or the workspace's grants.
     pub own: Option<(&'a str, &'a str)>,
@@ -426,22 +426,22 @@ impl<'a> Context<'a> {
         }
     }
 
-    /// Deciding about `record`, which is `person`'s own record (the hex of
+    /// Deciding about `resource`, which is `person`'s own document (the hex of
     /// their user root key).
     #[must_use]
-    pub const fn with_own_resource(mut self, record: &'a str, person: &'a str) -> Self {
-        self.own = Some((record, person));
+    pub const fn with_own_resource(mut self, resource: &'a str, person: &'a str) -> Self {
+        self.own = Some((resource, person));
         self
     }
 
-    /// The person whose own record `node` is in, when the decision is about
+    /// The person whose own document `node` is in, when the decision is about
     /// one ([`Self::with_own_resource`]).
     #[must_use]
     pub fn owner_of(&self, node: &TreePath) -> Option<&'a str> {
-        let (record, person) = self.own?;
+        let (resource, person) = self.own?;
         node.segments()
             .iter()
-            .any(|segment| matches!(segment, crate::Segment::Name(crate::Level::Resource, name) if name == record))
+            .any(|segment| matches!(segment, crate::Segment::Name(crate::Level::Resource, name) if name == resource))
             .then_some(person)
     }
 
