@@ -659,14 +659,14 @@ printf '%s\n' "$$" > "$pidfile"
 logs=$state/logs
 mkdir -p "$logs"
 
+# Until the socket is there, or the process that serves it ended: how long it
+# takes is the machine's load, not a sign that it failed.
 wait_for_socket() {
-    local path=$1 pid=$2 tries=200
-    while ((tries--)); do
-        [[ -S $path ]] && return 0
+    local path=$1 pid=$2
+    until [[ -S $path ]]; do
         kill -0 "$pid" 2>/dev/null || return 1
         sleep 0.1
     done
-    return 1
 }
 
 if ((fresh_desktop)); then
@@ -725,13 +725,6 @@ if ((!keep_identity)) && [[ ! -f $marker ]]; then
 fi
 
 # --- The session's own desktop ------------------------------------------------
-# The session places the Home workspace on this device's own room host before
-# it lets apps start, and the device's native owner is enrolled in it there.
-# The marker below says the session answers with a frame, so a check waits for
-# that rather than for a guess.
-ready_marker=$state/session-ready
-rm -f "$ready_marker"
-
 mkdir -p "$runtime/tilo/services"
 chmod 700 "$runtime/tilo" "$runtime/tilo/services"
 setsid "$bin/tilo-model-gateway" serve --socket "$runtime/tilo/services/model-gateway.sock" \
@@ -881,57 +874,33 @@ session_answers() {
         TILO_TEST_CONTROL=$control "$bin/tilo-control" windows >/dev/null 2>&1
     fi
 }
+# Where this session is, for tools that attach to it by its runtime directory
+# or control socket (`tilolang dev --session`): the same JSON as --ready.
+jq -n --arg control "$control" --arg runtime "$runtime" --arg state "$state" --arg bin "$bin" \
+    '{control: $control, runtime: $runtime, state: $state, bin: $bin}' > "$runtime/session.json"
+[[ -n $ready_out ]] && rm -f "$ready_out"
+# Once the session answers, tell whoever drives it (--ready), and say which
+# piece of its desktop it could not start: the session logs the surface it
+# went without, and a desktop without one is a broken session.
 confirm_ready() {
-    local shot=$state/session-ready.png tries=600
-    while ((tries--)); do
-        kill -0 "$session_pid" 2>/dev/null || return 0
-        if session_answers "$shot"; then
-            rm -f "$shot"
-            touch "$ready_marker"
-            echo "the session answers"
-            return 0
-        fi
+    local shot=$state/session-ready.png line
+    until session_answers "$shot"; do
+        kill -0 "$session_pid" 2>/dev/null || return 1
         sleep 0.2
     done
-    echo "the session did not answer; see session.log"
-    return 1
-}
-TILO_TEST_CONTROL=$control confirm_ready > "$logs/ready.log" 2>&1 &
-# The session logs the surface it could not start; a desktop it starts without
-# one is a broken session, so say which piece is missing and where to read why.
-missing_surfaces() {
-    local tries=300 line
-    while ((tries--)) && [[ ! -f $ready_marker ]]; do
-        kill -0 "$session_pid" 2>/dev/null || break
-        sleep 0.2
-    done
+    rm -f "$shot"
+    if [[ -n $ready_out ]]; then
+        cp "$runtime/session.json" "$ready_out.partial"
+        mv "$ready_out.partial" "$ready_out"
+    fi
+    echo "the session answers after $((SECONDS - started)) s"
     while IFS= read -r line; do
         say "!! this session started without part of its desktop: $line"
     done < <(grep -E 'no quick settings app is installed|no on-screen keyboard is installed|no lock screen' \
                  "$logs/session.log" 2>/dev/null || true)
 }
-missing_surfaces &
-# Where this session is, for tools that attach to it by its runtime directory
-# or control socket (`tilolang dev --session`): the same JSON as --ready.
-jq -n --arg control "$control" --arg runtime "$runtime" --arg state "$state" --arg bin "$bin" \
-    '{control: $control, runtime: $runtime, state: $state, bin: $bin}' > "$runtime/session.json"
-# Tell whoever drives the session that it answers: the session serves its
-# control socket once it is up.
-if [[ -n $ready_out ]]; then
-    rm -f "$ready_out"
-    (
-        wait_for_socket "$control" "$session_pid" || exit 1
-        tries=600
-        shot=$state/session-ready.png
-        until session_answers "$shot"; do
-            ((tries--)) && kill -0 "$session_pid" 2>/dev/null || exit 1
-            sleep 0.2
-        done
-        rm -f "$shot"
-        cp "$runtime/session.json" "$ready_out.partial"
-        mv "$ready_out.partial" "$ready_out"
-    ) &
-fi
+started=$SECONDS
+confirm_ready > "$logs/ready.log" &
 status=0
 wait "$session_pid" || status=$?
 exit "$status"

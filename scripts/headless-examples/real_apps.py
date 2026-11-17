@@ -508,10 +508,6 @@ class Session:
         # A viewer is looking: headless frames are rasterized, and a snapshot
         # then covers what the session painted instead of an empty texture.
         self.control({"op": "watch", "watching": True})
-        # The session answers once it has drawn its own desktop; apps start
-        # from there.
-        until("the session to answer",
-              lambda: (self.state / "session-ready").is_file(), 120, 0.2)
         return self
 
     def stop(self) -> None:
