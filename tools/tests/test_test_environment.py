@@ -277,7 +277,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
             )
         # The server's coding-agent tests start the guest's own agent program in its
         # serving mode, as a workspace's machine starts it: a program of another
-        # package, which Cargo builds for no test of the server's.
+        # package, which Cargo builds for no test of the server's. So do the agent
+        # session's tests of a coding agent on a person's server, which start it
+        # through that server's own keeper of coding agents.
         machine = scripts.pop("machine-siblings")
         self.assertEqual(machine["command"], ["bash", "tools/build-sibling-binaries.sh",
                                               "legacy-agent:tilo-legacy-agent"])
@@ -286,9 +288,10 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "machine-siblings"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-server) and test(coding_agents::)",
-                  {"host": 'cfg(target_os = "linux")'})],
-                f"the {profile} profile builds the guest's agent for the server's coding-agent tests",
+                [(filter_, {"host": 'cfg(target_os = "linux")'})
+                 for filter_ in ("package(tilo-server) and test(coding_agents::)",
+                                 "package(tilo-agent-session) and test(hosted_coding_agents::)")],
+                f"the {profile} profile builds the guest's agent for the tests that start a coding agent",
             )
         # The browser peer's page tests drive the page's modules beside a
         # runtime module the harness builds once, before they start.
@@ -334,6 +337,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "test(lounge_fresh_page::)":
                                      "lounge-siblings",
                                  "package(tilo-server) and test(coding_agents::)": "machine-siblings",
+                                 "package(tilo-agent-session) and test(hosted_coding_agents::)":
+                                     "machine-siblings",
                                  "package(tilo-session-client) and binary(it) and "
                                  "(test(passkey_root::) or test(node_workspace::))": "page-bundle",
                                  "package(tilo-ntfs-helper)": "ntfs-fixtures",
