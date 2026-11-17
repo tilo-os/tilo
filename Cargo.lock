@@ -22178,6 +22178,7 @@ dependencies = [
  "tilo-crash-reports",
  "tilo-startup-metrics",
  "tilo-test-env",
+ "tracing",
  "tracing-subscriber",
  "workspace-hack",
 ]

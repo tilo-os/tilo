@@ -451,9 +451,13 @@ impl Spawner {
         for app in apps.into_values() {
             #[cfg(target_os = "linux")]
             if let Some(kept) = app.stays_for(teardown) {
-                tracing::info!(app = %app.name, pid = app.pid, "kept across restart");
+                tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %app.name, pid = app.pid, "kept across restart");
                 kept.release();
                 continue;
+            }
+            #[cfg(target_os = "linux")]
+            if teardown == Teardown::InPlaceRestart && app.kept.is_some() {
+                tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %app.name, pid = app.pid, "not kept across restart: its keeper does not answer");
             }
             #[cfg(not(target_os = "linux"))]
             let _ = teardown;
@@ -570,7 +574,7 @@ impl Spawner {
                     }
                 }
                 Err(crate::kept::Refused::Failed(error)) => {
-                    tracing::warn!(dir = %dir.display(), %error, "not adopted: the keeper did not answer");
+                    tracing::warn!(target: tilo_startup_metrics::KEPT_APPS_TARGET, dir = %dir.display(), %error, "not adopted: the keeper did not answer");
                 }
             }
         }
@@ -629,7 +633,7 @@ impl Spawner {
         let launch = tilo_app_keeper::registry::KeptLaunch::decode(&description.launch)
             .or_else(|| crate::kept::written_launch(dir));
         let Some(launch) = launch else {
-            tracing::warn!(dir = %dir.display(), "not adopted: the launch it keeps is not one this session reads");
+            tracing::warn!(target: tilo_startup_metrics::KEPT_APPS_TARGET, dir = %dir.display(), "not adopted: the launch it keeps is not one this session reads");
             return None;
         };
         if let Some(end) = description.ended {
@@ -641,12 +645,12 @@ impl Spawner {
         }
         // A keeper still waiting for its first desktop has started nothing to mistake.
         if description.app_pid.is_some() && !crate::kept::same_process(&description) {
-            tracing::warn!(app = %launch.app, dir = %dir.display(), "not adopted: its process is not the one the keeper started");
+            tracing::warn!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %launch.app, dir = %dir.display(), "not adopted: its process is not the one the keeper started");
             return None;
         }
         let kept = crate::kept::Kept::new(dir.to_path_buf(), launch.service);
         if let Err(error) = kept.greeted(&control, keeper) {
-            tracing::warn!(app = %launch.app, %error, "not adopted: its keeper cannot be written to");
+            tracing::warn!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %launch.app, %error, "not adopted: its keeper cannot be written to");
             return None;
         }
         let id = self.next;
@@ -661,7 +665,7 @@ impl Spawner {
         running(&self.running).insert(id, app);
         // What the app writes went to the run that started it, through its launcher; that run's
         // log is gone, and nothing reattaches it, so it is no longer recorded.
-        tracing::info!(app = %launch.app, keeper, pid = ?description.app_pid, "adopted; its output is no longer recorded");
+        tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %launch.app, keeper, pid = ?description.app_pid, "adopted; its output is no longer recorded");
         let windows = description.windows;
         let (events, wake, still_running, ends) = (
             self.events.0.clone(),
@@ -719,7 +723,7 @@ impl Spawner {
     /// connected, when it is of a build that does.
     fn adopt_outdated(&mut self, dir: &Path, outdated: crate::kept::Outdated) -> Option<Adopted> {
         let Some(launch) = crate::kept::written_launch(dir) else {
-            tracing::warn!(dir = %dir.display(), version = outdated.version, "not adopted: an outdated keeper's launch is not one this session reads");
+            tracing::warn!(target: tilo_startup_metrics::KEPT_APPS_TARGET, dir = %dir.display(), version = outdated.version, "not adopted: an outdated keeper's launch is not one this session reads");
             return None;
         };
         let keeper = outdated.keeper;
@@ -733,6 +737,7 @@ impl Spawner {
         };
         let ended = crate::kept::pidfd(process.pid)?;
         tracing::warn!(
+            target: tilo_startup_metrics::KEPT_APPS_TARGET,
             app = %launch.app,
             version = outdated.version,
             holding = outdated.holding.is_some(),
@@ -813,10 +818,10 @@ impl Spawner {
             tracing::warn!(dir = %dir.display(), %error, "a kept app's directory stays");
         }
         let (Some(launch), Some(end)) = (launch, end) else {
-            tracing::info!(dir = %dir.display(), "not adopted: its keeper is gone");
+            tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, dir = %dir.display(), "not adopted: its keeper is gone");
             return;
         };
-        tracing::info!(app = %launch.app, %end, "not adopted: it ended while the desktop was away");
+        tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %launch.app, %end, "not adopted: it ended while the desktop was away");
         let id = self.next;
         self.next = self.next.wrapping_add(1);
         let _ = self.events.0.send(Event {

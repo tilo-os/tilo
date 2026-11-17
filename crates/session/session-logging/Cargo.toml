@@ -20,6 +20,8 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../dev/test-env" }
+# Lines written through the session's own filter, to read what it keeps.
+tracing.workspace = true
 
 [lints]
 workspace = true
