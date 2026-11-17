@@ -21,6 +21,9 @@ native = ["local-daemons"]
 # driven only through `CollaborationManager::with_transport`, and
 # `CollaborationManager::new` starts disabled.
 broker-transport = ["local-daemons", "runtime-collab/client", "tokio/full"]
+# Governed audio output for a native launch that plays sound: the app's media stack plays
+# through the person's admitted route.
+audio = ["native", "dep:media"]
 # The fixtures the toolkit's own tests drive the manager, its committed reads
 # and native construction with: the fake broker the tests stand up.
 test-support = ["dep:tilo-test-env", "dep:tracing-subscriber", "runtime-collab/settings-host"]
@@ -46,8 +49,7 @@ tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 # The channel settings the shell hands an app (personal dictionary).
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
-# Governed audio output for a native launch.
-media = { version = "0.1.0", package = "tilo-media", path = "../../platform/tilo-media" }
+media = { version = "0.1.0", package = "tilo-media", path = "../../platform/tilo-media", optional = true }
 registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 serde.workspace = true

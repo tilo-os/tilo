@@ -21,6 +21,7 @@ use super::{
 use runtime_collab::OpAdmission;
 use tilo_sort::CompactSort as _;
 
+#[cfg(feature = "audio")]
 #[path = "audio_output.rs"]
 mod audio_output;
 #[path = "broker_bytes.rs"]
@@ -2623,6 +2624,7 @@ impl CollaborationManager {
         let configured = crate::host::environment()
             .identity
             .collab_service_configured;
+        #[cfg(feature = "audio")]
         if configured {
             media::audio_output::require_governed();
         }

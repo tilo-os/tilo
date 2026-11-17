@@ -4,7 +4,7 @@
 
 use super::{
     BridgeState, DocumentRoute, InboundBridge, KeySignal, RouteLabel, RouteSpec, SdkCommand,
-    SdkJoinContext, SdkRoute, audio_output, broker_member_kind, change_waits, committed_document,
+    SdkJoinContext, SdkRoute, broker_member_kind, change_waits, committed_document,
     follow_channel_keys, native_media, spawn_action_catalogue_stream, spawn_content_stream,
     spawn_context_stream, spawn_invocation_stream, spawn_op_stream, spawn_presence_stream,
     spawn_realtime_stream, tokio_mpsc,
@@ -341,13 +341,14 @@ pub(super) async fn join_route(
             })
             .ok();
     media_routes.insert(channel_id.clone(), channel.clone());
+    #[cfg(feature = "audio")]
     if spec.document.is_none()
         && member_kind == "person"
         && crate::host::environment()
             .identity
             .collab_service_configured
     {
-        audio_output::install(channel.clone());
+        super::audio_output::install(channel.clone());
     }
     Ok(SdkRoute {
         _checks: checks,
