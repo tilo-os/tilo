@@ -173,6 +173,10 @@ refuse() { local what="$1"; shift; as_root "$@" > "$out/$what.txt" 2>&1 || die "
 boot_vm
 for _ in $(seq 1 60); do console 'true' >/dev/null 2>&1 && break; sleep 2; done
 console 'true' >/dev/null || die 'the installed disk never answered at its console'
+# Keep the console to the runner: kernel messages — auditd's lines among them,
+# one per sudo call — interleave mid-line with the marker it reads, and a marker
+# split that way waits out the command's whole deadline.
+as_root 'dmesg -n 1' >/dev/null 2>&1 || true
 
 say 'the machine serves'
 # What is up: multi-user reached, the hosted-VM service bound its socket, the API

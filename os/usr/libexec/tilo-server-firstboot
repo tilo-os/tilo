@@ -44,7 +44,14 @@ if valid_device_certificate && [[ -s "$home_peer" ]]; then
     handoff_home_peer
     exit 0
 fi
-label="$(hostnamectl --static 2>/dev/null || hostname 2>/dev/null || echo 'Home server')"
+# The name this machine is offered under. `hostnamectl --static` succeeds with
+# nothing to say when the image carries no /etc/hostname, which a bootc image
+# may not, and an empty label is refused by the enrollment: fall back on the
+# running name and then on a fixed one, so a machine with its own idea of its
+# name still pairs.
+label="$(hostnamectl --static 2>/dev/null || true)"
+[[ -n "$label" ]] || label="$(hostname 2>/dev/null || true)"
+[[ -n "$label" ]] || label='Home server'
 if [[ -e "$token" || -L "$token" ]]; then
     token_metadata="$(stat -c '%u:%a:%h:%s' -- "$token" 2>/dev/null || true)"
     if [[ ! -f "$token" || -L "$token" || ! "$token_metadata" =~ ^0:(600|644):1:([0-9]+)$ \
