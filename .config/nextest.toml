@@ -306,6 +306,15 @@ filter = 'package(tilo-agent-session) and binary(it) and test(workspace_actions:
 success-output = "final"
 slow-timeout = { period = "60s", terminate-after = 30 }
 
+# How fast a workspace takes records and files at each size it is filled to:
+# seeding the larger sizes and timing every path takes minutes, so the bound
+# only has to catch a run that stopped. Printed on a pass too, so the table
+# shows in every log.
+[[profile.default.overrides]]
+filter = 'package(tilo-agent-session) and binary(it) and test(workspace_actions::throughput::)'
+success-output = "final"
+slow-timeout = { period = "60s", terminate-after = 60 }
+
 [[profile.default.overrides]]
 filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::)))'
 threads-required = 16
