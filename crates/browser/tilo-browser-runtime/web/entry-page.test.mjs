@@ -1086,12 +1086,14 @@ test('a tab its person signed in with their agent pairs without asking whose dev
     pair: async options => {
       asked.push(options.userPublicKey);
       options.onPairingCode('123456');
-      waiting = cardWords('pair-wait');
+      waiting = {own: cardWords('pair-own'), other: cardWords('pair-wait')};
       return {workspace: 'current'};
     }});
   assert.equal(shown, null, 'no card asks whose device this becomes');
   assert.deepEqual(asked, [ELSEWHERE], 'the server is asked at once');
-  assert.ok(!waiting.join('\n').includes('no name for'), `the waiting card warns of nobody: ${waiting.join(' | ')}`);
+  assert.deepEqual(waiting, {own: ['Signing you in…'], other: null},
+    'while it goes through the tab says it signs its person in: no code, and no other device that asks');
+  assert.equal(cardWords('pair-own'), null, 'and the card goes with it');
   assert.equal(own.failure, null);
   assert.equal(own.session.get('tilo-own-pairing'), undefined, 'what the tab kept is read once');
 

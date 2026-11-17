@@ -31,7 +31,7 @@ import {idbStorage, openDeviceKey} from './device-key.mjs';
 import {createIdentityActions, setupOrigin, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, openFirstRun, openSignIn, readSetup, setupDone, setupLater} from './first-run.mjs';
 import {fetchPersonProfile, pickImageFile, squarePhoto} from './profile-photos.mjs';
-import {askOwnPairing, deviceLabel, ofThisSite, ownPairing, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose, pairSecret, whenRequested} from './pairing.mjs';
+import {askOwnPairing, deviceLabel, ofThisSite, ownPairing, PAIRING_SIGNING_IN, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, keptIdentity, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
@@ -479,6 +479,16 @@ function pairingWait(code, whose, where, onStop) {
   card.append(paragraph(PAIRING_WAIT.where), paragraph(code, 'tilo-pair-digits'),
     ...[whose, where].filter(Boolean).map(said => paragraph(said, 'tilo-pair-whose')),
     paragraph(PAIRING_WAIT.then, 'tilo-pair-note'), paragraph(PAIRING_WAIT.otherwise, 'tilo-pair-note'), stop);
+  document.body.append(card);
+  return () => card.remove();
+}
+
+/** Said on a tab its person signed in with their agent while its pairing
+ * goes through (`ownPairing`): nothing asks the person anything, since
+ * their stand-in approves the request their own computer's claim named, so
+ * the tab shows no code and points at no other device. */
+function pairingSigningIn() {
+  const card = pairCard('pair-own', PAIRING_SIGNING_IN, 'status');
   document.body.append(card);
   return () => card.remove();
 }
@@ -1272,7 +1282,7 @@ export async function startEntryPage({mode}) {
           stopped: () => stopped,
           onPairingCode: code => {
             waiting();
-            waiting = pairingWait(code, whose, where, () => { stopped = true; leavePairing(); });
+            waiting = own ? pairingSigningIn() : pairingWait(code, whose, where, () => { stopped = true; leavePairing(); });
           }});
       } catch (error) {
         // The host's answer, or this browser's own, said as what to do next; anything else as any failure.

@@ -151,6 +151,11 @@ export const PAIRING_WAIT = Object.freeze({
   otherwise: 'Nothing asking there? Its link was made more than 10 minutes ago, or its page was closed. On a device where you are signed in, choose “Pair a new device” on your own card (your picture, at the top right) or in search, and open the new link here.',
 });
 
+/** What a tab its person signed in with their agent says while its
+ * pairing goes through (`ownPairing`): nobody is asked, so it names no code
+ * and no device to approve on. */
+export const PAIRING_SIGNING_IN = 'Signing you in…';
+
 /** What a tab says while it waits to become a new device of the person its
  * browser is paired to, having opened no link: its request names no invite,
  * so no page asks about it by itself, and a new link opened in the tab is
