@@ -896,3 +896,7 @@ async fn a_turn_finds_what_was_said_in_its_conversation_by_words_and_by_time() {
     );
     page.peer.close();
 }
+
+/// How the service decides an agent the workspace's own list does not hold.
+#[path = "hosted_across.rs"]
+mod across;
