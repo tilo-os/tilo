@@ -277,6 +277,22 @@ impl ConfinedReplica {
             (inner.dirty, inner.beside_dirty) = pending;
             answer = Self::send(inner, request);
         }
+        // A request that reads the record's view may lay it out, and the view
+        // may write as it takes up what changed (a file it now names opened
+        // for the first time): what it wrote is collected with the next take.
+        if answer.is_ok()
+            && matches!(
+                request,
+                Request::Survey
+                    | Request::SurveyRows
+                    | Request::SurveyPage { .. }
+                    | Request::Resolve { .. }
+                    | Request::Wanted
+            )
+        {
+            inner.dirty = true;
+            inner.beside_dirty = true;
+        }
         answer.map_err(|stopped| {
             inner.stop();
             tracing::warn!(app = %self.app_id, record = %self.record.as_str(), reason = %stopped,

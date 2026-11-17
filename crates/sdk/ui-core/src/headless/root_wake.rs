@@ -41,6 +41,16 @@ impl RootWake {
     }
 }
 
+/// What [`super::FrameHarness::settle_if_owed`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwedSettle {
+    /// It ran frames until nothing was owed: the frame shows all of it.
+    Framed,
+    /// Nothing was owed, and it laid nothing out; `moved` when the
+    /// invocations it dispatched changed the document.
+    Unframed { moved: bool },
+}
+
 impl Drop for RootWake {
     fn drop(&mut self) {
         self.scope.close();
@@ -81,6 +91,33 @@ impl super::FrameHarness {
                 self.relayout();
             }
         });
+    }
+
+    /// What an action leaves for the frame after it, taken up as the live
+    /// window's idle pass takes it up, without a frame of everything the view
+    /// shows: the invocations it submitted are dispatched, and frames run
+    /// ([`Self::settle_owed`]) only while the root is owed a reply
+    /// ([`crate::wake::WakeHandle::owe`]) or one landed and woke it. An action
+    /// that only changed the document costs that change: whoever reads the
+    /// view next lays it out.
+    pub fn settle_if_owed(&mut self) -> OwedSettle {
+        let before = crate::doc::settle_mark(&self.state.doc);
+        self.idle_control_tick();
+        let moved = crate::doc::settle_mark(&self.state.doc) != before;
+        self.drain_component_wakes();
+        let owes = self
+            .component_wake
+            .as_ref()
+            .map_or_else(
+                || self.root_wake.handle(),
+                |wake| wake.binding.lifetime.clone(),
+            )
+            .owes();
+        if !owes && !self.wake_pending() {
+            return OwedSettle::Unframed { moved };
+        }
+        self.settle_owed();
+        OwedSettle::Framed
     }
 
     /// Take up the wake waiting for this frame, if any.

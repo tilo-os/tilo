@@ -883,20 +883,28 @@ fn pin_pdf(agent: &ConfinedReplica, reference: &str, name: &str) {
             false,
         )
         .expect("the record pins the workspace's PDF");
-    // The view opens the PDF it now names, and the record takes on what
-    // opening it adds the first time (its page plan, the markup the file
-    // carries) before the pin answers: the app's own work, caused by the
-    // pin and never by a later read.
+    // The pin answers once the record names the PDF: it does not wait for
+    // the view to open it.
     let pinned = agent
         .take_mutation()
         .unwrap()
         .expect("the pin is the agent's change");
-    let mut pinning = did(&pinned);
-    pinning.sort();
+    assert_eq!(did(&pinned), ["pin-source"]);
+    // The view opens the PDF the record names when it is next read, and the
+    // record takes on what opening it adds the first time (its page plan,
+    // the markup the file carries) in that frame: the app's own work, which
+    // whoever reads the view sees whole.
+    let _ = agent.survey();
+    let opened = agent
+        .take_mutation()
+        .unwrap()
+        .expect("opening the PDF adds to the record");
+    let mut opening = did(&opened);
+    opening.sort();
     assert_eq!(
-        pinning,
-        ["adopt-existing", "pin-source", "start-page-plan"],
-        "{pinning:?}"
+        opening,
+        ["adopt-existing", "start-page-plan"],
+        "{opening:?}"
     );
 }
 

@@ -342,6 +342,7 @@ pub use root_access::{Framed, RootAndStateMut, RootMut};
 mod part_row;
 mod root_component;
 mod root_wake;
+pub use root_wake::OwedSettle;
 mod search_open;
 mod sidebar_button;
 pub use part_row::WINDOW_PARTS;

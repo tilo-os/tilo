@@ -675,21 +675,45 @@ impl Replica {
     /// least the window's offset) and those from the `offset`th on, at most
     /// `take`, on a host that `can_render` or not.
     #[must_use]
+    pub fn survey_page(
+        &self,
+        query: &tilo_actions::remote::CatalogueQuery,
+        window: (bool, (usize, usize)),
+    ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
+        // A lookup (one action by its address, a resource by its name) is
+        // answered from the view as it stands: an action just done leaves
+        // the view to lay out its change when it is read, and what the
+        // lookup names is there already unless only that frame would add
+        // it. A listing reads the view laid out.
+        if (query.target.is_some() || query.resource_name.is_some()) && !self.view.laid_out() {
+            let standing =
+                self.survey_page_of(&self.view.published_standing(), true, query, window);
+            if standing.0 > 0 {
+                return standing;
+            }
+        }
+        self.survey_page_of(&self.view.published(), false, query, window)
+    }
+
+    /// [`Self::survey_page`] of `resources`, the tree the view publishes:
+    /// `standing` when the view has not laid out what changed, which then
+    /// reads past the published pages only the items a name finds.
     #[expect(
         clippy::too_many_lines,
         reason = "one walk of a level: the tree as published, then the items it \
                   leaves past its page, stopped where the page ends"
     )]
-    pub fn survey_page(
+    fn survey_page_of(
         &self,
+        resources: &[tilo_actions::ResourceSpec],
+        standing: bool,
         query: &tilo_actions::remote::CatalogueQuery,
         (can_render, (offset, take)): (bool, (usize, usize)),
     ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
         // The tree the view publishes, and only the items past its pages the
         // page reaches: a record holding thousands of notes costs a page its
         // rows, not its notes.
-        let resources = self.view.published();
-        let mut in_chains = chain_resources(&resources);
+        let mut in_chains = chain_resources(resources);
         let mut walk = SurveyWalk {
             query,
             can_render,
@@ -726,7 +750,7 @@ impl Replica {
                 },
             ))
         };
-        let mut complete = tilo_actions::api::survey_placed_each(&resources, &mut |placed| {
+        let mut complete = tilo_actions::api::survey_placed_each(resources, &mut |placed| {
             visit(placed, &mut walk, &in_chains)
         });
         // The items past the published pages, built only as far as the page
@@ -769,7 +793,7 @@ impl Replica {
                     }
                 }
             }
-            let past_len = if query.resource_name.is_some() {
+            let past_len = if query.resource_name.is_some() || standing {
                 0
             } else {
                 self.view.past_page_len()
@@ -801,7 +825,7 @@ impl Replica {
         }
         if complete && walk.total < walk.end {
             let mut containers = Vec::new();
-            self.survey_containers(&resources, None, &walk.offering, &mut containers);
+            self.survey_containers(resources, None, &walk.offering, &mut containers);
             if let Some(root) = &past_root {
                 for child in &past_built {
                     containers_into(child, root, &walk.offering, self.app_id(), &mut containers);

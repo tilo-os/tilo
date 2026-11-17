@@ -88,10 +88,16 @@ pub struct AttachedView {
     /// The app's view of the record: mounted, laid out, never drawn. Laid
     /// out when it is next read after a change ([`Self::frame`]).
     frame: RefCell<Box<FrameHarness>>,
-    /// The view has not laid out what was merged since its last frame: a
-    /// host merges a write's echo and each peer's change before it reads
-    /// anything, and one frame then shows them all.
+    /// The view has not laid out what changed since its last frame: what was
+    /// merged (a write's echo, each peer's change) and what the view's own
+    /// actions did. One frame shows them all when the view is next read; an
+    /// action on a resource the frame already finds does not wait for it.
     unsettled: Cell<bool>,
+    /// What the view has not laid out includes what reached it from
+    /// elsewhere (a peer's change, a part another device started, a new
+    /// standing): what its records ask the workspace for is what a frame of
+    /// that makes of it.
+    merged: Cell<bool>,
     /// What the view published as last asked, while nothing it reads moved
     /// ([`Published`]): one call resolves a path, finds its chains and checks
     /// what it offers against the same tree, built once.
@@ -335,6 +341,7 @@ impl AttachedView {
             checkout,
             frame: RefCell::new(Box::new(frame)),
             unsettled: Cell::new(false),
+            merged: Cell::new(false),
             published: RefCell::new(None),
             moves: Cell::new(0),
             records,
@@ -370,37 +377,61 @@ impl AttachedView {
     /// The member's permissions changed: a role granted or taken away.
     pub fn set_permissions(&mut self, permissions: PermissionContext) {
         self.permissions.set(permissions);
-        self.unsettle();
+        self.unsettle_merged();
     }
 
     /// The view's frame, laid out first when a change it has not shown was
-    /// merged since its last frame. A host merges every change a record
-    /// takes, its own write's echo among them, and reads the view far less
-    /// often: the view lays out once for all of them, when it is read.
+    /// merged or made since its last frame. A host merges every change a
+    /// record takes, its own write's echo among them, acts through the view
+    /// and reads it far less often: the view lays out once for all of them,
+    /// when it is read. What that frame asks a worker for is taken up in it
+    /// ([`FrameHarness::settle_owed`]): whoever reads the view reads all it
+    /// makes of the record.
     fn frame(&self) -> Ref<'_, FrameHarness> {
         if self.unsettled.replace(false) {
+            self.merged.set(false);
             self.moved();
-            self.frame.borrow_mut().relayout();
+            lay_out(&mut self.frame.borrow_mut());
         }
         Ref::map(self.frame.borrow(), |frame| &**frame)
     }
 
     /// [`Self::frame`], to act through: what it does may change anything the
-    /// view publishes.
+    /// view publishes. An effect or a view acts on what the view shows.
     fn frame_mut(&mut self) -> &mut FrameHarness {
         self.moved();
         let frame = self.frame.get_mut();
         if self.unsettled.replace(false) {
-            frame.relayout();
+            self.merged.set(false);
+            lay_out(frame);
         }
         frame
     }
 
-    /// Lay out what was merged since the view's last frame, if anything: what
-    /// the records hold and ask for after a merge is what the view makes of
-    /// it, before anything of them is read.
-    fn settle(&self) {
-        drop(self.frame());
+    /// The view's frame as it stands, without laying out what changed since
+    /// its last one. The record's resource reads its document as it is now
+    /// (an item a change made is there, one it removed is gone), so what an
+    /// address names is found here at the cost of that resource, however
+    /// much the view would lay out.
+    fn frame_standing(&self) -> Ref<'_, FrameHarness> {
+        Ref::map(self.frame.borrow(), |frame| &**frame)
+    }
+
+    /// What `find` finds in the frame as it stands, or else in the frame laid
+    /// out, when it has anything left to lay out: something only a frame
+    /// shows (an item a surface publishes once it has synced) is found then.
+    fn found<T>(&self, find: impl Fn(&FrameHarness) -> Option<T>) -> Option<T> {
+        let standing = find(&self.frame_standing());
+        if standing.is_some() || !self.unsettled.get() {
+            return standing;
+        }
+        find(&self.frame())
+    }
+
+    /// [`Self::unsettle`] for what reached the view from elsewhere.
+    fn unsettle_merged(&self) {
+        self.merged.set(true);
+        self.unsettle();
     }
 
     /// The view holds what it has not laid out yet: its next read lays it out.
@@ -432,7 +463,11 @@ impl AttachedView {
     /// call asks for it (a path resolved a level at a time, the chains the
     /// view keeps, what an action is offered as).
     fn frame_tree(&self) -> Rc<Vec<tilo_actions::ResourceSpec>> {
-        let frame = self.frame();
+        self.tree_of(self.frame())
+    }
+
+    /// The tree `frame` publishes, kept as [`Self::frame_tree`] keeps it.
+    fn tree_of(&self, frame: Ref<'_, FrameHarness>) -> Rc<Vec<tilo_actions::ResourceSpec>> {
         if let Some(published) = self.published.borrow().as_ref()
             && published.at == self.inputs()
         {
@@ -454,7 +489,31 @@ impl AttachedView {
     /// [`Self::resources`] without a copy of it.
     #[must_use]
     pub fn published(&self) -> Rc<Vec<tilo_actions::ResourceSpec>> {
-        let tree = self.frame_tree();
+        self.permitted_tree(&self.frame_tree())
+    }
+
+    /// [`Self::published`] from the view as it stands, without laying out
+    /// what changed since its last frame: what a lookup of one resource or
+    /// action reads first, at the cost of the tree and not of a frame. The
+    /// record's own resource reads its document as it is now; only what a
+    /// frame of the view would add is not there yet ([`Self::laid_out`]).
+    #[must_use]
+    pub fn published_standing(&self) -> Rc<Vec<tilo_actions::ResourceSpec>> {
+        self.permitted_tree(&self.tree_of(self.frame_standing()))
+    }
+
+    /// Whether the view has laid out everything that changed: nothing it
+    /// would publish waits for a frame.
+    #[must_use]
+    pub fn laid_out(&self) -> bool {
+        !self.unsettled.get()
+    }
+
+    /// `tree` as the member may reach it, kept with it.
+    fn permitted_tree(
+        &self,
+        tree: &[tilo_actions::ResourceSpec],
+    ) -> Rc<Vec<tilo_actions::ResourceSpec>> {
         if let Some(permitted) = self
             .published
             .borrow()
@@ -522,21 +581,19 @@ impl AttachedView {
     /// items the record holds.
     #[must_use]
     pub fn past_page_named(&self, name: &str) -> Vec<tilo_actions::ResourceSpec> {
-        let permissions = self.permissions.borrow();
-        let frame = self.frame();
-        frame
-            .past_page_labels()
-            .into_iter()
-            .filter(|(_, label)| label.eq_ignore_ascii_case(name))
-            .filter_map(|(id, _)| frame.resource(&id))
-            .filter_map(|resource| {
-                permissions.permitted_resource_on(
-                    self.definition.app_id(),
-                    self.checkout.id.as_str(),
-                    resource,
-                )
-            })
-            .collect()
+        // Named alone from the view as it stands; laid out only when that
+        // names none.
+        self.found(|frame| {
+            let named: Vec<_> = frame
+                .past_page_labels()
+                .into_iter()
+                .filter(|(_, label)| label.eq_ignore_ascii_case(name))
+                .filter_map(|(id, _)| frame.resource(&id))
+                .filter_map(|resource| self.permitted(resource))
+                .collect();
+            (!named.is_empty()).then_some(named)
+        })
+        .unwrap_or_default()
     }
 
     /// The items the view's tree leaves out past each collection's published
@@ -564,9 +621,15 @@ impl AttachedView {
     /// already known asks for.
     #[must_use]
     pub fn resource(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
-        let resource = self.frame().resource(id)?;
-        let permissions = self.permissions.borrow();
-        permissions.permitted_resource_on(
+        self.found(|frame| self.permitted(frame.resource(id)?))
+    }
+
+    /// `resource` as the member may reach it.
+    fn permitted(
+        &self,
+        resource: tilo_actions::ResourceSpec,
+    ) -> Option<tilo_actions::ResourceSpec> {
+        self.permissions.borrow().permitted_resource_on(
             self.definition.app_id(),
             self.checkout.id.as_str(),
             resource,
@@ -576,35 +639,33 @@ impl AttachedView {
     /// The resource `id` with its own actions, as the member may reach
     /// them, and none of its children: what an address on it is answered
     /// from, which costs that resource and not the items it holds.
-    fn resource_alone(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
-        let mut resource = self.frame().resource(id)?;
+    fn resource_alone(&self, frame: &FrameHarness, id: &str) -> Option<tilo_actions::ResourceSpec> {
+        let mut resource = frame.resource(id)?;
         resource.children.clear();
-        let permissions = self.permissions.borrow();
-        permissions.permitted_resource_on(
-            self.definition.app_id(),
-            self.checkout.id.as_str(),
-            resource,
-        )
+        self.permitted(resource)
     }
 
     /// The contract of the action `address` names, as the view publishes it
     /// now: `None` when the view publishes no such action.
     #[must_use]
     pub fn descriptor(&self, address: &ActionAddress) -> Option<ActionDescriptor> {
-        if let Some(alone) = self.resource_alone(&address.resource)
-            && alone
+        // The one resource's own actions, never its children's: an action
+        // elsewhere in the tree is not this address's.
+        let own = |frame: &FrameHarness| {
+            let alone = self.resource_alone(frame, &address.resource)?;
+            if !alone
                 .actions
                 .iter()
                 .any(|action| action.id == address.action)
-        {
-            // The one resource's own actions, never its children's: an
-            // action elsewhere in the tree is not this address's.
-            if let Some(descriptor) = tilo_actions::api::survey(&[alone])
+            {
+                return None;
+            }
+            tilo_actions::api::survey(&[alone])
                 .into_iter()
                 .find(|descriptor| descriptor.address == *address)
-            {
-                return Some(descriptor);
-            }
+        };
+        if let Some(descriptor) = self.found(own) {
+            return Some(descriptor);
         }
         // A resource only the whole tree names (an accessibility or search
         // surface) is answered as it always was.
@@ -689,7 +750,7 @@ impl AttachedView {
         // It answers once what it caused in the app has landed: a reply the
         // app asked a worker for in turn is applied as part of it, not of
         // whatever is invoked next. A job it started answers by itself.
-        self.frame_mut().settle_owed();
+        self.settle_acted();
         Ok(started.completed().unwrap_or_default())
     }
 
@@ -713,7 +774,7 @@ impl AttachedView {
     ) -> Result<ActionOutput, ApiError> {
         let (invocation, started) = self.start_as(invoker, address, arguments, confirmed)?;
         if let Some(output) = started.completed() {
-            self.frame_mut().settle_owed();
+            self.settle_acted();
             return Ok(output);
         }
         let ended = |frame: &FrameHarness| {
@@ -748,6 +809,17 @@ impl AttachedView {
         }
     }
 
+    /// After an action: take up what it left the view owed (a reply it asked
+    /// a worker for, one that already landed), or else leave the view to lay
+    /// out what it did when it is next read. An action never waits for a
+    /// frame of everything the view shows; whoever looks lays that out.
+    fn settle_acted(&mut self) {
+        self.moved();
+        if self.frame.get_mut().settle_if_owed() != ui_core::headless::OwedSettle::Framed {
+            self.unsettle();
+        }
+    }
+
     /// Start the operation `address` names for `invoker`, as
     /// [`Self::invoke_as`] does: its invocation, and whether it finished.
     fn start_as(
@@ -763,9 +835,9 @@ impl AttachedView {
         ),
         ApiError,
     > {
-        if self.descriptor(address).is_none() {
-            return Err(ApiError::Unknown(address.clone()));
-        }
+        let descriptor = self
+            .descriptor(address)
+            .ok_or_else(|| ApiError::Unknown(address.clone()))?;
         self.landed.0.borrow_mut().clear();
         // History names the app the view is of, as its window does, within
         // whatever task the member carries out.
@@ -773,7 +845,16 @@ impl AttachedView {
             &tilo_actions::ActionContext::default()
                 .with_app(self.definition.app_id(), self.definition.title()),
         );
-        self.frame_mut().start_bound_job_within(
+        // A document operation is the record's: it acts on the document as it
+        // is, through the frame as it stands. An effect or a view acts on
+        // what the view shows, laid out first.
+        let frame = if descriptor.kind == tilo_actions::OperationKind::Document {
+            self.moved();
+            &mut **self.frame.get_mut()
+        } else {
+            self.frame_mut()
+        };
+        frame.start_bound_job_within(
             Some(invoker),
             Some(&ambient),
             &ui_core::bound_dispatch::BoundActionAddress {
@@ -804,13 +885,23 @@ impl AttachedView {
         // under: one of another app's, kept here, is reached through the
         // provider that keeps it.
         let app = self.definition.app_id();
-        let resource = self
-            .resources()
-            .into_iter()
-            .find(|resource| resource.kind == R::KIND && resource.app().is_none_or(|of| of == app))
-            .ok_or_else(|| ApiError::Unknown(ActionAddress::new(R::KIND, invoke.id)))?;
+        let ours = |resource: &tilo_actions::ResourceSpec| {
+            resource.kind == R::KIND && resource.app().is_none_or(|of| of == app)
+        };
+        // The record's own resource is published under its kind: found
+        // alone, as an address is, before the whole tree is read for it.
+        let id = match self.resource(R::KIND).filter(ours) {
+            Some(resource) => resource.id,
+            None => {
+                self.resources()
+                    .into_iter()
+                    .find(ours)
+                    .ok_or_else(|| ApiError::Unknown(ActionAddress::new(R::KIND, invoke.id)))?
+                    .id
+            }
+        };
         self.invoke(
-            &ActionAddress::new(resource.id.as_str(), invoke.id),
+            &ActionAddress::new(id.as_str(), invoke.id),
             &invoke.arguments,
             confirmed,
         )
@@ -903,24 +994,23 @@ impl AttachedView {
         self.landed.0.borrow().last().cloned()
     }
 
-    /// Read the record's document.
+    /// Read the record's document, as it is: reading the record lays out
+    /// nothing of the view.
     pub fn read<R>(&self, read: impl FnOnce(&ui_core::automerge::AutoCommit) -> R) -> Option<R> {
-        self.settle();
         self.records.read(&self.checkout.id, read)
     }
 
     /// The member's changes since the last call, or `None` when it
     /// changed nothing. The first call on a record the member created
-    /// returns it whole.
+    /// returns it whole. What the view writes as it lays a change out goes
+    /// with the call after the frame that wrote it: taking a write lays out
+    /// nothing.
     ///
     /// # Errors
     /// The record's changes could not be collected (it is not open here or
     /// its store is busy). Distinct from `Ok(None)`: what the member
     /// changed is still in the record, unsent, and goes with the next call.
     pub fn take_changes(&mut self) -> Result<Option<DocumentMutation>, String> {
-        // What the view writes as it lays a merged change out goes with
-        // this member's changes, as it did when it laid out on merge.
-        self.settle();
         publish(&mut self.sync, &self.records, &self.checkout.id)
     }
 
@@ -960,7 +1050,7 @@ impl AttachedView {
         // Laid out when the view is next read: a change the record already
         // held moved nothing to lay out.
         if changed {
-            self.unsettle();
+            self.unsettle_merged();
         }
         Ok(changed)
     }
@@ -981,7 +1071,6 @@ impl AttachedView {
         record: &ui_core::resource::DocumentId,
         mutation: &DocumentMutation,
     ) -> Option<Result<Vec<Vec<String>>, String>> {
-        self.settle();
         self.records
             .with(record, |doc| changed_keys_of(doc, mutation))
     }
@@ -993,8 +1082,12 @@ impl AttachedView {
     /// parts before its head. Only the chains are read, not the view's tree.
     #[must_use]
     pub fn wanted_resources(&self) -> Vec<ui_core::resource::DocumentId> {
-        // What the records ask for is what the view's last frame asked.
-        self.settle();
+        // What reached the view from elsewhere asks for what a frame of it
+        // asks for (a chain a merged change starts); what the view's own
+        // actions did asks for nothing a frame would add.
+        if self.merged.get() {
+            drop(self.frame());
+        }
         let chains: std::collections::BTreeSet<ui_core::resource::DocumentId> = self
             .records
             .open_resources()
@@ -1002,7 +1095,9 @@ impl AttachedView {
             .filter_map(|checkout| checkout.id.chain_part().map(|(chain, _)| chain))
             .collect();
         for chain in &chains {
-            let _ = self.frame().resource(&super::chain_resource_id(chain));
+            let _ = self
+                .frame_standing()
+                .resource(&super::chain_resource_id(chain));
         }
         self.records.wanted_resources()
     }
@@ -1016,7 +1111,7 @@ impl AttachedView {
         answer: ui_core::resource::WorkspaceAnswer,
     ) {
         self.records.note_workspace_answer(record, answer);
-        self.unsettle();
+        self.unsettle_merged();
     }
 
     /// The chains of records the app keeps beside its own
@@ -1044,10 +1139,19 @@ impl AttachedView {
     #[must_use]
     pub fn beside(&self, record: &ui_core::resource::DocumentId) -> Option<DocumentCheckout> {
         let (chain, _) = record.chain_part()?;
-        self.chains()
-            .into_iter()
-            .find(|held| held.id == chain)
-            .map(|held| DocumentCheckout::new(record.clone(), held.kind))
+        let kind = self.chain_kind(&chain)?;
+        Some(DocumentCheckout::new(record.clone(), kind))
+    }
+
+    /// The kind of the parts of `chain`, when the view publishes it: found
+    /// by the chain's own resource, without the rest of the tree.
+    fn chain_kind(
+        &self,
+        chain: &ui_core::resource::DocumentId,
+    ) -> Option<ui_core::resource::ResourceType> {
+        let id = super::chain_resource_id(chain);
+        self.found(|frame| frame.resource(&id))
+            .map(|resource| ui_core::resource::ResourceType::new(resource.kind))
     }
 
     /// The records the view holds beside its own: the parts of the app's
@@ -1055,15 +1159,16 @@ impl AttachedView {
     /// own.
     #[must_use]
     pub fn resources_beside(&self) -> Vec<DocumentCheckout> {
-        let chains = self.chains();
+        let mut chains = std::collections::HashMap::new();
         self.records
             .open_resources()
             .into_iter()
             .filter(|checkout| {
-                checkout
-                    .id
-                    .chain_part()
-                    .is_some_and(|(chain, _)| chains.iter().any(|held| held.id == chain))
+                checkout.id.chain_part().is_some_and(|(chain, _)| {
+                    *chains
+                        .entry(chain)
+                        .or_insert_with_key(|chain| self.chain_kind(chain).is_some())
+                })
             })
             .collect()
     }
@@ -1074,7 +1179,6 @@ impl AttachedView {
         read: impl FnOnce(&ui_core::automerge::AutoCommit) -> R,
     ) -> Option<R> {
         self.beside(record)?;
-        self.settle();
         self.records.read(record, read)
     }
 
@@ -1088,7 +1192,6 @@ impl AttachedView {
         &mut self,
         record: &ui_core::resource::DocumentId,
     ) -> Result<Option<DocumentMutation>, String> {
-        self.settle();
         let sync = self.beside.entry(record.clone()).or_default();
         publish(sync, &self.records, record)
     }
@@ -1183,9 +1286,20 @@ impl AttachedView {
         // A part opened here is new to the view even when the change merged
         // into it is what it opened from.
         if changed || opened {
-            self.unsettle();
+            self.unsettle_merged();
         }
         Ok(changed)
+    }
+}
+
+/// Lay `frame` out, and take up what that frame asked for: the invocations
+/// it submitted, the replies it asked a worker for. One frame when it asked
+/// for nothing; when what it submitted changed the record, the frames that
+/// shows ([`FrameHarness::settle_owed`]).
+fn lay_out(frame: &mut FrameHarness) {
+    frame.relayout();
+    if frame.settle_if_owed() == (ui_core::headless::OwedSettle::Unframed { moved: true }) {
+        frame.settle_owed();
     }
 }
 

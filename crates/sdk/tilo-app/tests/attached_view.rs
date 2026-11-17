@@ -352,10 +352,11 @@ tilo_test_env::scenario! {
         assert_eq!(count(&view), 1);
     }
 
-    phase an_action_answers_once_the_work_it_caused_has_landed;
-    // An action answers once the work it caused in the app has landed: the
-    // reply a worker owed the view is taken up and its change made before the
-    // action answers, so the change is the action's, never the next one's.
+    phase an_action_answers_without_waiting_for_the_view;
+    // An action answers once its own change is made, never after a frame of
+    // the view: what the view makes of it (a reply it asks a worker for in
+    // turn) is made when the view is next read, whoever reads it, and that
+    // frame waits for the reply it asked for, so the reader sees it all.
     {
         let app = TestApp::<LogApp>::new().unwrap();
         let definition = definition::<LogApp>();
@@ -377,12 +378,17 @@ tilo_test_env::scenario! {
             })
             .unwrap()
         };
+        let mut before = String::new();
         for entry in ["lamps", "chairs"] {
-            view.invoke_typed(&Log::ASK.with(entry), false).unwrap();
+            let (_, acting) = observe(|| view.invoke_typed(&Log::ASK.with(entry), false).unwrap());
+            assert_eq!(frames(&acting), 0, "the action lays nothing out");
+            assert_eq!(answer(&view), before, "reading the record lays nothing out");
+            assert!(view.take_changes().unwrap().is_some(), "the ask leaves alone");
+            let _ = view.resources();
             assert_eq!(answer(&view), format!("{entry}: found"));
-            let changed = view.take_changes().unwrap();
-            assert!(changed.is_some(), "the ask and its answer leave together");
+            assert!(view.take_changes().unwrap().is_some(), "then its answer");
             assert!(view.take_changes().unwrap().is_none());
+            before = format!("{entry}: found");
         }
         let did: Vec<String> = view
             .read(|doc| tilo_resource::history::versions(&mut doc.clone()))
