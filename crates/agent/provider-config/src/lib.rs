@@ -1368,6 +1368,58 @@ impl ProviderConfig {
         }
     }
 
+    /// The profile `id` as it may change, or [`ProviderChoiceError::ProviderGone`]
+    /// when nothing has its id. The one way a caller reaches a profile to
+    /// change it, so the pane and a service change it the same way.
+    ///
+    /// # Errors
+    /// [`ProviderChoiceError::ProviderGone`] when no profile has the id.
+    pub fn profile_mut(&mut self, id: &str) -> Result<&mut ProviderProfile, ProviderChoiceError> {
+        self.profiles
+            .iter_mut()
+            .find(|profile| profile.id == id)
+            .ok_or(ProviderChoiceError::ProviderGone)
+    }
+
+    /// Make `model` the default of `provider`, which offers it afterwards
+    /// even if it was written by hand rather than listed by the provider.
+    /// `listed` is what the provider's list says of it; without one, a model
+    /// the profile does not have yet gets what its family is known to do
+    /// ([`ModelDescriptor::named`]). The one choice the pane's "Use model"
+    /// and the canvas composer's switcher make.
+    ///
+    /// # Errors
+    /// [`ProviderChoiceError::NotAModel`] when `model` is blank, longer than
+    /// 256 bytes, or holds a control character, and
+    /// [`ProviderChoiceError::ProviderGone`] when no profile has the
+    /// provider's id.
+    pub fn take_model(
+        &mut self,
+        provider: &str,
+        model: &str,
+        listed: Option<ModelDescriptor>,
+    ) -> Result<(), ProviderChoiceError> {
+        let model = model.trim();
+        if model.is_empty() || model.len() > 256 || model.contains(char::is_control) {
+            return Err(ProviderChoiceError::NotAModel);
+        }
+        let profile = self.profile_mut(provider)?;
+        match profile.models.iter_mut().find(|known| known.id == model) {
+            // What the provider now says about a model the person already
+            // has; their own answer stays.
+            Some(known) => {
+                if let Some(listed) = &listed {
+                    capabilities::refresh(known, listed);
+                }
+            }
+            None => profile
+                .models
+                .push(listed.unwrap_or_else(|| ModelDescriptor::named(model.to_owned()))),
+        }
+        profile.default_model = Some(model.to_owned());
+        Ok(())
+    }
+
     pub fn remove(&mut self, id: &str) -> Option<ProviderProfile> {
         let index = self.profiles.iter().position(|profile| profile.id == id)?;
         let removed = self.profiles.remove(index);
@@ -1427,6 +1479,30 @@ fn endpoint_issues(profile: &ProviderProfile, issues: &mut Vec<ProfileIssue>) {
 /// Why a model cannot plan for an agent: an agent acts by calling tools.
 pub const NO_TOOL_CALLING: &str =
     "This model does not call tools, so an agent cannot plan with it.";
+
+/// Why a person's choice of a provider or a model was refused, as
+/// [`ProviderConfig::take_model`] answers it: each carries no words, leaving
+/// the words to whoever shows them (the pane's localized keys, the canvas
+/// composer's own).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderChoiceError {
+    /// The model is blank, longer than 256 bytes, or holds a control
+    /// character.
+    NotAModel,
+    /// No profile has the provider's id.
+    ProviderGone,
+}
+
+impl std::fmt::Display for ProviderChoiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotAModel => "Enter a model ID on one line.",
+            Self::ProviderGone => "Provider is no longer available.",
+        })
+    }
+}
+
+impl std::error::Error for ProviderChoiceError {}
 
 /// A profile validation diagnosis fit for an inline Settings status line.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -308,3 +308,153 @@ fn the_settings_it_publishes_are_the_sections_and_the_index() {
         "a kind alone names no section's resource"
     );
 }
+
+/// Two providers the person set up: one on this device with two models, and
+/// one hosted with one, the device's the one agents answer with.
+fn configured() -> agent_provider_config::ProviderConfig {
+    use agent_provider_config::{
+        EndpointLocation, ModelDescriptor, ProviderConfig, ProviderProfile, ProviderProtocol,
+    };
+    let mut local = ProviderProfile::local_vllm();
+    local.id = "local".into();
+    local.label = "This machine".into();
+    local.models = vec![ModelDescriptor::new("small"), ModelDescriptor::new("large")];
+    local.default_model = Some("small".into());
+    let mut hosted = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+    hosted.id = "hosted".into();
+    hosted.label = "Work".into();
+    hosted.models = vec![ModelDescriptor::new("claude")];
+    hosted.default_model = Some("claude".into());
+    let _ = EndpointLocation::Hosted;
+    let config = ProviderConfig {
+        default_profile: Some(local.id.clone()),
+        profiles: vec![local, hosted],
+        ..ProviderConfig::default()
+    };
+    config.save().unwrap();
+    ProviderConfig::load()
+}
+
+/// The agent-models resource reads the providers the person set up, each
+/// with its models and the one agents use from it, and which provider and
+/// model agents answer with now.
+#[test]
+fn the_agent_model_reading_lists_a_providers_models_and_the_one_in_use() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    configured();
+    let services = services();
+    let reading = services
+        .read("settings:settings.agent-models")
+        .expect("the agent model choice is published");
+    let providers = reading["providers"].as_array().expect("providers");
+    let local = providers
+        .iter()
+        .find(|provider| provider["id"] == json!("local"))
+        .expect("the device's provider is listed");
+    let models: Vec<&str> = local["models"]
+        .as_array()
+        .expect("models")
+        .iter()
+        .map(|model| model["id"].as_str().expect("a model id"))
+        .collect();
+    assert_eq!(
+        models,
+        ["small", "large"],
+        "every model it offers is listed"
+    );
+    assert_eq!(
+        local["model"],
+        json!("small"),
+        "the model agents use from it"
+    );
+    assert_eq!(local["enabled"], json!(true));
+    assert_eq!(local["label"], json!("This machine"));
+    assert!(
+        local.get("endpoint").is_none() && local.get("credential").is_none(),
+        "no endpoint or credential is read: {local}"
+    );
+    assert_eq!(
+        reading["in_use"],
+        json!({ "provider": "local", "model": "small", "model_label": "small" }),
+        "the provider and model agents answer with now"
+    );
+}
+
+/// "Use model" makes that provider's model the one agents use and its
+/// provider the one they answer with, so `ProviderSelection::from_config`
+/// resolves to it; the change is one step the person takes back across both
+/// provider sections.
+#[test]
+fn use_model_changes_what_agents_answer_with_and_is_undone_as_one_step() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    configured();
+    let mut services = services();
+    let resolve = || {
+        // What `tilo_agent::providers::ProviderSelection::from_config` reads: the
+        // active profile and its default model.
+        let config = agent_provider_config::ProviderConfig::load();
+        let profile = config
+            .active_profile()
+            .expect("agents answer with a provider");
+        (profile.id.clone(), profile.default_model.clone())
+    };
+    assert_eq!(resolve(), ("local".into(), Some("small".into())));
+    let resource = "settings:settings.agent-models";
+    services
+        .invoke(
+            resource,
+            "use-model",
+            &arguments(json!({ "provider": "hosted", "model": "claude" })),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        resolve(),
+        ("hosted".into(), Some("claude".into())),
+        "agents answer with the provider and model the person chose"
+    );
+    assert_eq!(
+        services.read(resource).unwrap()["in_use"],
+        json!({ "provider": "hosted", "model": "claude", "model_label": "claude" })
+    );
+    services
+        .invoke(resource, "undo-model", &Map::new())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        resolve(),
+        ("local".into(), Some("small".into())),
+        "the choice is taken back across the device's provider section and the person's"
+    );
+    services
+        .invoke(resource, "redo-model", &Map::new())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        resolve(),
+        ("hosted".into(), Some("claude".into())),
+        "and made again"
+    );
+}
+
+/// The resource's surface, as a view of another language reads it: written
+/// beside this crate for `tilolang-tilo` to publish, the way
+/// `device-surface.json` is for the device. `UPDATE_SNAPSHOTS=1` writes it.
+#[test]
+fn the_agent_models_surface_file_is_what_this_crate_publishes() {
+    let published = super::agent_models::surface();
+    let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": [published] }))
+        .expect("a surface writes as JSON");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("agent-models-surface.json");
+    let committed = std::fs::read_to_string(&path).ok();
+    if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|value| value == "1") {
+        std::fs::write(&path, &text).expect("the surface file is written");
+        return;
+    }
+    assert_eq!(
+        committed.as_deref(),
+        Some(text.as_str()),
+        "crates/session/settings-service/agent-models-surface.json is not what this crate \
+         publishes; regenerate it with UPDATE_SNAPSHOTS=1"
+    );
+}

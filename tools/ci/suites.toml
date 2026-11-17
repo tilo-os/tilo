@@ -832,6 +832,7 @@ inputs = [
   "crates/lang/tilolang/tests/fixtures/",
   "crates/session/session/device-surface.json",
   "apps/settings/surface.toml",
+  "crates/session/settings-service/agent-models-surface.json",
 ]
 readers = [
   "crates/platform/tilolang-tilo/src/bench.rs",

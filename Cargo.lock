@@ -22239,6 +22239,8 @@ dependencies = [
 name = "tilo-settings-service"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
+ "serde",
  "serde_json",
  "settings-sections",
  "settings-store",
