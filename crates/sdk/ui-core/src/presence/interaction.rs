@@ -2702,7 +2702,7 @@ pub(crate) fn written_in(
 /// region. Each block's range spans what it inserted there, counted in characters. `None` when it
 /// wrote into no block. A plain text field is left out: where its item sits is the record's own
 /// layout, and a write to one names its field and item in its arguments.
-pub(crate) fn written_by(changes: &[automerge::Patch]) -> Option<tilo_actions::InteractionAnchor> {
+pub fn written_by(changes: &[automerge::Patch]) -> Option<tilo_actions::InteractionAnchor> {
     use automerge::Prop;
     let mut region: Option<&str> = None;
     let mut ranges: Vec<tilo_actions::InteractionTextRange> = Vec::new();

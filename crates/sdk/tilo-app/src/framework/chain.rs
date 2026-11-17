@@ -1979,7 +1979,12 @@ impl ChainState {
             if let Some(verb) = answering {
                 let after = doc.get_heads();
                 let changes = doc.diff(before, &after);
-                *self.answered.borrow_mut() = answer(doc, verb, &changes);
+                let value = answer(doc, verb, &changes);
+                // The answer names the text it wrote, as the app's own answers do.
+                *self.answered.borrow_mut() = match ui_core::presence::written_by(&changes) {
+                    Some(wrote) => tilo_actions::ActionOutput::noting_wrote(value, &wrote),
+                    None => value,
+                };
             }
         };
         let created = self

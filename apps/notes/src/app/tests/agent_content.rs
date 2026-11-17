@@ -330,13 +330,15 @@ fn an_agents_append_answers_the_characters_it_wrote() {
     let output = app
         .call_by(
             agent("helper"),
-            "notes.notebook",
+            &crate::part::chain_resource(),
             "append-to-note",
             serde_json::json!({ "title": "Plan", "markdown": "The agent added this line." }),
         )
         .unwrap();
     app.settle();
-    let added = app.read_document(|doc| crate::read::page_block_snapshots(doc, page));
+    let added = part_doc(&app, page, |doc| {
+        crate::read::page_block_snapshots(doc, page)
+    });
     let (block, text) = added.last().expect("the appended block");
     assert_eq!(text, "The agent added this line.");
     assert_eq!(
