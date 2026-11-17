@@ -469,9 +469,8 @@ def select(root: Path, push: Push, files: set[str]) -> Selection | None:
     if WORKSPACE_MANIFEST in files:
         reached = manifest_seeds(root, push, metadata)
         if reached is None:
-            say(f"pre-push: {WORKSPACE_MANIFEST}'s change decides how every member is built; "
-                "lint the workspace (`t cargo clippy --workspace`) or push past the gate "
-                "deliberately")
+            say(f"pre-push: {WORKSPACE_MANIFEST}'s change decides how every member is built, which "
+                "only a workspace-wide lint speaks for (`t cargo clippy --workspace`)")
             return None
         seeds |= reached
     names = changed_names(root, push.comparisons, files)
