@@ -570,6 +570,22 @@ fn manifest_bytes(
     Ok(manifest.encode())
 }
 
+/// Keep the content `hash` names as a file of the tree is kept: its manifest
+/// kept in the store, the manifest's address answered.
+///
+/// # Errors
+/// As [`manifest_bytes`].
+fn manifest_of(
+    store: &tilo_content::ContentStore,
+    hash: &str,
+    size: u64,
+) -> Result<String, String> {
+    let encoded = manifest_bytes(store, hash, size)?;
+    store
+        .put_public(&encoded)
+        .map_err(|error| error.to_string())
+}
+
 /// How much content one [`keep_pending`] keeps at once: a folder's manifests,
 /// whose bytes are small.
 const MANIFEST_FLUSH_BYTES: usize = 8 * 1024 * 1024;
