@@ -459,8 +459,10 @@ impl HostAgents {
     pub async fn look(&self, workspace: &str) -> Result<(), String> {
         // What a person answered about a use of their vault is carried out
         // whether or not anything asks an agent now.
-        self.settle_uses(workspace).await;
-        self.look_past(workspace, None).await
+        Box::pin(self.settle_uses(workspace)).await;
+        // Boxed, here and in `turns` and `answer`: whoever awaits a round or a turn holds a
+        // pointer to it and carries none of it in a future of its own.
+        Box::pin(self.look_past(workspace, None)).await
     }
 
     /// [`Self::look`], leaving out the ask a turn of `past`'s agent just ended on. A turn that
@@ -553,7 +555,7 @@ impl HostAgents {
     /// # Errors
     /// A record could not be read.
     pub async fn turns(&self, workspace: &str) -> Result<Vec<Turn>, String> {
-        Ok(self.asks(workspace).await?.turns)
+        Ok(Box::pin(self.asks(workspace)).await?.turns)
     }
 
     /// What `workspace`'s records ask of the agents its host runs: the turns they owe, and the
@@ -776,7 +778,9 @@ impl HostAgents {
     /// The person is not admitted here on any device, or the answer could not be written.
     pub async fn answer(&self, workspace: &str, turn: &Turn) -> Result<(), String> {
         match self.going.enter(workspace, turn) {
-            going::Entered::Began(held) => self.answer_going(workspace, turn, &held).await.1,
+            going::Entered::Began(held) => {
+                Box::pin(self.answer_going(workspace, turn, &held)).await.1
+            }
             going::Entered::Goes(_) => Ok(()),
         }
     }
